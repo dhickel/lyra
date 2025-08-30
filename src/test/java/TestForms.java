@@ -16,6 +16,7 @@ public class TestForms {
     static final String NAME_SPACE = " namespace->::Test[function call]";
     static final String NAME_SPACE2 = " namespace->::Test[function call]:.field";
     static final String F_EXPR = " ::Test[function call]:.field::func_call2[10 20 30]";
+    static final String F_EXPR2 = " ::func_call2[10 20 30]";
     static final String S_F_EXPR = " (::Test[function call]:.field::func_call2[10 20 30] 10 20 30)";
     static final String LET = " let x : I32  = (::Test[function call]:.field::func_call2[10 20 30] 10 20 30)";
     static final String ASSIGN = "x  := (* 10 20)";
@@ -51,6 +52,7 @@ public class TestForms {
             NAME_SPACE,
             NAME_SPACE2,
             F_EXPR,
+            F_EXPR2,
             S_F_EXPR,
             LET,
             ASSIGN,

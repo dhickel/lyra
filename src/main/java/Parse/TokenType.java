@@ -6,6 +6,7 @@ import java.util.function.Function;
 import java.util.stream.Stream;
 
 public sealed interface TokenType {
+
     TokenType LEFT_PAREN = TokenType.Syntactic.LeftParen;
     TokenType RIGHT_PAREN = TokenType.Syntactic.RightParen;
 
