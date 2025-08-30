@@ -203,13 +203,13 @@ public class Grammar {
     }
 
     // ::= '{' { Expr | Stmnt } '}'
-    private static MatchResult isBlockExpression(Parser p) {
+    private static MatchResult isBlockExpression(Parser p) throws InvalidGrammarException {
         if (!matchToken(p, MATCH_LEFT_BRACE)) { return MatchResult.NONE; }
 
         List<MatchResult> blockMembers = new ArrayList<>(5);
 
         // Collect inner Expressions/Statements
-        while (!matchToken(p, MATCH_RIGHT_BRACE)) { blockMembers.add(findNextMatch()); }
+        while (!matchToken(p, MATCH_RIGHT_BRACE)) { blockMembers.add(findNextMatch(p)); }
 
         // Yummy recursive patterns, these are best left as a more concrete form and not a result for inner assignments
         List<Form> memberForms = blockMembers.stream()
