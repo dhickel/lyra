@@ -5,10 +5,6 @@ public sealed interface Value {
 
     record I64(long i) implements Value { }
 
-    record U32(long u) implements Value { }
-
-    record U64(long u) implements Value { }
-
     record F32(float f32) implements Value { }
 
     record F64(double f64) implements Value { }

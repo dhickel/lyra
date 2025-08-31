@@ -6,6 +6,8 @@ import java.util.List;
 
 
 public sealed interface ASTNode permits Expression, Statement {
+    MetaData metaData();
+
     record Program(List<ASTNode> topMost) { }
 
     record Parameter(List<Modifiers> modifiers, Symbol identifier, LangType typ) { }
