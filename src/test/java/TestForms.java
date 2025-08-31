@@ -1,3 +1,4 @@
+import Parse.Grammar;
 import Parse.Lexer;
 import org.junit.jupiter.api.Test;
 
@@ -64,11 +65,24 @@ public class TestForms {
 
 
     @Test
-    void testForms() {
+    void testLexer() {
         for (var f : forms) {
             var t = Lexer.process(f);
             System.out.println(t);
 
         }
     }
+
+    @Test
+    void testGrammar() {
+        for (var f : forms) {
+            var t = Lexer.process(f);
+            var t = Grammar.findNextMatch(p);
+            System.out.println(t);
+
+        }
+    }
+
+
+
 }

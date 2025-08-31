@@ -4,6 +4,7 @@ import Lang.LangType;
 
 import java.util.List;
 
+
 public sealed interface ASTNode permits Expression, Statement {
     record Program(List<ASTNode> topMost) { }
 
