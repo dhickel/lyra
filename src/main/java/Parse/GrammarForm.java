@@ -3,14 +3,14 @@ package Parse;
 import java.util.List;
 import java.util.Optional;
 
-public sealed interface Form {
-    sealed interface Statement extends Form {
+public sealed interface GrammarForm {
+    sealed interface Statement extends GrammarForm {
         record Reassign(Expression assignment) implements Statement { }
 
         record Let(boolean hasType, int modifierCount, Expression expression) implements Statement { }
     }
 
-    sealed interface Expression extends Form {
+    sealed interface Expression extends GrammarForm {
         record SExpr(Operation operation, List<Expression> operands) implements Expression { }
 
         record VExpr() implements Expression { }
@@ -23,7 +23,7 @@ public sealed interface Form {
 
         // record BExpr() implements Expression { } // FIXME we are also calling in the ast block expression BExpr
 
-        record BlockExpr(List<Form> members) implements Expression { }
+        record BlockExpr(List<GrammarForm> members) implements Expression { }
 
         record CondExpr(Expression predicateExpression, PredicateForm predicateForm) implements Expression { }
 
@@ -36,13 +36,13 @@ public sealed interface Form {
         record IterExpr() implements Expression { }
     }
 
-    sealed interface Operation extends Form {
+    sealed interface Operation extends GrammarForm {
         record Expr(Expression expression) implements Operation { }
 
         record Op() implements Operation { }
     }
 
-    sealed interface MemberAccess extends Form {
+    sealed interface MemberAccess extends GrammarForm {
 
         record Field() implements MemberAccess { }
 
@@ -51,22 +51,22 @@ public sealed interface Form {
         record MethodCall(List<Arg> arguments) implements MemberAccess { }
     }
 
-    record Arg(int modifierCount, Expression expression) implements Form { }
+    record Arg(int modifierCount, Expression expression) implements GrammarForm { }
 
-    record Arguments(List<Arg> args) implements Form {
+    record Arguments(List<Arg> args) implements GrammarForm {
         public static Arguments EMPTY = new Arguments(List.of());
     }
 
-    record Param(int modifierCount, boolean hasType) implements Form { }
+    record Param(int modifierCount, boolean hasType) implements GrammarForm { }
 
-    record Parameters(List<Param> params) implements Form {
+    record Parameters(List<Param> params) implements GrammarForm {
         public static Parameters EMPTY = new Parameters(List.of());
     }
 
-    record AccessChain(List<MemberAccess> accessChain) implements Form { }
+    record AccessChain(List<MemberAccess> accessChain) implements GrammarForm { }
 
-    record PredicateForm(Expression thenForm, Optional<Expression> elseForm) implements Form { }
+    record PredicateForm(Expression thenForm, Optional<Expression> elseForm) implements GrammarForm { }
 
-    record LambdaForm(Parameters parameters, Expression expression) implements Form { }
+    record LambdaForm(Parameters parameters, Expression expression) implements GrammarForm { }
 
 }

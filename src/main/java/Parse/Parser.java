@@ -2,11 +2,17 @@ package Parse;
 
 
 import Lang.AST.ASTNode;
+import Lang.AST.MetaData;
+import Lang.LangType;
 import Lang.LineChar;
+import Lang.Symbol;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 public interface Parser {
     Token peekN(int n);
@@ -206,7 +212,212 @@ public interface Parser {
         | ENTRY METHODS |
          --------------*/
 
-        private ASTNode
+        private ASTNode parseGrammarPattern(GrammarForm form) throws ParseError {
+            switch (form) {
+                case GrammarForm.Expression expression -> { }
+                case GrammarForm.Statement statement -> { }
+                default -> throw ParseError.of(
+                        peek(),
+                        "Error<Internal>: GrammarForm to parse should have root of expression or statement"
+                );
+            }
+        }
+
+        private ASTNode parseStatement(GrammarForm.Statement statement) throws ParseError {
+            return switch (statement) {
+                case GrammarForm.Statement.Let let -> parseLetStatement(let);
+                case GrammarForm.Statement.Reassign reassign -> parseReassignStatement(reassign);
+            };
+        }
+
+        private ASTNode.Expression parseExpression(GrammarForm.Expression expression) {
+            return switch (expression) {
+                case GrammarForm.Expression.BlockExpr blockExpr -> parseBlockExpression(blockExpr);
+                case GrammarForm.Expression.CondExpr condExpr -> parseCondExpression(condExpr);
+                case GrammarForm.Expression.FExpr fExpr -> parseFExpression(fExpr);
+                case GrammarForm.Expression.IterExpr iterExpr -> parseIterExpression(iterExpr);
+                case GrammarForm.Expression.LambdaExpr lambdaExpr -> parseLambdaExpression(lambdaExpr);
+                case GrammarForm.Expression.LambdaFormExpr lambdaFormExpr -> parseLambdaFormExpression(lambdaFormExpr);
+                case GrammarForm.Expression.MatchExpr matchExpr -> parseMatchExpression(matchExpr);
+                case GrammarForm.Expression.SExpr sExpr -> parseSExpression(sExpr);
+                case GrammarForm.Expression.VExpr vExpr -> parseVExpression(vExpr);
+            };
+        }
+
+        /*-----------
+        | STATEMENTS |
+         -----------*/
+
+        // ::= 'let' Identifier { Modifier } [ ':' Type ] '=' Expr
+        private ASTNode parseLetStatement(GrammarForm.Statement.Let letStatement) throws ParseError {
+            LineChar lineChar = getLineChar();
+
+            // ::= let
+            consume(TokenType.Definition.Let);
+
+            // ::= Identifier
+            Symbol identifier = Symbol.ofResolved(parseIdentifier());
+
+            // ::= [ ':' Type ]
+            LangType type = letStatement.hasType()
+                    ? parseType(true)
+                    : LangType.UNDEFINED;
+
+            // ::= { Modifier }
+            List<ASTNode.Modifier> modifiers = parseModifiers(letStatement.modifierCount());
+
+            // ::= '='
+            consume(TokenType.Syntactic.Equal);
+
+            // ::= Expr
+            ASTNode.Expression assignment = parseExpression(letStatement.expression());
+
+            return new ASTNode.Statement.Let(identifier, modifiers, assignment, MetaData.ofUnresolved(lineChar, type));
+        }
+
+        private ASTNode parseReassignStatement(GrammarForm.Statement.Reassign reassignStatement) {
+
+        }
+
+
+
+
+        /*------------
+        | EXPRESSIONS |
+        -------------*/
+
+        private ASTNode.Expression parseBlockExpression(GrammarForm.Expression.BlockExpr blockExpression) {
+
+        }
+
+        private ASTNode.Expression parseCondExpression(GrammarForm.Expression.CondExpr condExpression) {
+
+        }
+
+        private ASTNode.Expression parseFExpression(GrammarForm.Expression.FExpr fExpression) {
+
+        }
+
+        private ASTNode.Expression parseSExpression(GrammarForm.Expression.SExpr sExpression) {
+
+        }
+
+        private ASTNode.Expression parseVExpression(GrammarForm.Expression.VExpr vExpression) {
+
+        }
+
+        private ASTNode.Expression parseIterExpression(GrammarForm.Expression.IterExpr iterExpression) {
+
+        }
+
+        private ASTNode.Expression parseMatchExpression(GrammarForm.Expression.MatchExpr matchExpression) {
+
+        }
+
+        private ASTNode.Expression parseLambdaExpression(GrammarForm.Expression.LambdaExpr lambdaExpression) {
+
+        }
+
+        private ASTNode.Expression parseLambdaFormExpression(GrammarForm.Expression.LambdaFormExpr lambdaFormExpression) {
+
+        }
+
+        /*--------
+        | UTILITY |
+         --------*/
+
+        private String parseIdentifier() throws ParseError {
+            return switch (consume(TokenType.IDENTIFIER)) {
+                case Token(_, TokenData data, _, _) when data instanceof TokenData.StringData(String s) -> s;
+                default -> throw ParseError.expected(peek(), "Identifier");
+            };
+        }
+
+        private List<ASTNode.Modifier> parseModifiers(int count) throws ParseError {
+            if (count == 0) { return List.of(); }
+
+            List<ASTNode.Modifier> modifiers = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                if (advance().tokenType() instanceof TokenType.Modifier mod) {
+                    modifiers.add(mod.astModValue);
+                } else { ParseError.expected(peek(), "Modifier"); }
+            }
+            return modifiers;
+        }
+
+
+        /*------
+        | TYPES |
+         ______*/
+
+        private LangType parseType(boolean consumeColon) throws ParseError {
+            if (consumeColon) { consume(TokenType.Syntactic.Colon); }
+
+            Token token = peek();
+            return switch (token.tokenType()) {
+                // Fn<Type>
+                case TokenType.BuiltIn.Fn -> {
+                    advance();
+                    yield parseFunctionType();
+                }
+                // Array<Type>
+                case TokenType.BuiltIn.Array -> {
+                    advance();
+                    yield parseArrayType();
+                }
+                // Type
+                case TokenType.Literal.Identifier -> {
+                    if (token.tokenData() instanceof TokenData.StringData(String identifier)) {
+                        LangType type = parseTypeFromString(identifier);
+                        advance();
+                        yield type;
+                    } else { throw ParseError.of(token, "Error<Internal>: Identifier should have StringData"); }
+                }
+                default -> throw ParseError.of(token, "Expected Type Identifier");
+            };
+        }
+
+        // ::= '<' { Identifier } ';' Identifier } '>'
+        private LangType parseFunctionType() throws ParseError {
+            // ::= '<'
+            consume(TokenType.LEFT_ANGLE_BRACKET);
+
+            // ::= { Identifier }
+
+            List<LangType> paramTypes = new ArrayList<>(5);
+            while (peek().tokenType() == TokenType.IDENTIFIER) {
+                LangType type = parseType(false);
+                paramTypes.add(type);
+            }
+
+            // ::= ';'
+            consume(TokenType.Syntactic.SemiColon);
+
+            // ::= Identifier
+            LangType rtnType = parseType(false);
+
+            // ::= '>'
+            consume(TokenType.RIGHT_ANGLE_BRACKET);
+
+            return LangType.ofFunction(paramTypes, rtnType);
+        }
+
+
+        private LangType parseArrayType() throws ParseError {
+            LangType type = parseType(false);
+            return LangType.ofArray(type);
+        }
+
+        private static final Map<String, LangType> primitiveTypes =
+                LangType.allPrimitives.stream().collect(Collectors.toUnmodifiableMap(
+                        p -> p.getClass().getSimpleName(),
+                        Function.identity()
+                ));
+
+        private LangType parseTypeFromString(String identifier) {
+            return primitiveTypes.getOrDefault(identifier, new LangType.UserType(identifier));
+
+        }
 
 
     }

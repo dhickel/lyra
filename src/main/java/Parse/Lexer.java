@@ -247,13 +247,13 @@ public class Lexer {
         }
 
         private boolean addToken(TokenType tokenType) {
-            var token = new Token(tokenType, Optional.empty(), lineNum, lineChar);
+            var token = new Token(tokenType, TokenData.EMPTY, lineNum, lineChar);
             tokens.add(token);
             return true;
         }
 
         private void addDataToken(TokenType tokenType, TokenData tokenData) {
-            var token = new Token(tokenType, Optional.of(tokenData), lineNum, lineChar);
+            var token = new Token(tokenType, tokenData, lineNum, lineChar);
             tokens.add(token);
         }
     }

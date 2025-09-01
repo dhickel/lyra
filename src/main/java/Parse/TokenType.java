@@ -1,5 +1,7 @@
 package Parse;
 
+import Lang.AST.ASTNode;
+
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.function.Function;
@@ -168,14 +170,18 @@ public sealed interface TokenType {
 
 
     enum Modifier implements TokenType {
-        Mutable("#mut"),
-        Public("#pub"),
-        Constant("#const"),
-        Optional("#opt");
+        Mutable("@mut", ASTNode.Modifier.MUTABLE),
+        Public("@pub", ASTNode.Modifier.PUBLIC),
+        Constant("@const", ASTNode.Modifier.CONST),
+        Optional("@opt", ASTNode.Modifier.OPTIONAL);
 
         public final String stringValue;
+        public final ASTNode.Modifier astModValue;
 
-        Modifier(String stringValue) { this.stringValue = stringValue; }
+        Modifier(String stringValue, ASTNode.Modifier astModValue) {
+            this.stringValue = stringValue;
+            this.astModValue = astModValue;
+        }
 
 
         @Override

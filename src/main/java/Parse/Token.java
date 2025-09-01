@@ -4,7 +4,7 @@ import java.util.Optional;
 
 public record Token(
         TokenType tokenType,
-        Optional<TokenData> tokenData,
+        TokenData tokenData,
         int line,
         int chr
 ) { }
