@@ -84,31 +84,36 @@ public sealed interface TokenType {
 
 
     enum Operation implements TokenType {
-        Plus("+"),
-        Minus("-"),
-        Asterisk("*"),
-        Slash("/"),
-        Caret("^"),
-        Percent("%"),
-        Greater(">"),
-        Less("<"),
-        PlusPlus("++"),
-        MinusMinus("--"),
-        GreaterEqual(">="),
-        LessEqual("<="),
-        BangEqual("!="),
-        EqualEqual("=="),
-        And("and"),
-        Or("or"),
-        Nor("nor"),
-        xor("xor"),
-        xnor("xnor"),
-        Nand("nand"),
-        Not("not");
+        Plus("+", ASTNode.Operation.Plus),
+        Minus("-", ASTNode.Operation.Minus),
+        Asterisk("*", ASTNode.Operation.Asterisk),
+        Slash("/", ASTNode.Operation.Slash),
+        Caret("^", ASTNode.Operation.Caret),
+        Percent("%", ASTNode.Operation.Percent),
+        Greater(">", ASTNode.Operation.Greater),
+        Less("<", ASTNode.Operation.Less),
+        PlusPlus("++", ASTNode.Operation.PlusPlus),
+        MinusMinus("--", ASTNode.Operation.MinusMinus),
+        GreaterEqual(">=", ASTNode.Operation.GreaterEqual),
+        LessEqual("<=", ASTNode.Operation.LessEqual),
+        BangEqual("!=", ASTNode.Operation.BangEqual),
+        EqualEqual("==", ASTNode.Operation.EqualEqual),
+        And("and", ASTNode.Operation.And),
+        Or("or", ASTNode.Operation.Or),
+        Nor("nor", ASTNode.Operation.Nor),
+        xor("xor", ASTNode.Operation.Xor),
+        xnor("xnor", ASTNode.Operation.Xnor),
+        Nand("nand", ASTNode.Operation.Nand),
+        Not("not", ASTNode.Operation.Negate);
 
         public final String stringValue;
+        public final ASTNode.Operation astOpValue;
 
-        Operation(String stringValue) { this.stringValue = stringValue; }
+
+        Operation(String stringValue, ASTNode.Operation astOpValue) {
+            this.stringValue = stringValue;
+            this.astOpValue = astOpValue;
+        }
 
         @Override
         public String asString() {

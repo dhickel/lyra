@@ -1,7 +1,6 @@
 package Parse;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.*;
@@ -253,13 +252,13 @@ public class Grammar {
         GrammarForm.Operation operation = switch (p) {
             case Parser _ when isOperator(p) -> new GrammarForm.Operation.Op();
             case Parser _ when isExpression(p) instanceof MatchResult.Found(GrammarForm.Expression expr) ->
-                    new GrammarForm.Operation.Expr(expr);
+                    new GrammarForm.Operation.ExprOp(expr);
             default -> throw InvalidGrammarException.expected(p.peek(), "Expression");
         };
 
         // Check if predicate form ::= '->' Expr [ ':' Expr ]
         if (isPredicateForm(p) instanceof MatchResult.Found(GrammarForm.PredicateForm form)) {
-            if (operation instanceof GrammarForm.Operation.Expr(GrammarForm.Expression expression)) {
+            if (operation instanceof GrammarForm.Operation.ExprOp(GrammarForm.Expression expression)) {
                 return MatchResult.of(new GrammarForm.Expression.CondExpr(expression, form));
             } else { InvalidGrammarException.expected(p.peek(), "Expression, Invalid conditional placement"); }
         }
@@ -295,7 +294,7 @@ public class Grammar {
         MatchResult accessChain = isMemberAccessChain(p);
 
         return accessChain instanceof MatchResult.Found(GrammarForm.AccessChain chain)
-                ? MatchResult.of(new GrammarForm.Expression.FExpr(nameSpaceCount, chain.accessChain()))
+                ? MatchResult.of(new GrammarForm.Expression.MExpr(nameSpaceCount, chain.accessChain()))
                 : MatchResult.NONE;
 
     }

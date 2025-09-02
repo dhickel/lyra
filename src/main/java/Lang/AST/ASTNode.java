@@ -1,12 +1,11 @@
 package Lang.AST;
 
 import Lang.LangType;
-import Lang.Operation;
+
 import Lang.Symbol;
 
 
 import java.util.List;
-import java.util.Optional;
 
 
 public sealed interface ASTNode permits ASTNode.Expression, ASTNode.Statement {
@@ -14,7 +13,9 @@ public sealed interface ASTNode permits ASTNode.Expression, ASTNode.Statement {
 
     record Program(List<ASTNode> topMost) { }
 
-    record Parameter(List<Modifier> modifiers, String identifier, LangType typ) { }
+    record Parameter(List<Modifier> modifiers, Symbol identifier, LangType typ) { }
+
+    record Argument(List<Modifier> modifiers, Expression expr) {}
 
     enum Modifier {
         MUTABLE,
@@ -23,12 +24,47 @@ public sealed interface ASTNode permits ASTNode.Expression, ASTNode.Statement {
         OPTIONAL
     }
 
+    enum Operation {
+        List,
+        And,
+        Or,
+        Nor,
+        Xor,
+        Xnor,
+        Nand,
+        Negate,
+        Plus,
+        Minus,
+        Asterisk,
+        Slash,
+        Caret,
+        Percent,
+        PlusPlus,
+        MinusMinus,
+        Greater,
+        Less,
+        GreaterEqual,
+        LessEqual,
+        Equals,
+        BangEqual,
+        EqualEqual,
+        ReAssign,
+    }
+
+    interface AccessType {
+        record Call(Symbol identifier, List<Expression> arguments) implements AccessType { }
+
+        record Identifier(Symbol identifier) implements AccessType { }
+
+        record Namespace(Symbol identifier) implements AccessType { }
+
+    }
+
 
     sealed interface Expression extends ASTNode {
         record SExpr(Expression operation, List<Expression> operands, MetaData metaData) implements Expression { }
 
-        record FExpr(List<FExpression.FAccess> accessors, Optional<FExpression.FCall> call,
-                     MetaData metaData) implements Expression { }
+        record MExpr(List<AccessType> expressionChain, MetaData metaData) implements Expression { }
 
         // Operation Expression
         record OExpr(Operation op, List<Expression> operands, MetaData metaData) implements Expression { }
@@ -47,12 +83,7 @@ public sealed interface ASTNode permits ASTNode.Expression, ASTNode.Statement {
         record LExpr(List<Parameter> parameters, Expression body, boolean isForm,
                      MetaData metaData) implements Expression { }
 
-        interface FExpression {
-            record FCall(Symbol method, List<Expression> arguments) implements FExpression { }
 
-            record FAccess(Symbol identifier) implements FExpression { }
-
-        }
     }
 
 
@@ -60,7 +91,8 @@ public sealed interface ASTNode permits ASTNode.Expression, ASTNode.Statement {
         record Let(Symbol identifier, List<Modifier> modifiers, Expression assignment,
                    MetaData metaData) implements Statement { }
 
-        record Assign(Symbol namespace, Symbol identifier, Expression assignment,
+        // This only handles local reassignment, member reassignment is an operation expression
+        record Assign(Symbol target, Expression assignment,
                       MetaData metaData) implements Statement { }
 
     }

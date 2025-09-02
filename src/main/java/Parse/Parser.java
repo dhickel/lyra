@@ -8,7 +8,6 @@ import Lang.LineChar;
 import Lang.Symbol;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -221,6 +220,7 @@ public interface Parser {
                         "Error<Internal>: GrammarForm to parse should have root of expression or statement"
                 );
             }
+            ;
         }
 
         private ASTNode parseStatement(GrammarForm.Statement statement) throws ParseError {
@@ -230,11 +230,11 @@ public interface Parser {
             };
         }
 
-        private ASTNode.Expression parseExpression(GrammarForm.Expression expression) {
+        private ASTNode.Expression parseExpression(GrammarForm.Expression expression) throws ParseError {
             return switch (expression) {
                 case GrammarForm.Expression.BlockExpr blockExpr -> parseBlockExpression(blockExpr);
                 case GrammarForm.Expression.CondExpr condExpr -> parseCondExpression(condExpr);
-                case GrammarForm.Expression.FExpr fExpr -> parseFExpression(fExpr);
+                case GrammarForm.Expression.MExpr mExpr -> parseMExpression(mExpr);
                 case GrammarForm.Expression.IterExpr iterExpr -> parseIterExpression(iterExpr);
                 case GrammarForm.Expression.LambdaExpr lambdaExpr -> parseLambdaExpression(lambdaExpr);
                 case GrammarForm.Expression.LambdaFormExpr lambdaFormExpr -> parseLambdaFormExpression(lambdaFormExpr);
@@ -256,7 +256,7 @@ public interface Parser {
             consume(TokenType.Definition.Let);
 
             // ::= Identifier
-            Symbol identifier = Symbol.ofResolved(parseIdentifier());
+            Symbol identifier = Symbol.ofResolved(parseIdentifier()); // Resolved as we've defined it here, it exists
 
             // ::= [ ':' Type ]
             LangType type = letStatement.hasType()
@@ -275,8 +275,20 @@ public interface Parser {
             return new ASTNode.Statement.Let(identifier, modifiers, assignment, MetaData.ofUnresolved(lineChar, type));
         }
 
-        private ASTNode parseReassignStatement(GrammarForm.Statement.Reassign reassignStatement) {
+        // ::= Identifier ':=' Expr
+        // Note: this is only for local identifiers and can be considered a sugared form of reassignment
+        private ASTNode parseReassignStatement(GrammarForm.Statement.Reassign reassignStatement) throws ParseError {
+            LineChar lineChar = getLineChar();
 
+            // ::= Identifier
+            Symbol identifier = Symbol.ofUnresolved(parseIdentifier()); //Unresolved, as we don't know if symbol exists
+
+            // ::= ':='
+            consume(TokenType.REASSIGNMENT);
+
+            // ::= Expr
+            ASTNode.Expression assignment = parseExpression(reassignStatement.assignment());
+            return new ASTNode.Statement.Assign(identifier, assignment, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED));
         }
 
 
@@ -294,12 +306,46 @@ public interface Parser {
 
         }
 
-        private ASTNode.Expression parseFExpression(GrammarForm.Expression.FExpr fExpression) {
+        //::=  [ NamespaceAccess ] [ Identifier ] [ MemberAccessChain ]
+        private ASTNode.Expression parseMExpression(GrammarForm.Expression.MExpr mExpression) {
+            LineChar lineChar = getLineChar();
+
+            List<ASTNode.Expression> subExpressions =
+                    new ArrayList<>(mExpression.namespaceDepth() + mExpression.accessChain().size());
+
+
+            // ::= [ NamespaceAccess ]
 
         }
 
-        private ASTNode.Expression parseSExpression(GrammarForm.Expression.SExpr sExpression) {
+        // ::= '(' Expr | Operation { Expr }
+        private ASTNode.Expression parseSExpression(GrammarForm.Expression.SExpr sExpression) throws ParseError {
+            LineChar lineChar = getLineChar();
 
+            // ::= '('
+            consumeLeftParen();
+
+            // Expr | Operation { Expr }
+            ASTNode.Expression parsedExpr = switch (sExpression.operation()) {
+                case GrammarForm.Operation.ExprOp exprOp -> {
+                    ASTNode.Expression expression = parseExpression(exprOp.expression());
+                    List<ASTNode.Expression> operands = parseOperands(sExpression.operands());
+                    yield new ASTNode.Expression.SExpr(
+                            expression, operands, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)
+                    );
+                }
+                case GrammarForm.Operation.Op op -> {
+                    ASTNode.Operation parsedOp = parseOperation();
+                    List<ASTNode.Expression> operands = parseOperands(sExpression.operands());
+                    yield new ASTNode.Expression.OExpr(
+                            parsedOp, operands, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)
+                    );
+                }
+            };
+
+            // ::= ')'
+            consumeRightParen();
+            return parsedExpr;
         }
 
         private ASTNode.Expression parseVExpression(GrammarForm.Expression.VExpr vExpression) {
@@ -340,10 +386,102 @@ public interface Parser {
             for (int i = 0; i < count; i++) {
                 if (advance().tokenType() instanceof TokenType.Modifier mod) {
                     modifiers.add(mod.astModValue);
-                } else { ParseError.expected(peek(), "Modifier"); }
+                } else { throw ParseError.expected(peek(), "Modifier"); }
             }
             return modifiers;
         }
+
+        private List<ASTNode.Expression> parseOperands(List<GrammarForm.Expression> operands) throws ParseError {
+            List<ASTNode.Expression> parsedOperands = new ArrayList<>(operands.size());
+            for (var opr : operands) { parsedOperands.add(parseExpression(opr)); }
+            return parsedOperands;
+        }
+
+        private ASTNode.Operation parseOperation() throws ParseError {
+            switch (advance().tokenType()) {
+                case TokenType.Operation op -> { return op.astOpValue; }
+                default -> throw ParseError.expected(peek(), "Operation");
+            }
+        }
+
+        private List<ASTNode.Argument> parseArguments(List<GrammarForm.Arg> argForms) throws ParseError {
+            if (argForms.isEmpty()) { return List.of(); }
+
+            List<ASTNode.Argument> arguments = new ArrayList<>(argForms.size());
+            for (var arg : argForms) {
+                List<ASTNode.Modifier> modifiers = parseModifiers(arg.modifierCount());
+                ASTNode.Expression expression = parseExpression(arg.expression());
+                arguments.add(new ASTNode.Argument(modifiers, expression));
+            }
+            return arguments;
+        }
+
+        private List<ASTNode.Parameter> parseParameters(List<GrammarForm.Param> paramForms) throws ParseError {
+            if (paramForms.isEmpty()) { return List.of(); }
+
+            List<ASTNode.Parameter> parameters = new ArrayList<>(paramForms.size());
+
+            for (var param : paramForms) {
+                List<ASTNode.Modifier> modifiers = parseModifiers(param.modifierCount());
+                Symbol identifier = Symbol.ofResolved(parseIdentifier()); // Resolved/Defined
+
+                LangType type = param.hasType()
+                        ? parseType(true)
+                        : LangType.UNDEFINED;
+
+                parameters.add(new ASTNode.Parameter(modifiers, identifier, type));
+            }
+
+            return parameters;
+
+        }
+
+
+        /*----------
+        | Accessors |
+         ----------*/
+
+        private List<ASTNode.AccessType> parseNamesAccess(int count) throws ParseError {
+            if (count == 0) { return List.of(); }
+
+            List<ASTNode.AccessType> accesses = new ArrayList<>(count);
+            for (int i = 0; i < count; ++i) {
+                switch (advance()) {
+                    case Token(TokenType t, TokenData.StringData str, _, _) when t == TokenType.Literal.Identifier -> {
+                        accesses.add(new ASTNode.AccessType.Namespace(Symbol.ofUnresolved(str.data())));
+                        consume(TokenType.NAME_SPACE_ACCESS);
+                    }
+                    default -> throw ParseError.expected(peek(), "Namespace Identifier");
+                }
+            }
+            return accesses;
+        }
+
+        private List<ASTNode.AccessType> parseMemberAccess(List<GrammarForm.MemberAccess> accessForms) throws ParseError {
+            if (accessForms.isEmpty()) { return List.of(); }
+
+            List<ASTNode.AccessType> accesses = new ArrayList<>(accessForms.size());
+            for (var acc : accessForms) {
+                switch (acc) {
+                    case GrammarForm.MemberAccess.Field _, GrammarForm.MemberAccess.MethodAccess _ -> {
+                        consume(acc instanceof GrammarForm.MemberAccess.Field
+                                ? TokenType.FIELD_SPACE_ACCESS
+                                : TokenType.METHOD_SPACE_ACCESS
+                        );
+                        Symbol identifier = Symbol.ofUnresolved(parseIdentifier()); //unresolved as we haven't validated existence
+                        accesses.add(new ASTNode.AccessType.Identifier(identifier));
+                    }
+                    case GrammarForm.MemberAccess.MethodCall methodCalls -> {
+                        consume(TokenType.METHOD_SPACE_ACCESS);
+                        Symbol identifier = Symbol.ofUnresolved(parseIdentifier()); //unresolved as we haven't validated existence
+                    }
+                }
+            }
+
+        }
+
+
+
 
 
         /*------
@@ -418,8 +556,6 @@ public interface Parser {
             return primitiveTypes.getOrDefault(identifier, new LangType.UserType(identifier));
 
         }
-
-
     }
 
 

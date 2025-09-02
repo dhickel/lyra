@@ -18,7 +18,7 @@ public sealed interface GrammarForm {
 //        record FExpr(int namespaceDepth, boolean hasIdentifier,
 //                     List<MemberAccess> accessChain) implements Expression { }
 
-        record FExpr(int namespaceDepth, List<MemberAccess> accessChain) implements Expression { }
+        record MExpr(int namespaceDepth, List<MemberAccess> accessChain) implements Expression { }
 
 
         // record BExpr() implements Expression { } // FIXME we are also calling in the ast block expression BExpr
@@ -37,7 +37,7 @@ public sealed interface GrammarForm {
     }
 
     sealed interface Operation extends GrammarForm {
-        record Expr(Expression expression) implements Operation { }
+        record ExprOp(Expression expression) implements Operation { }
 
         record Op() implements Operation { }
     }
