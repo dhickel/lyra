@@ -261,10 +261,10 @@ public class ASTPrinter {
             JsonNode value = node.get(key);
             return key + "=" + formatSimpleValue(value);
         }
-        if (node.isArray() && node.size() == 0) {
+        if (node.isArray() && node.isEmpty()) {
             return "[]";
         }
-        if (node.isObject() && node.size() == 0) {
+        if (node.isObject() && node.isEmpty()) {
             return "{}";
         }
 
