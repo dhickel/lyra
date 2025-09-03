@@ -3,7 +3,6 @@ package Parse;
 import Lang.AST.ASTNode;
 
 import java.util.Arrays;
-import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Stream;
 
@@ -27,8 +26,8 @@ public sealed interface TokenType {
     TokenType REASSIGNMENT = TokenType.Syntactic.ColonEqual;
     TokenType IDENTIFIER = TokenType.Literal.Identifier;
     TokenType NAME_SPACE_ACCESS = TokenType.Syntactic.Arrow;
-    TokenType METHOD_SPACE_ACCESS = TokenType.Syntactic.DoubleQuote;
-    TokenType FIELD_SPACE_ACCESS = TokenType.Syntactic.ColonDot;
+    TokenType FUNCTION_ACCESS = Syntactic.DoubleColon;
+    TokenType IDENTIFIER_ACCESS = TokenType.Syntactic.ColonDot;
     TokenType RIGHT_ARROW = TokenType.Syntactic.Arrow;
     TokenType BAR = TokenType.Syntactic.Bar;
 

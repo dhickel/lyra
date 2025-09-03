@@ -14,11 +14,11 @@ public sealed interface LangType {
     Primitive F32 = new Primitive.F32();
     Primitive F64 = new Primitive.F64();
     Primitive BOOL = new Primitive.Bool();
-    Primitive Nil = new Primitive.Nil();
+    Primitive NIL = new Primitive.Nil();
 
     List<Primitive> allPrimitives = List.of(
             LangType.I8, LangType.I16, LangType.I32, LangType.I64,
-            LangType.F32, LangType.F64, LangType.BOOL, LangType.Nil
+            LangType.F32, LangType.F64, LangType.BOOL, LangType.NIL
     );
 
     record Undefined() implements LangType { }

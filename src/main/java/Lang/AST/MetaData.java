@@ -19,6 +19,10 @@ public class MetaData {
     public ResolutionState resolutionState() { return resolutionState; }
 
     public static MetaData ofUnresolved(LineChar lineChar, LangType type) {
+        return new MetaData(lineChar, new ResolutionState.Unresolved(type));
+    }
+
+    public static MetaData ofResolved(LineChar lineChar, LangType type) {
         return new MetaData(lineChar, new ResolutionState.Resolved(type));
     }
 

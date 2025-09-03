@@ -6,6 +6,7 @@ import Lang.Symbol;
 
 
 import java.util.List;
+import java.util.Optional;
 
 
 public sealed interface ASTNode permits ASTNode.Expression, ASTNode.Statement {
@@ -15,7 +16,14 @@ public sealed interface ASTNode permits ASTNode.Expression, ASTNode.Statement {
 
     record Parameter(List<Modifier> modifiers, Symbol identifier, LangType typ) { }
 
-    record Argument(List<Modifier> modifiers, Expression expr) {}
+    record Argument(List<Modifier> modifiers, Expression expr) { }
+
+    enum PredicateType {
+        COALESCE,
+        MATCH,
+        THEN_ELSE
+    }
+
 
     enum Modifier {
         MUTABLE,
@@ -52,7 +60,7 @@ public sealed interface ASTNode permits ASTNode.Expression, ASTNode.Statement {
     }
 
     interface AccessType {
-        record Call(Symbol identifier, List<Expression> arguments) implements AccessType { }
+        record FunctionCall(Symbol identifier, List<Argument> arguments) implements AccessType { }
 
         record Identifier(Symbol identifier) implements AccessType { }
 
@@ -76,7 +84,7 @@ public sealed interface ASTNode permits ASTNode.Expression, ASTNode.Statement {
         record VExpr(Value value, MetaData metaData) implements Expression { }
 
         // predicate
-        record PExpr(Expression predExpr, Expression thenExpr, Expression elseExpr,
+        record PExpr(Expression predExpr, PredicateForm predForm,
                      MetaData metaData) implements Expression { }
 
         //lambda
@@ -84,6 +92,21 @@ public sealed interface ASTNode permits ASTNode.Expression, ASTNode.Statement {
                      MetaData metaData) implements Expression { }
 
 
+        record PredicateForm(Optional<Expression> thenExpr, Optional<Expression> elseExpr,
+                             MetaData metaData) implements Expression {
+
+            PredicateType predType() {
+                if (thenExpr().isPresent() && elseExpr().isPresent()) {
+                    return PredicateType.THEN_ELSE;
+                } else if (thenExpr.isPresent()) {
+                    return PredicateType.MATCH;
+                } else if (elseExpr().isPresent()) {
+                    return PredicateType.COALESCE;
+                }
+                throw new IllegalStateException("Error<Internal>: No then or else branch, invalid state");
+            }
+
+        }
     }
 
 

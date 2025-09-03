@@ -27,9 +27,9 @@ public sealed interface GrammarForm {
 
         record CondExpr(Expression predicateExpression, PredicateForm predicateForm) implements Expression { }
 
-        record LambdaExpr(boolean hasType, LambdaForm form) implements Expression { }
+        record LambdaExpr(boolean hasType, LambdaFormExpr form) implements Expression { }
 
-        record LambdaFormExpr(LambdaForm form) implements Expression { }
+        record LambdaFormExpr(Parameters parameters, Expression expression) implements Expression { }
 
         record MatchExpr() implements Expression { }
 
@@ -44,11 +44,11 @@ public sealed interface GrammarForm {
 
     sealed interface MemberAccess extends GrammarForm {
 
-        record Field() implements MemberAccess { }
+        record Identifier() implements MemberAccess { }
 
-        record MethodAccess() implements MemberAccess { }
+        record FunctionCall(List<Arg> arguments) implements MemberAccess { }
 
-        record MethodCall(List<Arg> arguments) implements MemberAccess { }
+        record FunctionAccess() implements MemberAccess {}
     }
 
     record Arg(int modifierCount, Expression expression) implements GrammarForm { }
@@ -65,8 +65,8 @@ public sealed interface GrammarForm {
 
     record AccessChain(List<MemberAccess> accessChain) implements GrammarForm { }
 
-    record PredicateForm(Expression thenForm, Optional<Expression> elseForm) implements GrammarForm { }
+    record PredicateForm(Optional<Expression> thenForm, Optional<Expression> elseForm) implements GrammarForm { }
 
-    record LambdaForm(Parameters parameters, Expression expression) implements GrammarForm { }
+
 
 }
