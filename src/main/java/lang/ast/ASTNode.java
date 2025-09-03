@@ -1,8 +1,8 @@
-package Lang.AST;
+package lang.ast;
 
-import Lang.LangType;
+import lang.LangType;
 
-import Lang.Symbol;
+import lang.Symbol;
 
 
 import java.util.List;

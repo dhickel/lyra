@@ -1,9 +1,7 @@
-package Lang.AST;
+package lang.ast;
 
-import Lang.LangType;
-import Lang.LineChar;
-
-import java.lang.reflect.Type;
+import lang.LangType;
+import lang.LineChar;
 
 public class MetaData {
     private final LineChar lineChar;

@@ -1,6 +1,6 @@
-package Util.exceptions;
+package util.exceptions;
 
-import Parse.Token;
+import parse.Token;
 
 
 public class InvalidGrammarException extends CompExcept {

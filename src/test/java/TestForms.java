@@ -1,8 +1,8 @@
-import Lang.AST.ASTNode;
-import Parse.*;
-import Util.ASTPrinter;
-import Util.exceptions.InvalidGrammarException;
-import Util.exceptions.ParseError;
+import lang.ast.ASTNode;
+import parse.*;
+import util.ASTPrinter;
+import util.exceptions.InvalidGrammarException;
+import util.exceptions.ParseError;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

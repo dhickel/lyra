@@ -1,7 +1,7 @@
-package Util;
+package util;
 
 
-import Lang.AST.ASTNode;
+import lang.ast.ASTNode;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;

@@ -1,4 +1,4 @@
-package Parse;
+package parse;
 
 public sealed interface TokenData {
     TokenData EMPTY = new Empty();

@@ -1,6 +1,4 @@
-package Parse;
-
-import java.util.Optional;
+package parse;
 
 public record Token(
         TokenType tokenType,

@@ -1,4 +1,4 @@
-package Util;
+package util;
 
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -59,6 +59,14 @@ public sealed interface Result<T, E extends Exception> permits Result.Err, Resul
             case Err<T, E> err -> Result.err(err.error());
         };
     }
+
+    default Result<T, E> orElse(Supplier<Result<T, E>> alt) {
+        return switch (this) {
+            case Ok<T, E> ok -> ok;
+            case Err<T, E> __ -> alt.get();
+        };
+    }
+
 
     // --- Error side ---
     default <F extends Exception> Result<T, F> mapErr(Function<? super E, ? extends F> f) {

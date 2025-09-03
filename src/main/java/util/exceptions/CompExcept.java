@@ -1,4 +1,4 @@
-package Util.exceptions;
+package util.exceptions;
 
 public abstract class CompExcept extends Exception {
     public CompExcept(String message) {

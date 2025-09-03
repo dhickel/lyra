@@ -1,15 +1,15 @@
-package Parse;
+package parse;
 
 
-import Lang.AST.ASTNode;
-import Lang.AST.MetaData;
-import Lang.LangType;
-import Lang.LineChar;
-import Lang.Symbol;
-import Util.Result;
-import Util.exceptions.CompExcept;
-import Util.exceptions.InvalidGrammarException;
-import Util.exceptions.ParseError;
+import lang.ast.ASTNode;
+import lang.ast.MetaData;
+import lang.LangType;
+import lang.LineChar;
+import lang.Symbol;
+import parse.grammar.*;
+import util.Result;
+import util.exceptions.CompExcept;
+import util.exceptions.ParseError;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -200,17 +200,17 @@ public interface Parser {
 
             while (haveNext()) {
                 var subParser = new SubParser(this::peekN);
-                var findNextMatchResult = Grammar.findNextMatch(subParser);
+                var findNextMatchResult = parse.Grammar.findNextMatch(subParser);
                 if (findNextMatchResult.isErr()) return findNextMatchResult.map(n -> null);
 
 
                 switch (findNextMatchResult.unwrap()) {
-                    case Grammar.GrammarMatch.Found(var form) -> {
+                    case GrammarMatch.Found(var form) -> {
                         var parseResult = parseGrammarPattern(form);
                         if (parseResult.isErr()) return parseResult.flatMap(n -> null);
                         rootExpressions.add(parseResult.unwrap());
                     }
-                    case Grammar.GrammarMatch.None _ -> {
+                    case GrammarMatch.None _ -> {
                         return Result.err(ParseError.of(peek(), "Valid Grammar Form"));
                     }
                 }

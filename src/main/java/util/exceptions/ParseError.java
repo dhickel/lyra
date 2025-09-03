@@ -1,8 +1,8 @@
-package Util.exceptions;
+package util.exceptions;
 
-import Parse.Token;
+import parse.Token;
 
-public class ParseError extends CompExcept {
+public class ParseError extends CompExcept{
     private final int line;
     private final int chr;
 

@@ -1,6 +1,6 @@
-package Parse;
+package parse;
 
-import Lang.AST.ASTNode;
+import lang.ast.ASTNode;
 
 import java.util.Arrays;
 import java.util.function.Function;

@@ -1,4 +1,4 @@
-package Parse;
+package parse.grammar;
 
 import java.util.List;
 import java.util.Optional;

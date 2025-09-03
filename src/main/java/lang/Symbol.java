@@ -1,4 +1,4 @@
-package Lang;
+package lang;
 
 public sealed interface Symbol {
     String identifier();

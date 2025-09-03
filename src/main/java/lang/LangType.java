@@ -1,4 +1,4 @@
-package Lang;
+package lang;
 
 import java.util.ArrayList;
 import java.util.Collections;

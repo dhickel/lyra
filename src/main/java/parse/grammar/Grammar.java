@@ -1,14 +1,16 @@
-package Parse;
+package parse;
 
-import Util.Result;
-import Util.exceptions.CompExcept;
-import Util.exceptions.InvalidGrammarException;
+import parse.grammar.GrammarForm;
+import parse.grammar.GrammarMatch;
+import util.Result;
+import util.exceptions.CompExcept;
+import util.exceptions.InternalException;
+import util.exceptions.InvalidGrammarException;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.*;
-import java.util.stream.Gatherer;
 import java.util.stream.Stream;
 
 public class Grammar {
@@ -32,39 +34,6 @@ public class Grammar {
     public static final Predicate<Token> MATCH_BAR = t -> t.tokenType() == TokenType.BAR;
     public static final Predicate<Token> MATCH_OPERATION = t -> t.tokenType() instanceof TokenType.Operation;
 
-
-
-    public sealed interface GrammarMatch {
-        GrammarMatch NONE = new None();
-
-        record Found(GrammarForm form) implements GrammarMatch { }
-
-        record None() implements GrammarMatch { }
-
-        static GrammarMatch of(GrammarForm form) {
-            return new Found(form);
-        }
-
-        default boolean isFound() {
-            return this instanceof Found;
-        }
-
-        default boolean isNone() {
-            return this instanceof None;
-        }
-
-        default Result<GrammarMatch, CompExcept> intoResult() {
-            return Result.ok(this);
-        }
-
-        static <T extends GrammarForm> Gatherer<GrammarMatch, Void, T> takeWhileFoundOfMatch(Class<T> type) {
-            return Gatherer.of(Gatherer.Integrator.of((state, match, downstream) ->
-                    switch (match) {
-                        case Found(var form) when type.isInstance(form) -> downstream.push(type.cast(form));
-                        default -> false; // Stop processing
-                    }));
-        }
-    }
 
     @FunctionalInterface
     public interface GrammarCheck<T, R> {
@@ -106,20 +75,23 @@ public class Grammar {
 
 
     // Note: Always check for existing token(s) before calling
+
+
     public static Result<GrammarMatch, CompExcept> findNextMatch(Parser p) {
-        var statementResult = isStatement(p);
-        if (statementResult.isErr()) return statementResult;
-        if (statementResult.unwrap().isFound()) return statementResult;
-
-        var expressionResult = isExpression(p);
-        if (expressionResult.isErr()) return expressionResult;
-        if (expressionResult.unwrap().isFound()) return expressionResult;
-
-
-        // Method should only be called when there are unconsumed tokens, if tokens exist and are not expr/stmt then
-        // invalid grammar is present
-        return Result.err(InvalidGrammarException.expected(p.peek(), "Statement or Expression: Parse Error"));
+        return isStatement(p)
+                .flatMap((GrammarMatch match) -> match.isFound()
+                        ? Result.ok(match)
+                        : Result.err(InternalException.of("Statement found nothing")))
+                .orElse(() -> isExpression(p)
+                        .flatMap((GrammarMatch match) -> match.isFound()
+                                ? Result.ok(match)
+                                : Result.err(InternalException.of("Statement found nothing"))))
+                .orElse(() -> Result.err(
+                        InvalidGrammarException.expected(p.peek(), "Statement or Expression")));
     }
+
+
+
 
     /*-----------
     | STATEMENTS |
@@ -319,7 +291,7 @@ public class Grammar {
     }
 
     // FIXME not sure if this is correct with the identifier check before chain?
-    // ::= {[ NamespaceChain ] [ Identifier ] [ MemberAccessChain ]}-
+// ::= {[ NamespaceChain ] [ Identifier ] [ MemberAccessChain ]}-
     private static Result<GrammarMatch, CompExcept> isFExpression(Parser p) {
         int nameSpaceCount = hasNamespaceDepth(p);
         // boolean hasIdentifier = matchToken(p, MATCH_IDENTIFIER);
@@ -363,8 +335,8 @@ public class Grammar {
     }
 
     // Note: Slight sematic discrepancy, even an in-scope method call will still be an access chain of one,
-    // even though technically it's not a member access
-    //  { { FieldAccess | MethodCall } [ MethodAccess ] }-
+// even though technically it's not a member access
+//  { { FieldAccess | MethodCall } [ MethodAccess ] }-
     private static Result<GrammarMatch, CompExcept> isMemberAccessChain(Parser p) {
         List<GrammarForm.MemberAccess> accessChain = new ArrayList<>(5);
 
