@@ -77,6 +77,11 @@ public class TestForms {
     void testGrammar() throws Grammar.InvalidGrammarException, Parser.ParseError {
         for (var f : forms) {
             List<Token> tokens = Lexer.process(f);
+
+            System.out.println(f);
+            System.out.println(tokens);
+
+
             ASTNode.CompilationUnit node = new Parser.LangParser(tokens).process();
 
             System.out.println(node);

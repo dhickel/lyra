@@ -279,14 +279,14 @@ public class Grammar {
         if (!(p.peek().tokenType() instanceof TokenType.Literal)) { return MatchResult.NONE; }
 
         // Make the following token is not call or member access (An identity is also a value)
-        switch (p.peekN(2).tokenType()) {
-            case TokenType.Syntactic.Arrow, TokenType.Syntactic.DoubleQuote,
-                 TokenType.Syntactic.Colon, TokenType.Syntactic.LeftBracket:
-                return MatchResult.NONE;
-            default:
+        return switch (p.peekN(2).tokenType()) {
+            case TokenType.Syntactic.Arrow, TokenType.Syntactic.DoubleColon,
+                 TokenType.Syntactic.ColonDot, TokenType.Syntactic.LeftBracket -> MatchResult.NONE;
+            default -> {
                 p.consumeN(1);
-                return MatchResult.of(new GrammarForm.Expression.VExpr());
-        }
+                yield MatchResult.of(new GrammarForm.Expression.VExpr());
+            }
+        };
     }
 
     // FIXME not sure if this is correct with the identifier check before chain?
