@@ -1,5 +1,6 @@
 import Lang.AST.ASTNode;
 import Parse.*;
+import Util.ASTPrinter;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -9,7 +10,7 @@ public class TestForms {
     static final String S_EXPR = "(test_func 1 2.0 30)";
     static final String S_EXPR_OP = "(- 10 20 30 (* (+ 10 10) (+ 20 -20)))";
     static final String PRED_EXPR = "((> 10 4) -> 420 : (* 6 9))";
-    // static final String PRED_ELSE_ONLY = "let x : I32 = ((fake_function) : 10)";
+     static final String PRED_ELSE_ONLY = "let x : I32 = ((fake_function) : 10)";
     static final String LAMBDA_EXPR = "(=> |x : I32 | (* 10 x))";
     static final String LAMBDA_EXPR_TYPES = "(=> : I32 |x: I32, y: I32| ((> x y) -> 1 : 0))";
     static final String LAMBDA_EXPR_FORM = "(|x: I32 | (* x 20))";
@@ -41,14 +42,15 @@ public class TestForms {
             })""";
     static final String FUNC_LET = "let x: Fn<I32, I32; I32> = (=> |x y| (* x y))";
 
+    static final String PRED_FORM_CALL = "::TestFunction[|t| (* t 10)] ";
+
     static final List<String> forms = List.of(
             S_EXPR,
             S_EXPR_OP,
             PRED_EXPR,
             LAMBDA_EXPR,
             LAMBDA_EXPR_TYPES,
-            LAMBDA_EXPR_FORM,
-            // PRED_ELSE_ONLY,
+            LAMBDA_EXPR_FORM, PRED_ELSE_ONLY,
             VALUES,
             NAME_SPACE,
             NAME_SPACE2,
@@ -60,7 +62,8 @@ public class TestForms {
             BLOCK_EXPR,
             BLOCK_EXPR2,
             LAMBDA_BLOCK,
-            FUNC_LET
+            FUNC_LET,
+            PRED_FORM_CALL
     );
 
 
@@ -83,8 +86,8 @@ public class TestForms {
 
 
             ASTNode.CompilationUnit node = new Parser.LangParser(tokens).process();
-
-            System.out.println(node);
+            ASTPrinter.debugPrint(node);
+           // System.out.println(node);
 
         }
     }
