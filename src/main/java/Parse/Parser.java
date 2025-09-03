@@ -117,28 +117,31 @@ public interface Parser {
         }
 
 
-        private void advancePastEndCheck() throws ParseError {
-            if (!haveNext()) { throw ParseError.of(peek(), "Advanced Past End"); }
+        private Result<Void, ParseError> advancePastEndCheck() {
+            if (!haveNext()) { return Result.err(ParseError.of(peek(), "Advanced Past End")); }
+            return Result.ok(null);
         }
 
         // Extra check to help catch common errors when parsing
-        private void openContainerTokenCheck() throws ParseError {
+        private Result<Void, ParseError> openContainerTokenCheck() {
             switch (peek().tokenType()) {
                 case TokenType.Syntactic.LeftParen, TokenType.Syntactic.RightParen,
                      TokenType.Syntactic.LeftBrace, TokenType.Syntactic.RightBrace,
-                     TokenType.Syntactic.LeftBracket, TokenType.Syntactic.RightBracket -> throw ParseError.of(
+                     TokenType.Syntactic.LeftBracket, TokenType.Syntactic.RightBracket -> {
+                    return Result.err(ParseError.of(
                         peek(),
                         "\"(, [, {, }, ], )\" should only be advanced via related consumer functions"
-                );
-                default -> { }
+                ));
+                }
+                default -> { return Result.ok(null); }
             }
         }
 
-        private Token advance() throws ParseError {
-            advancePastEndCheck();
-            openContainerTokenCheck();
+        private Result<Token, ParseError> advance() {
+            if (advancePastEndCheck().isErr()) return advancePastEndCheck().map(v -> null);
+            if (openContainerTokenCheck().isErr()) return openContainerTokenCheck().map(v -> null);
             current += 1;
-            return tokens.get(current - 1);
+            return Result.ok(tokens.get(current - 1));
         }
 
         private LineChar getLineChar() {
@@ -150,48 +153,54 @@ public interface Parser {
             warnings.add(warning);
         }
 
-        private void consumeLeftParen() throws ParseError {
+        private Result<Void, ParseError> consumeLeftParen() {
             if (!check(TokenType.Syntactic.LeftParen)) {
-                throw ParseError.expected(peek(), "Left Paren");
+                return Result.err(ParseError.expected(peek(), "Left Paren"));
             }
             current += 1;
             depth += 1;
+            return Result.ok(null);
         }
 
-        private void consumeRightParen() throws ParseError {
+        private Result<Void, ParseError> consumeRightParen() {
             if (!check(TokenType.Syntactic.RightParen)) {
-                throw ParseError.expected(peek(), "Right Paren");
+                return Result.err(ParseError.expected(peek(), "Right Paren"));
             }
             current += 1;
             depth -= 1;
+            return Result.ok(null);
         }
 
-        private void consumeLeftBracket() throws ParseError {
+        private Result<Void, ParseError> consumeLeftBracket() {
             if (!check(TokenType.Syntactic.LeftBracket)) {
-                throw ParseError.expected(peek(), "Left Bracket");
+                return Result.err(ParseError.expected(peek(), "Left Bracket"));
             }
             current += 1;
+            return Result.ok(null);
         }
 
-        private void consumeRightBracket() throws ParseError {
+        private Result<Void, ParseError> consumeRightBracket() {
             if (!check(TokenType.Syntactic.RightBracket)) {
-                throw ParseError.expected(peek(), "Right Bracket");
+                return Result.err(ParseError.expected(peek(), "Right Bracket"));
             }
             current += 1;
+            return Result.ok(null);
         }
 
-        private void consumeLeftBrace() throws ParseError {
+        private Result<Void, ParseError> consumeLeftBrace() {
             if (!check(TokenType.Syntactic.LeftBrace)) {
-                throw ParseError.expected(peek(), "Left Brace");
+                return Result.err(ParseError.expected(peek(), "Left Brace"));
             }
             current += 1;
+            return Result.ok(null);
         }
 
-        private void consumeRightBrace() throws ParseError {
+        private Result<Void, ParseError> consumeRightBrace() {
             if (!check(TokenType.Syntactic.RightBrace)) {
-                throw ParseError.expected(peek(), "Right Brace");
+                return Result.err(ParseError.expected(peek(), "Right Brace"));
             }
             current += 1;
+            return Result.ok(null);
         }
 
         private boolean check(TokenType checkType) {
@@ -201,10 +210,10 @@ public interface Parser {
             } else { return false; }
         }
 
-        private Token consume(TokenType tokenType) throws ParseError {
-            advancePastEndCheck();
-            openContainerTokenCheck();
-            if (!check(tokenType)) { throw ParseError.expected(peek(), tokenType.toString()); }
+        private Result<Token, ParseError> consume(TokenType tokenType) {
+            if (advancePastEndCheck().isErr()) return advancePastEndCheck().map(v -> null);
+            if (openContainerTokenCheck().isErr()) return openContainerTokenCheck().map(v -> null);
+            if (!check(tokenType)) { return Result.err(ParseError.expected(peek(), tokenType.toString())); }
             return advance();
         }
 
@@ -212,45 +221,54 @@ public interface Parser {
         | ENTRY METHODS |
          --------------*/
 
-        public ASTNode.CompilationUnit process() throws Grammar.InvalidGrammarException, ParseError {
+        public Result<ASTNode.CompilationUnit, Exception> process() {
             List<ASTNode> rootExpressions = new ArrayList<>();
 
             while (haveNext()) {
                 var subParser = new SubParser(this::peekN);
-                switch (Grammar.findNextMatch(subParser)) {
-                    case Grammar.MatchResult.Found(var form) -> rootExpressions.add(parseGrammarPattern(form));
-                    case Grammar.MatchResult.None _ -> throw ParseError.of(peek(), "Valid Grammar Form");
+                var findNextMatchResult = Grammar.findNextMatch(subParser);
+                if(findNextMatchResult.isErr()) return findNextMatchResult.map(n -> null);
+
+                switch (findNextMatchResult.unwrap()) {
+                    case Grammar.MatchResult.Found(var form) -> {
+                        var parseResult = parseGrammarPattern(form);
+                        if(parseResult.isErr()) return parseResult.map(n -> null);
+                        rootExpressions.add(parseResult.unwrap());
+                    }
+                    case Grammar.MatchResult.None _ -> {
+                        return Result.err(ParseError.of(peek(), "Valid Grammar Form"));
+                    }
                 }
             }
-            return new ASTNode.CompilationUnit(rootExpressions);
+            return Result.ok(new ASTNode.CompilationUnit(rootExpressions));
         }
 
-        public ASTNode parseGrammarPattern(GrammarForm form) throws ParseError {
+        public Result<ASTNode, ParseError> parseGrammarPattern(GrammarForm form) {
             return switch (form) {
-                case GrammarForm.Expression expression -> parseExpression(expression);
-                case GrammarForm.Statement statement -> parseStatement(statement);
-                default -> throw ParseError.of(
+                case GrammarForm.Expression expression -> parseExpression(expression).map(e -> e);
+                case GrammarForm.Statement statement -> parseStatement(statement).map(s -> s);
+                default -> Result.err(ParseError.of(
                         peek(),
                         "Error<Internal>: GrammarForm to parse should have root of expression or statement"
-                );
+                ));
             };
         }
 
-        private ASTNode parseStatement(GrammarForm.Statement statement) throws ParseError {
+        private Result<ASTNode, ParseError> parseStatement(GrammarForm.Statement statement) {
             return switch (statement) {
-                case GrammarForm.Statement.Let let -> parseLetStatement(let);
-                case GrammarForm.Statement.Reassign reassign -> parseReassignStatement(reassign);
+                case GrammarForm.Statement.Let let -> parseLetStatement(let).map(s -> s);
+                case GrammarForm.Statement.Reassign reassign -> parseReassignStatement(reassign).map(s -> s);
             };
         }
 
-        private ASTNode.Expression parseExpression(GrammarForm.Expression expression) throws ParseError {
+        private Result<ASTNode.Expression, ParseError> parseExpression(GrammarForm.Expression expression) {
             return switch (expression) {
                 case GrammarForm.Expression.BlockExpr blockExpr -> parseBlockExpression(blockExpr);
                 case GrammarForm.Expression.CondExpr condExpr -> parseCondExpression(condExpr);
                 case GrammarForm.Expression.MExpr mExpr -> parseMExpression(mExpr);
                 case GrammarForm.Expression.IterExpr iterExpr -> parseIterExpression(iterExpr);
                 case GrammarForm.Expression.LambdaExpr lambdaExpr -> parseLambdaExpression(lambdaExpr);
-                case GrammarForm.Expression.LambdaFormExpr lambdaFormExpr -> parseLambdaFormExpression(lambdaFormExpr);
+                case GrammarForm.Expression.LambdaFormExpr lambdaFormExpr -> parseLambdaFormExpression(lambdaFormExpr).map(e -> e);
                 case GrammarForm.Expression.MatchExpr matchExpr -> parseMatchExpression(matchExpr);
                 case GrammarForm.Expression.SExpr sExpr -> parseSExpression(sExpr);
                 case GrammarForm.Expression.VExpr vExpr -> parseVExpression(vExpr);
@@ -262,46 +280,58 @@ public interface Parser {
          -----------*/
 
         // ::= 'let' Identifier { Modifier } [ ':' Type ] '=' Expr
-        private ASTNode parseLetStatement(GrammarForm.Statement.Let letStatement) throws ParseError {
+        private Result<ASTNode.Statement.Let, ParseError> parseLetStatement(GrammarForm.Statement.Let letStatement) {
             LineChar lineChar = getLineChar();
 
             // ::= let
-            consume(TokenType.Definition.Let);
+            if(consume(TokenType.Definition.Let).isErr()) return consume(TokenType.Definition.Let).map(t -> null);
 
             // ::= Identifier
-            Symbol identifier = Symbol.ofResolved(parseIdentifier()); // Resolved as we've defined it here, it exists
+            var identifierResult = parseIdentifier();
+            if(identifierResult.isErr()) return identifierResult.map(s -> null);
+            Symbol identifier = Symbol.ofResolved(identifierResult.unwrap()); // Resolved as we've defined it here, it exists
 
             // ::= [ ':' Type ]
-            LangType type = letStatement.hasType()
-                    ? parseType(true)
-                    : LangType.UNDEFINED;
+            Result<LangType, ParseError> typeResult;
+            if (letStatement.hasType()) {
+                typeResult = parseType(true);
+                if(typeResult.isErr()) return typeResult.map(t -> null);
+            } else {
+                typeResult = Result.ok(LangType.UNDEFINED);
+            }
+
 
             // ::= { Modifier }
-            List<ASTNode.Modifier> modifiers = parseModifiers(letStatement.modifierCount());
+            var modifiersResult = parseModifiers(letStatement.modifierCount());
+            if(modifiersResult.isErr()) return modifiersResult.map(m -> null);
 
             // ::= '='
-            consume(TokenType.Syntactic.Equal);
+            if(consume(TokenType.Syntactic.Equal).isErr()) return consume(TokenType.Syntactic.Equal).map(t -> null);
 
             // ::= Expr
-            ASTNode.Expression assignment = parseExpression(letStatement.expression());
+            var assignmentResult = parseExpression(letStatement.expression());
+            if(assignmentResult.isErr()) return assignmentResult.map(e -> null);
 
-            return new ASTNode.Statement.Let(identifier, modifiers, assignment, MetaData.ofUnresolved(lineChar, type));
+            return Result.ok(new ASTNode.Statement.Let(identifier, modifiersResult.unwrap(), assignmentResult.unwrap(), MetaData.ofUnresolved(lineChar, typeResult.unwrap())));
         }
 
         // ::= Identifier ':=' Expr
         // Note: this is only for local identifiers and can be considered a sugared form of reassignment
-        private ASTNode parseReassignStatement(GrammarForm.Statement.Reassign reassignStatement) throws ParseError {
+        private Result<ASTNode.Statement.Assign, ParseError> parseReassignStatement(GrammarForm.Statement.Reassign reassignStatement) {
             LineChar lineChar = getLineChar();
 
             // ::= Identifier
-            Symbol identifier = Symbol.ofUnresolved(parseIdentifier()); //Unresolved, as we don't know if symbol exists
+            var identifierResult = parseIdentifier();
+            if(identifierResult.isErr()) return identifierResult.map(s -> null);
+            Symbol identifier = Symbol.ofUnresolved(identifierResult.unwrap()); //Unresolved, as we don't know if symbol exists
 
             // ::= ':='
-            consume(TokenType.REASSIGNMENT);
+            if(consume(TokenType.REASSIGNMENT).isErr()) return consume(TokenType.REASSIGNMENT).map(t -> null);
 
             // ::= Expr
-            ASTNode.Expression assignment = parseExpression(reassignStatement.assignment());
-            return new ASTNode.Statement.Assign(identifier, assignment, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED));
+            var assignmentResult = parseExpression(reassignStatement.assignment());
+            if(assignmentResult.isErr()) return assignmentResult.map(e -> null);
+            return Result.ok(new ASTNode.Statement.Assign(identifier, assignmentResult.unwrap(), MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
         }
 
 
@@ -313,266 +343,314 @@ public interface Parser {
 
 
         // ::= '{' { Expr | Stmnt } '}'
-        private ASTNode.Expression parseBlockExpression(GrammarForm.Expression.BlockExpr blockExpression) throws ParseError {
+        private Result<ASTNode.Expression, ParseError> parseBlockExpression(GrammarForm.Expression.BlockExpr blockExpression) {
             LineChar lineChar = getLineChar();
 
             // ::= '{'
-            consumeLeftBrace();
+            if(consumeLeftBrace().isErr()) return consumeLeftBrace().map(v -> null);
 
             //::= { Expr | Stmnt }
             List<ASTNode> contents = new ArrayList<>(blockExpression.members().size());
-            for (var member : blockExpression.members()) { contents.add(parseGrammarPattern(member)); }
+            for (var member : blockExpression.members()) {
+                var patternResult = parseGrammarPattern(member);
+                if(patternResult.isErr()) return patternResult.map(p -> null);
+                contents.add(patternResult.unwrap());
+            }
 
             // ::= '{'
-            consumeRightBrace();
+            if(consumeRightBrace().isErr()) return consumeRightBrace().map(v -> null);
 
-            return new ASTNode.Expression.BExpr(contents, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED));
+            return Result.ok(new ASTNode.Expression.BExpr(contents, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
         }
 
-        private ASTNode.Expression parseCondExpression(GrammarForm.Expression.CondExpr condExpression) throws ParseError {
+        private Result<ASTNode.Expression, ParseError> parseCondExpression(GrammarForm.Expression.CondExpr condExpression) {
             LineChar lineChar = getLineChar();
 
             // ::= '('
-            consumeLeftParen();
+            if(consumeLeftParen().isErr()) return consumeLeftParen().map(v -> null);
 
             // ::= Expr
-            ASTNode.Expression predicate = parseExpression(condExpression.predicateExpression());
+            var predicateResult = parseExpression(condExpression.predicateExpression());
+            if(predicateResult.isErr()) return predicateResult.map(e -> null);
 
             // ::= '->' Expr [ ':' Expr ]
-            ASTNode.Expression.PredicateForm predicateForm = parsePredicateForm(condExpression.predicateForm());
+            var predicateFormResult = parsePredicateForm(condExpression.predicateForm());
+            if(predicateFormResult.isErr()) return predicateFormResult.map(e -> null);
 
             // ::= ')'
-            consumeRightParen();
+            if(consumeRightParen().isErr()) return consumeRightParen().map(v -> null);
 
-            return new ASTNode.Expression.PExpr(predicate, predicateForm, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED));
+            return Result.ok(new ASTNode.Expression.PExpr(predicateResult.unwrap(), predicateFormResult.unwrap(), MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
         }
 
 
         // ::= '->' Expr [ ':' Expr ]
-        private ASTNode.Expression.PredicateForm parsePredicateForm(GrammarForm.PredicateForm predicateForm) throws ParseError {
+        private Result<ASTNode.Expression.PredicateForm, ParseError> parsePredicateForm(GrammarForm.PredicateForm predicateForm) {
             LineChar lineChar = getLineChar();
 
             Optional<ASTNode.Expression> thenExpr;
             if (predicateForm.thenForm().isPresent()) {
-                consume(TokenType.RIGHT_ARROW);
-                thenExpr = Optional.of(parseExpression(predicateForm.thenForm().get()));
+                if(consume(TokenType.RIGHT_ARROW).isErr()) return consume(TokenType.RIGHT_ARROW).map(t -> null);
+                var thenResult = parseExpression(predicateForm.thenForm().get());
+                if(thenResult.isErr()) return thenResult.map(e -> null);
+                thenExpr = Optional.of(thenResult.unwrap());
             } else {
                 thenExpr = Optional.empty();
             }
 
             Optional<ASTNode.Expression> elseExpr;
             if (predicateForm.elseForm().isPresent()) {
-                consume(TokenType.Syntactic.Colon);
-                elseExpr = Optional.of(parseExpression(predicateForm.elseForm().get()));
+                if(consume(TokenType.Syntactic.Colon).isErr()) return consume(TokenType.Syntactic.Colon).map(t -> null);
+                var elseResult = parseExpression(predicateForm.elseForm().get());
+                if(elseResult.isErr()) return elseResult.map(e -> null);
+                elseExpr = Optional.of(elseResult.unwrap());
             } else {
                 elseExpr = Optional.empty();
             }
 
-            return new ASTNode.Expression.PredicateForm(thenExpr, elseExpr, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED));
+            return Result.ok(new ASTNode.Expression.PredicateForm(thenExpr, elseExpr, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
         }
 
         //::=  [ NamespaceAccess ] [ AccessChain ]
-        private ASTNode.Expression parseMExpression(GrammarForm.Expression.MExpr mExpression) throws ParseError {
+        private Result<ASTNode.Expression, ParseError> parseMExpression(GrammarForm.Expression.MExpr mExpression) {
             LineChar lineChar = getLineChar();
 
             List<ASTNode.AccessType> accesses =
                     new ArrayList<>(mExpression.namespaceDepth() + mExpression.accessChain().size());
 
             // ::= [ NamespaceAccess ]
-            accesses.addAll(parseNamesAccess(mExpression.namespaceDepth()));
+            var namespaceAccessesResult = parseNamesAccess(mExpression.namespaceDepth());
+            if(namespaceAccessesResult.isErr()) return namespaceAccessesResult.map(e -> null);
+            accesses.addAll(namespaceAccessesResult.unwrap());
 
             // ::= [ AccessChain ]
-            accesses.addAll(parseAccessChain(mExpression.accessChain()));
+            var accessChainResult = parseAccessChain(mExpression.accessChain());
+            if(accessChainResult.isErr()) return accessChainResult.map(e -> null);
+            accesses.addAll(accessChainResult.unwrap());
 
-            return new ASTNode.Expression.MExpr(accesses, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED));
+            return Result.ok(new ASTNode.Expression.MExpr(accesses, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
         }
 
         // ::= '(' Expr | Operation { Expr }
-        private ASTNode.Expression parseSExpression(GrammarForm.Expression.SExpr sExpression) throws ParseError {
+        private Result<ASTNode.Expression, ParseError> parseSExpression(GrammarForm.Expression.SExpr sExpression) {
             LineChar lineChar = getLineChar();
 
             // ::= '('
-            consumeLeftParen();
+            if(consumeLeftParen().isErr()) return consumeLeftParen().map(v -> null);
 
             // Expr | Operation { Expr }
-            ASTNode.Expression parsedExpr = switch (sExpression.operation()) {
+            Result<ASTNode.Expression, ParseError> parsedExprResult = switch (sExpression.operation()) {
                 case GrammarForm.Operation.ExprOp exprOp -> {
-                    ASTNode.Expression expression = parseExpression(exprOp.expression());
-                    List<ASTNode.Expression> operands = parseOperands(sExpression.operands());
-                    yield new ASTNode.Expression.SExpr(
-                            expression, operands, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)
-                    );
+                    var expressionResult = parseExpression(exprOp.expression());
+                    if(expressionResult.isErr()) yield expressionResult.map(e -> null);
+                    var operandsResult = parseOperands(sExpression.operands());
+                    if(operandsResult.isErr()) yield operandsResult.map(o -> null);
+                    yield Result.ok(new ASTNode.Expression.SExpr(
+                            expressionResult.unwrap(), operandsResult.unwrap(), MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)
+                    ));
                 }
                 case GrammarForm.Operation.Op op -> {
-                    ASTNode.Operation parsedOp = parseOperation();
-                    List<ASTNode.Expression> operands = parseOperands(sExpression.operands());
-                    yield new ASTNode.Expression.OExpr(
-                            parsedOp, operands, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)
-                    );
+                    var opResult = parseOperation();
+                    if(opResult.isErr()) yield opResult.map(o -> null);
+                    var operandsResult = parseOperands(sExpression.operands());
+                    if(operandsResult.isErr()) yield operandsResult.map(o -> null);
+                    yield Result.ok(new ASTNode.Expression.OExpr(
+                            opResult.unwrap(), operandsResult.unwrap(), MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)
+                    ));
                 }
             };
 
-            // ::= ')'
-            consumeRightParen();
+            if(parsedExprResult.isErr()) return parsedExprResult;
 
-            return parsedExpr;
+            // ::= ')'
+            if(consumeRightParen().isErr()) return consumeRightParen().map(v -> null);
+
+            return parsedExprResult;
         }
 
         //TODO add array and tuple literals
         // This is also messy af
-        private ASTNode.Expression parseVExpression(GrammarForm.Expression.VExpr vExpression) throws ParseError {
+        private Result<ASTNode.Expression, ParseError> parseVExpression(GrammarForm.Expression.VExpr vExpression) {
             LineChar lineChar = getLineChar();
 
-            Token token = advance();
+            var tokenResult = advance();
+            if(tokenResult.isErr()) return tokenResult.map(t -> null);
+            Token token = tokenResult.unwrap();
             return switch (token) {
                 case Token(TokenType.Literal lit, _, _, _) when lit == TokenType.Literal.True ->
-                        new ASTNode.Expression.VExpr(new ASTNode.Value.Bool(true), MetaData.ofResolved(lineChar, LangType.BOOL));
+                        Result.ok(new ASTNode.Expression.VExpr(new ASTNode.Value.Bool(true), MetaData.ofResolved(lineChar, LangType.BOOL)));
 
                 case Token(TokenType.Literal lit, _, _, _) when lit == TokenType.Literal.False ->
-                        new ASTNode.Expression.VExpr(new ASTNode.Value.Bool(false), MetaData.ofResolved(lineChar, LangType.BOOL));
+                        Result.ok(new ASTNode.Expression.VExpr(new ASTNode.Value.Bool(false), MetaData.ofResolved(lineChar, LangType.BOOL)));
 
                 case Token(
                         TokenType.Literal lit, TokenData.FloatData fd, _, _
                 ) when lit == TokenType.Literal.Float ->
-                        new ASTNode.Expression.VExpr(new ASTNode.Value.F64(fd.data()), MetaData.ofResolved(lineChar, LangType.F64));
+                        Result.ok(new ASTNode.Expression.VExpr(new ASTNode.Value.F64(fd.data()), MetaData.ofResolved(lineChar, LangType.F64)));
 
                 case Token(
                         TokenType.Literal lit, TokenData.IntegerData id, _, _
-                ) when lit == TokenType.Literal.Integer -> new ASTNode.Expression.VExpr(
+                ) when lit == TokenType.Literal.Integer -> Result.ok(new ASTNode.Expression.VExpr(
                         new ASTNode.Value.F64(id.data()), MetaData.ofResolved(lineChar, LangType.I64)
-                );
+                ));
 
                 case Token(
                         TokenType.Literal lit, TokenData.StringData id, _, _
-                ) when lit == TokenType.Literal.Identifier -> new ASTNode.Expression.VExpr(new ASTNode.Value.Identifier(
+                ) when lit == TokenType.Literal.Identifier -> Result.ok(new ASTNode.Expression.VExpr(new ASTNode.Value.Identifier(
                         Symbol.ofUnresolved(id.data())), MetaData.ofResolved(lineChar, LangType.UNDEFINED)
-                );
+                ));
 
                 case Token(
                         TokenType.Literal lit, TokenData.StringData id, _, _
                 ) when lit == TokenType.Literal.Nil ->
-                        new ASTNode.Expression.VExpr(new ASTNode.Value.Nil(), MetaData.ofResolved(lineChar, LangType.NIL));
+                        Result.ok(new ASTNode.Expression.VExpr(new ASTNode.Value.Nil(), MetaData.ofResolved(lineChar, LangType.NIL)));
 
-                default -> throw ParseError.expected(token, "Value Expression");
+                default -> Result.err(ParseError.expected(token, "Value Expression"));
             };
         }
 
-        private ASTNode.Expression parseIterExpression(GrammarForm.Expression.IterExpr iterExpression) {
+        private Result<ASTNode.Expression, ParseError> parseIterExpression(GrammarForm.Expression.IterExpr iterExpression) {
             throw new UnsupportedOperationException("Iter not implemented");
         }
 
-        private ASTNode.Expression parseMatchExpression(GrammarForm.Expression.MatchExpr matchExpression) {
+        private Result<ASTNode.Expression, ParseError> parseMatchExpression(GrammarForm.Expression.MatchExpr matchExpression) {
             throw new UnsupportedOperationException("Match not implemented");
         }
 
-        private ASTNode.Expression parseLambdaExpression(GrammarForm.Expression.LambdaExpr lambdaExpression) throws ParseError {
+        private Result<ASTNode.Expression, ParseError> parseLambdaExpression(GrammarForm.Expression.LambdaExpr lambdaExpression) {
             LineChar lineChar = getLineChar();
 
             // ::= '('
-            consumeLeftParen();
+            if(consumeLeftParen().isErr()) return consumeLeftParen().map(v -> null);
 
             // ::=  '=>'
-            consume(TokenType.LAMBDA_ARROW);
+            if(consume(TokenType.LAMBDA_ARROW).isErr()) return consume(TokenType.LAMBDA_ARROW).map(t -> null);
 
             // ::= [ (':' Type) ]
-            LangType type = lambdaExpression.hasType()
-                    ? parseType(true)
-                    : LangType.UNDEFINED;
+            Result<LangType, ParseError> typeResult;
+            if (lambdaExpression.hasType()) {
+                typeResult = parseType(true);
+                if(typeResult.isErr()) return typeResult.map(t -> null);
+            } else {
+                typeResult = Result.ok(LangType.UNDEFINED);
+            }
 
             // ::= '|' { Parameter } '|' Expr
-            ASTNode.Expression.LExpr lambda = parseLambdaFormExpression(lambdaExpression.form());
+            var lambdaResult = parseLambdaFormExpression(lambdaExpression.form());
+            if(lambdaResult.isErr()) return lambdaResult.map(l -> null);
 
             // ::= ')'
-            consumeRightParen();
+            if(consumeRightParen().isErr()) return consumeRightParen().map(v -> null);
 
-            return new ASTNode.Expression.LExpr(
-                    lambda.parameters(), lambda.body(), false, MetaData.ofUnresolved(lineChar, type)
-            );
+            return Result.ok(new ASTNode.Expression.LExpr(
+                    lambdaResult.unwrap().parameters(), lambdaResult.unwrap().body(), false, MetaData.ofUnresolved(lineChar, typeResult.unwrap())
+            ));
         }
 
         // ::= '|' { Parameter } '|' Expr
-        private ASTNode.Expression.LExpr parseLambdaFormExpression(GrammarForm.Expression.LambdaFormExpr lambdaFormExpr) throws ParseError {
+        private Result<ASTNode.Expression.LExpr, ParseError> parseLambdaFormExpression(GrammarForm.Expression.LambdaFormExpr lambdaFormExpr) {
             LineChar lineChar = getLineChar();
 
             // ::= '|'
-            consume(TokenType.BAR);
+            if(consume(TokenType.BAR).isErr()) return consume(TokenType.BAR).map(t -> null);
 
             // ::= { Parameter }
-            List<ASTNode.Parameter> parameters = parseParameters(lambdaFormExpr.parameters().params());
+            var parametersResult = parseParameters(lambdaFormExpr.parameters().params());
+            if(parametersResult.isErr()) return parametersResult.map(p -> null);
 
             // ::= '|'
-            consume(TokenType.BAR);
+            if(consume(TokenType.BAR).isErr()) return consume(TokenType.BAR).map(t -> null);
             // ::= Expr
-            ASTNode.Expression expr = parseExpression(lambdaFormExpr.expression());
+            var exprResult = parseExpression(lambdaFormExpr.expression());
+            if(exprResult.isErr()) return exprResult.map(e -> null);
 
-            return new ASTNode.Expression.LExpr(parameters, expr, true, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED));
+            return Result.ok(new ASTNode.Expression.LExpr(parametersResult.unwrap(), exprResult.unwrap(), true, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
         }
 
         /*--------
         | UTILITY |
          --------*/
 
-        private String parseIdentifier() throws ParseError {
-            return switch (consume(TokenType.IDENTIFIER)) {
-                case Token(_, TokenData data, _, _) when data instanceof TokenData.StringData(String s) -> s;
-                default -> throw ParseError.expected(peek(), "Identifier");
+        private Result<String, ParseError> parseIdentifier() {
+            var consumeResult = consume(TokenType.IDENTIFIER);
+            if(consumeResult.isErr()) return consumeResult.map(t -> null);
+            return switch (consumeResult.unwrap()) {
+                case Token(_, TokenData data, _, _) when data instanceof TokenData.StringData(String s) -> Result.ok(s);
+                default -> Result.err(ParseError.expected(peek(), "Identifier"));
             };
         }
 
-        private List<ASTNode.Modifier> parseModifiers(int count) throws ParseError {
-            if (count == 0) { return List.of(); }
+        private Result<List<ASTNode.Modifier>, ParseError> parseModifiers(int count) {
+            if (count == 0) { return Result.ok(List.of()); }
 
             List<ASTNode.Modifier> modifiers = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
-                if (advance().tokenType() instanceof TokenType.Modifier mod) {
+                var advanceResult = advance();
+                if(advanceResult.isErr()) return advanceResult.map(t -> null);
+                if (advanceResult.unwrap().tokenType() instanceof TokenType.Modifier mod) {
                     modifiers.add(mod.astModValue);
-                } else { throw ParseError.expected(peek(), "Modifier"); }
+                } else { return Result.err(ParseError.expected(peek(), "Modifier")); }
             }
-            return modifiers;
+            return Result.ok(modifiers);
         }
 
-        private List<ASTNode.Expression> parseOperands(List<GrammarForm.Expression> operands) throws ParseError {
+        private Result<List<ASTNode.Expression>, ParseError> parseOperands(List<GrammarForm.Expression> operands) {
             List<ASTNode.Expression> parsedOperands = new ArrayList<>(operands.size());
-            for (var opr : operands) { parsedOperands.add(parseExpression(opr)); }
-            return parsedOperands;
+            for (var opr : operands) {
+                var operandResult = parseExpression(opr);
+                if(operandResult.isErr()) return operandResult.map(o -> null);
+                parsedOperands.add(operandResult.unwrap());
+            }
+            return Result.ok(parsedOperands);
         }
 
-        private ASTNode.Operation parseOperation() throws ParseError {
-            switch (advance().tokenType()) {
-                case TokenType.Operation op -> { return op.astOpValue; }
-                default -> throw ParseError.expected(peek(), "Operation");
+        private Result<ASTNode.Operation, ParseError> parseOperation() {
+            var advanceResult = advance();
+            if(advanceResult.isErr()) return advanceResult.map(t -> null);
+            switch (advanceResult.unwrap().tokenType()) {
+                case TokenType.Operation op -> { return Result.ok(op.astOpValue); }
+                default -> { return Result.err(ParseError.expected(peek(), "Operation")); }
             }
         }
 
-        private List<ASTNode.Argument> parseArguments(List<GrammarForm.Arg> argForms) throws ParseError {
-            if (argForms.isEmpty()) { return List.of(); }
+        private Result<List<ASTNode.Argument>, ParseError> parseArguments(List<GrammarForm.Arg> argForms) {
+            if (argForms.isEmpty()) { return Result.ok(List.of()); }
 
             List<ASTNode.Argument> arguments = new ArrayList<>(argForms.size());
             for (var arg : argForms) {
-                List<ASTNode.Modifier> modifiers = parseModifiers(arg.modifierCount());
-                ASTNode.Expression expression = parseExpression(arg.expression());
-                arguments.add(new ASTNode.Argument(modifiers, expression));
+                var modifiersResult = parseModifiers(arg.modifierCount());
+                if(modifiersResult.isErr()) return modifiersResult.map(m -> null);
+                var expressionResult = parseExpression(arg.expression());
+                if(expressionResult.isErr()) return expressionResult.map(e -> null);
+                arguments.add(new ASTNode.Argument(modifiersResult.unwrap(), expressionResult.unwrap()));
             }
-            return arguments;
+            return Result.ok(arguments);
         }
 
-        private List<ASTNode.Parameter> parseParameters(List<GrammarForm.Param> paramForms) throws ParseError {
-            if (paramForms.isEmpty()) { return List.of(); }
+        private Result<List<ASTNode.Parameter>, ParseError> parseParameters(List<GrammarForm.Param> paramForms) {
+            if (paramForms.isEmpty()) { return Result.ok(List.of()); }
 
             List<ASTNode.Parameter> parameters = new ArrayList<>(paramForms.size());
 
             for (var param : paramForms) {
-                List<ASTNode.Modifier> modifiers = parseModifiers(param.modifierCount());
-                Symbol identifier = Symbol.ofResolved(parseIdentifier()); // Resolved/Defined
+                var modifiersResult = parseModifiers(param.modifierCount());
+                if(modifiersResult.isErr()) return modifiersResult.map(m -> null);
+                var identifierResult = parseIdentifier();
+                if(identifierResult.isErr()) return identifierResult.map(i -> null);
+                Symbol identifier = Symbol.ofResolved(identifierResult.unwrap()); // Resolved/Defined
 
-                LangType type = param.hasType()
-                        ? parseType(true)
-                        : LangType.UNDEFINED;
+                Result<LangType, ParseError> typeResult;
+                if (param.hasType()) {
+                    typeResult = parseType(true);
+                    if(typeResult.isErr()) return typeResult.map(t -> null);
+                } else {
+                    typeResult = Result.ok(LangType.UNDEFINED);
+                }
 
-                parameters.add(new ASTNode.Parameter(modifiers, identifier, type));
+                parameters.add(new ASTNode.Parameter(modifiersResult.unwrap(), identifier, typeResult.unwrap()));
             }
 
-            return parameters;
+            return Result.ok(parameters);
 
         }
 
@@ -581,50 +659,59 @@ public interface Parser {
         | Accessors |
          ----------*/
 
-        private List<ASTNode.AccessType> parseNamesAccess(int count) throws ParseError {
-            if (count == 0) { return List.of(); }
+        private Result<List<ASTNode.AccessType>, ParseError> parseNamesAccess(int count) {
+            if (count == 0) { return Result.ok(List.of()); }
 
             List<ASTNode.AccessType> accesses = new ArrayList<>(count);
             for (int i = 0; i < count; ++i) {
-                switch (advance()) {
+                var advanceResult = advance();
+                if(advanceResult.isErr()) return advanceResult.map(t -> null);
+                switch (advanceResult.unwrap()) {
                     case Token(
                             TokenType t, TokenData.StringData str, _, _
                     ) when t == TokenType.Literal.Identifier -> {
                         accesses.add(new ASTNode.AccessType.Namespace(Symbol.ofUnresolved(str.data())));
-                        consume(TokenType.NAME_SPACE_ACCESS);
+                        if(consume(TokenType.NAME_SPACE_ACCESS).isErr()) return consume(TokenType.NAME_SPACE_ACCESS).map(c -> null);
                     }
-                    default -> throw ParseError.expected(peek(), "Namespace Identifier");
+                    default -> { return Result.err(ParseError.expected(peek(), "Namespace Identifier")); }
                 }
             }
-            return accesses;
+            return Result.ok(accesses);
         }
 
-        private List<ASTNode.AccessType> parseAccessChain(List<GrammarForm.MemberAccess> accessForms) throws
-                ParseError {
-            if (accessForms.isEmpty()) { return List.of(); }
+        private Result<List<ASTNode.AccessType>, ParseError> parseAccessChain(List<GrammarForm.MemberAccess> accessForms) {
+            if (accessForms.isEmpty()) { return Result.ok(List.of()); }
 
             List<ASTNode.AccessType> accesses = new ArrayList<>(accessForms.size());
             for (var acc : accessForms) {
                 switch (acc) {
                     case GrammarForm.MemberAccess.Identifier _, GrammarForm.MemberAccess.FunctionAccess _ -> {
-                        consume(acc instanceof GrammarForm.MemberAccess.Identifier
+                        if(consume(acc instanceof GrammarForm.MemberAccess.Identifier
                                 ? TokenType.IDENTIFIER_ACCESS
                                 : TokenType.FUNCTION_ACCESS
-                        );
-                        Symbol identifier = Symbol.ofUnresolved(parseIdentifier()); //unresolved as we haven't validated existence
+                        ).isErr()) return consume(acc instanceof GrammarForm.MemberAccess.Identifier
+                                ? TokenType.IDENTIFIER_ACCESS
+                                : TokenType.FUNCTION_ACCESS
+                        ).map(c -> null);
+                        var identifierResult = parseIdentifier();
+                        if(identifierResult.isErr()) return identifierResult.map(i -> null);
+                        Symbol identifier = Symbol.ofUnresolved(identifierResult.unwrap()); //unresolved as we haven't validated existence
                         accesses.add(new ASTNode.AccessType.Identifier(identifier));
                     }
                     case GrammarForm.MemberAccess.FunctionCall fc -> {
-                        consume(TokenType.FUNCTION_ACCESS);
-                        Symbol identifier = Symbol.ofUnresolved(parseIdentifier()); //unresolved as we haven't validated existence
-                        consumeLeftBracket();
-                        List<ASTNode.Argument> arguments = parseArguments(fc.arguments());
-                        consumeRightBracket();
-                        accesses.add(new ASTNode.AccessType.FunctionCall(identifier, arguments));
+                        if(consume(TokenType.FUNCTION_ACCESS).isErr()) return consume(TokenType.FUNCTION_ACCESS).map(c -> null);
+                        var identifierResult = parseIdentifier();
+                        if(identifierResult.isErr()) return identifierResult.map(i -> null);
+                        Symbol identifier = Symbol.ofUnresolved(identifierResult.unwrap()); //unresolved as we haven't validated existence
+                        if(consumeLeftBracket().isErr()) return consumeLeftBracket().map(b -> null);
+                        var argumentsResult = parseArguments(fc.arguments());
+                        if(argumentsResult.isErr()) return argumentsResult.map(a -> null);
+                        if(consumeRightBracket().isErr()) return consumeRightBracket().map(b -> null);
+                        accesses.add(new ASTNode.AccessType.FunctionCall(identifier, argumentsResult.unwrap()));
                     }
                 }
             }
-            return accesses;
+            return Result.ok(accesses);
         }
 
 
@@ -635,62 +722,68 @@ public interface Parser {
         | TYPES |
          ______*/
 
-        private LangType parseType(boolean consumeColon) throws ParseError {
-            if (consumeColon) { consume(TokenType.Syntactic.Colon); }
+        private Result<LangType, ParseError> parseType(boolean consumeColon) {
+            if (consumeColon) {
+                var consumeResult = consume(TokenType.Syntactic.Colon);
+                if(consumeResult.isErr()) return consumeResult.map(c -> null);
+            }
 
             Token token = peek();
             return switch (token.tokenType()) {
                 // Fn<Type>
                 case TokenType.BuiltIn.Fn -> {
-                    advance();
+                    if(advance().isErr()) yield advance().map(a -> null);
                     yield parseFunctionType();
                 }
                 // Array<Type>
                 case TokenType.BuiltIn.Array -> {
-                    advance();
+                    if(advance().isErr()) yield advance().map(a -> null);
                     yield parseArrayType();
                 }
                 // Type
                 case TokenType.Literal.Identifier -> {
                     if (token.tokenData() instanceof TokenData.StringData(String identifier)) {
                         LangType type = parseTypeFromString(identifier);
-                        advance();
-                        yield type;
-                    } else { throw ParseError.of(token, "Error<Internal>: Identifier should have StringData"); }
+                        if(advance().isErr()) yield advance().map(a -> null);
+                        yield Result.ok(type);
+                    } else { yield Result.err(ParseError.of(token, "Error<Internal>: Identifier should have StringData")); }
                 }
-                default -> throw ParseError.of(token, "Expected Type Identifier");
+                default -> Result.err(ParseError.of(token, "Expected Type Identifier"));
             };
         }
 
         // ::= '<' { Identifier } ';' Identifier } '>'
-        private LangType parseFunctionType() throws ParseError {
+        private Result<LangType, ParseError> parseFunctionType() {
             // ::= '<'
-            consume(TokenType.LEFT_ANGLE_BRACKET);
+            if(consume(TokenType.LEFT_ANGLE_BRACKET).isErr()) return consume(TokenType.LEFT_ANGLE_BRACKET).map(t -> null);
 
             // ::= { Identifier }
 
             List<LangType> paramTypes = new ArrayList<>(5);
             while (peek().tokenType() == TokenType.IDENTIFIER) {
-                LangType type = parseType(false);
-                paramTypes.add(type);
+                var typeResult = parseType(false);
+                if(typeResult.isErr()) return typeResult;
+                paramTypes.add(typeResult.unwrap());
             }
 
             // ::= ';'
-            consume(TokenType.Syntactic.SemiColon);
+            if(consume(TokenType.Syntactic.SemiColon).isErr()) return consume(TokenType.Syntactic.SemiColon).map(t -> null);
 
             // ::= Identifier
-            LangType rtnType = parseType(false);
+            var rtnTypeResult = parseType(false);
+            if(rtnTypeResult.isErr()) return rtnTypeResult;
 
             // ::= '>'
-            consume(TokenType.RIGHT_ANGLE_BRACKET);
+            if(consume(TokenType.RIGHT_ANGLE_BRACKET).isErr()) return consume(TokenType.RIGHT_ANGLE_BRACKET).map(t -> null);
 
-            return LangType.ofFunction(paramTypes, rtnType);
+            return Result.ok(LangType.ofFunction(paramTypes, rtnTypeResult.unwrap()));
         }
 
 
-        private LangType parseArrayType() throws ParseError {
-            LangType type = parseType(false);
-            return LangType.ofArray(type);
+        private Result<LangType, ParseError> parseArrayType() {
+            var typeResult = parseType(false);
+            if(typeResult.isErr()) return typeResult;
+            return Result.ok(LangType.ofArray(typeResult.unwrap()));
         }
 
         private static final Map<String, LangType> primitiveTypes =
