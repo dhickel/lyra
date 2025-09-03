@@ -1,6 +1,8 @@
 import Lang.AST.ASTNode;
 import Parse.*;
 import Util.ASTPrinter;
+import Util.exceptions.InvalidGrammarException;
+import Util.exceptions.ParseError;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -77,7 +79,7 @@ public class TestForms {
     }
 
     @Test
-    void testGrammar() throws Grammar.InvalidGrammarException, Parser.ParseError {
+    void testGrammar() throws InvalidGrammarException, ParseError {
         for (var f : forms) {
             List<Token> tokens = Lexer.process(f);
 
@@ -85,7 +87,7 @@ public class TestForms {
             System.out.println(tokens);
 
 
-            ASTNode.CompilationUnit node = new Parser.LangParser(tokens).process();
+            ASTNode.CompilationUnit node = new Parser.LangParser(tokens).process().unwrap();
             ASTPrinter.debugPrint(node);
            // System.out.println(node);
 
