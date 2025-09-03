@@ -164,7 +164,7 @@ public class Grammar {
             if (isType(p)) {
                 hasType = true;
             } else { throw InvalidGrammarException.expected(p.peek(), "Type"); }
-        } else { throw InvalidGrammarException.expected(p.peek(), ":"); }
+        }
 
         // ::= '='
         if (!matchToken(p, MATCH_EQUAL)) { throw InvalidGrammarException.expected(p.peek(), "="); }
@@ -279,11 +279,14 @@ public class Grammar {
         if (!(p.peek().tokenType() instanceof TokenType.Literal)) { return MatchResult.NONE; }
 
         // Make the following token is not call or member access (An identity is also a value)
-        return switch (p.peekN(2).tokenType()) {
+        switch (p.peekN(2).tokenType()) {
             case TokenType.Syntactic.Arrow, TokenType.Syntactic.DoubleQuote,
-                 TokenType.Syntactic.Colon, TokenType.Syntactic.LeftBracket -> MatchResult.NONE;
-            default -> MatchResult.of(new GrammarForm.Expression.VExpr());
-        };
+                 TokenType.Syntactic.Colon, TokenType.Syntactic.LeftBracket:
+                return MatchResult.NONE;
+            default:
+                p.consumeN(1);
+                return MatchResult.of(new GrammarForm.Expression.VExpr());
+        }
     }
 
     // FIXME not sure if this is correct with the identifier check before chain?
@@ -454,24 +457,29 @@ public class Grammar {
 
     // TODO add grammar
     private static MatchResult isPredicateForm(Parser p) throws InvalidGrammarException {
-        if (!matchToken(p, MATCH_RIGHT_ARROW) && !matchToken(p, MATCH_COLON)) { return MatchResult.NONE; }
+        if (p.peek().tokenType() != TokenType.RIGHT_ARROW && p.peek().tokenType() != TokenType.Syntactic.Colon) {
+            return MatchResult.NONE;
+        }
 
+        Optional<GrammarForm.Expression> thenForm = Optional.empty();
+        if (p.peek().tokenType() == TokenType.RIGHT_ARROW) {
+            matchToken(p, MATCH_RIGHT_ARROW);
+            if (isExpression(p) instanceof MatchResult.Found(GrammarForm.Expression expr)) {
+                thenForm = Optional.of(expr);
+            } else {
+                throw InvalidGrammarException.expected(p.peek(), "Expression");
+            }
+        }
 
-        Optional<GrammarForm.Expression> thenForm = switch (matchToken(p, MATCH_RIGHT_ARROW)) {
-            case boolean found when found && isExpression(p) instanceof MatchResult.Found(
-                    GrammarForm.Expression expr
-            ) -> Optional.of(expr);
-            case boolean found when found -> throw InvalidGrammarException.expected(p.peek(), "Expression");
-            default -> Optional.empty();
-        };
-
-        Optional<GrammarForm.Expression> elseForm = switch (matchToken(p, MATCH_COLON)) {
-            case boolean found when found && isExpression(p) instanceof MatchResult.Found(
-                    GrammarForm.Expression expr
-            ) -> Optional.of(expr);
-            case boolean found when found -> throw InvalidGrammarException.expected(p.peek(), "Expression");
-            default -> Optional.empty();
-        };
+        Optional<GrammarForm.Expression> elseForm = Optional.empty();
+        if (p.peek().tokenType() == TokenType.Syntactic.Colon) {
+            matchToken(p, MATCH_COLON);
+            if (isExpression(p) instanceof MatchResult.Found(GrammarForm.Expression expr)) {
+                elseForm = Optional.of(expr);
+            } else {
+                throw InvalidGrammarException.expected(p.peek(), "Expression");
+            }
+        }
         return MatchResult.of(new GrammarForm.PredicateForm(thenForm, elseForm));
     }
 

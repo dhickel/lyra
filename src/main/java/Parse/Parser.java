@@ -353,23 +353,21 @@ public interface Parser {
         private ASTNode.Expression.PredicateForm parsePredicateForm(GrammarForm.PredicateForm predicateForm) throws ParseError {
             LineChar lineChar = getLineChar();
 
-            // ::= '->' Expr
-            Optional<ASTNode.Expression> thenExpr = switch (predicateForm.thenForm()) {
-                case Optional<GrammarForm.Expression> t when t.isPresent() -> {
-                    consume(TokenType.RIGHT_ARROW);
-                    yield Optional.of(parseExpression(t.get()));
-                }
-                default -> Optional.empty();
-            };
+            Optional<ASTNode.Expression> thenExpr;
+            if (predicateForm.thenForm().isPresent()) {
+                consume(TokenType.RIGHT_ARROW);
+                thenExpr = Optional.of(parseExpression(predicateForm.thenForm().get()));
+            } else {
+                thenExpr = Optional.empty();
+            }
 
-            // ::= [ ':' Expr ]
-            Optional<ASTNode.Expression> elseExpr = switch (predicateForm.thenForm()) {
-                case Optional<GrammarForm.Expression> t when t.isPresent() -> {
-                    consume(TokenType.Syntactic.Colon);
-                    yield Optional.of(parseExpression(t.get()));
-                }
-                default -> Optional.empty();
-            };
+            Optional<ASTNode.Expression> elseExpr;
+            if (predicateForm.elseForm().isPresent()) {
+                consume(TokenType.Syntactic.Colon);
+                elseExpr = Optional.of(parseExpression(predicateForm.elseForm().get()));
+            } else {
+                elseExpr = Optional.empty();
+            }
 
             return new ASTNode.Expression.PredicateForm(thenExpr, elseExpr, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED));
         }
@@ -620,7 +618,9 @@ public interface Parser {
                     case GrammarForm.MemberAccess.FunctionCall fc -> {
                         consume(TokenType.FUNCTION_ACCESS);
                         Symbol identifier = Symbol.ofUnresolved(parseIdentifier()); //unresolved as we haven't validated existence
+                        consumeLeftBracket();
                         List<ASTNode.Argument> arguments = parseArguments(fc.arguments());
+                        consumeRightBracket();
                         accesses.add(new ASTNode.AccessType.FunctionCall(identifier, arguments));
                     }
                 }

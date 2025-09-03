@@ -177,8 +177,7 @@ public class Lexer {
     private static boolean isAlpha(char c) {
         return (c >= 'a' && c <= 'z')
                || (c >= 'A' && c <= 'Z')
-               || c == '_'
-               || c == '-';
+               || c == '_';
     }
 
     private static boolean isNumeric(char c) {
