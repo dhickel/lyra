@@ -12,7 +12,7 @@ import java.util.Optional;
 public sealed interface ASTNode permits ASTNode.Expression, ASTNode.Statement {
     MetaData metaData();
 
-    record Program(List<ASTNode> topMost) { }
+    record CompilationUnit(List<ASTNode> rootExpressions) { }
 
     record Parameter(List<Modifier> modifiers, Symbol identifier, LangType typ) { }
 

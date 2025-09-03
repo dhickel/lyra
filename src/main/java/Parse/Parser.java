@@ -6,6 +6,7 @@ import Lang.AST.MetaData;
 import Lang.LangType;
 import Lang.LineChar;
 import Lang.Symbol;
+import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -212,7 +213,20 @@ public interface Parser {
         | ENTRY METHODS |
          --------------*/
 
-        private ASTNode parseGrammarPattern(GrammarForm form) throws ParseError {
+        public ASTNode.CompilationUnit process() throws Grammar.InvalidGrammarException, ParseError {
+            List<ASTNode> rootExpressions = new ArrayList<>();
+
+            while (haveNext()) {
+                var subParser = new SubParser(this::peekN);
+                switch (Grammar.findNextMatch(subParser)) {
+                    case Grammar.MatchResult.Found(var form) -> rootExpressions.add(parseGrammarPattern(form));
+                    case Grammar.MatchResult.None _ -> throw ParseError.of(peek(), "Valid Grammar Form");
+                }
+            }
+            return new ASTNode.CompilationUnit(rootExpressions);
+        }
+
+        public ASTNode parseGrammarPattern(GrammarForm form) throws ParseError {
             return switch (form) {
                 case GrammarForm.Expression expression -> parseExpression(expression);
                 case GrammarForm.Statement statement -> parseStatement(statement);
