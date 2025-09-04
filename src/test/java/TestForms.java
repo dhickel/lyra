@@ -45,6 +45,8 @@ public class TestForms {
             })""";
     static final String FUNC_LET = "let x: Fn<I32, I32; I32> = (=> |x y| (* x y))";
 
+    static final String ARRAY_FORM = "let x: Array<Fn<I32, I32; I32>> = (=> |x y| (* x y))";
+
     static final String PRED_FORM_CALL = "::TestFunction[|t| (* t 10)] ";
 
     static final List<String> forms = List.of(
@@ -66,6 +68,7 @@ public class TestForms {
             BLOCK_EXPR2,
             LAMBDA_BLOCK,
             FUNC_LET,
+            ARRAY_FORM,
             PRED_FORM_CALL
     );
 

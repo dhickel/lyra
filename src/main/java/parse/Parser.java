@@ -780,8 +780,15 @@ public interface Parser {
 
 
         private Result<LangType, CompExcept> parseArrayType() {
+            if (consume(TokenType.LEFT_ANGLE_BRACKET).isErr()) {
+                return Result.err(ParseError.expected(peek(), "<"));
+            }
             var typeResult = parseType(false);
             if (typeResult.isErr()) return typeResult;
+
+            if (consume(TokenType.RIGHT_ANGLE_BRACKET).isErr()) {
+                return Result.err(ParseError.expected(peek(), ">"));
+            }
             return Result.ok(LangType.ofArray(typeResult.unwrap()));
         }
 
