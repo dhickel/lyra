@@ -6,7 +6,9 @@ import lang.ast.MetaData;
 import lang.LangType;
 import lang.LineChar;
 import lang.Symbol;
-import parse.grammar.*;
+import lang.grammar.Grammar;
+import lang.grammar.GrammarForm;
+import lang.grammar.GrammarMatch;
 import util.Result;
 import util.exceptions.CompExcept;
 import util.exceptions.ParseError;
@@ -200,7 +202,7 @@ public interface Parser {
 
             while (haveNext()) {
                 var subParser = new SubParser(this::peekN);
-                var findNextMatchResult = parse.Grammar.findNextMatch(subParser);
+                var findNextMatchResult = Grammar.findNextMatch(subParser);
                 if (findNextMatchResult.isErr()) return findNextMatchResult.map(n -> null);
 
 
@@ -670,17 +672,17 @@ public interface Parser {
         }
 
         private Result<List<ASTNode.AccessType>, CompExcept> parseAccessChain
-                (List<GrammarForm.MemberAccess> accessForms) {
+                (List<GrammarForm.AccessType> accessForms) {
             if (accessForms.isEmpty()) { return Result.ok(List.of()); }
 
             List<ASTNode.AccessType> accesses = new ArrayList<>(accessForms.size());
             for (var acc : accessForms) {
                 switch (acc) {
-                    case GrammarForm.MemberAccess.Identifier _, GrammarForm.MemberAccess.FunctionAccess _ -> {
-                        if (consume(acc instanceof GrammarForm.MemberAccess.Identifier
+                    case GrammarForm.AccessType.Identifier _, GrammarForm.AccessType.FunctionAccessType _ -> {
+                        if (consume(acc instanceof GrammarForm.AccessType.Identifier
                                 ? TokenType.IDENTIFIER_ACCESS
                                 : TokenType.FUNCTION_ACCESS
-                        ).isErr()) return consume(acc instanceof GrammarForm.MemberAccess.Identifier
+                        ).isErr()) return consume(acc instanceof GrammarForm.AccessType.Identifier
                                 ? TokenType.IDENTIFIER_ACCESS
                                 : TokenType.FUNCTION_ACCESS
                         ).map(c -> null);
@@ -689,7 +691,7 @@ public interface Parser {
                         Symbol identifier = Symbol.ofUnresolved(identifierResult.unwrap()); //unresolved as we haven't validated existence
                         accesses.add(new ASTNode.AccessType.Identifier(identifier));
                     }
-                    case GrammarForm.MemberAccess.FunctionCall fc -> {
+                    case GrammarForm.AccessType.FunctionCall fc -> {
                         if (consume(TokenType.FUNCTION_ACCESS).isErr())
                             return consume(TokenType.FUNCTION_ACCESS).map(c -> null);
                         var identifierResult = parseIdentifier();

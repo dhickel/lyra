@@ -1,7 +1,8 @@
-package parse;
+package lang.grammar;
 
-import parse.grammar.GrammarForm;
-import parse.grammar.GrammarMatch;
+import parse.Parser;
+import parse.Token;
+import parse.TokenType;
 import util.Result;
 import util.exceptions.CompExcept;
 import util.exceptions.InternalException;
@@ -103,12 +104,11 @@ public class Grammar {
 
 
     private static Result<GrammarMatch, CompExcept> isStatement(Parser p) {
-        for (var form : STATEMENT_CHECKS) {
-            var result = form.check(p);
-            if (result.isErr()) return result;
-            if (result.unwrap().isFound()) return result;
-        }
-        return Result.ok(GrammarMatch.NONE);
+        return STATEMENT_CHECKS.stream()
+                .map(f -> f.check(p))
+                .filter(r -> (r.isOk() && r.unwrap().isFound()) || r.isErr())
+                .findAny()
+                .orElseGet(() -> Result.ok(GrammarMatch.NONE));
     }
 
 
@@ -129,14 +129,10 @@ public class Grammar {
 
         // ::= (':' Type)
         if (matchToken(p, MATCH_COLON)) {
-            var typeResult = isType(p);
-            if (typeResult instanceof Result.Err<Boolean, CompExcept>(InvalidGrammarException error)) {
-                return new Result.Err<>(error);
-            }
-            if (typeResult.unwrap()) { // is Ok and true
-                hasType = true;
-            } else { // is Ok and false
-                return Result.err(InvalidGrammarException.expected(p.peek(), "Type"));
+            switch (isType(p)) {
+                case Result.Ok(boolean foundType) when foundType -> hasType = true;
+                case Result.Err<Boolean, CompExcept> err -> { return Result.err(err.error()); }
+                default -> { return Result.err(InvalidGrammarException.expected(p.peek(), "Type")); }
             }
         }
 
@@ -150,16 +146,18 @@ public class Grammar {
     }
 
     // ::= Identifier ':=' Expr // TODO better error when = is used for assignment on accident
+    // NOTE: this only handles local reassignment
     private static Result<GrammarMatch, CompExcept> isReAssignStatement(Parser p) {
         // ::= Identifier ':='
         if (!matchTokens(p, List.of(MATCH_IDENTIFIER, MATCH_REASSIGN))) { return Result.ok(GrammarMatch.NONE); }
 
-        var expressionResult = isExpression(p);
-        if (expressionResult.isErr()) return expressionResult;
-
-        if (expressionResult.unwrap() instanceof GrammarMatch.Found(GrammarForm.Expression expr)) {
-            return GrammarMatch.of(new GrammarForm.Statement.Reassign(expr)).intoResult();
-        } else { return Result.err(InvalidGrammarException.expected(p.peek(), "Expression")); }
+        //Expr
+        return switch (isExpression(p)) {
+            case Result.Ok(GrammarMatch.Found(GrammarForm.Expression expr)) ->
+                    Result.ok(GrammarMatch.of(new GrammarForm.Statement.Reassign(expr)));
+            case Result.Err<GrammarMatch, CompExcept> err -> err;
+            default -> Result.err(InvalidGrammarException.expected(p.peek(), "Expression"));
+        };
     }
 
     /*------------
@@ -173,12 +171,11 @@ public class Grammar {
 
 
     private static Result<GrammarMatch, CompExcept> isExpression(Parser p) {
-        for (var form : EXPRESSION_CHECKS) {
-            var result = form.check(p);
-            if (result.isErr()) return result;
-            if (result.unwrap().isFound()) return result;
-        }
-        return Result.ok(GrammarMatch.NONE);
+        return EXPRESSION_CHECKS.stream().map(form -> form.check(p))
+                .filter(r -> (r.isOk() && r.unwrap().isFound()) || r.isErr())
+                .findAny()
+                .orElseGet(() -> Result.ok(GrammarMatch.NONE));
+
     }
 
     // ::= '{' { Expr | Stmnt } '}'
@@ -189,13 +186,12 @@ public class Grammar {
 
         // Collect inner Expressions/Statements
         while (!matchToken(p, MATCH_RIGHT_BRACE)) {
-            var nextMatch = findNextMatch(p);
-            if (nextMatch.isErr()) return nextMatch;
-            if (nextMatch.unwrap() instanceof GrammarMatch.Found(GrammarForm form)) {
-                blockMembers.add(form);
+            switch (findNextMatch(p)) {
+                case Result.Ok(GrammarMatch.Found(GrammarForm form)) -> blockMembers.add(form);
+                case Result.Err<GrammarMatch, CompExcept> err -> { return err; }
+                default -> { return Result.err(InvalidGrammarException.expected(p.peek(), "Expression")); }
             }
         }
-
         return Result.ok(GrammarMatch.of(new GrammarForm.Expression.BlockExpr(blockMembers)));
     }
 
@@ -205,24 +201,28 @@ public class Grammar {
 
         // ::= (':' Type)
         boolean hasType = false;
+
+        // ::= (':' Type)
         if (matchToken(p, MATCH_COLON)) {
-            var typeResult = isType(p);
-            if (typeResult.isErr()) return typeResult.map(b -> null);
-            if (!typeResult.unwrap()) return Result.err(InvalidGrammarException.expected(p.peek(), "Type"));
-            hasType = true;
+            switch (isType(p)) {
+                case Result.Ok(boolean foundType) when foundType -> hasType = true;
+                case Result.Err<Boolean, CompExcept> err -> { return Result.err(err.error()); }
+                default -> { return Result.err(InvalidGrammarException.expected(p.peek(), "Type")); }
+            }
         }
 
         // ::= ('|' { Parameter } '|')
-        var lambdaFormResult = isLambdaForm(p);
-        if (lambdaFormResult.isErr()) return lambdaFormResult;
-
-        if (lambdaFormResult.unwrap() instanceof GrammarMatch.Found(GrammarForm.Expression.LambdaFormExpr expr)) {
-            // ::= ')'
-            if (!matchToken(p, MATCH_RIGHT_PAREN)) {
-                return Result.err(InvalidGrammarException.expected(p.peek(), ")"));
+        return switch (isLambdaForm(p)) {
+            case Result.Ok(GrammarMatch.Found(GrammarForm.Expression.LambdaFormExpr expr)) -> {
+                // ::= ')'
+                if (!matchToken(p, MATCH_RIGHT_PAREN)) {
+                    yield Result.err(InvalidGrammarException.expected(p.peek(), ")"));
+                }
+                yield Result.ok(GrammarMatch.of(new GrammarForm.Expression.LambdaExpr(hasType, expr)));
             }
-            return Result.ok(GrammarMatch.of(new GrammarForm.Expression.LambdaExpr(hasType, expr)));
-        } else { return Result.err(InvalidGrammarException.expected(p.peek(), "Expression")); }
+            case Result.Err<GrammarMatch, CompExcept> err -> err;
+            default -> Result.err(InvalidGrammarException.expected(p.peek(), "Expression"));
+        };
     }
 
 
@@ -231,42 +231,41 @@ public class Grammar {
         // ::= '('
         if (!matchToken(p, MATCH_LEFT_PAREN)) { return Result.ok(GrammarMatch.NONE); }
 
+
         // ::= Expr | Operation
-        Result<GrammarForm.Operation, CompExcept> operationResult = isOperator(p)
-                ? Result.ok(new GrammarForm.Operation.Op())
-                : isExpression(p).map(grammarMatch -> {
-            if (grammarMatch instanceof GrammarMatch.Found(GrammarForm.Expression expr)) {
-                return new GrammarForm.Operation.ExprOp(expr);
+        GrammarForm.Operation operation;
+        if (isOperator(p)) {
+            operation = new GrammarForm.Operation.Op();
+        } else {
+            switch (isExpression(p)) {
+                case Result.Ok(GrammarMatch.Found(GrammarForm.Expression expr)) ->
+                        operation = new GrammarForm.Operation.ExprOp(expr);
+                case Result.Err<GrammarMatch, CompExcept> err -> { return err; }
+                default -> { return Result.err(InvalidGrammarException.expected(p.peek(), "Operation | Expression")); }
             }
-            return null; // Should not happen if isExpression returns Found
-        });
-
-        if (operationResult.isErr()) return operationResult.map(o -> null);
-        GrammarForm.Operation operation = operationResult.unwrap();
-        if (operation == null) return Result.err(InvalidGrammarException.expected(p.peek(), "Expression"));
-
+        }
 
         // Check if predicate form ::= '->' Expr [ ':' Expr ]
-        var predicateFormResult = isPredicateForm(p);
-        if (predicateFormResult.isErr()) return predicateFormResult;
-
-        if (predicateFormResult.unwrap() instanceof GrammarMatch.Found(GrammarForm.PredicateForm form)) {
-            if (operation instanceof GrammarForm.Operation.ExprOp(GrammarForm.Expression expression)) {
-                return Result.ok(GrammarMatch.of(new GrammarForm.Expression.CondExpr(expression, form)));
-            } else {
-                return Result.err(InvalidGrammarException.expected(p.peek(), "Expression, Invalid conditional placement"));
+        switch (isPredicateForm(p)) {
+            case Result.Ok(GrammarMatch.Found(GrammarForm.PredicateForm form)) -> {
+                if (operation instanceof GrammarForm.Operation.ExprOp(GrammarForm.Expression expression)) {
+                    return Result.ok(GrammarMatch.of(new GrammarForm.Expression.CondExpr(expression, form)));
+                } else {
+                    return Result.err(InvalidGrammarException.expected(p.peek(), "Expression; Invalid conditional placement"));
+                }
             }
+            case Result.Err<GrammarMatch, CompExcept> err -> { return err; }
+            default -> { }
         }
 
         // ::= { Expr }
         List<GrammarForm.Expression> operands = new ArrayList<>();
+        loop:
         while (true) {
-            var expressionResult = isExpression(p);
-            if (expressionResult.isErr()) return expressionResult.map(e -> null);
-            if (expressionResult.unwrap() instanceof GrammarMatch.Found(GrammarForm.Expression expr)) {
-                operands.add(expr);
-            } else {
-                break;
+            switch (isExpression(p)) {
+                case Result.Ok(GrammarMatch.Found(GrammarForm.Expression expr)) -> operands.add(expr);
+                case Result.Err<GrammarMatch, CompExcept> err -> { return err; }
+                default -> { break loop; }
             }
         }
 
@@ -282,7 +281,7 @@ public class Grammar {
         // Make the following token is not call or member access (An identity is also a value)
         return switch (p.peekN(2).tokenType()) {
             case TokenType.Syntactic.Arrow, TokenType.Syntactic.DoubleColon,
-                 TokenType.Syntactic.ColonDot, TokenType.Syntactic.LeftBracket -> GrammarMatch.NONE.intoResult();
+                 TokenType.Syntactic.ColonDot, TokenType.Syntactic.LeftBracket -> Result.ok(GrammarMatch.NONE);
             default -> {
                 p.consumeN(1);
                 yield Result.ok(GrammarMatch.of(new GrammarForm.Expression.VExpr()));
@@ -291,17 +290,18 @@ public class Grammar {
     }
 
     // FIXME not sure if this is correct with the identifier check before chain?
-// ::= {[ NamespaceChain ] [ Identifier ] [ MemberAccessChain ]}-
+    // ::= {[ NamespaceChain ] [ Identifier ] [ MemberAccessChain ]}-
     private static Result<GrammarMatch, CompExcept> isFExpression(Parser p) {
         int nameSpaceCount = hasNamespaceDepth(p);
         // boolean hasIdentifier = matchToken(p, MATCH_IDENTIFIER);
-        var accessChainResult = isMemberAccessChain(p);
-        if (accessChainResult.isErr()) return accessChainResult;
 
+        return switch (isAccessChain(p)) {
+            case Result.Err<GrammarMatch, CompExcept> err ->  err;
+            case Result.Ok(GrammarMatch.Found(GrammarForm.AccessChain chain))
+                    -> GrammarMatch.of(new GrammarForm.Expression.MExpr(nameSpaceCount, chain.accessChain())).intoResult();
+            default -> GrammarMatch.NONE.intoResult();
+        };
 
-        return accessChainResult.unwrap() instanceof GrammarMatch.Found(GrammarForm.AccessChain chain)
-                ? Result.ok(GrammarMatch.of(new GrammarForm.Expression.MExpr(nameSpaceCount, chain.accessChain())))
-                : Result.ok(GrammarMatch.NONE);
 
     }
 
@@ -334,15 +334,14 @@ public class Grammar {
                 .count();
     }
 
-    // Note: Slight sematic discrepancy, even an in-scope method call will still be an access chain of one,
-// even though technically it's not a member access
+
 //  { { FieldAccess | MethodCall } [ MethodAccess ] }-
-    private static Result<GrammarMatch, CompExcept> isMemberAccessChain(Parser p) {
-        List<GrammarForm.MemberAccess> accessChain = new ArrayList<>(5);
+    private static Result<GrammarMatch, CompExcept> isAccessChain(Parser p) {
+        List<GrammarForm.AccessType> accessChain = new ArrayList<>(5);
 
         while (true) {
             if (isIdentifierAccess(p)) {
-                accessChain.add(new GrammarForm.MemberAccess.Identifier());
+                accessChain.add(new GrammarForm.AccessType.Identifier());
                 continue;
             }
 
@@ -351,18 +350,17 @@ public class Grammar {
 
             // Method Access found, check if it is a method call
             if (matchToken(p, MATCH_LEFT_BRACKET)) {
-                var argumentsResult = isArguments(p);
-                if (argumentsResult.isErr()) return argumentsResult;
 
-                GrammarForm.Arguments arguments = argumentsResult.unwrap() instanceof GrammarMatch.Found(
-                        GrammarForm.Arguments args
-                )
-                        ? args
-                        : GrammarForm.Arguments.EMPTY;
+                GrammarForm.Arguments arguments = null;
+                switch (isArguments(p)) {
+                    case Result.Err<GrammarMatch, CompExcept> err -> { return err;}
+                    case Result.Ok(GrammarMatch.Found(GrammarForm.Arguments args))  -> arguments = args;
+                    case Result.Ok<GrammarMatch, CompExcept> ok-> arguments = GrammarForm.Arguments.EMPTY;
+                };
 
                 if (matchToken(p, MATCH_RIGHT_BRACKET)) {
                     // Add method call to chain
-                    accessChain.add(new GrammarForm.MemberAccess.FunctionCall(arguments.args()));
+                    accessChain.add(new GrammarForm.AccessType.FunctionCall(arguments.args()));
                 } else { return Result.err(InvalidGrammarException.expected(p.peek(), "]")); }
 
             } else { // Is method access (identity)
@@ -374,14 +372,14 @@ public class Grammar {
                     ));
                 }
                 // Valid identity call position
-                accessChain.add(new GrammarForm.MemberAccess.FunctionAccess());
+                accessChain.add(new GrammarForm.AccessType.FunctionAccessType());
                 break;
             }
         }
 
         return Result.ok(accessChain.isEmpty()
                 ? GrammarMatch.NONE
-                : GrammarMatch.of(new GrammarForm.MemberAccess.AccessChain(accessChain)));
+                : GrammarMatch.of(new GrammarForm.AccessChain(accessChain)));
     }
 
 
@@ -401,7 +399,9 @@ public class Grammar {
         if (!matchToken(p, MATCH_IDENTIFIER)) {
             if (modifierCount == 0) {
                 return Result.ok(GrammarMatch.NONE);
-            } else { return Result.err(InvalidGrammarException.expected(p.peek(), "Identifier following modifier")); }
+            } else {
+                return Result.err(InvalidGrammarException.expected(p.peek(), "Identifier following modifier"));
+            }
         }
 
         // ::= [ (':' Type) ]
@@ -576,7 +576,9 @@ public class Grammar {
             p.consumeN(1);
             var isTypeResult = isType(p);
             if (isTypeResult.isErr()) return isTypeResult;
-            if (!isTypeResult.unwrap()) { return Result.err(InvalidGrammarException.expected(t, "<t1, t1; !ERROR!>")); }
+            if (!isTypeResult.unwrap()) {
+                return Result.err(InvalidGrammarException.expected(t, "<t1, t1; !ERROR!>"));
+            }
         } else { return Result.err(InvalidGrammarException.expected(t, ";")); }
 
         t = p.peek();

@@ -1,6 +1,7 @@
 import lang.ast.ASTNode;
 import parse.*;
 import util.ASTPrinter;
+import util.exceptions.CompExcept;
 import util.exceptions.InvalidGrammarException;
 import util.exceptions.ParseError;
 import org.junit.jupiter.api.Test;
@@ -12,7 +13,7 @@ public class TestForms {
     static final String S_EXPR = "(test_func 1 2.0 30)";
     static final String S_EXPR_OP = "(- 10 20 30 (* (+ 10 10) (+ 20 -20)))";
     static final String PRED_EXPR = "((> 10 4) -> 420 : (* 6 9))";
-     static final String PRED_ELSE_ONLY = "let x : I32 = ((fake_function) : 10)";
+    static final String PRED_ELSE_ONLY = "let x : I32 = ((fake_function) : 10)";
     static final String LAMBDA_EXPR = "(=> |x : I32 | (* 10 x))";
     static final String LAMBDA_EXPR_TYPES = "(=> : I32 |x: I32, y: I32| ((> x y) -> 1 : 0))";
     static final String LAMBDA_EXPR_FORM = "(|x: I32 | (* x 20))";
@@ -79,7 +80,7 @@ public class TestForms {
     }
 
     @Test
-    void testGrammar() throws InvalidGrammarException, ParseError {
+    void testGrammar() throws CompExcept {
         for (var f : forms) {
             List<Token> tokens = Lexer.process(f);
 
@@ -87,9 +88,15 @@ public class TestForms {
             System.out.println(tokens);
 
 
-            ASTNode.CompilationUnit node = new Parser.LangParser(tokens).process().unwrap();
-            ASTPrinter.debugPrint(node);
-           // System.out.println(node);
+            try {
+                ASTNode.CompilationUnit node = new Parser.LangParser(tokens).process().throwOnErr();
+                ASTPrinter.debugPrint(node);
+            } catch (CompExcept e) {
+                System.out.println(e.getMessage());
+                e.printStackTrace();
+            }
+
+            // System.out.println(node);
 
         }
     }

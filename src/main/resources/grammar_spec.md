@@ -35,7 +35,7 @@ Parameter ::={ Modifier } Identifier [(':' Type)];
 
 NamespaceAccess ::= Identifier '->';
 FieldAccess ::= ':.' Identifier;
-MethodAccess ::= '::' Identifier;
+1MethodAccess ::= '::' Identifier;
 MethodCall ::= MethodAccess FCall;
 MemberAccessChain ::= ((FieldAccess | MethodCall)*  [MethodAccess])+;
 NameSpaceChain ::= { NameSpaceAccess }- ;
