@@ -14,6 +14,13 @@ This is a Java-based compiler for a custom functional programming language. The 
 - **Package:** `mvn package`
 - **Run specific test:** `mvn test -Dtest=TestForms`
 
+### Java 25 EA Commands
+
+- **JDK 25 EA Path:** `/home/hickelpickle/.jdks/openjdk-ea-25+36-3489`
+- **Compile with Java 25 EA:** `JAVA_HOME=/home/hickelpickle/.jdks/openjdk-ea-25+36-3489 mvn compile`
+- **Test with Java 25 EA:** `JAVA_HOME=/home/hickelpickle/.jdks/openjdk-ea-25+36-3489 mvn test`
+- **Test with preview features:** `JAVA_HOME=/home/hickelpickle/.jdks/openjdk-ea-25+36-3489 mvn test -Dmaven.compiler.args="--enable-preview"`
+
 ## Project Architecture
 
 ### Core Components

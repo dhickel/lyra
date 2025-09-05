@@ -6,9 +6,9 @@ import java.util.function.Supplier;
 public sealed interface Result<T, E extends Exception> permits Result.Err, Result.Ok {
 
 
-    record Ok<T, E extends Exception>(T value) implements Result<T, E> {}
+    record Ok<T, E extends Exception>(T value) implements Result<T, E> { }
 
-    record Err<T, E extends Exception>(E error) implements Result<T, E> {}
+    record Err<T, E extends Exception>(E error) implements Result<T, E> { }
 
     static <T, E extends Exception> Result<T, E> ok(T value) {
         return new Ok<>(value);
@@ -17,7 +17,6 @@ public sealed interface Result<T, E extends Exception> permits Result.Err, Resul
     static <T, E extends Exception> Result<T, E> err(E error) {
         return new Err<>(error);
     }
-
 
 
     default boolean isOk() { return this instanceof Ok; }
@@ -89,5 +88,27 @@ public sealed interface Result<T, E extends Exception> permits Result.Err, Resul
             case Err<T, E> err -> throw err.error();
         };
     }
-}
+
+    @SuppressWarnings("unchecked")
+    default <U> Result<U, E> castErr() {
+        return switch (this) {
+            case Ok<T, E> __ -> throw new IllegalStateException("Cannot cast error from Ok result");
+            case Err<T, E> err -> (Result<U, E>) err; // Zero allocation };
+        };
+    }
+
+//    default <U> Result<U, E> castErr() {
+//        return switch (this) {
+//            case Ok<T, E> __ -> throw new IllegalStateException("Cannot cast error from Ok result");
+//            case Err<T, E> err -> Result.err(err.error());
+//        };
+//    }
+
+        default <U > Result < U, E > asErr() {
+            if (this instanceof Err<T, E> err) {
+                return Result.err(err.error());
+            }
+            throw new IllegalStateException("Cannot cast error from Ok result");
+        }
+    }
 

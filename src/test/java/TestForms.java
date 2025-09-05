@@ -6,6 +6,7 @@ import util.exceptions.InvalidGrammarException;
 import util.exceptions.ParseError;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 public class TestForms {
@@ -84,6 +85,7 @@ public class TestForms {
 
     @Test
     void testGrammar() throws CompExcept {
+        List<Exception> exceptions = new ArrayList<>();
         for (var f : forms) {
             List<Token> tokens = Lexer.process(f);
 
@@ -95,13 +97,13 @@ public class TestForms {
                 ASTNode.CompilationUnit node = new Parser.LangParser(tokens).process().throwOnErr();
                 ASTPrinter.debugPrint(node);
             } catch (CompExcept e) {
+                exceptions.add(e);
                 System.out.println(e.getMessage());
                 e.printStackTrace();
             }
-
             // System.out.println(node);
-
         }
+        assert exceptions.isEmpty();
     }
 
 
