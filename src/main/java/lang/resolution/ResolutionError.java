@@ -114,4 +114,43 @@ public abstract sealed class ResolutionError extends CompExcept {
     public static InvalidParameter invalidParameter(LineChar loc, String msg) {
         return new InvalidParameter(loc, msg);
     }
+    
+    public static final class EmptyNamespaceChain extends ResolutionError {
+        public EmptyNamespaceChain() {
+            super("Empty namespace chain");
+        }
+        
+        @Override public int line() { return -1; }
+        @Override public int column() { return -1; }
+    }
+    
+    public static final class NamespaceNotFound extends ResolutionError {
+        public NamespaceNotFound(String path) {
+            super("Namespace not found: " + path);
+        }
+        
+        @Override public int line() { return -1; }
+        @Override public int column() { return -1; }
+    }
+    
+    public static final class AmbiguousResolution extends ResolutionError {
+        public AmbiguousResolution(String identifier, java.util.List<String> candidates) {
+            super("Ambiguous resolution for '" + identifier + "', candidates: " + candidates);
+        }
+        
+        @Override public int line() { return -1; }
+        @Override public int column() { return -1; }
+    }
+    
+    public static EmptyNamespaceChain emptyChain() {
+        return new EmptyNamespaceChain();
+    }
+    
+    public static NamespaceNotFound namespaceNotFound(String path) {
+        return new NamespaceNotFound(path);
+    }
+    
+    public static AmbiguousResolution ambiguousResolution(String identifier, java.util.List<String> candidates) {
+        return new AmbiguousResolution(identifier, candidates);
+    }
 }

@@ -1,12 +1,14 @@
 package lang.resolution;
 
 import lang.types.TypeTable;
+import util.Result;
 
 import java.util.*;
 
 public class Environment {
     private final List<String> namespaceNames;
     private final Map<String, Integer> namespaceMap;
+    private final NamespaceTree namespaceTree;
     private final SymbolTable symbolTable;
     private final TypeTable typeTable;
     private int nextNamespaceId;
@@ -14,6 +16,7 @@ public class Environment {
     public Environment() {
         this.namespaceNames = new ArrayList<>();
         this.namespaceMap = new HashMap<>();
+        this.namespaceTree = new NamespaceTree();
         this.symbolTable = new SymbolTable();
         this.typeTable = new TypeTable();
         this.nextNamespaceId = 0;
@@ -22,15 +25,24 @@ public class Environment {
         registerNamespace("main");
     }
     
+    @Deprecated
     public int registerNamespace(String name) {
-        if (namespaceMap.containsKey(name)) {
-            return namespaceMap.get(name);
+        // Delegate to hierarchical system for backward compatibility
+        Result<NamespaceTree.NamespaceNode, NamespaceError> result = registerNamespacePath(name);
+        if (result.isErr()) {
+            return -1;
         }
         
-        int namespaceId = nextNamespaceId++;
-        namespaceNames.add(name);
-        namespaceMap.put(name, namespaceId);
-        return namespaceId;
+        NamespaceTree.NamespaceNode node = result.unwrap();
+        
+        // Maintain old flat map for existing compatibility
+        if (!namespaceMap.containsKey(name)) {
+            int namespaceId = nextNamespaceId++;
+            namespaceNames.add(name);
+            namespaceMap.put(name, namespaceId);
+        }
+        
+        return node.getId();
     }
     
     public Optional<Integer> getNamespaceId(String name) {
@@ -75,6 +87,23 @@ public class Environment {
         return new ArrayList<>(namespaceNames);
     }
     
+    public Result<NamespaceTree.NamespaceNode, NamespaceError> registerNamespacePath(String path) {
+        return namespaceTree.registerPath(path);
+    }
+    
+    public Optional<NamespaceTree.NamespaceNode> resolveNamespacePath(String path) {
+        return namespaceTree.resolvePath(path);
+    }
+    
+    public Optional<Integer> getHierarchicalNamespaceId(String path) {
+        return namespaceTree.getNamespaceId(path);
+    }
+    
+    
+    public NamespaceTree getNamespaceTree() {
+        return namespaceTree;
+    }
+
     @Override
     public String toString() {
         return "Environment{" +
