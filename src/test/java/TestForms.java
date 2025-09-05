@@ -1,6 +1,9 @@
 import lang.ast.ASTNode;
+import lang.resolution.CompilationPipeline;
+import lang.resolution.ResolutionResult;
 import parse.*;
 import util.ASTPrinter;
+import util.Result;
 import util.exceptions.CompExcept;
 import util.exceptions.InvalidGrammarException;
 import util.exceptions.ParseError;
@@ -106,5 +109,18 @@ public class TestForms {
         assert exceptions.isEmpty();
     }
 
+    @Test
+    void testFull() {
+        for (var f : forms) {
+            Result<ResolutionResult, ?> result = CompilationPipeline.compile(f);
+            System.out.println("\n " + f + "\n");
+            switch (result) {
+                case Result.Err<ResolutionResult, ?> err -> System.out.println("Compilation error: " + result);
+                case Result.Ok(ResolutionResult rr)  -> System.out.println(rr.resolvedNodes());
+            }
+
+
+        }
+    }
 
 }

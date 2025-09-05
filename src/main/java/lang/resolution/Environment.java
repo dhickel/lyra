@@ -1,0 +1,85 @@
+package lang.resolution;
+
+import lang.types.TypeTable;
+
+import java.util.*;
+
+public class Environment {
+    private final List<String> namespaceNames;
+    private final Map<String, Integer> namespaceMap;
+    private final SymbolTable symbolTable;
+    private final TypeTable typeTable;
+    private int nextNamespaceId;
+    
+    public Environment() {
+        this.namespaceNames = new ArrayList<>();
+        this.namespaceMap = new HashMap<>();
+        this.symbolTable = new SymbolTable();
+        this.typeTable = new TypeTable();
+        this.nextNamespaceId = 0;
+        
+        // Register the main namespace
+        registerNamespace("main");
+    }
+    
+    public int registerNamespace(String name) {
+        if (namespaceMap.containsKey(name)) {
+            return namespaceMap.get(name);
+        }
+        
+        int namespaceId = nextNamespaceId++;
+        namespaceNames.add(name);
+        namespaceMap.put(name, namespaceId);
+        return namespaceId;
+    }
+    
+    public Optional<Integer> getNamespaceId(String name) {
+        return Optional.ofNullable(namespaceMap.get(name));
+    }
+    
+    public Optional<String> getNamespaceName(int id) {
+        if (id >= 0 && id < namespaceNames.size()) {
+            return Optional.of(namespaceNames.get(id));
+        }
+        return Optional.empty();
+    }
+    
+    public SubEnvironment createSubEnvironment(int namespaceId) {
+        if (namespaceId < 0 || namespaceId >= namespaceNames.size()) {
+            throw new IllegalArgumentException("Invalid namespace ID: " + namespaceId);
+        }
+        return new SubEnvironment(namespaceId, symbolTable, typeTable);
+    }
+    
+    public SubEnvironment createSubEnvironment(String namespaceName) {
+        Integer namespaceId = namespaceMap.get(namespaceName);
+        if (namespaceId == null) {
+            throw new IllegalArgumentException("Unknown namespace: " + namespaceName);
+        }
+        return createSubEnvironment(namespaceId);
+    }
+    
+    public SubEnvironment createMainSubEnvironment() {
+        return createSubEnvironment("main");
+    }
+    
+    public SymbolTable getSymbolTable() {
+        return symbolTable;
+    }
+    
+    public TypeTable getTypeTable() {
+        return typeTable;
+    }
+    
+    public List<String> getAllNamespaceNames() {
+        return new ArrayList<>(namespaceNames);
+    }
+    
+    @Override
+    public String toString() {
+        return "Environment{" +
+               "namespaces=" + namespaceNames +
+               ", nextId=" + nextNamespaceId +
+               '}';
+    }
+}

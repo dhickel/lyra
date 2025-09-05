@@ -279,7 +279,7 @@ public interface Parser {
             // ::= Identifier
             var identifierResult = parseIdentifier();
             if (identifierResult.isErr()) { return identifierResult.castErr(); }
-            Symbol identifier = Symbol.ofResolved(identifierResult.unwrap());
+            Symbol identifier = Symbol.of(identifierResult.unwrap());
 
             // ::= [ ':' Type ]
             Result<LangType, CompExcept> typeResult = letStatement.hasType()
@@ -317,7 +317,7 @@ public interface Parser {
             // ::= Identifier
             var identifierResult = parseIdentifier();
             if (identifierResult.isErr()) { return identifierResult.castErr(); }
-            Symbol identifier = Symbol.ofUnresolved(identifierResult.unwrap());
+            Symbol identifier = Symbol.of(identifierResult.unwrap());
 
             // ::= ':='
             if (consume(TokenType.REASSIGNMENT).isErr()) { return consume(TokenType.REASSIGNMENT).castErr(); }
@@ -522,7 +522,7 @@ public interface Parser {
                         Result.ok(new ASTNode.Expression.VExpr(new ASTNode.Value.F64(id.data()), MetaData.ofResolved(lineChar, LangType.I64)));
 
                 case Token(TokenType.Literal lit, TokenData.StringData id, _, _) when lit == TokenType.Literal.Identifier ->
-                        Result.ok(new ASTNode.Expression.VExpr(new ASTNode.Value.Identifier(Symbol.ofUnresolved(id.data())), MetaData.ofResolved(lineChar, LangType.UNDEFINED)));
+                        Result.ok(new ASTNode.Expression.VExpr(new ASTNode.Value.Identifier(Symbol.of(id.data())), MetaData.ofResolved(lineChar, LangType.UNDEFINED)));
 
                 case Token(TokenType.Literal lit, TokenData.StringData id, _, _) when lit == TokenType.Literal.Nil ->
                         Result.ok(new ASTNode.Expression.VExpr(new ASTNode.Value.Nil(), MetaData.ofResolved(lineChar, LangType.NIL)));
@@ -681,7 +681,7 @@ public interface Parser {
                                         ? parseType(true)
                                         : Result.ok(LangType.UNDEFINED);
                                 if (typeResult.isErr()) { return typeResult.castErr(); }
-                                parameters.add(new ASTNode.Parameter(mods, Symbol.ofResolved(identifier), typeResult.unwrap()));
+                                parameters.add(new ASTNode.Parameter(mods, Symbol.of(identifier), typeResult.unwrap()));
                             }
                         }
                     }
@@ -704,7 +704,7 @@ public interface Parser {
                 switch (advance()) {
                     case Result.Err<Token, CompExcept> err -> { return err.castErr(); }
                     case Result.Ok(Token(TokenType tt, TokenData.StringData str, _, _)) when tt == TokenType.Literal.Identifier -> {
-                        accesses.add(new ASTNode.AccessType.Namespace(Symbol.ofUnresolved(str.data())));
+                        accesses.add(new ASTNode.AccessType.Namespace(Symbol.of(str.data())));
                         if (consume(TokenType.NAME_SPACE_ACCESS) instanceof Result.Err<Token,CompExcept> err) { return err.castErr(); }
                     }
                     default -> { return Result.err(ParseError.expected(peek(), "Namespace Identifier")); }
@@ -728,7 +728,7 @@ public interface Parser {
                                 switch (parseIdentifier()) {
                                     case Result.Err<String, CompExcept> err -> { return err.castErr(); }
                                     case Result.Ok(String identifier) -> {
-                                        Symbol symbol = Symbol.ofUnresolved(identifier);
+                                        Symbol symbol = Symbol.of(identifier);
                                         accesses.add(new ASTNode.AccessType.Identifier(symbol));
                                     }
                                 }
@@ -741,13 +741,12 @@ public interface Parser {
                             case Result.Ok<Token, CompExcept> _ -> {
                                 switch (parseIdentifier()) {
                                     case Result.Err<String, CompExcept> err -> { return err.castErr(); }
-                                    case Result.Ok(String identifier) -> {
-                                        Symbol symbol = Symbol.ofUnresolved(identifier);
-                                        accesses.add(new ASTNode.AccessType.Identifier(symbol));
-                                    }
+                                    case Result.Ok(String identifier) ->
+                                            accesses.add(new ASTNode.AccessType.Identifier(Symbol.of(identifier)));
                                 }
                             }
                         }
+
                     }
                     case GrammarForm.AccessType.FunctionCall fc -> {
                         switch (consume(TokenType.FUNCTION_ACCESS)) {
@@ -756,7 +755,7 @@ public interface Parser {
                                 switch (parseIdentifier()) {
                                     case Result.Err<String, CompExcept> err -> { return err.castErr(); }
                                     case Result.Ok(String identifier) -> {
-                                        Symbol symbol = Symbol.ofUnresolved(identifier);
+                                        Symbol symbol = Symbol.of(identifier);
 
                                         if (consumeLeftBracket().isErr()) {
                                             return consumeLeftBracket().castErr();
@@ -859,9 +858,9 @@ public interface Parser {
                 return err.castErr();
             }
 
-            return switch(parseType(false)) {
+            return switch (parseType(false)) {
                 case Result.Err<LangType, CompExcept> err -> err.castErr();
-                case Result.Ok(LangType type)  -> {
+                case Result.Ok(LangType type) -> {
                     if (consume(TokenType.RIGHT_ANGLE_BRACKET) instanceof Result.Err<Token, CompExcept> err) {
                         yield err.castErr();
                     }

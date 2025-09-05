@@ -1,24 +1,11 @@
 package lang;
 
-public sealed interface Symbol {
-    String identifier();
+public record Symbol(String identifier) {
 
-    static Symbol ofResolved(String identifier) {
-        return new Resolved(identifier);
-    }
 
-    static Symbol ofUnresolved(String identifier) {
-        return new Unresolved(identifier);
-    }
-
-    default Symbol toResolved() {
-        return this instanceof Unresolved
-                ? new Resolved(this.identifier())
-                : this;
+    public static Symbol of(String identifier) {
+        return new Symbol(identifier);
     }
 
 
-    record Resolved(String identifier) implements Symbol { }
-
-    record Unresolved(String identifier) implements Symbol { }
 }
