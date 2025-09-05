@@ -8,7 +8,7 @@ public sealed interface Symbol {
     }
 
     static Symbol ofUnresolved(String identifier) {
-        return new Resolved(identifier);
+        return new Unresolved(identifier);
     }
 
     default Symbol toResolved() {
