@@ -1,7 +1,6 @@
 package lang.resolution;
 
 import lang.LangType;
-import lang.Symbol;
 import lang.ast.ASTNode;
 import lang.ast.MetaData;
 import lang.types.*;
@@ -25,7 +24,7 @@ public class Resolver {
      * Multi-pass resolution with configurable attempts
      */
     public Result<ResolutionResult, ResolutionError> resolve(
-        List<ASTNode> nodes, int maxAttempts) {
+            List<ASTNode> nodes, int maxAttempts) {
         
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             environment.resetScopeForNextIteration();
@@ -48,48 +47,48 @@ public class Resolver {
     
     private Result<Boolean, ResolutionError> resolveTopNode(ASTNode node) {
         return switch (node) {
-            case ASTNode.Statement stmt -> resolveStatement(stmt);
-            case ASTNode.Expression expr -> resolveExpression(expr);
+            case ASTNode.Stmt stmt -> resolveStatement(stmt);
+            case ASTNode.Expr expr -> resolveExpression(expr);
         };
     }
     
-    private Result<Boolean, ResolutionError> resolveStatement(ASTNode.Statement stmt) {
+    private Result<Boolean, ResolutionError> resolveStatement(ASTNode.Stmt stmt) {
         return switch (stmt) {
-            case ASTNode.Statement.Let letStmt -> resolveLet(letStmt);
-            case ASTNode.Statement.Assign assignStmt -> resolveAssign(assignStmt);
+            case ASTNode.Stmt.Let letStmt -> resolveLet(letStmt);
+            case ASTNode.Stmt.Assign assignStmt -> resolveAssign(assignStmt);
         };
     }
     
-    private Result<Boolean, ResolutionError> resolveExpression(ASTNode.Expression expr) {
+    private Result<Boolean, ResolutionError> resolveExpression(ASTNode.Expr expr) {
         if (expr.metaData().isResolved()) {
             return Result.ok(true);
         }
         
         return switch (expr) {
-            case ASTNode.Expression.SExpr sexpr -> resolveSExpr(sexpr);
-            case ASTNode.Expression.VExpr vexpr -> resolveValue(vexpr);
-            case ASTNode.Expression.BExpr bexpr -> {
+            case ASTNode.Expr.S sexpr -> resolveSExpr(sexpr);
+            case ASTNode.Expr.V vexpr -> resolveValue(vexpr);
+            case ASTNode.Expr.B bexpr -> {
                 environment.pushScope();
                 Result<Boolean, ResolutionError> result = resolveBlock(bexpr);
                 environment.popScope();
                 yield result;
             }
-            case ASTNode.Expression.LExpr lexpr -> {
+            case ASTNode.Expr.L lexpr -> {
                 environment.pushScope();
                 Result<Boolean, ResolutionError> result = resolveLambda(lexpr);
                 environment.popScope();
                 yield result;
             }
-            case ASTNode.Expression.OExpr oexpr -> resolveOperation(oexpr);
-            case ASTNode.Expression.PExpr pexpr -> resolvePredicate(pexpr);
-            case ASTNode.Expression.MExpr mexpr -> resolveMethodChain(mexpr);
-            case ASTNode.Expression.PredicateForm predForm -> Result.ok(false); // TODO: implement
+            case ASTNode.Expr.O oexpr -> resolveOperation(oexpr);
+            case ASTNode.Expr.P pexpr -> resolvePredicate(pexpr);
+            case ASTNode.Expr.M mexpr -> resolveMethodChain(mexpr);
+            case ASTNode.Expr.PForm predForm -> Result.ok(false); // TODO: implement
         };
     }
     
     // Statement Resolution
     
-    private Result<Boolean, ResolutionError> resolveLet(ASTNode.Statement.Let letStmt) {
+    private Result<Boolean, ResolutionError> resolveLet(ASTNode.Stmt.Let letStmt) {
         MetaData metaData = letStmt.metaData();
         if (metaData.isResolved()) {
             return Result.ok(true);
@@ -155,7 +154,7 @@ public class Resolver {
         return Result.ok(true);
     }
     
-    private Result<Boolean, ResolutionError> resolveAssign(ASTNode.Statement.Assign assignStmt) {
+    private Result<Boolean, ResolutionError> resolveAssign(ASTNode.Stmt.Assign assignStmt) {
         MetaData metaData = assignStmt.metaData();
         if (metaData.isResolved()) {
             return Result.ok(true);
@@ -212,7 +211,7 @@ public class Resolver {
     
     // Expression Resolution
     
-    private Result<Boolean, ResolutionError> resolveValue(ASTNode.Expression.VExpr vexpr) {
+    private Result<Boolean, ResolutionError> resolveValue(ASTNode.Expr.V vexpr) {
         MetaData metaData = vexpr.metaData();
         if (metaData.isResolved()) {
             return Result.ok(true);
@@ -259,7 +258,7 @@ public class Resolver {
     }
     
     private Result<Boolean, ResolutionError> resolveIdentifierValue(
-        ASTNode.Value.Identifier identifier, MetaData metaData) {
+            ASTNode.Value.Identifier identifier, MetaData metaData) {
         
         String name = identifier.symbol().identifier();
         Optional<SymbolContext> symbolContext = environment.findSymbolInScope(name);
@@ -282,32 +281,32 @@ public class Resolver {
     // Stub implementations for other expression types
     // These will be implemented based on the specific needs
     
-    private Result<Boolean, ResolutionError> resolveSExpr(ASTNode.Expression.SExpr sexpr) {
+    private Result<Boolean, ResolutionError> resolveSExpr(ASTNode.Expr.S sexpr) {
         // TODO: Implement S-expression resolution
         return Result.ok(false);
     }
     
-    private Result<Boolean, ResolutionError> resolveBlock(ASTNode.Expression.BExpr bexpr) {
+    private Result<Boolean, ResolutionError> resolveBlock(ASTNode.Expr.B bexpr) {
         // TODO: Implement block expression resolution
         return Result.ok(false);
     }
     
-    private Result<Boolean, ResolutionError> resolveLambda(ASTNode.Expression.LExpr lexpr) {
+    private Result<Boolean, ResolutionError> resolveLambda(ASTNode.Expr.L lexpr) {
         // TODO: Implement lambda expression resolution
         return Result.ok(false);
     }
     
-    private Result<Boolean, ResolutionError> resolveOperation(ASTNode.Expression.OExpr oexpr) {
+    private Result<Boolean, ResolutionError> resolveOperation(ASTNode.Expr.O oexpr) {
         // TODO: Implement operation expression resolution
         return Result.ok(false);
     }
     
-    private Result<Boolean, ResolutionError> resolvePredicate(ASTNode.Expression.PExpr pexpr) {
+    private Result<Boolean, ResolutionError> resolvePredicate(ASTNode.Expr.P pexpr) {
         // TODO: Implement predicate expression resolution
         return Result.ok(false);
     }
     
-    private Result<Boolean, ResolutionError> resolveMethodChain(ASTNode.Expression.MExpr mexpr) {
+    private Result<Boolean, ResolutionError> resolveMethodChain(ASTNode.Expr.M mexpr) {
         // TODO: Implement method chain expression resolution
         return Result.ok(false);
     }

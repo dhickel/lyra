@@ -13,7 +13,7 @@ public class ResolutionTest {
     void testBasicValueResolution() {
         String source = "42";
         
-        Result<ResolutionResult, ?> result = CompilationPipeline.compile(source);
+        Result<ResolutionResult, ?> result = CompPipeline.compile(source);
         
         assertTrue(result.isOk(), "Compilation should succeed");
         ResolutionResult resolutionResult = result.unwrap();
@@ -23,9 +23,9 @@ public class ResolutionTest {
         assertEquals(1, nodes.size(), "Should have one root node");
         
         ASTNode node = nodes.get(0);
-        assertTrue(node instanceof ASTNode.Expression, "Node should be an expression");
+        assertTrue(node instanceof ASTNode.Expr, "Node should be an expression");
         
-        ASTNode.Expression expr = (ASTNode.Expression) node;
+        ASTNode.Expr expr = (ASTNode.Expr) node;
         assertTrue(expr.metaData().isResolved(), "Expression should be resolved");
     }
 
@@ -33,7 +33,7 @@ public class ResolutionTest {
     void testSimpleLetStatement() {
         String source = "let x : I64 = 42";
         
-        Result<ResolutionResult, ?> result = CompilationPipeline.compile(source);
+        Result<ResolutionResult, ?> result = CompPipeline.compile(source);
         
         if (result.isErr()) {
             System.out.println("Compilation error: " + result);
@@ -50,7 +50,7 @@ public class ResolutionTest {
         assertEquals(1, nodes.size(), "Should have one root node");
         
         ASTNode node = nodes.get(0);
-        assertTrue(node instanceof ASTNode.Statement.Let, "Node should be a let statement");
+        assertTrue(node instanceof ASTNode.Stmt.Let, "Node should be a let statement");
         
         System.out.println("Let statement resolution result: " + resolutionResult.fullyResolved());
         System.out.println("Warnings: " + resolutionResult.warnings().size());

@@ -3,18 +3,16 @@ package lang.grammar;
 import util.Result;
 import util.exceptions.CompExcept;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.stream.Gatherer;
 
-public sealed interface GrammarMatch {
-    GrammarMatch NONE = new None();
+public sealed interface GMatch {
+    GMatch NONE = new None();
 
-    record Found(GrammarForm form) implements GrammarMatch { }
+    record Found(GForm form) implements GMatch { }
 
-    record None() implements GrammarMatch { }
+    record None() implements GMatch { }
 
-    static GrammarMatch of(GrammarForm form) {
+    static GMatch of(GForm form) {
         return new Found(form);
     }
 
@@ -26,16 +24,16 @@ public sealed interface GrammarMatch {
         return this instanceof None;
     }
 
-    default Result<GrammarMatch, CompExcept> intoResult() {
+    default Result<GMatch, CompExcept> intoResult() {
         return Result.ok(this);
     }
 
 
 
-    static <T extends GrammarForm> Gatherer<Result<GrammarMatch, CompExcept>, Void, Result<T, CompExcept>>
+    static <T extends GForm> Gatherer<Result<GMatch, CompExcept>, Void, Result<T, CompExcept>>
     takeWhileFoundOfMatch(Class<T> type) {
         return Gatherer.of(Gatherer.Integrator.of((state, result, downstream) -> {
-            if (result instanceof Result.Err<GrammarMatch, CompExcept>(CompExcept error)) {
+            if (result instanceof Result.Err<GMatch, CompExcept>(CompExcept error)) {
                 downstream.push(Result.err(error));
                 return false; // short-circuit on error
             }

@@ -9,14 +9,14 @@ import java.util.List;
 import java.util.Optional;
 
 
-public sealed interface ASTNode permits ASTNode.Expression, ASTNode.Statement {
+public sealed interface ASTNode permits ASTNode.Expr, ASTNode.Stmt {
     MetaData metaData();
 
     record CompilationUnit(List<ASTNode> rootExpressions) { }
 
     record Parameter(List<Modifier> modifiers, Symbol identifier, LangType typ) { }
 
-    record Argument(List<Modifier> modifiers, Expression expr) { }
+    record Argument(List<Modifier> modifiers, Expr expr) { }
 
     enum PredicateType {
         COALESCE,
@@ -59,41 +59,41 @@ public sealed interface ASTNode permits ASTNode.Expression, ASTNode.Statement {
         ReAssign,
     }
 
-    interface AccessType {
-        record FunctionCall(Symbol identifier, List<Argument> arguments) implements AccessType { }
+    interface Access {
+        record FuncCall(Symbol identifier, List<Argument> arguments) implements Access { }
 
-        record Identifier(Symbol identifier) implements AccessType { }
+        record Identifier(Symbol identifier) implements Access { }
 
-        record Namespace(Symbol identifier) implements AccessType { }
+        record Namespace(Symbol identifier) implements Access { }
 
     }
 
 
-    sealed interface Expression extends ASTNode {
-        record SExpr(Expression operation, List<Expression> operands, MetaData metaData) implements Expression { }
+    sealed interface Expr extends ASTNode {
+        record S(Expr operation, List<Expr> operands, MetaData metaData) implements Expr { }
 
-        record MExpr(List<AccessType> expressionChain, MetaData metaData) implements Expression { }
+        record M(List<Access> expressionChain, MetaData metaData) implements Expr { }
 
         // Operation Expression
-        record OExpr(Operation op, List<Expression> operands, MetaData metaData) implements Expression { }
+        record O(Operation op, List<Expr> operands, MetaData metaData) implements Expr { }
 
         // Block
-        record BExpr(List<ASTNode> expressions, MetaData metaData) implements Expression { }
+        record B(List<ASTNode> expressions, MetaData metaData) implements Expr { }
 
         //value
-        record VExpr(Value value, MetaData metaData) implements Expression { }
+        record V(Value value, MetaData metaData) implements Expr { }
 
         // predicate
-        record PExpr(Expression predExpr, PredicateForm predForm,
-                     MetaData metaData) implements Expression { }
+        record P(Expr predExpr, PForm predForm,
+                 MetaData metaData) implements Expr { }
 
         //lambda
-        record LExpr(List<Parameter> parameters, Expression body, boolean isForm,
-                     MetaData metaData) implements Expression { }
+        record L(List<Parameter> parameters, Expr body, boolean isForm,
+                 MetaData metaData) implements Expr { }
 
 
-        record PredicateForm(Optional<Expression> thenExpr, Optional<Expression> elseExpr,
-                             MetaData metaData) implements Expression {
+        record PForm(Optional<Expr> thenExpr, Optional<Expr> elseExpr,
+                     MetaData metaData) implements Expr {
 
             PredicateType predType() {
                 if (thenExpr().isPresent() && elseExpr().isPresent()) {
@@ -110,13 +110,13 @@ public sealed interface ASTNode permits ASTNode.Expression, ASTNode.Statement {
     }
 
 
-    sealed interface Statement extends ASTNode {
-        record Let(Symbol identifier, List<Modifier> modifiers, Expression assignment,
-                   MetaData metaData) implements Statement { }
+    sealed interface Stmt extends ASTNode {
+        record Let(Symbol identifier, List<Modifier> modifiers, Expr assignment,
+                   MetaData metaData) implements Stmt { }
 
         // This only handles local reassignment, member reassignment is an operation expression
-        record Assign(Symbol target, Expression assignment,
-                      MetaData metaData) implements Statement { }
+        record Assign(Symbol target, Expr assignment,
+                      MetaData metaData) implements Stmt { }
 
     }
 

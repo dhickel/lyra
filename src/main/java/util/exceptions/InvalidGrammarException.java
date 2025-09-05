@@ -1,6 +1,6 @@
 package util.exceptions;
 
-import lang.grammar.GrammarMatch;
+import lang.grammar.GMatch;
 import parse.Token;
 import util.Result;
 
@@ -24,7 +24,7 @@ public class InvalidGrammarException extends CompExcept {
         );
     }
 
-    public Result<GrammarMatch, CompExcept> intoResult() {
+    public Result<GMatch, CompExcept> intoResult() {
         return Result.err(this);
     }
 

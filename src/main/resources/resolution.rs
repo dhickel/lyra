@@ -24,7 +24,7 @@ pub enum ResolveError {
     InvalidArgument(String),
 }
 
-// TODO dont allow statements inside any expression except a block expression
+// TODO dont allow statements inside any expr except a block expr
 
 impl ResolveError {
     pub fn invalid_assignment<T>(line_char: (u32, u32), src_type: &LangType, dst_type: &LangType) -> Result<T, ResolveError> {
@@ -174,10 +174,10 @@ impl<'a> Resolver<'a> {
             return ResolveError::invalid_assignment(data.line_char, assign_type.lang_type(), symbol_type.lang_type());
         }
 
-        // Set conv_need, this gets applied to the inner assignment node, as self node is a statement
+        // Set conv_need, this gets applied to the inner assignment node, as self node is a stmt
         // I think this is more logical, if not the conversion will be attached to the let nodes type
         // which is already typed as the conversion, conversion should happen on nodes last and make sense
-        // to apply to the expression in-between assignment instead of at.
+        // to apply to the expr in-between assignment instead of at.
         if conv_need.is_some() {
             data.node_data.assignment.add_type_conversion(conv_need);
         }
@@ -256,7 +256,7 @@ impl<'a> Resolver<'a> {
         let operands = &mut data.node_data.operand_exprs;
 
 
-        // Check and resolve operation expression if needed
+        // Check and resolve operation expr if needed
         let operation_resolved = if !operation.get_resolve_state().is_node_resolved() {
             self.resolve_expression(operation)?
         } else { true };
@@ -276,7 +276,7 @@ impl<'a> Resolver<'a> {
         } else { true };
 
 
-        // return early if resolution of inner expression unsuccessful
+        // return early if resolution of inner expr unsuccessful
         if !(operation_resolved && operands_resolved) { return Ok(false); }
 
 
@@ -522,7 +522,7 @@ impl<'a> Resolver<'a> {
             data.node_data.pred_expr.get_resolve_state().get_type_entry().unwrap().lang_type(),
             &LangType::BOOL
         ) {
-            return ResolveError::invalid_operation(data.line_char, "Non-boolean expression as predicate condition", None);
+            return ResolveError::invalid_operation(data.line_char, "Non-boolean expr as predicate condition", None);
         }
 
         let then_resolved = self.resolve_expression(&mut data.node_data.then_expr)?;
@@ -565,7 +565,7 @@ impl<'a> Resolver<'a> {
             data.resolve_state = ResolveState::Resolved(self.env.get_resolve_data_by_type_id(then_type.id()));
             Ok(true)
         } else {
-            // If branches are not compatible than the predicate expression is forced to return nil
+            // If branches are not compatible than the predicate expr is forced to return nil
             // this will only be an issue, if it is placed in an assignment or place expecting a result
             // which will result in an error as it should
             data.resolve_state = ResolveState::Resolved(self.env.get_nil_resolve());
@@ -575,7 +575,7 @@ impl<'a> Resolver<'a> {
 
 
     fn resolve_lambda_expression(&mut self, data: &mut AstData<LambdaData>) -> Result<bool, ResolveError> {
-        println!("Resolving lambda expression");
+        println!("Resolving lambda expr");
         if data.resolve_state.is_node_resolved() { return Ok(true); }
 
 

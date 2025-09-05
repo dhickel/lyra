@@ -13,7 +13,7 @@ public record SymbolContext(
 ) {
     
     public static SymbolContext of(String identifier, TypeId typeId, 
-                                  Set<ASTNode.Modifier> modifiers, 
+                                  Set<ASTNode.Modifier> modifiers,
                                   ResolveContext resolveContext) {
         return new SymbolContext(identifier, typeId, modifiers, resolveContext);
     }

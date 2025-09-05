@@ -12,7 +12,7 @@ import java.util.List;
 /**
  * Main compilation pipeline that integrates lexing, parsing, and resolution.
  */
-public class CompilationPipeline {
+public class CompPipeline {
     
     public static Result<ResolutionResult, CompExcept> compile(String source) {
         return compile(source, 3); // Default to 3 resolution attempts
@@ -23,12 +23,10 @@ public class CompilationPipeline {
         List<Token> tokens = Lexer.process(source);
         
         // Phase 2: Parsing
-        Result<ASTNode.CompilationUnit, CompExcept> parseResult = 
+        Result<ASTNode.CompilationUnit, CompExcept> parseResult =
             new Parser.LangParser(tokens).process();
         
-        if (parseResult.isErr()) {
-            return parseResult.castErr();
-        }
+        if (parseResult.isErr()) { return parseResult.castErr(); }
         
         ASTNode.CompilationUnit compilationUnit = parseResult.unwrap();
         
