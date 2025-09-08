@@ -1,6 +1,3 @@
-package lang.resolution;
-
-import lang.Symbol;
 import util.Result;
 import java.util.*;
 
@@ -15,7 +12,7 @@ public class NamespaceResolver {
     
     public Result<ResolutionResult, ResolutionError> resolveNamespaceChain(
             NamespaceTree.NamespaceNode currentNamespace, 
-            List<Symbol> chain) {
+            List<String> chain) {
         
         if (chain.isEmpty()) {
             return Result.err(ResolutionError.emptyChain());
@@ -26,7 +23,7 @@ public class NamespaceResolver {
         int namespaceParts = 0;
         
         for (int i = 0; i < chain.size(); i++) {
-            String part = chain.get(i).identifier();
+            String part = chain.get(i);
             
             if (i > 0) pathBuilder.append(".");
             pathBuilder.append(part);
@@ -43,7 +40,7 @@ public class NamespaceResolver {
         }
         
         if (namespaceParts > 0) {
-            List<Symbol> remainingChain = chain.subList(namespaceParts, chain.size());
+            List<String> remainingChain = chain.subList(namespaceParts, chain.size());
             
             if (remainingChain.isEmpty()) {
                 return Result.ok(new ResolutionResult.Namespace(targetNamespace));
@@ -58,7 +55,7 @@ public class NamespaceResolver {
     
     public sealed interface ResolutionResult {
         record Namespace(NamespaceTree.NamespaceNode namespace) implements ResolutionResult {}
-        record NamespacedSymbol(NamespaceTree.NamespaceNode namespace, List<Symbol> symbolChain) implements ResolutionResult {}
-        record LocalSymbol(List<Symbol> symbolChain) implements ResolutionResult {}
+        record NamespacedSymbol(NamespaceTree.NamespaceNode namespace, List<String> symbolChain) implements ResolutionResult {}
+        record LocalSymbol(List<String> symbolChain) implements ResolutionResult {}
     }
 }

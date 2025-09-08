@@ -1,5 +1,3 @@
-package lang.resolution;
-
 public record ResolveContext(int namespaceId, int scopeId, int depth) {
     
     public static ResolveContext of(int namespaceId, int scopeId, int depth) {

@@ -1,5 +1,3 @@
-package lang.resolution;
-
 import lang.ast.ASTNode;
 import lang.types.TypeId;
 

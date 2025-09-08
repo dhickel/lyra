@@ -178,8 +178,8 @@ public class ASTPrinter {
         if (node.has("modifiers")) {
             return "Parameter";
         }
-        if (node.has("rootExpressions")) {
-            int count = node.get("rootExpressions").isArray() ? node.get("rootExpressions").size() : 0;
+        if (node.has("topMost")) {
+            int count = node.get("topMost").isArray() ? node.get("topMost").size() : 0;
             return "CompilationUnit[expressions=" + count + "]";
         }
         if (node.has("thenExpr") || node.has("elseExpr")) {

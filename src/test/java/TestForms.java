@@ -1,10 +1,10 @@
 import lang.ast.ASTNode;
-import lang.resolution.CompPipeline;
+import compile.Compiler;
 import lang.resolution.ResolutionResult;
 import parse.*;
 import util.ASTPrinter;
 import util.Result;
-import util.exceptions.CompExcept;
+import util.exceptions.Error;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -85,7 +85,7 @@ public class TestForms {
     }
 
     @Test
-    void testGrammar() throws CompExcept {
+    void testGrammar() throws Error {
         List<Exception> exceptions = new ArrayList<>();
         for (var f : forms) {
             List<Token> tokens = Lexer.process(f);
@@ -97,7 +97,7 @@ public class TestForms {
             try {
                 ASTNode.CompilationUnit node = new Parser.LangParser(tokens).process().throwOnErr();
                 ASTPrinter.debugPrint(node);
-            } catch (CompExcept e) {
+            } catch (Error e) {
                 exceptions.add(e);
                 System.out.println(e.getMessage());
                 e.printStackTrace();
@@ -110,7 +110,7 @@ public class TestForms {
     @Test
     void testFull() {
         for (var f : forms) {
-            Result<ResolutionResult, ?> result = CompPipeline.compile(f);
+            Result<ResolutionResult, ?> result = Compiler.compile(f);
             System.out.println("\n " + f + "\n");
             switch (result) {
                 case Result.Err<ResolutionResult, ?> err -> System.out.println("Compilation error: " + result);

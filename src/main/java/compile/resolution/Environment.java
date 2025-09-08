@@ -1,4 +1,4 @@
-package lang.resolution;
+package compile.resolution;
 
 import lang.types.TypeTable;
 import util.Result;

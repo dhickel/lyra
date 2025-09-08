@@ -2,8 +2,6 @@ package lang.ast;
 
 import lang.LangType;
 
-import lang.Symbol;
-
 
 import java.util.List;
 import java.util.Optional;
@@ -12,9 +10,9 @@ import java.util.Optional;
 public sealed interface ASTNode permits ASTNode.Expr, ASTNode.Stmt {
     MetaData metaData();
 
-    record CompilationUnit(List<ASTNode> rootExpressions) { }
+    record CompilationUnit(List<ASTNode> topMost) { }
 
-    record Parameter(List<Modifier> modifiers, Symbol identifier, LangType typ) { }
+    record Parameter(List<Modifier> modifiers, String identifier, LangType typ) { }
 
     record Argument(List<Modifier> modifiers, Expr expr) { }
 
@@ -60,11 +58,11 @@ public sealed interface ASTNode permits ASTNode.Expr, ASTNode.Stmt {
     }
 
     interface Access {
-        record FuncCall(Symbol identifier, List<Argument> arguments) implements Access { }
+        record FuncCall(String identifier, List<Argument> arguments) implements Access { }
 
-        record Identifier(Symbol identifier) implements Access { }
+        record Identifier(String identifier) implements Access { }
 
-        record Namespace(Symbol identifier) implements Access { }
+        record Namespace(String identifier) implements Access { }
 
     }
 
@@ -111,11 +109,11 @@ public sealed interface ASTNode permits ASTNode.Expr, ASTNode.Stmt {
 
 
     sealed interface Stmt extends ASTNode {
-        record Let(Symbol identifier, List<Modifier> modifiers, Expr assignment,
+        record Let(String identifier, List<Modifier> modifiers, Expr assignment,
                    MetaData metaData) implements Stmt { }
 
         // This only handles local reassignment, member reassignment is an operation expression
-        record Assign(Symbol target, Expr assignment,
+        record Assign(String target, Expr assignment,
                       MetaData metaData) implements Stmt { }
 
     }
@@ -141,7 +139,7 @@ public sealed interface ASTNode permits ASTNode.Expr, ASTNode.Stmt {
 
         record Tuple() implements Value { }
 
-        record Identifier(Symbol symbol) implements Value { }
+        record Identifier(String name) implements Value { }
 
     }
 

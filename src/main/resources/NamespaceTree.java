@@ -1,5 +1,3 @@
-package lang.resolution;
-
 import util.Result;
 import java.util.*;
 

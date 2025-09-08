@@ -11,8 +11,16 @@ public sealed interface Result<T, E extends Exception> permits Result.Err, Resul
     record Err<T, E extends Exception>(E error) implements Result<T, E> { }
 
     static <T, E extends Exception> Result<T, E> ok(T value) {
+        if (value == null) { throw new IllegalArgumentException("Null result value no allowed)"); }
+
         return new Ok<>(value);
     }
+
+    static <Void, E extends Exception> Result<Void, E> okVoid() {
+        return new Result.Ok<>(null);
+    }
+
+
 
     static <T, E extends Exception> Result<T, E> err(E error) {
         return new Err<>(error);
@@ -104,11 +112,11 @@ public sealed interface Result<T, E extends Exception> permits Result.Err, Resul
 //        };
 //    }
 
-        default <U > Result < U, E > asErr() {
-            if (this instanceof Err<T, E> err) {
-                return Result.err(err.error());
-            }
-            throw new IllegalStateException("Cannot cast error from Ok result");
+    default <U> Result<U, E> asErr() {
+        if (this instanceof Err<T, E> err) {
+            return Result.err(err.error());
         }
+        throw new IllegalStateException("Cannot cast error from Ok result");
     }
+}
 

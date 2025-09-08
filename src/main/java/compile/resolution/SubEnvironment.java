@@ -1,7 +1,4 @@
-package lang.resolution;
-
 import lang.LangType;
-import lang.Symbol;
 import lang.ast.ASTNode;
 import lang.types.*;
 import util.Result;
@@ -76,12 +73,12 @@ public class SubEnvironment {
     
     // Symbol Management
     public Result<Void, ResolutionError> addSymbol(
-        Symbol symbol, TypeId typeId, Set<ASTNode.Modifier> modifiers) {
+            String symbol, TypeId typeId, Set<ASTNode.Modifier> modifiers) {
         
 
         
         SymbolContext context = SymbolContext.of(
-            symbol.identifier(),
+            symbol,
             typeId,
             modifiers,
             getCurrentContext()

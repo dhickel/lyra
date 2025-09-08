@@ -1,7 +1,7 @@
 package util.exceptions;
 
-public abstract class CompExcept extends Exception {
-    public CompExcept(String message) {
+public abstract class Error extends Exception {
+    public Error(String message) {
         super(message);
     }
     

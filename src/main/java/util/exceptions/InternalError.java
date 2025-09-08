@@ -1,7 +1,7 @@
 package util.exceptions;
 
-public class InternalException extends CompExcept {
-    public InternalException(String message) {
+public class InternalError extends Error {
+    public InternalError(String message) {
         super(message);
     }
 
@@ -15,7 +15,7 @@ public class InternalException extends CompExcept {
         return -1;
     }
 
-    public static CompExcept of(String msg) {
-        return new InternalException(msg);
+    public static Error of(String msg) {
+        return new InternalError(msg);
     }
 }

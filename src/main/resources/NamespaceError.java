@@ -1,8 +1,6 @@
-package lang.resolution;
+import util.exceptions.Error;
 
-import util.exceptions.CompExcept;
-
-public abstract sealed class NamespaceError extends CompExcept {
+public abstract sealed class NamespaceError extends Error {
     
     protected NamespaceError(String message) {
         super(message);

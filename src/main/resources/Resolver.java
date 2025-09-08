@@ -1,17 +1,15 @@
-package lang.resolution;
-
 import lang.LangType;
 import lang.ast.ASTNode;
 import lang.ast.MetaData;
 import lang.types.*;
 import util.Result;
-import util.exceptions.CompExcept;
+import util.exceptions.Error;
 
 import java.util.*;
 
 public class Resolver {
     private final SubEnvironment environment;
-    private final List<CompExcept> warnings;
+    private final List<Error> warnings;
     private boolean fullyResolved;
     
     public Resolver(SubEnvironment environment) {
@@ -161,7 +159,7 @@ public class Resolver {
         }
         
         // Find the symbol being assigned to
-        String identifier = assignStmt.target().identifier();
+        String identifier = assignStmt.target();
         Optional<SymbolContext> symbolContext = environment.findSymbolInScope(identifier);
         
         if (symbolContext.isEmpty()) {
@@ -260,7 +258,7 @@ public class Resolver {
     private Result<Boolean, ResolutionError> resolveIdentifierValue(
             ASTNode.Value.Identifier identifier, MetaData metaData) {
         
-        String name = identifier.symbol().identifier();
+        String name = identifier.name();
         Optional<SymbolContext> symbolContext = environment.findSymbolInScope(name);
         
         if (symbolContext.isEmpty()) {

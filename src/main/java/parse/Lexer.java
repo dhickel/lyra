@@ -1,5 +1,9 @@
 package parse;
 
+import util.Result;
+import util.exceptions.Error;
+import util.exceptions.InternalError;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -13,7 +17,7 @@ public class Lexer {
     private static final TokenType.ModifierToken[] MODIFIER_TOKENS = TokenType.getModifierTokens();
 
 
-    public static List<Token> process(String input) {
+    public static Result<List<Token>, Error> process(String input) {
         var state = new State(input);
 
         while (state.hasNext()) {
@@ -31,11 +35,11 @@ public class Lexer {
             if (isNumeric(c) && lexNumber(state)) { continue; }
             if (lexWord(state)) { continue; }
 
-            throw new RuntimeException("Failed to parse at Line:  " + state.lineNum + ", Char: " + state.lineChar);
+            return Result.err(InternalError.of("Fatal error during lexing process"));
         }
 
         state.addToken(TokenType.Internal.EOF);
-        return state.tokens;
+        return Result.ok(state.tokens);
     }
 
     private static boolean lexSingleTokens(State state) {

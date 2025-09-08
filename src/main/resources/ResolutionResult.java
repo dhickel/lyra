@@ -1,7 +1,5 @@
-package lang.resolution;
-
 import lang.ast.ASTNode;
-import util.exceptions.CompExcept;
+import util.exceptions.Error;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -9,14 +7,14 @@ import java.util.List;
 public record ResolutionResult(
     boolean fullyResolved,
     List<ASTNode> resolvedNodes,
-    List<CompExcept> warnings
+    List<Error> warnings
 ) {
     
     public static ResolutionResult success(List<ASTNode> nodes) {
         return new ResolutionResult(true, nodes, new ArrayList<>());
     }
     
-    public static ResolutionResult success(List<ASTNode> nodes, List<CompExcept> warnings) {
+    public static ResolutionResult success(List<ASTNode> nodes, List<Error> warnings) {
         return new ResolutionResult(true, nodes, warnings);
     }
     
@@ -24,12 +22,12 @@ public record ResolutionResult(
         return new ResolutionResult(false, nodes, new ArrayList<>());
     }
     
-    public static ResolutionResult partial(List<ASTNode> nodes, List<CompExcept> warnings) {
+    public static ResolutionResult partial(List<ASTNode> nodes, List<Error> warnings) {
         return new ResolutionResult(false, nodes, warnings);
     }
     
-    public ResolutionResult withWarning(CompExcept warning) {
-        List<CompExcept> newWarnings = new ArrayList<>(warnings);
+    public ResolutionResult withWarning(Error warning) {
+        List<Error> newWarnings = new ArrayList<>(warnings);
         newWarnings.add(warning);
         return new ResolutionResult(fullyResolved, resolvedNodes, newWarnings);
     }

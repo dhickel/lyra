@@ -1,6 +1,5 @@
 package util;
 
-import util.exceptions.CompilerError;
 import java.util.function.Function;
 import java.util.function.Supplier;
 

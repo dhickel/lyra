@@ -6,25 +6,25 @@ import util.Result;
 
 
 
-public class InvalidGrammarException extends CompExcept {
+public class GrammarError extends Error {
     private final int line;
     private final int chr;
 
-    private InvalidGrammarException(String message, int line, int column) {
+    private GrammarError(String message, int line, int column) {
         super(message);
         this.line = line;
         this.chr = column;
     }
 
-    public static InvalidGrammarException expected(Token token, String expected) {
-        return new InvalidGrammarException(
+    public static GrammarError expected(Token token, String expected) {
+        return new GrammarError(
                 String.format("Expected: %s, Found: %s", expected, token.tokenType()),
                 token.line(),
                 token.chr()
         );
     }
 
-    public Result<GMatch, CompExcept> intoResult() {
+    public Result<GMatch, Error> intoResult() {
         return Result.err(this);
     }
 

@@ -1,5 +1,6 @@
+import compile.Compiler;
+import compile.resolution.Environment;
 import lang.ast.ASTNode;
-import lang.resolution.*;
 import org.junit.jupiter.api.Test;
 import util.Result;
 
@@ -7,13 +8,13 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-public class ResolutionTest {
+public class ResolverTest {
 
     @Test
     void testBasicValueResolution() {
         String source = "42";
         
-        Result<ResolutionResult, ?> result = CompPipeline.compile(source);
+        Result<ResolutionResult, ?> result = Compiler.compile(source);
         
         assertTrue(result.isOk(), "Compilation should succeed");
         ResolutionResult resolutionResult = result.unwrap();
@@ -33,7 +34,7 @@ public class ResolutionTest {
     void testSimpleLetStatement() {
         String source = "let x : I64 = 42";
         
-        Result<ResolutionResult, ?> result = CompPipeline.compile(source);
+        Result<ResolutionResult, ?> result = Compiler.compile(source);
         
         if (result.isErr()) {
             System.out.println("Compilation error: " + result);
