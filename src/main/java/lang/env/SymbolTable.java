@@ -9,32 +9,27 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
-public abstract class SymbolTable {
-    private final SymbolTable parent;
-
-    protected SymbolTable(SymbolTable parent) { this.parent = parent; }
-
-    abstract Result<Optional<Symbol>, ResolutionError> lookup(int scopeId, String identifier);
-
-    abstract Result<Optional<Symbol>, ResolutionError> lookup(IntList scopeIds, String identifier);
-
-    abstract Result<Void, ResolutionError> insert(int scopeId, Symbol symbol);
-
-    public boolean hasParent() {
-        return parent != null;
-    }
+public interface  SymbolTable {
 
 
-    public static class MapTable extends SymbolTable {
+     Result<Optional<Symbol>, ResolutionError> lookup(int scopeId, String identifier);
+
+     Result<Optional<Symbol>, ResolutionError> lookup(IntList scopeIds, String identifier);
+
+     Result<Void, ResolutionError> insert(int scopeId, Symbol symbol);
+
+
+
+    public static class MapTable implements SymbolTable {
         private final IntObjectHashMap<Map<String, Symbol>> table;
 
-        public MapTable(SymbolTable parent, int initSize) {
-            super(parent);
+        public MapTable( int initSize) {
+
             table = new IntObjectHashMap<>(initSize);
         }
 
         @Override
-        Result<Optional<Symbol>, ResolutionError> lookup(int scopeId, String identifier) {
+        public Result<Optional<Symbol>, ResolutionError> lookup(int scopeId, String identifier) {
             var innerMap = table.get(scopeId);
 
             return Result.ok(innerMap == null
@@ -45,7 +40,7 @@ public abstract class SymbolTable {
 
 
         @Override
-        Result<Void, ResolutionError> insert(int scopeId, Symbol symbol) {
+        public Result<Void, ResolutionError> insert(int scopeId, Symbol symbol) {
             var innerMap = table.getIfAbsentPut(scopeId, new HashMap<>());
             return switch (innerMap.putIfAbsent(symbol.identifier(), symbol)) {
                 case null -> Result.okVoid();
@@ -54,7 +49,7 @@ public abstract class SymbolTable {
         }
 
         @Override
-        Result<Optional<Symbol>, ResolutionError> lookup(IntList scopeIds, String identifier) {
+        public Result<Optional<Symbol>, ResolutionError> lookup(IntList scopeIds, String identifier) {
             return null;
         }
 

@@ -1,6 +1,6 @@
 package lang.env;
 
-import compile.resolution.NsScope;
+import compile.resolve.NsScope;
 import lang.LineChar;
 import lang.ast.ASTNode;
 

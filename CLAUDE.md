@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Java-based compiler for a custom functional programming language. The language features LISP-like syntax with unique accessor operators and a grammar-driven parsing system.
+This is a Java-based compiler for a custom functional programming language that compiles to the JVM. The language features LISP-like syntax with unique accessor operators and a grammar-driven parsing system.
 
 ## Build Commands
 
@@ -13,13 +13,15 @@ This is a Java-based compiler for a custom functional programming language. The 
 - **Clean:** `mvn clean`
 - **Package:** `mvn package`
 - **Run specific test:** `mvn test -Dtest=TestForms`
+- **Run resolution tests:** `mvn test -Dtest=ResolutionTest`
 
 ### Java 25 EA Commands
+
+This project uses Java 25 Early Access with preview features enabled by default in the Maven configuration.
 
 - **JDK 25 EA Path:** `/home/hickelpickle/.jdks/openjdk-ea-25+36-3489`
 - **Compile with Java 25 EA:** `JAVA_HOME=/home/hickelpickle/.jdks/openjdk-ea-25+36-3489 mvn compile`
 - **Test with Java 25 EA:** `JAVA_HOME=/home/hickelpickle/.jdks/openjdk-ea-25+36-3489 mvn test`
-- **Test with preview features:** `JAVA_HOME=/home/hickelpickle/.jdks/openjdk-ea-25+36-3489 mvn test -Dmaven.compiler.args="--enable-preview"`
 
 ## Project Architecture
 
@@ -48,6 +50,16 @@ This is a Java-based compiler for a custom functional programming language. The 
 - `LangType.java`: Type representations including primitives, functions, and arrays
 - `Symbol.java`: Identifier management with resolution status tracking
 
+**Symbol Resolution** (`src/main/java/lang/env/`)
+- `Environment.java`: Environment chain for symbol scoping and resolution
+- `Namespace.java`: Namespace management with symbol tables
+- `Symbol.java`: Symbol representation with resolution status tracking
+- `SymbolTable.java`: Symbol lookup and management
+
+**Resolution System** (`src/main/java/compile/resolve/`)
+- `Resolver.java`: Interface for symbol resolution operations
+- `NsScope.java`: Namespace scoping for resolution context
+
 **Error Handling** (`src/util/Result.java`)
 - Rust-style `Result<T, E>` type used throughout for error propagation
 - Custom exceptions in `src/main/java/util/exceptions/`
@@ -68,10 +80,12 @@ This is a Java-based compiler for a custom functional programming language. The 
 
 ## Development Notes
 
-- Uses Java 25 with preview features enabled
+- Uses Java 25 EA with preview features enabled by default via Maven configuration
+- Target platform: JVM bytecode compilation
 - All parsing uses `Result<T, E>` pattern - avoid throwing exceptions directly
 - Grammar matching happens before AST construction (two-phase approach)
-- Symbol resolution is deferred - symbols marked as resolved/unresolved during parsing
+- Symbol resolution uses environment chains for scoping
+- Eclipse Collections library used for performance-optimized collections
 - Jackson library used for JSON serialization (future IR output)
 
 ## Testing

@@ -1,4 +1,4 @@
-package compile.resolution;
+package compile.resolve;
 
 public record NsScope(int ns, int scope) {
     public static NsScope of(int ns, int scope) {

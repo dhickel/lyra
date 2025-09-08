@@ -306,9 +306,7 @@ public interface Parser {
 
         // ::= Identifier ':=' Expr
         // Note: this is only for local identifiers and can be considered a sugared form of reassignment
-        private Result<ASTNode.Stmt.Assign, Error> parseReassignStatement(
-                GForm.Stmt.Reassign reassignStatement
-        ) {
+        private Result<ASTNode.Stmt.Assign, Error> parseReassignStatement(GForm.Stmt.Reassign reassignStatement) {
             LineChar lineChar = getLineChar();
 
             // ::= Identifier
@@ -338,9 +336,7 @@ public interface Parser {
         -------------*/
 
         // ::= '{' { Expr | Stmnt } '}'
-        private Result<ASTNode.Expr, Error> parseBlockExpression(
-                GForm.Expr.B blockExpression
-        ) {
+        private Result<ASTNode.Expr, Error> parseBlockExpression(GForm.Expr.B blockExpression) {
             LineChar lineChar = getLineChar();
 
             // ::= '{'
@@ -361,8 +357,7 @@ public interface Parser {
             return Result.ok(new ASTNode.Expr.B(contents, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
         }
 
-        private Result<ASTNode.Expr, Error> parseCondExpression(GForm.Expr.Cond
-                                                                             condExpression) {
+        private Result<ASTNode.Expr, Error> parseCondExpression(GForm.Expr.Cond condExpression) {
             LineChar lineChar = getLineChar();
 
             // ::= '('
@@ -388,9 +383,7 @@ public interface Parser {
 
 
         // ::= '->' Expr [ ':' Expr ]
-        private Result<ASTNode.Expr.PForm, Error> parsePredicateForm(
-                GForm.PForm pForm
-        ) {
+        private Result<ASTNode.Expr.PForm, Error> parsePredicateForm(GForm.PForm pForm) {
             LineChar lineChar = getLineChar();
 
             Optional<ASTNode.Expr> thenExpr;

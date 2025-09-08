@@ -2,7 +2,6 @@ package lang.ast;
 
 import lang.LangType;
 import lang.LineChar;
-import lang.resolution.ResolveContext;
 import lang.types.TypeConversion;
 import lang.types.TypeId;
 
@@ -10,13 +9,11 @@ public class MetaData {
     private final LineChar lineChar;
     private ResolutionState resolutionState;
     private TypeConversion typeConversion;
-    private ResolveContext resolveContext;
 
     MetaData(LineChar lineChar, ResolutionState resolutionState) {
         this.lineChar = lineChar;
         this.resolutionState = resolutionState;
         this.typeConversion = TypeConversion.none();
-        this.resolveContext = null;
     }
 
     public LineChar lineChar() { return lineChar; }
@@ -24,8 +21,6 @@ public class MetaData {
     public ResolutionState resolutionState() { return resolutionState; }
     
     public TypeConversion typeConversion() { return typeConversion; }
-    
-    public ResolveContext resolveContext() { return resolveContext; }
 
     public static MetaData ofUnresolved(LineChar lineChar, LangType type) {
         return new MetaData(lineChar, new ResolutionState.Unresolved(type));
@@ -65,10 +60,6 @@ public class MetaData {
         this.typeConversion = conversion;
     }
     
-    public void setResolveContext(ResolveContext context) {
-        this.resolveContext = context;
-    }
-    
     public boolean isResolved() {
         return resolutionState instanceof ResolutionState.Resolved;
     }
@@ -89,7 +80,6 @@ public class MetaData {
                "lineChar=" + lineChar +
                ", resolutionState=" + resolutionState +
                ", typeConversion=" + typeConversion +
-               ", resolveContext=" + resolveContext +
                '}';
     }
 }

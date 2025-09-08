@@ -1,39 +1,50 @@
 package lang.env;
 
-import java.io.File;
+import compile.Compiler;
+import util.Result;
+import util.exceptions.Error;
+
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 
 public class Namespace {
-    private final Namespace parent;
     private final String name;
     private final Path directory;
-    private final List<File> files;
     private final List<Namespace> children;
     private final SymbolTable symbolTable;
-    private boolean isResolved;
+    private final Compiler.Module compModule;
+    private final int id;
 
 
     public Namespace(
-            Namespace parent,
-            String name,
             Path directory,
-            List<File> files,
+            List<Path> files,
             List<Namespace> children,
-            SymbolTable symbolTable
+            SymbolTable symbolTable,
+            int id
     ) {
-        this.parent = parent;
-        this.name = name.toLowerCase();
+        this.name = directory.getFileName().toString();
         this.directory = directory;
-        this.files = files;
         this.children = children;
         this.symbolTable = symbolTable;
-        this.isResolved = files.isEmpty();
+        this.compModule = Compiler.Module.of(files.stream().map(Compiler.Unit::of).toList());
+        this.id = id;
+    }
+
+    public Result<Void, Error> applyCompilerStep(Compiler.Step func) {
+        return compModule.transform(func);
     }
 
 
     public String name() { return this.name; }
+
+
+    public List<Namespace> children() { return children; }
+
+    public boolean hasChildren() { return !children.isEmpty(); }
+
+    public Compiler.State getCompileState() { return compModule.getState(); }
 
     public SymbolTable symbolTable() { return symbolTable; }
 
@@ -42,4 +53,7 @@ public class Namespace {
                 .filter(c -> c.name.equals(name.toLowerCase()))
                 .findAny();
     }
+
+    public int id() { return id; }
+
 }

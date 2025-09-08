@@ -1,4 +1,4 @@
-package compile.resolution;
+package compile.resolve;
 
 import util.Result;
 import util.exceptions.ResolutionError;

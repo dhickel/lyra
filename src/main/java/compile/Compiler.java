@@ -1,6 +1,5 @@
 package compile;
 
-import compile.resolution.Environment;
 import lang.ast.ASTNode;
 import parse.Lexer;
 import parse.Parser;
@@ -8,7 +7,6 @@ import parse.Token;
 import util.Result;
 import util.exceptions.Error;
 import util.exceptions.InternalError;
-import util.exceptions.ResolutionError;
 
 
 import java.io.IOException;
@@ -19,123 +17,143 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.function.Function;
 
-/**
- * Main compilation pipeline that integrates lexing, parsing, and resolution.
- */
 public class Compiler {
 
-    public record CompUnit(
+    @FunctionalInterface
+    public interface Step extends Function<Unit, Result<Unit, Error>> {
+        @Override
+        Result<Unit, Error> apply(Unit unit);
+    }
+
+    /**
+     * Create a single Step from a list of steps that executes sequentially,
+     * stopping on the first error encountered.
+     */
+    public static Step createPipeline(List<Step> steps) {
+        return unit -> {
+            Result<Unit, Error> current = Result.ok(unit);
+            
+            for (Step step : steps) {
+                current = current.flatMap(step);
+                if (current.isErr()) { return current; }
+            }
+            
+            return current;
+        };
+    }
+
+    public enum State {
+        INIT(0), READ(1), LEXED(2), PARSED(3), PARTIALLY_RESOLVED(4), FULLY_RESOLVED(5);
+        public final int value;
+
+        State(int value) { this.value = value; }
+    }
+
+    public record Unit(
             Path file,
             String text,
             List<Token> tokens,
             List<ASTNode> rootExpressions,
             State state
     ) {
-        public enum State {
-            INIT(0), READ(1), LEXED(2), PARSED(3), PARTIALLY_RESOLVED(4), FULLY_RESOLVED(5);
-            public final int value;
 
-            State(int value) { this.value = value; }
+
+        public static Unit of(Path file) { return new Unit(file, "", List.of(), List.of(), State.INIT); }
+
+
+        public Unit asRead(String text) { return new Unit(this.file, text, List.of(), List.of(), State.READ); }
+
+        public Unit asLexed(List<Token> tokens) { return new Unit(this.file, this.text, tokens, List.of(), State.LEXED); }
+
+        public Unit asParsed(List<ASTNode> rootExpressions) {
+            return new Unit(this.file, this.text, this.tokens, rootExpressions, State.PARSED);
         }
 
-
-        public CompUnit asRead(String text) { return new CompUnit(this.file, text, List.of(), List.of(), State.READ); }
-
-        public CompUnit asLexed(List<Token> tokens) { return new CompUnit(this.file, this.text, tokens, List.of(), State.LEXED); }
-
-        public CompUnit asParsed(List<ASTNode> rootExpressions) {
-            return new CompUnit(this.file, this.text, this.tokens, rootExpressions, State.PARSED);
+        public Unit asPartiallyResolved() {
+            return new Unit(this.file, this.text, this.tokens, this.rootExpressions, State.PARTIALLY_RESOLVED);
         }
 
-        public CompUnit asPartiallyResolved() {
-            return new CompUnit(this.file, this.text, this.tokens, this.rootExpressions, State.PARTIALLY_RESOLVED);
-        }
-
-        public CompUnit asFullyResolved() {
-            return new CompUnit(this.file, this.text, this.tokens, this.rootExpressions, State.FULLY_RESOLVED);
+        public Unit asFullyResolved() {
+            return new Unit(this.file, this.text, this.tokens, this.rootExpressions, State.FULLY_RESOLVED);
         }
 
     }
 
-    public static class CompModule {
-        private List<CompUnit> compUnits;
+    public static class Module {
+        private List<Unit> units;
 
-        public CompModule(List<CompUnit> compUnits) { this.compUnits = Collections.unmodifiableList(compUnits); }
+        public Module(List<Unit> units) { this.units = Collections.unmodifiableList(units); }
 
-        public CompModule of(List<CompUnit> compUnits) { return new CompModule(compUnits); }
+        public static Module of(List<Unit> units) { return new Module(units); }
 
-        public Result<CompModule, Error> transform(Function<CompUnit, Result<CompUnit, Error>> func) {
-            List<Result<CompUnit, Error>> results = compUnits.stream()
-                    .map(Compiler::read)
+        public Result<Void, Error> transform(Step func) {
+            List<Result<Unit, Error>> results = units.stream()
+                    .map(func)
                     .toList();
 
             return switch (results.stream().allMatch(Result::isOk)) {
                 case true -> {
-                    this.compUnits = unwrapUnitResults(results);
-                    yield Result.ok(this);
+                    this.units = unwrapUnitResults(results);
+                    yield Result.okVoid();
                 }
                 case false -> getUnitError(results).castErr();
             };
-
         }
 
 
-        public CompUnit.State getState() {
-            return compUnits.stream()
-                    .map(CompUnit::state)
+        public State getState() {
+            if (units.isEmpty()) { return State.FULLY_RESOLVED; }
+
+            return units.stream()
+                    .map(Unit::state)
                     .min(Comparator.comparingInt(s -> s.value))
-                    .orElse(CompUnit.State.INIT);
+                    .orElse(State.INIT);
         }
     }
 
-    private static Result<CompUnit, Error> getUnitError(List<Result<CompUnit, Error>> results) {
+    private static Result<Unit, Error> getUnitError(List<Result<Unit, Error>> results) {
         return results.stream()
                 .filter(Result::isErr)
                 .findFirst()
                 .orElse(Result.err(InternalError.of("Invalid state in read, no error when expected")));
     }
 
-    private static List<CompUnit> unwrapUnitResults(List<Result<CompUnit, Error>> results) {
+    private static List<Unit> unwrapUnitResults(List<Result<Unit, Error>> results) {
         return results.stream().map(Result::unwrap).toList();
     }
 
 
-    private static Result<CompUnit, Error> read(CompUnit compUnit) {
+    public static Result<Unit, Error> readUnit(Unit unit) {
         try {
-            String text = Files.readString(compUnit.file);
-            return Result.ok(compUnit.asRead(text));
+            String text = Files.readString(unit.file);
+            return Result.ok(unit.asRead(text));
         } catch (IOException e) {
-            return Result.err(InternalError.of("Failed to read file: " + compUnit.file));
+            return Result.err(InternalError.of("Failed to read file: " + unit.file));
         }
     }
 
-    private static Result<CompUnit, Error> lex(CompUnit compUnit) {
-        if (compUnit.state.value != CompUnit.State.READ.value) {
-            Result.err(InternalError.of("Attempted to lex at invalid state: " + compUnit.state));
+    public static Result<Unit, Error> lexUnit(Unit unit) {
+        if (unit.state.value < State.READ.value) {
+            Result.err(InternalError.of("Attempted to lex at invalid state: " + unit.state));
         }
-        return switch (Lexer.process(compUnit.text)) {
+        return switch (Lexer.process(unit.text)) {
             case Result.Err<List<Token>, Error> err -> err.castErr();
-            case Result.Ok(List<Token> tokens) -> Result.ok(compUnit.asLexed(tokens));
+            case Result.Ok(List<Token> tokens) -> Result.ok(unit.asLexed(tokens));
         };
     }
 
-    public static Result<CompUnit, Error> parse(CompUnit compUnit) {
-        if (compUnit.state.value != CompUnit.State.LEXED.value) {
-            Result.err(InternalError.of("Attempted to parse at invalid state: " + compUnit.state));
+    public static Result<Unit, Error> parseUnit(Unit unit) {
+        if (unit.state.value < State.LEXED.value) {
+            Result.err(InternalError.of("Attempted to parse at invalid state: " + unit.state));
         }
-        var parser = new Parser.LangParser(compUnit.tokens);
+        var parser = new Parser.LangParser(unit.tokens);
         return switch (parser.process()) {
             case Result.Err<ASTNode.CompilationUnit, Error> err -> err.castErr();
-            case Result.Ok(ASTNode.CompilationUnit parsedUnit) -> Result.ok(compUnit.asParsed(parsedUnit.topMost()));
+            case Result.Ok(ASTNode.CompilationUnit parsedUnit) -> Result.ok(unit.asParsed(parsedUnit.topMost()));
         };
     }
 
 
-    public static Result<CompModule, Error> readModule(CompModule compModule) { return compModule.transform(Compiler::read); }
-
-    public static Result<CompModule, Error> lexModule(CompModule compModule) { return compModule.transform(Compiler::lex); }
-
-    public static Result<CompModule, Error> parseModule(CompModule compModule) { return compModule.transform(Compiler::parse); }
 
 
 }

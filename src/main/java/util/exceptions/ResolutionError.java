@@ -12,6 +12,10 @@ public class ResolutionError extends Error {
         return new ResolutionError(String.format("Attempted to redeclare symbol:" + symbol));
     }
 
+    public static ResolutionError of(String msg) {
+        return new ResolutionError(msg);
+    }
+
     @Override
     public int line() {
         return -1;
