@@ -2,7 +2,7 @@ package lang.env;
 
 import compile.Compiler;
 import util.Result;
-import util.exceptions.Error;
+import util.exceptions.CError;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -32,7 +32,7 @@ public class Namespace {
         this.id = id;
     }
 
-    public Result<Void, Error> applyCompilerStep(Compiler.Step func) {
+    public Result<Void, CError> applyCompilerStep(Compiler.Step func) {
         return compModule.transform(func);
     }
 
@@ -56,4 +56,16 @@ public class Namespace {
 
     public int id() { return id; }
 
+
+    @Override
+    public String toString() {
+        return "Namespace{" +
+               "name='" + name + '\'' +
+               ", directory=" + directory +
+               ", children=" + children +
+               ", symbolTable=" + symbolTable +
+               ", compModule=" + compModule +
+               ", id=" + id +
+               '}';
+    }
 }

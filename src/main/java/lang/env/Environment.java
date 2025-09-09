@@ -2,7 +2,7 @@ package lang.env;
 
 import util.Result;
 import compile.Compiler;
-import util.exceptions.Error;
+import util.exceptions.CError;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -32,8 +32,8 @@ public class Environment {
     }
 
 
-    public Result<Void, Error> applyCompilerStep(Compiler.Step func) {
-        List<Result<Void, Error>> results = allNamespaces.stream()
+    public Result<Void, CError> applyCompilerStep(Compiler.Step func) {
+        List<Result<Void, CError>> results = allNamespaces.stream()
                 .map(n -> n.applyCompilerStep(func))
                 .toList();
 
@@ -64,12 +64,17 @@ public class Environment {
             allNamespaces.clear();
             nextNamespaceId = 0;
 
-            Namespace tree = buildRecursive(rootPath);
+            var dirContents = listDirectoryContents(rootPath);
+
+            List<Namespace> children = new ArrayList<>();
+            for (Path subDir : dirContents.directories()) {
+                children.add(buildRecursive(subDir));
+            }
 
             this.rootNamespace = new Namespace(
                     Path.of("root"),
-                    List.of(),
-                    List.of(tree),
+                    dirContents.files(),
+                    children,
                     new SymbolTable.MapTable(10),
                     nextNamespaceId++
             );
@@ -82,8 +87,9 @@ public class Environment {
         }
     }
 
+    private record DirectoryContents(List<Path> files, List<Path> directories) {}
 
-    private Namespace buildRecursive(Path dir) throws IOException {
+    private DirectoryContents listDirectoryContents(Path dir) throws IOException {
         List<Path> files = new ArrayList<>();
         List<Path> directories = new ArrayList<>();
 
@@ -94,14 +100,20 @@ public class Environment {
             });
         }
 
+        return new DirectoryContents(files, directories);
+    }
+
+    private Namespace buildRecursive(Path dir) throws IOException {
+        var dirContents = listDirectoryContents(dir);
+
         List<Namespace> children = new ArrayList<>();
-        for (Path subDir : directories) {
+        for (Path subDir : dirContents.directories()) {
             children.add(buildRecursive(subDir));
         }
 
         Namespace namespace = new Namespace(
                 dir,
-                files,
+                dirContents.files(),
                 children,
                 new SymbolTable.MapTable(40),
                 nextNamespaceId++
@@ -111,4 +123,13 @@ public class Environment {
         return namespace;
     }
 
+
+    @Override
+    public String toString() {
+        return "Environment{" +
+               "rootNamespace=" + rootNamespace +
+               ", allNamespaces=" + allNamespaces +
+               ", nextNamespaceId=" + nextNamespaceId +
+               '}';
+    }
 }

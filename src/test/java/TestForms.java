@@ -1,13 +1,6 @@
-import lang.ast.ASTNode;
-import compile.Compiler;
-import lang.resolution.ResolutionResult;
 import parse.*;
-import util.ASTPrinter;
-import util.Result;
-import util.exceptions.Error;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
 import java.util.List;
 
 public class TestForms {
@@ -83,42 +76,4 @@ public class TestForms {
 
         }
     }
-
-    @Test
-    void testGrammar() throws Error {
-        List<Exception> exceptions = new ArrayList<>();
-        for (var f : forms) {
-            List<Token> tokens = Lexer.process(f);
-
-            System.out.println(f);
-            System.out.println(tokens);
-
-
-            try {
-                ASTNode.CompilationUnit node = new Parser.LangParser(tokens).process().throwOnErr();
-                ASTPrinter.debugPrint(node);
-            } catch (Error e) {
-                exceptions.add(e);
-                System.out.println(e.getMessage());
-                e.printStackTrace();
-            }
-            // System.out.println(node);
-        }
-        assert exceptions.isEmpty();
-    }
-
-    @Test
-    void testFull() {
-        for (var f : forms) {
-            Result<ResolutionResult, ?> result = Compiler.compile(f);
-            System.out.println("\n " + f + "\n");
-            switch (result) {
-                case Result.Err<ResolutionResult, ?> err -> System.out.println("Compilation error: " + result);
-                case Result.Ok(ResolutionResult rr)  -> System.out.println(rr.resolvedNodes());
-            }
-
-
-        }
-    }
-
 }

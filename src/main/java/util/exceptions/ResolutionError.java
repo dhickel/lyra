@@ -2,7 +2,7 @@ package util.exceptions;
 
 import lang.env.Symbol;
 
-public class ResolutionError extends Error {
+public class ResolutionError extends CError {
     public ResolutionError(String message) {
         super(message);
     }

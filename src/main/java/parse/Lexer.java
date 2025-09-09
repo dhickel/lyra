@@ -1,7 +1,7 @@
 package parse;
 
 import util.Result;
-import util.exceptions.Error;
+import util.exceptions.CError;
 import util.exceptions.InternalError;
 
 import java.util.ArrayList;
@@ -17,7 +17,7 @@ public class Lexer {
     private static final TokenType.ModifierToken[] MODIFIER_TOKENS = TokenType.getModifierTokens();
 
 
-    public static Result<List<Token>, Error> process(String input) {
+    public static Result<List<Token>, CError> process(String input) {
         var state = new State(input);
 
         while (state.hasNext()) {

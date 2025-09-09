@@ -1,7 +1,7 @@
 package lang.grammar;
 
 import util.Result;
-import util.exceptions.Error;
+import util.exceptions.CError;
 
 import java.util.stream.Gatherer;
 
@@ -24,17 +24,17 @@ public sealed interface GMatch {
         return this instanceof None;
     }
 
-    default Result<GMatch, Error> intoResult() {
+    default Result<GMatch, CError> intoResult() {
         return Result.ok(this);
     }
 
 
 
-    static <T extends GForm> Gatherer<Result<GMatch, Error>, Void, Result<T, Error>>
+    static <T extends GForm> Gatherer<Result<GMatch, CError>, Void, Result<T, CError>>
     takeWhileFoundOfMatch(Class<T> type) {
         return Gatherer.of(Gatherer.Integrator.of((state, result, downstream) -> {
-            if (result instanceof Result.Err<GMatch, Error>(Error error)) {
-                downstream.push(Result.err(error));
+            if (result instanceof Result.Err<GMatch, CError>(CError CError)) {
+                downstream.push(Result.err(CError));
                 return false; // short-circuit on error
             }
             switch (result.unwrap()) {

@@ -1,7 +1,7 @@
 package util.exceptions;
 
-public abstract class Error extends Exception {
-    public Error(String message) {
+public abstract class CError extends Exception {
+    public CError(String message) {
         super(message);
     }
     

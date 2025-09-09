@@ -34,7 +34,7 @@ This project uses Java 25 Early Access with preview features enabled by default 
 
 **Parser** (`src/main/java/parse/Parser.java`)
 - Two-phase parsing: grammar matching via `Grammar.findNextMatch()`, then AST construction
-- Uses `Result<T, E>` type for error handling throughout
+- Uses `Result<T, E>` type for CError handling throughout
 - Contains `LangParser` (main parser) and `SubParser` (lookahead helper)
 
 **Grammar System** (`src/main/java/lang/grammar/`)
@@ -61,7 +61,7 @@ This project uses Java 25 Early Access with preview features enabled by default 
 - `NsScope.java`: Namespace scoping for resolution context
 
 **Error Handling** (`src/util/Result.java`)
-- Rust-style `Result<T, E>` type used throughout for error propagation
+- Rust-style `Result<T, E>` type used throughout for CError propagation
 - Custom exceptions in `src/main/java/util/exceptions/`
 
 ### Language Features

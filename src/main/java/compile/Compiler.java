@@ -5,7 +5,7 @@ import parse.Lexer;
 import parse.Parser;
 import parse.Token;
 import util.Result;
-import util.exceptions.Error;
+import util.exceptions.CError;
 import util.exceptions.InternalError;
 
 
@@ -20,9 +20,9 @@ import java.util.function.Function;
 public class Compiler {
 
     @FunctionalInterface
-    public interface Step extends Function<Unit, Result<Unit, Error>> {
+    public interface Step extends Function<Unit, Result<Unit, CError>> {
         @Override
-        Result<Unit, Error> apply(Unit unit);
+        Result<Unit, CError> apply(Unit unit);
     }
 
     /**
@@ -31,7 +31,7 @@ public class Compiler {
      */
     public static Step createPipeline(List<Step> steps) {
         return unit -> {
-            Result<Unit, Error> current = Result.ok(unit);
+            Result<Unit, CError> current = Result.ok(unit);
             
             for (Step step : steps) {
                 current = current.flatMap(step);
@@ -86,8 +86,8 @@ public class Compiler {
 
         public static Module of(List<Unit> units) { return new Module(units); }
 
-        public Result<Void, Error> transform(Step func) {
-            List<Result<Unit, Error>> results = units.stream()
+        public Result<Void, CError> transform(Step func) {
+            List<Result<Unit, CError>> results = units.stream()
                     .map(func)
                     .toList();
 
@@ -109,21 +109,28 @@ public class Compiler {
                     .min(Comparator.comparingInt(s -> s.value))
                     .orElse(State.INIT);
         }
+
+        @Override
+        public String toString() {
+            return "Module{" +
+                   "units=" + units +
+                   '}';
+        }
     }
 
-    private static Result<Unit, Error> getUnitError(List<Result<Unit, Error>> results) {
+    private static Result<Unit, CError> getUnitError(List<Result<Unit, CError>> results) {
         return results.stream()
                 .filter(Result::isErr)
                 .findFirst()
                 .orElse(Result.err(InternalError.of("Invalid state in read, no error when expected")));
     }
 
-    private static List<Unit> unwrapUnitResults(List<Result<Unit, Error>> results) {
+    private static List<Unit> unwrapUnitResults(List<Result<Unit, CError>> results) {
         return results.stream().map(Result::unwrap).toList();
     }
 
 
-    public static Result<Unit, Error> readUnit(Unit unit) {
+    public static Result<Unit, CError> readUnit(Unit unit) {
         try {
             String text = Files.readString(unit.file);
             return Result.ok(unit.asRead(text));
@@ -132,23 +139,23 @@ public class Compiler {
         }
     }
 
-    public static Result<Unit, Error> lexUnit(Unit unit) {
+    public static Result<Unit, CError> lexUnit(Unit unit) {
         if (unit.state.value < State.READ.value) {
             Result.err(InternalError.of("Attempted to lex at invalid state: " + unit.state));
         }
         return switch (Lexer.process(unit.text)) {
-            case Result.Err<List<Token>, Error> err -> err.castErr();
+            case Result.Err<List<Token>, CError> err -> err.castErr();
             case Result.Ok(List<Token> tokens) -> Result.ok(unit.asLexed(tokens));
         };
     }
 
-    public static Result<Unit, Error> parseUnit(Unit unit) {
+    public static Result<Unit, CError> parseUnit(Unit unit) {
         if (unit.state.value < State.LEXED.value) {
             Result.err(InternalError.of("Attempted to parse at invalid state: " + unit.state));
         }
         var parser = new Parser.LangParser(unit.tokens);
         return switch (parser.process()) {
-            case Result.Err<ASTNode.CompilationUnit, Error> err -> err.castErr();
+            case Result.Err<ASTNode.CompilationUnit, CError> err -> err.castErr();
             case Result.Ok(ASTNode.CompilationUnit parsedUnit) -> Result.ok(unit.asParsed(parsedUnit.topMost()));
         };
     }

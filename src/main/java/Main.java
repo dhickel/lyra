@@ -1,25 +1,31 @@
 import compile.Compiler;
 import lang.env.Environment;
 import util.Result;
-import util.exceptions.Error;
-import java.util.List;
+import util.exceptions.CError;
 
-public class Main {
+void main() {
+    Environment environment = new Environment();
+    Result<Void, IOException> envResult = environment
+            .buildNamespaceTree(
+                    "/home/hickelpickle/Code/Java/mylang-compiler/src/test/resources/project"
+            );
 
-    public static void main(String[] args) {
-        Environment environment = new Environment();
 
-        
-        List<Compiler.Step> steps = List.of(
+    System.out.println(envResult);
+    System.out.println(environment);
+
+
+    List<Compiler.Step> steps = List.of(
             Compiler::readUnit,
             Compiler::lexUnit,
             Compiler::parseUnit
-        );
-        
-        Compiler.Step pipeline = Compiler.createPipeline(steps);
+    );
 
-        Result<Void, Error> result = environment.applyCompilerStep(pipeline);
-        
+    Compiler.Step pipeline = Compiler.createPipeline(steps);
 
-    }
+    Result<Void, CError> result = environment.applyCompilerStep(pipeline);
+
+    System.out.println(environment);
+
+
 }

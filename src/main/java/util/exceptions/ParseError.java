@@ -2,7 +2,7 @@ package util.exceptions;
 
 import parse.Token;
 
-public class ParseError extends Error {
+public class ParseError extends CError {
     private final int line;
     private final int chr;
 

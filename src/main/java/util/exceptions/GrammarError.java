@@ -6,7 +6,7 @@ import util.Result;
 
 
 
-public class GrammarError extends Error {
+public class GrammarError extends CError {
     private final int line;
     private final int chr;
 
@@ -24,7 +24,7 @@ public class GrammarError extends Error {
         );
     }
 
-    public Result<GMatch, Error> intoResult() {
+    public Result<GMatch, CError> intoResult() {
         return Result.err(this);
     }
 
