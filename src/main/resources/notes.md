@@ -1,0 +1,1 @@
+Types can only has instance methods and const values, static methods and fields can only be at the namespace level.

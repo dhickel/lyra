@@ -9,7 +9,7 @@ public sealed interface GForm {
 
         record Let(boolean hasType, int modifierCount, Expr expr) implements Stmt { }
 
-        record Import(String qualifier, Optional<String> alias) implements Stmt { }
+        record Import(boolean hasAlias) implements Stmt { }
     }
 
     sealed interface Expr extends GForm {

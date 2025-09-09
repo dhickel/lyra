@@ -30,7 +30,7 @@ public class Compiler {
         @Override
         Result<Void, CError> apply(Module mod);
 
-        default ModuleTransform ofUnitTransform(UnitTransform transform) {
+        static  ModuleTransform ofUnitTransform(UnitTransform transform) {
             return (mod -> mod.transform(transform));
         }
     }

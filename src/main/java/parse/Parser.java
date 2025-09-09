@@ -245,6 +245,7 @@ public interface Parser {
             return switch (stmt) {
                 case GForm.Stmt.Let let -> parseLetStatement(let).map(Function.identity());
                 case GForm.Stmt.Reassign reassign -> parseReassignStatement(reassign).map(Function.identity());
+                case GForm.Stmt.Import imp -> parseImportStatement(imp).map(Function.identity());
             };
         }
 
@@ -266,16 +267,49 @@ public interface Parser {
         | STATEMENTS |
          -----------*/
 
+
+        //::= 'import' Identifier [ ( 'as' Identifier ) ]
+        private Result<ASTNode.Stmt.Import, CError> parseImportStatement(GForm.Stmt.Import importStatement) {
+            LineChar lineChar = getLineChar();
+
+            // ::= 'import'
+            if (consume(TokenType.IMPORT).isErr()) { return consume(TokenType.Definition.IMPORT).castErr(); }
+            var identifierResult = parseIdentifier();
+            if (identifierResult.isErr()) { return identifierResult.castErr(); }
+
+
+            if (importStatement.hasAlias()) {
+                // ::= As
+                if (consume(TokenType.AS).isErr()) { return consume(TokenType.Syntactic.AS).castErr(); }
+                // ::= 'identifier'
+                var aliasResult = parseIdentifier();
+                if (aliasResult.isErr()) { return aliasResult.castErr(); }
+                return Result.ok(new ASTNode.Stmt.Import(
+                        identifierResult.unwrap(),
+                        Optional.of(aliasResult.unwrap()),
+                        MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
+            } else {
+                return Result.ok(new ASTNode.Stmt.Import(
+                        identifierResult.unwrap(),
+                        Optional.empty(),
+                        MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
+            }
+        }
+
         // ::= 'let' Identifier { Modifier } [ ':' Type ] '=' Expr
         private Result<ASTNode.Stmt.Let, CError> parseLetStatement(GForm.Stmt.Let letStatement) {
             LineChar lineChar = getLineChar();
 
             // ::= let
-            if (consume(TokenType.Definition.Let).isErr()) { return consume(TokenType.Definition.Let).castErr(); }
+            if (consume(TokenType.Definition.Let) instanceof Result.Err<Token, CError> err) {
+                return err.castErr();
+            }
+
 
             // ::= Identifier
             var identifierResult = parseIdentifier();
             if (identifierResult.isErr()) { return identifierResult.castErr(); }
+
             String identifier = identifierResult.unwrap();
 
             // ::= [ ':' Type ]
@@ -289,7 +323,11 @@ public interface Parser {
             if (modifiersResult.isErr()) { return modifiersResult.castErr(); }
 
             // ::= '='
-            if (consume(TokenType.Syntactic.Equal).isErr()) { return consume(TokenType.Syntactic.Equal).castErr(); }
+            if (
+
+                    consume(TokenType.Syntactic.Equal).
+
+                            isErr()) { return consume(TokenType.Syntactic.Equal).castErr(); }
 
             // ::= Expr
             var assignmentResult = parseExpression(letStatement.expr());
@@ -327,8 +365,6 @@ public interface Parser {
                     MetaData.ofUnresolved(lineChar, LangType.UNDEFINED))
             );
         }
-
-
 
 
         /*------------
@@ -738,6 +774,15 @@ public interface Parser {
                         }
 
                     }
+
+                    case GForm.Access.Type _ -> {
+                        var typeIdentifier = parseIdentifier();
+                        switch (typeIdentifier) {
+                            case Result.Err<String, CError> err -> { return err.castErr(); }
+                            case Result.Ok(String identifier) -> accesses.add(new ASTNode.Access.Type((identifier)));
+                        }
+                    }
+
                     case GForm.Access.FuncCall fc -> {
                         switch (consume(TokenType.FUNCTION_ACCESS)) {
                             case Result.Err<Token, CError> err -> { return err.castErr(); }

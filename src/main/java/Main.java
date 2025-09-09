@@ -11,7 +11,7 @@ void main() {
             );
 
 
-    System.out.println(envResult);
+
     System.out.println(environment);
 
 
@@ -23,7 +23,8 @@ void main() {
 
     Compiler.UnitTransform pipeline = Compiler.createPipeline(unitTransforms);
 
-    Result<Void, CError> result = environment.compileModulesWith(pipeline);
+    Result<Void, CError> result = environment.compileModulesWith(Compiler.ModuleTransform.ofUnitTransform(pipeline));
+    System.out.println(result);
 
     System.out.println(environment);
 
