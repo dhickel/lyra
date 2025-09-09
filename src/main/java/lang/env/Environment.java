@@ -42,6 +42,10 @@ public class Environment {
                 : results.stream().filter(Result::isErr).findFirst().get();
     }
 
+    public void addTextUnitToGlobalNs(Compiler.Unit unit) {
+        rootNamespace.addUnit(unit);
+    }
+
 
     public Optional<Namespace> lookupQualifier(String qualifier) {
         return recursiveNSLookUp(Arrays.asList(qualifier.split("\\.")), rootNamespace);

@@ -39,6 +39,10 @@ public class Namespace {
 
     public String name() { return this.name; }
 
+    public void addUnit(Compiler.Unit unit) {
+        this.compModule.addUnit(unit);
+    }
+
 
     public List<Namespace> children() { return children; }
 

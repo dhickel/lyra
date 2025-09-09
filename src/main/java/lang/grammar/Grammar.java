@@ -340,7 +340,7 @@ public class Grammar {
 
     // ::= Identifier
     private static boolean isTypeAccess(Parser p) {
-        return matchToken(p, MATCH_IDENTIFIER_ACCESS);
+        return matchToken(p, MATCH_IDENTIFIER);
     }
 
 
@@ -372,6 +372,7 @@ public class Grammar {
                 return switch (nonTypeAccess.contains(p.peek().tokenType())) {
                     case true -> Result.err(GrammarError.expected(p.peek(), "End of chain after Type access"));
                     case false -> Result.ok(GMatch.of(new GForm.AccessChain(accessChain)));
+
                 };
 
             }
@@ -382,34 +383,33 @@ public class Grammar {
                 continue;
             }
 
-            if (isFunctionAccess(p)) {
-                // Method Access found, check if it is a method call
-                if (matchToken(p, MATCH_LEFT_BRACKET)) {
+            if (!isFunctionAccess(p)) { break; }
+            // Method Access found, check if it is a method call
+            if (matchToken(p, MATCH_LEFT_BRACKET)) {
 
-                    GForm.Arguments arguments = null;
-                    switch (isArguments(p)) {
-                        case Result.Err<GMatch, CError> err -> { return err; }
-                        case Result.Ok(GMatch.Found(GForm.Arguments args)) -> arguments = args;
-                        default -> arguments = GForm.Arguments.EMPTY;
-                    }
-
-                    if (matchToken(p, MATCH_RIGHT_BRACKET)) {
-                        // Add method call to chain
-                        accessChain.add(new GForm.Access.FuncCall(arguments.args()));
-                    } else { return Result.err(GrammarError.expected(p.peek(), "]")); }
-
-                } else { // Is method access (identity)
-                    // Ensure no more accesses are left in the chain, as an identity call must be terminal
-                    if (isFunctionAccess(p) || isIdentifierAccess(p)) { // These consume, not best for a throw check FIXME
-                        return Result.err(GrammarError.expected(
-                                p.peekN(0),
-                                "End of F-Expr (Method identity calls must come last)"
-                        ));
-                    }
-                    // Valid identity call position
-                    accessChain.add(new GForm.Access.FunctionAccess());
-                    break;
+                GForm.Arguments arguments = null;
+                switch (isArguments(p)) {
+                    case Result.Err<GMatch, CError> err -> { return err; }
+                    case Result.Ok(GMatch.Found(GForm.Arguments args)) -> arguments = args;
+                    default -> arguments = GForm.Arguments.EMPTY;
                 }
+
+                if (matchToken(p, MATCH_RIGHT_BRACKET)) {
+                    // Add method call to chain
+                    accessChain.add(new GForm.Access.FuncCall(arguments.args()));
+                } else { return Result.err(GrammarError.expected(p.peek(), "]")); }
+
+            } else { // Is method access (identity)
+                // Ensure no more accesses are left in the chain, as an identity call must be terminal
+                if (isFunctionAccess(p) || isIdentifierAccess(p)) { // These consume, not best for a throw check FIXME
+                    return Result.err(GrammarError.expected(
+                            p.peekN(0),
+                            "End of F-Expr (Method identity calls must come last)"
+                    ));
+                }
+                // Valid identity call position
+                accessChain.add(new GForm.Access.FunctionAccess());
+                break;
             }
 
 

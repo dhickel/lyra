@@ -3,12 +3,12 @@ import lang.env.Environment;
 import util.Result;
 import util.exceptions.CError;
 
-void main() {
+import java.util.List;
+
+public class Main {
+    public static void main(String[] args) {
     Environment environment = new Environment();
-    Result<Void, IOException> envResult = environment
-            .buildNamespaceTree(
-                    "/home/hickelpickle/Code/Java/mylang-compiler/src/test/resources/project"
-            );
+    environment.addTextUnitToGlobalNs(Compiler.Unit.of("namespace->namespace->Type"));
 
 
 
@@ -24,9 +24,8 @@ void main() {
     Compiler.UnitTransform pipeline = Compiler.createPipeline(unitTransforms);
 
     Result<Void, CError> result = environment.compileModulesWith(Compiler.ModuleTransform.ofUnitTransform(pipeline));
+
     System.out.println(result);
 
-    System.out.println(environment);
-
-
+    }
 }

@@ -12,10 +12,9 @@ import util.exceptions.InternalError;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.List;
+import java.util.*;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 public class Compiler {
 
@@ -30,7 +29,7 @@ public class Compiler {
         @Override
         Result<Void, CError> apply(Module mod);
 
-        static  ModuleTransform ofUnitTransform(UnitTransform transform) {
+        static ModuleTransform ofUnitTransform(UnitTransform transform) {
             return (mod -> mod.transform(transform));
         }
     }
@@ -60,7 +59,7 @@ public class Compiler {
     }
 
     public record Unit(
-            Path file,
+            Optional<Path> file,
             String text,
             List<Token> tokens,
             List<ASTNode> rootExpressions,
@@ -68,7 +67,9 @@ public class Compiler {
     ) {
 
 
-        public static Unit of(Path file) { return new Unit(file, "", List.of(), List.of(), State.INIT); }
+        public static Unit of(Path file) { return new Unit(Optional.of(file), "", List.of(), List.of(), State.INIT); }
+
+        public static Unit of(String text) { return new Unit(Optional.empty(), text, List.of(), List.of(), State.READ); }
 
 
         public Unit asRead(String text) { return new Unit(this.file, text, List.of(), List.of(), State.READ); }
@@ -89,10 +90,11 @@ public class Compiler {
 
     }
 
+    // TODO we really need a way to flag if a module is mutable or not, hacked to always be with new arraylist
     public static class Module {
         private List<Unit> units;
 
-        public Module(List<Unit> units) { this.units = Collections.unmodifiableList(units); }
+        public Module(List<Unit> units) { this.units = new ArrayList<>(units); }
 
         public static Module of(List<Unit> units) { return new Module(units); }
 
@@ -108,6 +110,12 @@ public class Compiler {
                 }
                 case false -> getUnitError(results).castErr();
             };
+        }
+
+        // TODO ad a result and maybe an immuntable flag and set up
+        public void addUnit(Compiler.Unit unit) {
+            this.units.add(unit);
+
         }
 
 
@@ -136,13 +144,14 @@ public class Compiler {
     }
 
     private static List<Unit> unwrapUnitResults(List<Result<Unit, CError>> results) {
-        return results.stream().map(Result::unwrap).toList();
+        return results.stream().map(Result::unwrap).collect(Collectors.toCollection(ArrayList::new));
     }
 
 
     public static Result<Unit, CError> readUnit(Unit unit) {
+        if (unit.file.isEmpty()) { return Result.ok(unit); }
         try {
-            String text = Files.readString(unit.file);
+            String text = Files.readString(unit.file.get());
             return Result.ok(unit.asRead(text));
         } catch (IOException e) {
             return Result.err(InternalError.of("Failed to read file: " + unit.file));
