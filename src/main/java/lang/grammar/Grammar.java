@@ -29,6 +29,8 @@ public class Grammar {
     public static final Predicate<Token> MATCH_VALUE = t -> t.tokenType() instanceof TokenType.Literal;
     public static final Predicate<Token> MATCH_MODIFIER = t -> t.tokenType() instanceof TokenType.Modifier;
     public static final Predicate<Token> MATCH_REASSIGN = t -> t.tokenType() == TokenType.REASSIGNMENT;
+    public static final Predicate<Token> MATCH_IMPORT = t -> t.tokenType() == TokenType.IMPORT;
+    public static final Predicate<Token> MATCH_AS = t -> t.tokenType() == TokenType.AS;
     public static final Predicate<Token> MATCH_LET = t -> t.tokenType() == TokenType.Definition.Let;
     public static final Predicate<Token> MATCH_COLON = t -> t.tokenType() == TokenType.Syntactic.Colon;
     public static final Predicate<Token> MATCH_EQUAL = t -> t.tokenType() == TokenType.Syntactic.Equal;
@@ -109,6 +111,13 @@ public class Grammar {
                 .filter(r -> (r.isOk() && r.unwrap().isFound()) || r.isErr())
                 .findAny()
                 .orElseGet(() -> Result.ok(GMatch.NONE));
+    }
+
+    //::= 'import' Identifier [ ( 'as' Identifier ) ]
+
+    private static Result<GMatch, CError> isImportStatement(Parser p) {
+
+
     }
 
 

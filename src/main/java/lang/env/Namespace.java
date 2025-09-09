@@ -32,8 +32,8 @@ public class Namespace {
         this.id = id;
     }
 
-    public Result<Void, CError> applyCompilerStep(Compiler.Step func) {
-        return compModule.transform(func);
+    public Result<Void, CError> applyModuleTransform(Compiler.ModuleTransform func) {
+        return func.apply(compModule);
     }
 
 

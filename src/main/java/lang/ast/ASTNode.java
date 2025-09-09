@@ -62,6 +62,8 @@ public sealed interface ASTNode permits ASTNode.Expr, ASTNode.Stmt {
 
         record Identifier(String identifier) implements Access { }
 
+        record Type(String identifier) implements Access { }
+
         record Namespace(String identifier) implements Access { }
 
     }
@@ -109,12 +111,12 @@ public sealed interface ASTNode permits ASTNode.Expr, ASTNode.Stmt {
 
 
     sealed interface Stmt extends ASTNode {
-        record Let(String identifier, List<Modifier> modifiers, Expr assignment,
-                   MetaData metaData) implements Stmt { }
+        record Let(String identifier, List<Modifier> modifiers, Expr assignment, MetaData metaData) implements Stmt { }
 
         // This only handles local reassignment, member reassignment is an operation expression
-        record Assign(String target, Expr assignment,
-                      MetaData metaData) implements Stmt { }
+        record Assign(String target, Expr assignment, MetaData metaData) implements Stmt { }
+
+        record Import(String qualifier, Optional<String> alias, MetaData metaData) implements Stmt { }
 
     }
 

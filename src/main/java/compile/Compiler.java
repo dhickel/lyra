@@ -20,24 +20,34 @@ import java.util.function.Function;
 public class Compiler {
 
     @FunctionalInterface
-    public interface Step extends Function<Unit, Result<Unit, CError>> {
+    public interface UnitTransform extends Function<Unit, Result<Unit, CError>> {
         @Override
         Result<Unit, CError> apply(Unit unit);
+    }
+
+    @FunctionalInterface
+    public interface ModuleTransform extends Function<Module, Result<Void, CError>> {
+        @Override
+        Result<Void, CError> apply(Module mod);
+
+        default ModuleTransform ofUnitTransform(UnitTransform transform) {
+            return (mod -> mod.transform(transform));
+        }
     }
 
     /**
      * Create a single Step from a list of steps that executes sequentially,
      * stopping on the first error encountered.
      */
-    public static Step createPipeline(List<Step> steps) {
+    public static UnitTransform createPipeline(List<UnitTransform> unitTransforms) {
         return unit -> {
             Result<Unit, CError> current = Result.ok(unit);
-            
-            for (Step step : steps) {
-                current = current.flatMap(step);
+
+            for (UnitTransform unitTransform : unitTransforms) {
+                current = current.flatMap(unitTransform);
                 if (current.isErr()) { return current; }
             }
-            
+
             return current;
         };
     }
@@ -86,7 +96,7 @@ public class Compiler {
 
         public static Module of(List<Unit> units) { return new Module(units); }
 
-        public Result<Void, CError> transform(Step func) {
+        public Result<Void, CError> transform(UnitTransform func) {
             List<Result<Unit, CError>> results = units.stream()
                     .map(func)
                     .toList();
@@ -159,8 +169,6 @@ public class Compiler {
             case Result.Ok(ASTNode.CompilationUnit parsedUnit) -> Result.ok(unit.asParsed(parsedUnit.topMost()));
         };
     }
-
-
 
 
 }

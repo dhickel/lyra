@@ -1121,8 +1121,8 @@ public class ResolutionBridge {
         };
     }
     
-    // Enhanced Environment method for resolution steps
-    public static Result<Void, CError> applyResolutionStep(Environment env, ResolutionStep step) {
+    // Enhanced Environment method for resolution unitTransforms
+    public static Result<Void, CError> applyResolutionStep(Environment env, ResolutionStep unitTransform) {
         List<Result<Void, CError>> results = new ArrayList<>();
         
         for (Namespace namespace : env.getAllNamespaces()) {
@@ -1130,7 +1130,7 @@ public class ResolutionBridge {
             CompilationContext compilationCtx = CompilationContext.of(namespace, subEnv);
             ResolutionContext resolutionCtx = ResolutionContext.of(compilationCtx);
             
-            results.add(step.apply(resolutionCtx));
+            results.add(unitTransform.apply(resolutionCtx));
         }
         
         return results.stream().allMatch(Result::isOk) 
@@ -1341,7 +1341,7 @@ public void clearScope(int scopeId) {
 
 ```java
 // Add to Environment.java
-public Result<Void, CError> applyResolutionStep(ResolutionStep step) {
+public Result<Void, CError> applyResolutionStep(ResolutionStep unitTransform) {
     List<Result<Void, CError>> results = new ArrayList<>();
     
     for (Namespace namespace : allNamespaces) {
@@ -1349,7 +1349,7 @@ public Result<Void, CError> applyResolutionStep(ResolutionStep step) {
         CompilationContext compilationCtx = CompilationContext.of(namespace, subEnv);
         ResolutionContext resolutionCtx = ResolutionContext.of(compilationCtx);
         
-        results.add(step.apply(resolutionCtx));
+        results.add(unitTransform.apply(resolutionCtx));
     }
     
     return results.stream().allMatch(Result::isOk) 
@@ -1358,7 +1358,7 @@ public Result<Void, CError> applyResolutionStep(ResolutionStep step) {
 }
 
 // Add method for dependency-ordered namespace processing
-public Result<Void, CError> applyResolutionStepOrdered(ResolutionStep step, DependencyGraph depGraph) {
+public Result<Void, CError> applyResolutionStepOrdered(ResolutionStep unitTransform, DependencyGraph depGraph) {
     // Get topologically sorted namespace order
     var sortResult = depGraph.topologicalSort();
     if (sortResult.isErr()) return sortResult.castErr();
@@ -1374,7 +1374,7 @@ public Result<Void, CError> applyResolutionStepOrdered(ResolutionStep step, Depe
         CompilationContext compilationCtx = CompilationContext.of(namespace.get(), subEnv);
         ResolutionContext resolutionCtx = ResolutionContext.of(compilationCtx);
         
-        results.add(step.apply(resolutionCtx));
+        results.add(unitTransform.apply(resolutionCtx));
     }
     
     return results.stream().allMatch(Result::isOk) 
@@ -1747,8 +1747,8 @@ public class ResolutionPipeline {
         
         return context -> {
             // Execute Stage 1
-            for (ResolutionStep step : stage1Steps) {
-                var result = step.apply(context);
+            for (ResolutionStep unitTransform : stage1Steps) {
+                var result = unitTransform.apply(context);
                 if (result.isErr()) return result;
             }
             
@@ -1756,8 +1756,8 @@ public class ResolutionPipeline {
             markNamespacePartiallyResolved(context.compilationContext().targetNamespace());
             
             // Execute Stage 2
-            for (ResolutionStep step : stage2Steps) {
-                var result = step.apply(context);
+            for (ResolutionStep unitTransform : stage2Steps) {
+                var result = unitTransform.apply(context);
                 if (result.isErr()) return result;
             }
             
@@ -2518,14 +2518,14 @@ public class ResolutionErrorRecovery {
     }
     
     public static Result<Void, CError> executeWithErrorCollection(
-            List<ResolutionStep> steps, 
+            List<ResolutionStep> unitTransforms, 
             ResolutionContext context,
             int maxErrors) {
         
         ErrorCollector collector = new ErrorCollector(maxErrors);
         
-        for (ResolutionStep step : steps) {
-            var result = step.apply(context);
+        for (ResolutionStep unitTransform : unitTransforms) {
+            var result = unitTransform.apply(context);
             if (result.isErr()) {
                 if (result.unwrapErr() instanceof ResolutionError resError) {
                     collector.addError(resError);
@@ -2645,8 +2645,8 @@ public class IncrementalResolver {
         // Invalidate cache for affected namespaces
         namespacesToResolve.forEach(cache::invalidateNamespace);
         
-        // Create resolution steps for affected namespaces only
-        List<ResolutionStep> steps = ResolutionPipeline.createResolutionPipeline();
+        // Create resolution unitTransforms for affected namespaces only
+        List<ResolutionStep> unitTransforms = ResolutionPipeline.createResolutionPipeline();
         
         // Execute resolution in dependency order
         for (String namespace : getResolutionOrder(namespacesToResolve)) {
@@ -2657,8 +2657,8 @@ public class IncrementalResolver {
             CompilationContext compCtx = CompilationContext.of(ns.get(), subEnv);
             ResolutionContext resolCtx = ResolutionContext.of(compCtx);
             
-            for (ResolutionStep step : steps) {
-                var result = step.apply(resolCtx);
+            for (ResolutionStep unitTransform : unitTransforms) {
+                var result = unitTransform.apply(resolCtx);
                 if (result.isErr()) return result;
             }
             
@@ -3030,7 +3030,7 @@ src/main/java/compile/resolve/
 ├── SubEnvironment.java              # Scope chain management
 ├── ResolutionContext.java           # Resolution state and context
 ├── CompilationContext.java          # Compilation-specific context
-├── ResolutionStep.java              # Resolution step interface
+├── ResolutionStep.java              # Resolution unitTransform interface
 ├── ResolutionBridge.java            # Integration with existing pipeline
 ├── DependencyGraph.java             # Circular dependency detection
 ├── ImportResolver.java              # Import and aliasing resolution
@@ -3044,7 +3044,7 @@ src/main/java/compile/resolve/
 ```
 
 Additional modifications to existing files:
-- `Environment.java`: Add resolution step methods
+- `Environment.java`: Add resolution unitTransform methods
 - `SymbolTable.java`: Complete lookup implementation, add batch operations
 - `ResolutionError.java`: Comprehensive error type definitions (new file)
 

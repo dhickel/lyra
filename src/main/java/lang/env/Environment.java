@@ -32,9 +32,9 @@ public class Environment {
     }
 
 
-    public Result<Void, CError> applyCompilerStep(Compiler.Step func) {
+    public Result<Void, CError> compileModulesWith(Compiler.ModuleTransform func) {
         List<Result<Void, CError>> results = allNamespaces.stream()
-                .map(n -> n.applyCompilerStep(func))
+                .map(n -> n.applyModuleTransform(func))
                 .toList();
 
         return results.stream().allMatch(Result::isOk)

@@ -30,6 +30,8 @@ public sealed interface TokenType {
     TokenType IDENTIFIER_ACCESS = TokenType.Syntactic.ColonDot;
     TokenType RIGHT_ARROW = TokenType.Syntactic.Arrow;
     TokenType BAR = TokenType.Syntactic.Bar;
+    TokenType IMPORT = TokenType.Definition.Import;
+    TokenType AS = TokenType.Syntactic.As;
 
     enum Internal implements TokenType {
         EOF("EOF");
@@ -70,7 +72,9 @@ public sealed interface TokenType {
         DoubleColon("::"),
         ColonDot(":."),
         ColonEqual(":="),
-        Arrow("->");
+        Arrow("->"),
+        As("as");
+
         public final String stringValue;
 
         Syntactic(String stringValue) { this.stringValue = stringValue; }
@@ -143,7 +147,8 @@ public sealed interface TokenType {
         Let("let"),
         Func("func"),
         Class("class"),
-        Struct("struct");
+        Struct("struct"),
+        Import("import");
 
         public final String stringValue;
 

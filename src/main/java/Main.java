@@ -15,15 +15,15 @@ void main() {
     System.out.println(environment);
 
 
-    List<Compiler.Step> steps = List.of(
+    List<Compiler.UnitTransform> unitTransforms = List.of(
             Compiler::readUnit,
             Compiler::lexUnit,
             Compiler::parseUnit
     );
 
-    Compiler.Step pipeline = Compiler.createPipeline(steps);
+    Compiler.UnitTransform pipeline = Compiler.createPipeline(unitTransforms);
 
-    Result<Void, CError> result = environment.applyCompilerStep(pipeline);
+    Result<Void, CError> result = environment.compileModulesWith(pipeline);
 
     System.out.println(environment);
 

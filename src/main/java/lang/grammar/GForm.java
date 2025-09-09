@@ -8,6 +8,8 @@ public sealed interface GForm {
         record Reassign(Expr assignment) implements Stmt { }
 
         record Let(boolean hasType, int modifierCount, Expr expr) implements Stmt { }
+
+        record Import(String qualifier, Optional<String> alias) implements Stmt { }
     }
 
     sealed interface Expr extends GForm {
@@ -15,13 +17,7 @@ public sealed interface GForm {
 
         record V() implements Expr { }
 
-//        record FExpr(int namespaceDepth, boolean hasIdentifier,
-//                     List<MemberAccess> accessChain) implements Expression { }
-
         record M(int namespaceDepth, List<Access> accessChain) implements Expr { }
-
-
-        // record BExpr() implements Expression { } // FIXME we are also calling in the ast block expression BExpr
 
         record B(List<GForm> members) implements Expr { }
 
@@ -46,9 +42,11 @@ public sealed interface GForm {
 
         record Identifier() implements Access { }
 
+        record Type() implements Access { }
+
         record FuncCall(List<Arg> arguments) implements Access { }
 
-        record FunctionAccess() implements Access {}
+        record FunctionAccess() implements Access { }
     }
 
     record Arg(int modifierCount, Expr expr) implements GForm { }
@@ -66,7 +64,6 @@ public sealed interface GForm {
     record AccessChain(List<Access> accessChain) implements GForm { }
 
     record PForm(Optional<Expr> thenForm, Optional<Expr> elseForm) implements GForm { }
-
 
 
 }
