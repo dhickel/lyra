@@ -268,32 +268,34 @@ public interface Parser {
          -----------*/
 
 
-        //::= 'import' Identifier [ ( 'as' Identifier ) ]
+        //::= 'import' Qualifier [ ( 'as' Identifier ) ]
         private Result<ASTNode.Stmt.Import, CError> parseImportStatement(GForm.Stmt.Import importStatement) {
             LineChar lineChar = getLineChar();
 
             // ::= 'import'
             if (consume(TokenType.IMPORT).isErr()) { return consume(TokenType.Definition.IMPORT).castErr(); }
-            var identifierResult = parseIdentifier();
-            if (identifierResult.isErr()) { return identifierResult.castErr(); }
 
+            //::= Qualifier
+            return switch (parseQualifier()) {
+                case Result.Err<List<String>, CError> err -> err.castErr();
+                case Result.Ok(List<String> qualifier) -> switch (importStatement.hasAlias()) {
+                    case true -> {
+                        if (consume(TokenType.AS).isErr()) { yield consume(TokenType.Syntactic.AS).castErr(); }
 
-            if (importStatement.hasAlias()) {
-                // ::= As
-                if (consume(TokenType.AS).isErr()) { return consume(TokenType.Syntactic.AS).castErr(); }
-                // ::= 'identifier'
-                var aliasResult = parseIdentifier();
-                if (aliasResult.isErr()) { return aliasResult.castErr(); }
-                return Result.ok(new ASTNode.Stmt.Import(
-                        identifierResult.unwrap(),
-                        Optional.of(aliasResult.unwrap()),
-                        MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
-            } else {
-                return Result.ok(new ASTNode.Stmt.Import(
-                        identifierResult.unwrap(),
-                        Optional.empty(),
-                        MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
-            }
+                        // ::= 'identifier'
+                        var aliasResult = parseIdentifier();
+                        if (aliasResult.isErr()) { yield aliasResult.castErr(); }
+                        yield Result.ok(new ASTNode.Stmt.Import(
+                                qualifier,
+                                Optional.of(aliasResult.unwrap()),
+                                MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
+                    }
+                    case false -> Result.ok(new ASTNode.Stmt.Import(
+                            qualifier,
+                            Optional.empty(),
+                            MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
+                };
+            };
         }
 
         // ::= 'let' Identifier { Modifier } [ ':' Type ] '=' Expr
@@ -634,6 +636,29 @@ public interface Parser {
                         Result.ok(s);
                 case Result.Ok<Token, CError> _ -> Result.err(ParseError.expected(peek(), "Identifier"));
             };
+        }
+
+        private Result<List<String>, CError> parseQualifier() {
+            List<String> qualifier = new ArrayList<>(5);
+
+
+            loop:
+            while (true) {
+                switch (parseIdentifier()) {
+                    case Result.Err<String, CError> err -> { return err.castErr(); }
+                    case Result.Ok(String identifier) -> {
+                        qualifier.add(identifier);
+                        if (peek().tokenType() == TokenType.Syntactic.Period) {
+                            switch (advance()) {
+                                case Result.Err<Token, CError> err -> { return err.castErr(); }
+                                case Result.Ok<Token, CError> v -> { continue; }
+                            }
+
+                        } else { break loop; }
+                    }
+                }
+            }
+            return Result.ok(qualifier);
         }
 
         private Result<List<ASTNode.Modifier>, CError> parseModifiers(int count) {

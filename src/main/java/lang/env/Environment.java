@@ -42,7 +42,7 @@ public class Environment {
                 : results.stream().filter(Result::isErr).findFirst().get();
     }
 
-    public void addTextUnitToGlobalNs(Compiler.Unit unit) {
+    public void addTextUnitToGlobalNS(Compiler.Unit unit) {
         rootNamespace.addUnit(unit);
     }
 

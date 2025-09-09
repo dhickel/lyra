@@ -8,11 +8,11 @@ import java.util.List;
 public class Main {
     public static void main(String[] args) {
     Environment environment = new Environment();
-    environment.addTextUnitToGlobalNs(Compiler.Unit.of("namespace->namespace->Type"));
+    environment.addTextUnitToGlobalNS(Compiler.Unit.of("import package.other.now as new"));
 
 
 
-    System.out.println(environment);
+
 
 
     List<Compiler.UnitTransform> unitTransforms = List.of(
@@ -26,6 +26,7 @@ public class Main {
     Result<Void, CError> result = environment.compileModulesWith(Compiler.ModuleTransform.ofUnitTransform(pipeline));
 
     System.out.println(result);
+        System.out.println(environment);
 
     }
 }

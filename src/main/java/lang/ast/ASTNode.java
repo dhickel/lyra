@@ -116,7 +116,7 @@ public sealed interface ASTNode permits ASTNode.Expr, ASTNode.Stmt {
         // This only handles local reassignment, member reassignment is an operation expression
         record Assign(String target, Expr assignment, MetaData metaData) implements Stmt { }
 
-        record Import(String qualifier, Optional<String> alias, MetaData metaData) implements Stmt { }
+        record Import(List<String> qualifierPath, Optional<String> alias, MetaData metaData) implements Stmt { }
 
     }
 

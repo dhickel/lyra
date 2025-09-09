@@ -28,6 +28,8 @@ public class Grammar {
     public static final Predicate<Token> MATCH_LAMBDA_ARROW = t -> t.tokenType() == TokenType.LAMBDA_ARROW;
     public static final Predicate<Token> MATCH_RIGHT_ARROW = t -> t.tokenType() == TokenType.RIGHT_ARROW;
     public static final Predicate<Token> MATCH_IDENTIFIER = t -> t.tokenType() == TokenType.IDENTIFIER;
+    public static final Predicate<Token> MATCH_PERIOD = t -> t.tokenType() == TokenType.Syntactic.Period;
+
     public static final Predicate<Token> MATCH_VALUE = t -> t.tokenType() instanceof TokenType.Literal;
     public static final Predicate<Token> MATCH_MODIFIER = t -> t.tokenType() instanceof TokenType.Modifier;
     public static final Predicate<Token> MATCH_REASSIGN = t -> t.tokenType() == TokenType.REASSIGNMENT;
@@ -115,11 +117,14 @@ public class Grammar {
                 .orElseGet(() -> Result.ok(GMatch.NONE));
     }
 
-    //::= 'import' Identifier [ ( 'as' Identifier ) ]
+    //::= 'import' Qualifier [ ( 'as' Identifier ) ]
 
     private static Result<GMatch, CError> isImportStatement(Parser p) {
-        // ::= 'import' Identifier
+        // ::= 'import' Qualifier
         if (!matchTokens(p, List.of(MATCH_IMPORT, MATCH_IDENTIFIER))) { return Result.ok(GMatch.NONE); }
+
+        // ::= Qualifier (loop through accesses)
+        while (matchTokens(p, List.of(MATCH_PERIOD, MATCH_IDENTIFIER))) { continue; }
 
         // ::= [ ( 'as' Identifier ) ]
         return switch (matchToken(p, MATCH_AS)) {
