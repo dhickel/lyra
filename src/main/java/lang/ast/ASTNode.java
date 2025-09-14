@@ -1,6 +1,7 @@
 package lang.ast;
 
 import lang.LangType;
+import lang.env.Identifier;
 
 
 import java.util.List;
@@ -58,11 +59,11 @@ public sealed interface ASTNode permits ASTNode.Expr, ASTNode.Stmt {
     }
 
     interface Access {
-        record FuncCall(String identifier, List<Argument> arguments) implements Access { }
+        record FuncCall(lang.env.Identifier identifier, List<Argument> arguments) implements Access { }
 
-        record Identifier(String identifier) implements Access { }
+        record Identifier(lang.env.Identifier identifier) implements Access { }
 
-        record Type(String identifier) implements Access { }
+        record Type(lang.env.Identifier identifier) implements Access { }
 
         record Namespace(String identifier) implements Access { }
 
@@ -88,7 +89,7 @@ public sealed interface ASTNode permits ASTNode.Expr, ASTNode.Stmt {
                  MetaData metaData) implements Expr { }
 
         //lambda
-        record L(List<Parameter> parameters, Expr body, boolean isForm,
+        record L(List<Parameter> parameters, LangType rtnType, Expr body, boolean isForm,
                  MetaData metaData) implements Expr { }
 
 
@@ -111,10 +112,10 @@ public sealed interface ASTNode permits ASTNode.Expr, ASTNode.Stmt {
 
 
     sealed interface Stmt extends ASTNode {
-        record Let(String identifier, List<Modifier> modifiers, Expr assignment, MetaData metaData) implements Stmt { }
+        record Let(Identifier identifier, List<Modifier> modifiers, Expr assignment, MetaData metaData) implements Stmt { }
 
         // This only handles local reassignment, member reassignment is an operation expression
-        record Assign(String target, Expr assignment, MetaData metaData) implements Stmt { }
+        record Assign(Identifier target, Expr assignment, MetaData metaData) implements Stmt { }
 
         record Import(List<String> qualifierPath, Optional<String> alias, MetaData metaData) implements Stmt { }
 
@@ -141,7 +142,7 @@ public sealed interface ASTNode permits ASTNode.Expr, ASTNode.Stmt {
 
         record Tuple() implements Value { }
 
-        record Identifier(String name) implements Value { }
+        record Identifier(lang.env.Identifier name) implements Value { }
 
     }
 

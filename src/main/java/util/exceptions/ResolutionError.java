@@ -1,6 +1,6 @@
 package util.exceptions;
 
-import lang.env.Symbol;
+import lang.env.SymbolRef;
 
 public class ResolutionError extends CError {
     public ResolutionError(String message) {
@@ -8,8 +8,8 @@ public class ResolutionError extends CError {
     }
 
 
-    public static ResolutionError duplicateSymbol(Symbol symbol) {
-        return new ResolutionError(String.format("Attempted to redeclare symbol:" + symbol));
+    public static ResolutionError duplicateSymbol(SymbolRef SymbolRef) {
+        return new ResolutionError(String.format("Attempted to redeclare symbol:" + SymbolRef));
     }
 
     public static ResolutionError of(String msg) {

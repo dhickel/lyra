@@ -1,5 +1,5 @@
 import compile.Compiler;
-import lang.env.Environment;
+import lang.env.RootEnv;
 import util.Result;
 import util.exceptions.CError;
 
@@ -7,8 +7,8 @@ import java.util.List;
 
 public class Main {
     public static void main(String[] args) {
-    Environment environment = new Environment();
-    environment.addTextUnitToGlobalNS(Compiler.Unit.of("import package.other.now as new"));
+    RootEnv rootEnv = new RootEnv();
+    rootEnv.addTextUnitToGlobalNS(Compiler.Unit.of("import package.other.now as new"));
 
 
 
@@ -23,10 +23,10 @@ public class Main {
 
     Compiler.UnitTransform pipeline = Compiler.createPipeline(unitTransforms);
 
-    Result<Void, CError> result = environment.compileModulesWith(Compiler.ModuleTransform.ofUnitTransform(pipeline));
+    Result<Void, CError> result = rootEnv.compileModulesWith(Compiler.ModuleTransform.ofUnitTransform(pipeline));
 
     System.out.println(result);
-        System.out.println(environment);
+        System.out.println(rootEnv);
 
     }
 }

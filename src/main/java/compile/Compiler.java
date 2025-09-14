@@ -112,6 +112,17 @@ public class Compiler {
             };
         }
 
+        public Result<List<ASTNode>, CError> getRootExpressions() {
+            if (getState().value < State.PARSED.value) {
+                return Result.err(InternalError.of("Attempted to read AST during invalid state: " + getState()));
+            }
+            return Result.ok(units.stream()
+                    .flatMap(u -> u.rootExpressions.stream())
+                    .collect(Collectors.toCollection(ArrayList::new)
+            ));
+
+        }
+
         // TODO ad a result and maybe an immuntable flag and set up
         public void addUnit(Compiler.Unit unit) {
             this.units.add(unit);

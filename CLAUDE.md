@@ -48,16 +48,16 @@ This project uses Java 25 Early Access with preview features enabled by default 
 
 **Type System** (`src/main/java/lang/`)
 - `LangType.java`: Type representations including primitives, functions, and arrays
-- `Symbol.java`: Identifier management with resolution status tracking
+- `Symbol.java`: SymbolRef management with resolution status tracking
 
 **Symbol Resolution** (`src/main/java/lang/env/`)
-- `Environment.java`: Environment chain for symbol scoping and resolution
-- `Namespace.java`: Namespace management with symbol tables
+- `Environment.java`: Environment chain for SymbolRef scoping and resolution
+- `Namespace.java`: Namespace management with SymbolRef tables
 - `Symbol.java`: Symbol representation with resolution status tracking
 - `SymbolTable.java`: Symbol lookup and management
 
 **Resolution System** (`src/main/java/compile/resolve/`)
-- `Resolver.java`: Interface for symbol resolution operations
+- `Resolver.java`: Interface for SymbolRef resolution operations
 - `NsScope.java`: Namespace scoping for resolution context
 
 **Error Handling** (`src/util/Result.java`)
@@ -84,7 +84,7 @@ This project uses Java 25 Early Access with preview features enabled by default 
 - Target platform: JVM bytecode compilation
 - All parsing uses `Result<T, E>` pattern - avoid throwing exceptions directly
 - Grammar matching happens before AST construction (two-phase approach)
-- Symbol resolution uses environment chains for scoping
+- Symbol resolution uses rootEnv chains for scoping
 - Eclipse Collections library used for performance-optimized collections
 - Jackson library used for JSON serialization (future IR output)
 

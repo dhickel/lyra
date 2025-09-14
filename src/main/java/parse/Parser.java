@@ -2,9 +2,10 @@ package parse;
 
 
 import lang.ast.ASTNode;
-import lang.ast.MetaData;
 import lang.LangType;
 import lang.LineChar;
+import lang.ast.MetaData;
+import lang.env.Identifier;
 import lang.grammar.Grammar;
 import lang.grammar.GForm;
 import lang.grammar.GMatch;
@@ -288,12 +289,10 @@ public interface Parser {
                         yield Result.ok(new ASTNode.Stmt.Import(
                                 qualifier,
                                 Optional.of(aliasResult.unwrap()),
-                                MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
+                                MetaData.of(lineChar)));
                     }
-                    case false -> Result.ok(new ASTNode.Stmt.Import(
-                            qualifier,
-                            Optional.empty(),
-                            MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
+                    case false ->
+                            Result.ok(new ASTNode.Stmt.Import(qualifier, Optional.empty(), MetaData.of(lineChar)));
                 };
             };
         }
@@ -325,22 +324,17 @@ public interface Parser {
             if (modifiersResult.isErr()) { return modifiersResult.castErr(); }
 
             // ::= '='
-            if (
-
-                    consume(TokenType.Syntactic.Equal).
-
-                            isErr()) { return consume(TokenType.Syntactic.Equal).castErr(); }
+            if (consume(TokenType.Syntactic.Equal).isErr()) { return consume(TokenType.Syntactic.Equal).castErr(); }
 
             // ::= Expr
             var assignmentResult = parseExpression(letStatement.expr());
             if (assignmentResult.isErr()) { return assignmentResult.castErr(); }
 
             return Result.ok(new ASTNode.Stmt.Let(
-                    identifier,
+                    lang.env.Identifier.of(identifier),
                     modifiersResult.unwrap(),
                     assignmentResult.unwrap(),
-                    MetaData.ofUnresolved(lineChar,
-                            typeResult.unwrap()))
+                    MetaData.of(lineChar))
             );
         }
 
@@ -362,9 +356,9 @@ public interface Parser {
             if (assignmentResult.isErr()) { return assignmentResult.castErr(); }
 
             return Result.ok(new ASTNode.Stmt.Assign(
-                    identifier,
+                    lang.env.Identifier.of(identifier),
                     assignmentResult.unwrap(),
-                    MetaData.ofUnresolved(lineChar, LangType.UNDEFINED))
+                    MetaData.of(lineChar))
             );
         }
 
@@ -392,7 +386,7 @@ public interface Parser {
             // ::= '}'
             if (consumeRightBrace().isErr()) { return consumeRightBrace().castErr(); }
 
-            return Result.ok(new ASTNode.Expr.B(contents, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
+            return Result.ok(new ASTNode.Expr.B(contents, MetaData.of(lineChar)));
         }
 
         private Result<ASTNode.Expr, CError> parseCondExpression(GForm.Expr.Cond condExpression) {
@@ -412,11 +406,7 @@ public interface Parser {
             // ::= ')'
             if (consumeRightParen().isErr()) { return consumeRightParen().castErr(); }
 
-            return Result.ok(new ASTNode.Expr.P(
-                    predicateResult.unwrap(),
-                    predicateFormResult.unwrap(),
-                    MetaData.ofUnresolved(lineChar, LangType.UNDEFINED))
-            );
+            return Result.ok(new ASTNode.Expr.P(predicateResult.unwrap(), predicateFormResult.unwrap(), MetaData.of(lineChar)));
         }
 
 
@@ -450,11 +440,7 @@ public interface Parser {
                 }
             } else { elseExpr = Optional.empty(); }
 
-            return Result.ok(new ASTNode.Expr.PForm(
-                    thenExpr,
-                    elseExpr,
-                    MetaData.ofUnresolved(lineChar, LangType.UNDEFINED))
-            );
+            return Result.ok(new ASTNode.Expr.PForm(thenExpr, elseExpr, MetaData.of(lineChar)));
         }
 
         //::=  [ NamespaceAccess ] [ AccessChain ]
@@ -474,7 +460,7 @@ public interface Parser {
             if (accessChainResult.isErr()) { return accessChainResult.castErr(); }
             accesses.addAll(accessChainResult.unwrap());
 
-            return Result.ok(new ASTNode.Expr.M(accesses, MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)));
+            return Result.ok(new ASTNode.Expr.M(accesses, MetaData.of(lineChar)));
         }
 
         // ::= '(' Expr | Operation { Expr }
@@ -496,11 +482,7 @@ public interface Parser {
                     var operandsResult = parseOperands(sExpression.operands());
                     if (operandsResult.isErr()) yield operandsResult.castErr();
 
-                    yield Result.ok(new ASTNode.Expr.S(
-                            expressionResult.unwrap(),
-                            operandsResult.unwrap(),
-                            MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)
-                    ));
+                    yield Result.ok(new ASTNode.Expr.S(expressionResult.unwrap(), operandsResult.unwrap(), MetaData.of(lineChar)));
                 }
 
                 case GForm.Operation.Op op -> {
@@ -510,11 +492,7 @@ public interface Parser {
                     var operandsResult = parseOperands(sExpression.operands());
                     if (operandsResult.isErr()) yield operandsResult.castErr();
 
-                    yield Result.ok(new ASTNode.Expr.O(
-                            opResult.unwrap(),
-                            operandsResult.unwrap(),
-                            MetaData.ofUnresolved(lineChar, LangType.UNDEFINED)
-                    ));
+                    yield Result.ok(new ASTNode.Expr.O(opResult.unwrap(), operandsResult.unwrap(), MetaData.of(lineChar)));
                 }
             };
 
@@ -539,21 +517,21 @@ public interface Parser {
             Token token = tokenResult.unwrap();
             return switch (token) {
                 case Token(TokenType.Literal lit, _, _, _) when lit == TokenType.Literal.True ->
-                        Result.ok(new ASTNode.Expr.V(new ASTNode.Value.Bool(true), MetaData.ofResolved(lineChar, LangType.BOOL)));
+                        Result.ok(new ASTNode.Expr.V(new ASTNode.Value.Bool(true), MetaData.of(lineChar)));
                 case Token(TokenType.Literal lit, _, _, _) when lit == TokenType.Literal.False ->
-                        Result.ok(new ASTNode.Expr.V(new ASTNode.Value.Bool(false), MetaData.ofResolved(lineChar, LangType.BOOL)));
+                        Result.ok(new ASTNode.Expr.V(new ASTNode.Value.Bool(false), MetaData.of(lineChar)));
 
                 case Token(TokenType.Literal lit, TokenData.FloatData fd, _, _) when lit == TokenType.Literal.Float ->
-                        Result.ok(new ASTNode.Expr.V(new ASTNode.Value.F64(fd.data()), MetaData.ofResolved(lineChar, LangType.F64)));
+                        Result.ok(new ASTNode.Expr.V(new ASTNode.Value.F64(fd.data()), MetaData.of(lineChar)));
 
                 case Token(TokenType.Literal lit, TokenData.IntegerData id, _, _) when lit == TokenType.Literal.Integer ->
-                        Result.ok(new ASTNode.Expr.V(new ASTNode.Value.F64(id.data()), MetaData.ofResolved(lineChar, LangType.I64)));
+                        Result.ok(new ASTNode.Expr.V(new ASTNode.Value.F64(id.data()), MetaData.of(lineChar)));
 
                 case Token(TokenType.Literal lit, TokenData.StringData id, _, _) when lit == TokenType.Literal.Identifier ->
-                        Result.ok(new ASTNode.Expr.V(new ASTNode.Value.Identifier(id.data()), MetaData.ofResolved(lineChar, LangType.UNDEFINED)));
+                        Result.ok(new ASTNode.Expr.V(new ASTNode.Value.Identifier(lang.env.Identifier.of(id.data())), MetaData.of(lineChar)));
 
                 case Token(TokenType.Literal lit, TokenData.StringData id, _, _) when lit == TokenType.Literal.Nil ->
-                        Result.ok(new ASTNode.Expr.V(new ASTNode.Value.Nil(), MetaData.ofResolved(lineChar, LangType.NIL)));
+                        Result.ok(new ASTNode.Expr.V(new ASTNode.Value.Nil(), MetaData.of(lineChar)));
 
                 default -> Result.err(ParseError.expected(token, "Value Expression"));
             };
@@ -578,23 +556,24 @@ public interface Parser {
             if (consume(TokenType.LAMBDA_ARROW).isErr()) { return consume(TokenType.LAMBDA_ARROW).castErr(); }
 
             // ::= [ ':' Type ]
-            Result<LangType, CError> typeResult = lambdaExpression.hasType()
+            Result<LangType, CError> rtnType = lambdaExpression.hasType()
                     ? parseType(true)
                     : Result.ok(LangType.UNDEFINED);
-            if (typeResult.isErr()) { return typeResult.castErr(); }
+            if (rtnType.isErr()) { return rtnType.castErr(); }
 
             // ::= '|' { Parameter } '|' Expr
-            var lambdaResult = parseLambdaFormExpression(lambdaExpression.form());
-            if (lambdaResult.isErr()) { return lambdaResult.castErr(); }
+            var lambdaForm = parseLambdaFormExpression(lambdaExpression.form());
+            if (lambdaForm.isErr()) { return lambdaForm.castErr(); }
 
             // ::= ')'
             if (consumeRightParen().isErr()) { return consumeRightParen().castErr(); }
 
             return Result.ok(new ASTNode.Expr.L(
-                    lambdaResult.unwrap().parameters(),
-                    lambdaResult.unwrap().body(),
+                    lambdaForm.unwrap().parameters(),
+                    rtnType.unwrap(),
+                    lambdaForm.unwrap().body(),
                     false,
-                    MetaData.ofUnresolved(lineChar, typeResult.unwrap())
+                    MetaData.of(lineChar)
             ));
         }
 
@@ -619,9 +598,10 @@ public interface Parser {
 
             return Result.ok(new ASTNode.Expr.L(
                     parametersResult.unwrap(),
+                    LangType.UNDEFINED,
                     exprResult.unwrap(),
                     true,
-                    MetaData.ofUnresolved(lineChar, LangType.UNDEFINED))
+                    MetaData.of(lineChar))
             );
         }
 
@@ -781,7 +761,8 @@ public interface Parser {
                             case Result.Ok<Token, CError> _ -> {
                                 switch (parseIdentifier()) {
                                     case Result.Err<String, CError> err -> { return err.castErr(); }
-                                    case Result.Ok(String id) -> accesses.add(new ASTNode.Access.Identifier(id));
+                                    case Result.Ok(String id) ->
+                                            accesses.add(new ASTNode.Access.Identifier(Identifier.of(id)));
                                 }
                             }
                         }
@@ -793,7 +774,7 @@ public interface Parser {
                                 switch (parseIdentifier()) {
                                     case Result.Err<String, CError> err -> { return err.castErr(); }
                                     case Result.Ok(String identifier) ->
-                                            accesses.add(new ASTNode.Access.Identifier(identifier));
+                                            accesses.add(new ASTNode.Access.Identifier(Identifier.of(identifier)));
                                 }
                             }
                         }
@@ -804,7 +785,8 @@ public interface Parser {
                         var typeIdentifier = parseIdentifier();
                         switch (typeIdentifier) {
                             case Result.Err<String, CError> err -> { return err.castErr(); }
-                            case Result.Ok(String identifier) -> accesses.add(new ASTNode.Access.Type((identifier)));
+                            case Result.Ok(String identifier) ->
+                                    accesses.add(new ASTNode.Access.Type((Identifier.of(identifier))));
                         }
                     }
 
@@ -825,7 +807,7 @@ public interface Parser {
                                                 if (consumeRightBracket().isErr()) {
                                                     return consumeRightBracket().castErr();
                                                 }
-                                                accesses.add(new ASTNode.Access.FuncCall(identifier, args));
+                                                accesses.add(new ASTNode.Access.FuncCall(Identifier.of(identifier), args));
                                             }
                                         }
                                     }

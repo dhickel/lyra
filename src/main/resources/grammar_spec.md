@@ -1,11 +1,11 @@
 ```EBNF 
 
-Identifier ::= [a-zA-Z_][a-zA-Z0-9_?-]*;
+SymbolRef ::= [a-zA-Z_][a-zA-Z0-9_?-]*;
 Value ::= Number | Lambda | Array | Object | String | Nil | Bool;
 Operation ::= '+' | '-' | '*' | '/' | '^' | '%' | '==' | 'and' | 'or' | '!=' | 'eq?' | '!eq?'
 | 'eqt?' | '!eqt?' | 'eqv?' | '!eqv?' | 'nor' | 'nand' | 'xnor' | 'not' | '>' | '<' | '<=' | '>='
 
-Modifier ::= '@' Identifier;
+Modifier ::= '@' SymbolRef;
 
 Number ::= Integer | Float;
 Integer ::= I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64;
@@ -19,7 +19,7 @@ String ::= String;
 Nil ::= '()' | '#Nil';
 Bool ::=  '#True' | '#False';
 
-Type ::= Identifier | 'Fn<' Type* ';' Type '>' | 'Array<' Type '>';
+Type ::= SymbolRef | 'Fn<' Type* ';' Type '>' | 'Array<' Type '>';
 
 Variant := Type Where Type<+Type>;
 Sequence ::= Expr Where Type<Sequence>;
@@ -31,11 +31,11 @@ Range ::= [Number] '..' [ '=' ] [Number] [(':' Number)];
 Expr ::= SExpr | FExpr | VExpr | LambdaExpr | BExpr | CondExpr;
 
 Argument ::= { Modifier } Expr;
-Parameter ::={ Modifier } Identifier [(':' Type)];
+Parameter ::={ Modifier } SymbolRef [(':' Type)];
 
-NamespaceAccess ::= Identifier '->';
-FieldAccess ::= ':.' Identifier;
-1MethodAccess ::= '::' Identifier;
+NamespaceAccess ::= SymbolRef '->';
+FieldAccess ::= ':.' SymbolRef;
+1MethodAccess ::= '::' SymbolRef;
 MethodCall ::= MethodAccess FCall;
 MemberAccessChain ::= ((FieldAccess | MethodCall)*  [MethodAccess])+;
 NameSpaceChain ::= { NameSpaceAccess }- ;
@@ -43,9 +43,9 @@ NameSpaceChain ::= { NameSpaceAccess }- ;
 FCall ::=  '[' Argument* ']';
 
 LambdaExpr ::= '(' '=>' [Type] LambdaForm ')' | '(' LambdaForm ')';
-VExpr ::= Identifier | Value;
+VExpr ::= SymbolRef | Value;
 SExpr ::= '(' Expr | Operation  ({ Expr } | [ PredicateForm ]) ')';
-FExpr ::= ([NamespaceAccess] [ Identifier ] [MemberAccessChain])  ;
+FExpr ::= ([NamespaceAccess] [ SymbolRef ] [MemberAccessChain])  ;
 BlockExpr ::= '{'  { Expr | Stmnt } '}';
 BExpr ::= Match | Iter;
 
@@ -64,6 +64,6 @@ LambdaForm ::= BoundForm Expr;
 
 Stmnt ::= LetStmnt | AssignStmnt;
 
-LetStmnt ::= 'let' Identifier [(':' Type)] Modifier* '=' Expr;
-AssignStmnt ::= Identifier ':=' Expr;
+LetStmnt ::= 'let' SymbolRef [(':' Type)] Modifier* '=' Expr;
+AssignStmnt ::= SymbolRef ':=' Expr;
 ```

@@ -2,84 +2,23 @@ package lang.ast;
 
 import lang.LangType;
 import lang.LineChar;
-import lang.types.TypeConversion;
-import lang.types.TypeId;
+import lang.env.TypeRef;
+
+import java.util.Optional;
 
 public class MetaData {
-    private final LineChar lineChar;
-    private ResolutionState resolutionState;
-    private TypeConversion typeConversion;
+    private LineChar lineChar;
+    private TypeRef typeRef = null;
 
-    MetaData(LineChar lineChar, ResolutionState resolutionState) {
+    public MetaData(LineChar lineChar) {
         this.lineChar = lineChar;
-        this.resolutionState = resolutionState;
-        this.typeConversion = TypeConversion.none();
     }
 
-    public LineChar lineChar() { return lineChar; }
+    public static MetaData of(LineChar lineChar) { return new MetaData(lineChar); }
 
-    public ResolutionState resolutionState() { return resolutionState; }
-    
-    public TypeConversion typeConversion() { return typeConversion; }
+    public boolean isTypeResolved() { return typeRef != null && typeRef.isResolved(); }
 
-    public static MetaData ofUnresolved(LineChar lineChar, LangType type) {
-        return new MetaData(lineChar, new ResolutionState.Unresolved(type));
-    }
+    public Optional<TypeRef> getTypeRef() { return typeRef == null ? Optional.empty() : Optional.of(typeRef); }
 
-    public static MetaData ofResolved(LineChar lineChar, LangType type) {
-        return new MetaData(lineChar, new ResolutionState.Resolved(type, null));
-    }
-    
-    public static MetaData ofResolved(LineChar lineChar, LangType type, TypeId typeId) {
-        return new MetaData(lineChar, new ResolutionState.Resolved(type, typeId));
-    }
-
-    public void setResolved(LangType type) {
-        if (!(resolutionState instanceof ResolutionState.Unresolved)) {
-            throw new IllegalStateException("Error<Internal>: Type already resolved");
-        }
-
-        if (type != LangType.UNDEFINED
-            && (type.equals(resolutionState.type()) || resolutionState.type() == LangType.UNDEFINED)) {
-            resolutionState = new ResolutionState.Resolved(type, null);
-        }
-    }
-    
-    public void setResolved(LangType type, TypeId typeId) {
-        if (!(resolutionState instanceof ResolutionState.Unresolved)) {
-            throw new IllegalStateException("Error<Internal>: Type already resolved");
-        }
-
-        if (type != LangType.UNDEFINED
-            && (type.equals(resolutionState.type()) || resolutionState.type() == LangType.UNDEFINED)) {
-            resolutionState = new ResolutionState.Resolved(type, typeId);
-        }
-    }
-    
-    public void setTypeConversion(TypeConversion conversion) {
-        this.typeConversion = conversion;
-    }
-    
-    public boolean isResolved() {
-        return resolutionState instanceof ResolutionState.Resolved;
-    }
-
-
-    public sealed interface ResolutionState {
-        LangType type();
-
-        record Resolved(LangType type, TypeId typeId) implements ResolutionState { }
-
-        record Unresolved(LangType type) implements ResolutionState { }
-
-    }
-
-    @Override
-    public String toString() {
-        return "MetaData{" +
-               "lineChar=" + lineChar +
-               ", resolutionState=" + resolutionState +
-               ", typeConversion=" + typeConversion +
-               '}';
-    }
+    public void setTypeRef(TypeRef typeRef) { this.typeRef = typeRef; }
 }

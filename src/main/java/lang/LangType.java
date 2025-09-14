@@ -7,8 +7,6 @@ import java.util.List;
 
 public sealed interface LangType {
     LangType UNDEFINED = new Undefined();
-    Primitive I8 = new Primitive.I8();
-    Primitive I16 = new Primitive.I16();
     Primitive I32 = new Primitive.I32();
     Primitive I64 = new Primitive.I64();
     Primitive F32 = new Primitive.F32();
@@ -17,8 +15,9 @@ public sealed interface LangType {
     Primitive NIL = new Primitive.Nil();
 
     List<Primitive> allPrimitives = List.of(
-            LangType.I8, LangType.I16, LangType.I32, LangType.I64,
-            LangType.F32, LangType.F64, LangType.BOOL, LangType.NIL
+            LangType.I32, LangType.I64,
+            LangType.F32, LangType.F64,
+            LangType.BOOL, LangType.NIL
     );
 
     record Undefined() implements LangType { }
@@ -40,11 +39,17 @@ public sealed interface LangType {
 
 
     sealed interface Primitive extends LangType {
+        default int getPrecedence() {
+            return switch (this) {
+                case Nil nil -> 0;
+                case Bool bool -> 1;
+                case I32 i32 -> 3;
+                case I64 i64 -> 4;
+                case F32 f32 -> 5;
+                case F64 f64 -> 6;
+            };
+        }
 
-
-        record I8() implements Primitive { }
-
-        record I16() implements Primitive { }
 
         record I32() implements Primitive { }
 

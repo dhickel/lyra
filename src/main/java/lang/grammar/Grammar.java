@@ -83,7 +83,6 @@ public class Grammar {
 
     // Note: Always check for existing token(s) before calling
 
-
     public static Result<GMatch, CError> findNextMatch(Parser p) {
         return isStatement(p)
                 .flatMap((GMatch match) -> match.isFound()
@@ -96,7 +95,6 @@ public class Grammar {
                 .orElse(() -> Result.err(
                         GrammarError.expected(p.peek(), "Statement or Expression")));
     }
-
 
 
 

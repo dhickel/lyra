@@ -43,6 +43,10 @@ public class Namespace {
         this.compModule.addUnit(unit);
     }
 
+    public Compiler.Module getCompModule() {
+        return this.compModule;
+    }
+
 
     public List<Namespace> children() { return children; }
 

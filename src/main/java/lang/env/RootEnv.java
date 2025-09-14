@@ -8,17 +8,16 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Stream;
 
-public class Environment {
+public class RootEnv {
     private Namespace rootNamespace;
     private final List<Namespace> allNamespaces;
     private int nextNamespaceId;
 
-    public Environment() {
+    public RootEnv() {
         this.allNamespaces = new ArrayList<>();
         this.nextNamespaceId = 0;
         this.rootNamespace = new Namespace(
@@ -32,6 +31,9 @@ public class Environment {
     }
 
 
+
+
+
     public Result<Void, CError> compileModulesWith(Compiler.ModuleTransform func) {
         List<Result<Void, CError>> results = allNamespaces.stream()
                 .map(n -> n.applyModuleTransform(func))
@@ -39,16 +41,22 @@ public class Environment {
 
         return results.stream().allMatch(Result::isOk)
                 ? Result.okVoid()
-                : results.stream().filter(Result::isErr).findFirst().get();
+                : results.stream().filter(Result::isErr).findFirst().get(); // We know it's there
     }
 
     public void addTextUnitToGlobalNS(Compiler.Unit unit) {
         rootNamespace.addUnit(unit);
     }
 
+    public ModuleEnv getNewModuleEnv(int nsId) {
+        var ns = allNamespaces.get(nsId);
+        return new ModuleEnv(ns, this::lookupQualifier, rootNamespace.symbolTable()::lookup);
 
-    public Optional<Namespace> lookupQualifier(String qualifier) {
-        return recursiveNSLookUp(Arrays.asList(qualifier.split("\\.")), rootNamespace);
+    }
+
+
+    public Optional<Namespace> lookupQualifier(List<String> qualifier) {
+        return recursiveNSLookUp(qualifier, rootNamespace);
     }
 
     private Optional<Namespace> recursiveNSLookUp(List<String> path, Namespace current) {
@@ -91,7 +99,7 @@ public class Environment {
         }
     }
 
-    private record DirectoryContents(List<Path> files, List<Path> directories) {}
+    private record DirectoryContents(List<Path> files, List<Path> directories) { }
 
     private DirectoryContents listDirectoryContents(Path dir) throws IOException {
         List<Path> files = new ArrayList<>();
@@ -103,7 +111,6 @@ public class Environment {
                 else if (Files.isRegularFile(p)) files.add(p);
             });
         }
-
         return new DirectoryContents(files, directories);
     }
 
