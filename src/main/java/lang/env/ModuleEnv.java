@@ -12,12 +12,14 @@ import java.util.Optional;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
+import compile.resolve.NsScope;
+
 public class ModuleEnv {
     private int scopeCounter = 0;
-    private IntList scopeStack = new IntArrayList(20);
-    private Namespace namespace;
-    private Function<List<String>, Optional<Namespace>> lookupNS;
-    private BiFunction<Integer, String, Result<Optional<SymbolRef>, ResolutionError>> lookupGlobal;
+    private final IntList scopeStack = new IntArrayList(20);
+    private final Namespace namespace;
+    private final Function<List<String>, Optional<Namespace>> lookupNS;
+    private final BiFunction<Integer, String, Result<Optional<SymbolRef>, ResolutionError>> lookupGlobal;
 
     public ModuleEnv(
             Namespace namespace,
@@ -27,9 +29,36 @@ public class ModuleEnv {
         this.namespace = namespace;
         this.lookupNS = nsLookupFunc;
         this.lookupGlobal = globalLookupFunc;
+        // Start with the global scope of the namespace
+        scopeStack.add(0);
     }
 
     public Result<List<ASTNode>, CError> getExpressions(){
         return namespace.getCompModule().getRootExpressions();
+    }
+
+    public void enterScope() {
+        scopeCounter++;
+        scopeStack.add(scopeCounter);
+    }
+
+    public void exitScope() {
+        scopeStack.removeAtIndex(scopeStack.size() - 1);
+    }
+
+    public int getCurrentScope() {
+        return scopeStack.getLast();
+    }
+
+    public NsScope getCurrentNsScope() {
+        return NsScope.of(namespace.id(), getCurrentScope());
+    }
+
+    public Result<Void, CError> define(String identifier, SymbolRef.SymbolData symbolData) {
+        return namespace.symbolTable().define(getCurrentScope(), identifier, symbolData).castErr();
+    }
+
+    public Optional<SymbolRef> lookup(String identifier) {
+        return namespace.symbolTable().lookup(scopeStack, identifier);
     }
 }
