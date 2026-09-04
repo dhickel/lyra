@@ -32,6 +32,7 @@
         <junit.version>5.11.0</junit.version>
         <jmh.version>1.37</jmh.version>
 
+        <build-helper-maven-plugin.version>3.6.1</build-helper-maven-plugin.version>
         <maven-clean-plugin.version>3.4.1</maven-clean-plugin.version>
         <maven-compiler-plugin.version>3.14.1</maven-compiler-plugin.version>
         <maven-dependency-plugin.version>3.9.0</maven-dependency-plugin.version>

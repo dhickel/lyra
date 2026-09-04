@@ -1,0 +1,20 @@
+{
+  "schema": "lyra.phase23.gates.v1",
+  "latency": {
+    "coreEquivalentMaximumRatio": 3.0,
+    "selfTailEquivalentMaximumRatio": 5.0,
+    "exactHandleEquivalentMaximumRatio": 15.0,
+    "facadeEquivalentMaximumRatio": 15.0
+  },
+  "allocation": {
+    "nonAllocatingMaximumBytesPerOperation": 1.0,
+    "semanticAggregateEquivalentMaximumRatio": 4.0,
+    "closureMaximumBytesPerOperation": 2048.0,
+    "expectedFailureMaximumBytesPerOperation": 4096.0
+  },
+  "footprint": {
+    "maximumEmittedFixtureClasses": 32,
+    "coldGeneratedLoadAndCallMaximumNanoseconds": 10000000.0,
+    "classLoadingAndMetaspace": "evidence-only-whole-process"
+  }
+}

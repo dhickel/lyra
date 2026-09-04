@@ -1481,20 +1481,31 @@ final class JvmBytecodeEmitter {
                 returnPhysicalDescriptor(member.descriptor().substring(member.descriptor().indexOf(')') + 1));
                 return;
             }
+            // The state stores only compiler-emitted or setter-authenticated
+            // closures.  The facade still checks lifecycle before loading the
+            // state, while the exact interface invocation avoids reparsing the
+            // signature and re-authenticating the same closure on every typed
+            // Java call.
             loadFacadeState();
             emitStateFunction(facadeStateDeclaration(export));
-            loadFacadeState();
-            code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
-                    "$lyra$closureAuthority",
-                    method("()L" + RUNTIME + "LyraClosureAuthority;"));
-            code.ldc(signature.canonicalLyraSignature());
-            code.invokestatic(CD_SIGNATURE, "parse", method(
-                    "(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
-            code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "requireAuthenticated", method(
-                    "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L" + RUNTIME
-                            + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
-            code.checkcast(cd(owner.plan.functionInterfaces().get(
-                    function.canonicalSpelling())));
+            if (export.valueType().isNilable()) {
+                // A nullable function has a legal null invocation failure;
+                // retain the authenticated boundary so it reports LYR-LINK
+                // rather than exposing a JVM NullPointerException.  The
+                // non-nullable primitive hot path above remains allocation-free.
+                loadFacadeState();
+                code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
+                        "$lyra$closureAuthority",
+                        method("()L" + RUNTIME + "LyraClosureAuthority;"));
+                code.ldc(signature.canonicalLyraSignature());
+                code.invokestatic(CD_SIGNATURE, "parse", method(
+                        "(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+                code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "requireAuthenticated", method(
+                        "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L" + RUNTIME
+                                + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
+                code.checkcast(cd(owner.plan.functionInterfaces().get(
+                        function.canonicalSpelling())));
+            }
             for (int index = 0; index < function.arity(); index++) {
                 emitParameterFromFacade(index, function.parameterType(index), signature.parameters().get(index));
             }
