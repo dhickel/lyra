@@ -435,6 +435,12 @@ final class JvmAbiParity {
                 if (lambda.ownerDeclaration().filter(link.from()::equals).isEmpty()) {
                     continue;
                 }
+                IrDeclaration targetDeclaration = declarations.get(link.to());
+                if (targetDeclaration != null
+                        && targetDeclaration.kind()
+                        == io.mindspice.lyra.compiler.semantic.DeclarationKind.INTRINSIC_EXPORT) {
+                    continue;
+                }
                 IrLambda target = lambdasByOwner.get(link.to());
                 addExpectedDependency(dependencies,
                         target == null ? null : plan.closureClasses().get(target.id()),
@@ -446,6 +452,27 @@ final class JvmAbiParity {
                 addExpectedDependency(dependencies, plan.closureClasses().get(lambda.id()),
                         GeneratedDependencyKind.RECURSIVE_FUNCTION_LINKAGE, false);
             }
+        }
+
+        for (IrDeclaration declaration : ir.declarations().stream()
+                .filter(value -> value.kind()
+                        == io.mindspice.lyra.compiler.semantic.DeclarationKind.INTRINSIC_EXPORT)
+                .toList()) {
+            Set<DependencyIdentity> dependencies = expectedFor(expected,
+                    plan.intrinsicFunctionClasses().get(declaration.id()));
+            if (dependencies == null || declaration.contract().isEmpty()) {
+                continue;
+            }
+            LyraType intrinsicType = declaration.contract().orElseThrow().valueType().withoutQualifiers();
+            if (!(intrinsicType instanceof FunctionType function)) {
+                continue;
+            }
+            addExpectedDependency(dependencies,
+                    plan.functionInterfaces().get(function.canonicalSpelling()),
+                    GeneratedDependencyKind.CLOSURE_FUNCTION_INTERFACE, true);
+            addExpectedDependency(dependencies,
+                    plan.moduleStates().get(declaration.moduleId()),
+                    GeneratedDependencyKind.CLOSURE_MODULE_STATE, true);
         }
 
         for (var module : ir.modules()) {

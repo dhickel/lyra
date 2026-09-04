@@ -85,6 +85,7 @@ final class GeneratedTypePlanner {
         Map<ModuleId, String> moduleFacades = names.moduleFacades();
         Map<LambdaId, String> closureClasses = names.closureClasses();
         Map<DeclarationId, String> cellClasses = names.cellClasses();
+        Map<DeclarationId, String> intrinsicFunctionClasses = names.intrinsicFunctionClasses();
 
         Map<DeclarationId, IrDeclaration> declarations = ir.declarations().stream()
                 .collect(java.util.stream.Collectors.toUnmodifiableMap(
@@ -114,6 +115,8 @@ final class GeneratedTypePlanner {
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
         addClosureClasses(classes, ir, mapper, names, closureClasses, cellClasses, moduleStates,
                 captures, lambdasByOwner, declarations, rootDeclarations);
+        addIntrinsicClosureClasses(classes, ir, mapper, names, intrinsicFunctionClasses,
+                moduleStates);
         addModuleStateClasses(classes, ir, mapper, names, moduleStates, cellClasses,
                 declarations, cellsByDeclaration);
         addModuleFacadeClasses(classes, ir, names, moduleStates, moduleFacades,
@@ -123,7 +126,7 @@ final class GeneratedTypePlanner {
         GeneratedTypePlan result = new GeneratedTypePlan(basePackage, typeNames, ordered,
                 names.tupleNames(), names.functionNames(), closureClasses, cellClasses,
                 moduleStates, moduleFacades, new ArrayList<>(exportPlans.values()),
-                ir.initializationOrder());
+                ir.initializationOrder(), intrinsicFunctionClasses);
         // Descriptor/signature parity is a publication gate for the plan; no
         // later class-body phase may start from a partially audited shape.
         JvmAbiParity.require(ir, result);
@@ -484,6 +487,14 @@ final class GeneratedTypePlanner {
                 if (lambda.ownerDeclaration().filter(link.from()::equals).isEmpty()) {
                     continue;
                 }
+                IrDeclaration targetDeclaration = declarations.get(link.to());
+                if (targetDeclaration != null
+                        && targetDeclaration.kind() == io.mindspice.lyra.compiler.semantic.DeclarationKind.INTRINSIC_EXPORT) {
+                    // Intrinsic calls are lowered directly to the runtime and
+                    // therefore have no generated closure class or linkage
+                    // ordering edge.
+                    continue;
+                }
                 IrLambda target = lambdasByOwner.get(link.to());
                 if (target == null) {
                     throw new IllegalArgumentException(
@@ -510,6 +521,56 @@ final class GeneratedTypePlanner {
                     GeneratedClassKind.CLOSURE, "closure:" + moduleKey(lambda.moduleId())
                     + ":" + lambda.id().value() + ":" + lambda.signature().canonicalSpelling(),
                     Optional.of(lambda.moduleId()), true, false, List.of(functionName), List.of(),
+                    new ArrayList<>(dependencies), members));
+        }
+    }
+
+    private static void addIntrinsicClosureClasses(
+            List<GeneratedClassPlan> classes,
+            TypedIr ir,
+            JvmAbiMapper mapper,
+            NameAssignment names,
+            Map<DeclarationId, String> intrinsicFunctionClasses,
+            Map<ModuleId, String> moduleStates) {
+        for (IrDeclaration declaration : ir.declarations().stream()
+                .filter(value -> value.kind() == io.mindspice.lyra.compiler.semantic.DeclarationKind.INTRINSIC_EXPORT)
+                .sorted(Comparator.comparing(IrDeclaration::id)).toList()) {
+            if (declaration.contract().isEmpty()
+                    || !(declaration.contract().orElseThrow().valueType().withoutQualifiers()
+                    instanceof FunctionType function)) {
+                throw new IllegalArgumentException("intrinsic export is not a function: " + declaration.id());
+            }
+            String className = intrinsicFunctionClasses.get(declaration.id());
+            String functionName = names.functionNames().get(function.canonicalSpelling());
+            String stateName = moduleStates.get(declaration.moduleId());
+            if (className == null || functionName == null || stateName == null) {
+                throw new IllegalArgumentException("intrinsic export has incomplete generated type mappings: "
+                        + declaration.id());
+            }
+            JvmSignaturePlan signature = mapper.mapSignature(function.signature(),
+                    JvmAbiBoundary.JAVA_VISIBLE);
+            String stateDescriptor = "L" + stateName.replace('.', '/') + ";";
+            ArrayList<GeneratedMemberPlan> members = new ArrayList<>();
+            members.add(GeneratedMemberPlan.rawField(
+                    GeneratedMemberKind.CLOSURE_AUTHORITY_FIELD, "$lyra$authority",
+                    AUTHORITY_DESCRIPTOR));
+            members.add(GeneratedMemberPlan.rawField(
+                    GeneratedMemberKind.CLOSURE_STATE_FIELD, "$lyra$state", stateDescriptor));
+            members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.CLOSURE_CONSTRUCTOR,
+                    "<init>", "(" + AUTHORITY_DESCRIPTOR + stateDescriptor + ")V", false));
+            members.add(GeneratedMemberPlan.method(GeneratedMemberKind.CLOSURE_INVOKE,
+                    "invoke", signature, false, Optional.empty(), Optional.empty()));
+            LinkedHashSet<GeneratedClassDependency> dependencies = new LinkedHashSet<>();
+            dependencies.add(new GeneratedClassDependency(functionName,
+                    GeneratedDependencyKind.CLOSURE_FUNCTION_INTERFACE, true,
+                    "intrinsic function adapter implements its typed functional interface"));
+            dependencies.add(new GeneratedClassDependency(stateName,
+                    GeneratedDependencyKind.CLOSURE_MODULE_STATE, true,
+                    "intrinsic function adapter retains its module-state instance"));
+            classes.add(new GeneratedClassPlan(className, GeneratedClassKind.CLOSURE,
+                    "intrinsic-closure:" + moduleKey(declaration.moduleId()) + ":"
+                            + declaration.id().value() + ":" + function.canonicalSpelling(),
+                    Optional.of(declaration.moduleId()), true, false, List.of(functionName), List.of(),
                     new ArrayList<>(dependencies), members));
         }
     }
@@ -975,10 +1036,12 @@ final class GeneratedTypePlanner {
             IrDeclaration from = declarationsById.get(link.from());
             IrDeclaration to = declarationsById.get(link.to());
             var reference = referencesById.get(link.referenceId());
+            boolean intrinsicTarget = to != null
+                    && to.kind() == io.mindspice.lyra.compiler.semantic.DeclarationKind.INTRINSIC_EXPORT;
             if (from == null || to == null || reference == null
                     || !from.isFunction() || !to.isFunction()
                     || !lambdaOwners.containsKey(from.id())
-                    || !lambdaOwners.containsKey(to.id())
+                    || (!intrinsicTarget && !lambdaOwners.containsKey(to.id()))
                     || !reference.moduleId().equals(from.moduleId())) {
                 throw new IllegalArgumentException("function linkage has absent metadata: " + link);
             }
@@ -1118,6 +1181,23 @@ final class GeneratedTypePlanner {
                             moduleKey(lambda.moduleId()), Long.toString(lambda.id().value()),
                             lambda.signature().canonicalSpelling()).substring(0, 16)));
         }
+        for (IrDeclaration declaration : ir.declarations().stream()
+                .filter(value -> value.kind() == io.mindspice.lyra.compiler.semantic.DeclarationKind.INTRINSIC_EXPORT)
+                .sorted(Comparator.comparing(IrDeclaration::id)).toList()) {
+            FunctionType function = declaration.contract()
+                    .map(BindingContract::valueType)
+                    .map(LyraType::withoutQualifiers)
+                    .filter(FunctionType.class::isInstance)
+                    .map(FunctionType.class::cast)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "intrinsic export is not a function: " + declaration.id()));
+            requests.add(new NameRequest("intrinsic-closure:" + moduleKey(declaration.moduleId())
+                    + ":" + declaration.id().value() + ":" + function.canonicalSpelling(),
+                    basePackage + ".$lyra$closure$" + JvmStableHash.sha256(
+                            "LYRA-JVM-GENERATED-CLASS", "intrinsic-closure",
+                            moduleKey(declaration.moduleId()), Long.toString(declaration.id().value()),
+                            function.canonicalSpelling()).substring(0, 16)));
+        }
         for (ModuleId module : ir.modules().stream().map(IrModule::moduleId).sorted().toList()) {
             requests.add(new NameRequest("state:" + moduleKey(module),
                     basePackage + ".$lyra$state$" + JvmStableHash.sha256(
@@ -1136,6 +1216,21 @@ final class GeneratedTypePlanner {
             closures.put(lambda.id(), assigned.get("closure:" + moduleKey(lambda.moduleId())
                     + ":" + lambda.id().value() + ":" + lambda.signature().canonicalSpelling()));
         }
+        TreeMap<DeclarationId, String> intrinsicFunctions = new TreeMap<>();
+        for (IrDeclaration declaration : ir.declarations().stream()
+                .filter(value -> value.kind() == io.mindspice.lyra.compiler.semantic.DeclarationKind.INTRINSIC_EXPORT)
+                .sorted(Comparator.comparing(IrDeclaration::id)).toList()) {
+            FunctionType function = declaration.contract()
+                    .map(BindingContract::valueType)
+                    .map(LyraType::withoutQualifiers)
+                    .filter(FunctionType.class::isInstance)
+                    .map(FunctionType.class::cast)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "intrinsic export is not a function: " + declaration.id()));
+            intrinsicFunctions.put(declaration.id(), assigned.get("intrinsic-closure:"
+                    + moduleKey(declaration.moduleId()) + ":" + declaration.id().value() + ":"
+                    + function.canonicalSpelling()));
+        }
         TreeMap<DeclarationId, String> cells = new TreeMap<>();
         for (IrCell cell : ir.cells()) {
             cells.put(cell.declarationId(), assigned.get("cell:" + moduleKey(cell.moduleId())
@@ -1148,7 +1243,8 @@ final class GeneratedTypePlanner {
             states.put(module.moduleId(), assigned.get("state:" + moduleKey(module.moduleId())));
             facades.put(module.moduleId(), assigned.get("facade:" + moduleKey(module.moduleId())));
         }
-        return new NameAssignment(tupleNames, functionNames, closures, cells, states, facades);
+        return new NameAssignment(tupleNames, functionNames, closures, cells, intrinsicFunctions,
+                states, facades);
     }
 
     private static Map<String, String> assignNames(List<NameRequest> requests) {
@@ -1274,6 +1370,7 @@ final class GeneratedTypePlanner {
             Map<String, String> functionNames,
             Map<LambdaId, String> closureClasses,
             Map<DeclarationId, String> cellClasses,
+            Map<DeclarationId, String> intrinsicFunctionClasses,
             Map<ModuleId, String> moduleStates,
             Map<ModuleId, String> moduleFacades) {
         private NameAssignment {
@@ -1281,6 +1378,7 @@ final class GeneratedTypePlanner {
             functionNames = immutableStringMap(functionNames);
             closureClasses = Map.copyOf(closureClasses);
             cellClasses = Map.copyOf(cellClasses);
+            intrinsicFunctionClasses = Map.copyOf(intrinsicFunctionClasses);
             moduleStates = Map.copyOf(moduleStates);
             moduleFacades = Map.copyOf(moduleFacades);
         }

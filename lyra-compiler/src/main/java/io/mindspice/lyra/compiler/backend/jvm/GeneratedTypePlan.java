@@ -29,6 +29,7 @@ final class GeneratedTypePlan {
     private final Map<String, String> functionInterfaces;
     private final Map<LambdaId, String> closureClasses;
     private final Map<DeclarationId, String> cellClasses;
+    private final Map<DeclarationId, String> intrinsicFunctionClasses;
     private final Map<ModuleId, String> moduleStates;
     private final Map<ModuleId, String> moduleFacades;
     private final List<GeneratedExportPlan> exports;
@@ -48,7 +49,7 @@ final class GeneratedTypePlan {
             Map<ModuleId, String> moduleFacades,
             List<GeneratedExportPlan> exports) {
         this(basePackage, typeNames, classes, tupleClasses, functionInterfaces, closureClasses,
-                cellClasses, moduleStates, moduleFacades, exports, List.of());
+                cellClasses, moduleStates, moduleFacades, exports, List.of(), Map.of());
     }
 
     public GeneratedTypePlan(
@@ -63,6 +64,23 @@ final class GeneratedTypePlan {
             Map<ModuleId, String> moduleFacades,
             List<GeneratedExportPlan> exports,
             List<ModuleId> initializationOrder) {
+        this(basePackage, typeNames, classes, tupleClasses, functionInterfaces, closureClasses,
+                cellClasses, moduleStates, moduleFacades, exports, initializationOrder, Map.of());
+    }
+
+    public GeneratedTypePlan(
+            String basePackage,
+            JvmTypeNameTable typeNames,
+            List<GeneratedClassPlan> classes,
+            Map<String, String> tupleClasses,
+            Map<String, String> functionInterfaces,
+            Map<LambdaId, String> closureClasses,
+            Map<DeclarationId, String> cellClasses,
+            Map<ModuleId, String> moduleStates,
+            Map<ModuleId, String> moduleFacades,
+            List<GeneratedExportPlan> exports,
+            List<ModuleId> initializationOrder,
+            Map<DeclarationId, String> intrinsicFunctionClasses) {
         this.basePackage = Objects.requireNonNull(basePackage, "basePackage");
         this.typeNames = Objects.requireNonNull(typeNames, "typeNames");
         if (!this.basePackage.equals(typeNames.basePackage())) {
@@ -91,6 +109,8 @@ final class GeneratedTypePlan {
         this.functionInterfaces = sortedStringMap(functionInterfaces, "functionInterfaces");
         this.closureClasses = sortedMap(closureClasses, "closureClasses");
         this.cellClasses = sortedMap(cellClasses, "cellClasses");
+        this.intrinsicFunctionClasses = sortedMap(intrinsicFunctionClasses,
+                "intrinsicFunctionClasses");
         this.moduleStates = sortedMap(moduleStates, "moduleStates");
         this.moduleFacades = sortedMap(moduleFacades, "moduleFacades");
         if (!this.tupleClasses.equals(this.typeNames.tupleNames())
@@ -194,6 +214,10 @@ final class GeneratedTypePlan {
         return cellClasses;
     }
 
+    public Map<DeclarationId, String> intrinsicFunctionClasses() {
+        return intrinsicFunctionClasses;
+    }
+
     public Map<ModuleId, String> moduleStates() {
         return moduleStates;
     }
@@ -241,6 +265,7 @@ final class GeneratedTypePlan {
                 && functionInterfaces.equals(plan.functionInterfaces)
                 && closureClasses.equals(plan.closureClasses)
                 && cellClasses.equals(plan.cellClasses)
+                && intrinsicFunctionClasses.equals(plan.intrinsicFunctionClasses)
                 && moduleStates.equals(plan.moduleStates)
                 && moduleFacades.equals(plan.moduleFacades)
                 && exports.equals(plan.exports)
@@ -251,8 +276,8 @@ final class GeneratedTypePlan {
     @Override
     public int hashCode() {
         return Objects.hash(basePackage, typeNames, classes, tupleClasses, functionInterfaces,
-                closureClasses, cellClasses, moduleStates, moduleFacades, exports,
-                javaNames, initializationOrder);
+                closureClasses, cellClasses, intrinsicFunctionClasses, moduleStates,
+                moduleFacades, exports, javaNames, initializationOrder);
     }
 
     public String canonicalSpelling() {
@@ -260,6 +285,7 @@ final class GeneratedTypePlan {
                 + "|tuples=" + tupleClasses
                 + "|functions=" + functionInterfaces
                 + "|classes=" + classNames()
+                + "|intrinsicFunctions=" + intrinsicFunctionClasses
                 + "|exports=" + exports
                 + "|javaNames=" + javaNames
                 + "|initialization=" + initializationOrder;
@@ -278,7 +304,16 @@ final class GeneratedTypePlan {
         requireExactKindIndex(tupleClasses.values(), GeneratedClassKind.TUPLE_VALUE, "tupleClasses");
         requireExactKindIndex(functionInterfaces.values(), GeneratedClassKind.FUNCTION_INTERFACE,
                 "functionInterfaces");
-        requireExactKindIndex(closureClasses.values(), GeneratedClassKind.CLOSURE, "closureClasses");
+        Set<String> allClosureClasses = new java.util.TreeSet<>(closureClasses.values());
+        if (allClosureClasses.size() != closureClasses.size()) {
+            throw new IllegalArgumentException("closure indexes contain duplicate generated classes");
+        }
+        int closureIndexSize = allClosureClasses.size();
+        allClosureClasses.addAll(intrinsicFunctionClasses.values());
+        if (allClosureClasses.size() != closureIndexSize + intrinsicFunctionClasses.size()) {
+            throw new IllegalArgumentException("closure indexes contain duplicate generated classes");
+        }
+        requireExactKindIndex(allClosureClasses, GeneratedClassKind.CLOSURE, "closureClasses");
         requireExactKindIndex(cellClasses.values(), GeneratedClassKind.CELL, "cellClasses");
         requireExactKindIndex(moduleStates.values(), GeneratedClassKind.MODULE_STATE, "moduleStates");
         requireExactKindIndex(moduleFacades.values(), GeneratedClassKind.MODULE_FACADE, "moduleFacades");
@@ -319,6 +354,20 @@ final class GeneratedTypePlan {
                     + invoke.signature().orElseThrow().canonicalLyraSignature())) {
                 throw new IllegalArgumentException("closure class index does not identify its lambda: "
                         + entry.getKey());
+            }
+        }
+        for (Map.Entry<DeclarationId, String> entry : intrinsicFunctionClasses.entrySet()) {
+            GeneratedClassPlan closure = indexedClass(entry.getValue(), GeneratedClassKind.CLOSURE,
+                    "intrinsic function class");
+            GeneratedMemberPlan invoke = closure.members().stream()
+                    .filter(member -> member.kind() == GeneratedMemberKind.CLOSURE_INVOKE)
+                    .findFirst().orElseThrow();
+            if (closure.moduleId().isEmpty() || invoke.signature().isEmpty()
+                    || !closure.stableKey().equals("intrinsic-closure:"
+                    + moduleKey(closure.moduleId().orElseThrow()) + ":" + entry.getKey().value() + ":"
+                    + invoke.signature().orElseThrow().canonicalLyraSignature())) {
+                throw new IllegalArgumentException(
+                        "intrinsic function class index does not identify its declaration: " + entry.getKey());
             }
         }
         for (Map.Entry<DeclarationId, String> entry : cellClasses.entrySet()) {
@@ -496,6 +545,10 @@ final class GeneratedTypePlan {
         }
         for (Map.Entry<DeclarationId, String> entry : cellClasses.entrySet()) {
             requireKind(entry.getValue(), GeneratedClassKind.CELL, "cell class");
+        }
+        for (Map.Entry<DeclarationId, String> entry : intrinsicFunctionClasses.entrySet()) {
+            requireKind(entry.getValue(), GeneratedClassKind.CLOSURE,
+                    "intrinsic function class");
         }
     }
 
