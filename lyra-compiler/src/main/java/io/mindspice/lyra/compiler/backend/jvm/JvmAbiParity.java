@@ -3,6 +3,7 @@ package io.mindspice.lyra.compiler.backend.jvm;
 import io.mindspice.lyra.compiler.identity.CaptureId;
 import io.mindspice.lyra.compiler.identity.DeclarationId;
 import io.mindspice.lyra.compiler.identity.LambdaId;
+import io.mindspice.lyra.compiler.identity.ScopeId;
 import io.mindspice.lyra.compiler.ir.IrCapture;
 import io.mindspice.lyra.compiler.ir.IrCell;
 import io.mindspice.lyra.compiler.ir.IrDeclaration;
@@ -556,6 +557,17 @@ final class JvmAbiParity {
             List<String> differences) {
         Map<CaptureId, IrCapture> captures = ir.captures().stream()
                 .collect(java.util.stream.Collectors.toMap(IrCapture::id, value -> value));
+        Map<DeclarationId, IrDeclaration> declarations = ir.declarations().stream()
+                .collect(java.util.stream.Collectors.toMap(IrDeclaration::id, value -> value));
+        Map<ModuleId, ScopeId> rootScopes =
+                ir.modules().stream().collect(java.util.stream.Collectors.toUnmodifiableMap(
+                        io.mindspice.lyra.compiler.ir.IrModule::moduleId,
+                        io.mindspice.lyra.compiler.ir.IrModule::rootScope));
+        Set<DeclarationId> rootDeclarations = ir.declarations().stream()
+                .filter(declaration -> declaration.scopeId().equals(
+                        rootScopes.get(declaration.moduleId())))
+                .map(IrDeclaration::id)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
         for (IrLambda lambda : ir.lambdas()) {
             String className = plan.closureClasses().get(lambda.id());
             GeneratedClassPlan closure = className == null
@@ -580,7 +592,9 @@ final class JvmAbiParity {
                     continue;
                 }
                 String prefix = "$lyra$capture$" + captureId.value();
-                if (capture.isSharedCell()) {
+                boolean functionSlot = usesLocalFunctionSlot(
+                        capture, declarations, rootDeclarations);
+                if (capture.isSharedCell() || functionSlot) {
                     expectedCaptureNames.add(prefix);
                 } else {
                     JvmTypePlan expected = mapper.map(capture.contract().valueType(),
@@ -604,6 +618,18 @@ final class JvmAbiParity {
                 }
                 JvmTypePlan expected = mapper.map(capture.contract().valueType(),
                         JvmMappingContext.INTERNAL_CAPTURE);
+                if (functionSlot) {
+                    boolean present = expected.isSingleValue()
+                            && expected.physicalComponents().getFirst().isReference()
+                            && closure.members().stream().anyMatch(member ->
+                            member.kind() == GeneratedMemberKind.CLOSURE_CAPTURE_FIELD
+                                    && member.name().equals(prefix)
+                                    && member.descriptor().equals("[" + expected.descriptor()));
+                    if (!present) {
+                        differences.add("linked function closure capture mapping differs: " + captureId);
+                    }
+                    continue;
+                }
                 List<GeneratedMemberPlan> actual = closure.members().stream()
                         .filter(member -> member.name().equals(prefix)
                                 || member.name().equals(prefix + "$present")
@@ -628,6 +654,22 @@ final class JvmAbiParity {
                 differences.add("closure capture inventory differs: " + lambda.id());
             }
         }
+    }
+
+    private static boolean usesLocalFunctionSlot(
+            IrCapture capture,
+            Map<DeclarationId, IrDeclaration> declarations,
+            Set<DeclarationId> rootDeclarations) {
+        IrDeclaration declaration = declarations.get(capture.declarationId());
+        return !capture.isSharedCell()
+                && declaration != null
+                && !rootDeclarations.contains(declaration.id())
+                && declaration.signaturePredeclared()
+                && declaration.initializerLambda().isPresent()
+                && declaration.contract().map(io.mindspice.lyra.compiler.types.BindingContract::valueType)
+                .map(LyraType::withoutQualifiers)
+                .filter(FunctionType.class::isInstance)
+                .isPresent();
     }
 
     private static Set<DependencyIdentity> expectedFor(

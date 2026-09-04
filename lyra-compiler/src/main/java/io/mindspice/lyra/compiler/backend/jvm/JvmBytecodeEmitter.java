@@ -13,16 +13,20 @@ import io.mindspice.lyra.compiler.ir.IrConstantValue;
 import io.mindspice.lyra.compiler.ir.IrCell;
 import io.mindspice.lyra.compiler.ir.IrCheckKind;
 import io.mindspice.lyra.compiler.ir.IrDeclaration;
+import io.mindspice.lyra.compiler.ir.IrExport;
 import io.mindspice.lyra.compiler.ir.IrFailureSite;
+import io.mindspice.lyra.compiler.ir.IrImportBinding;
 import io.mindspice.lyra.compiler.ir.IrModule;
 import io.mindspice.lyra.compiler.ir.IrNode;
 import io.mindspice.lyra.compiler.ir.TypedIr;
 import io.mindspice.lyra.compiler.lex.TokenKind;
 import io.mindspice.lyra.compiler.semantic.AccessKind;
 import io.mindspice.lyra.compiler.semantic.DeclarationKind;
+import io.mindspice.lyra.compiler.semantic.ImportBindingKind;
 import io.mindspice.lyra.compiler.semantic.ReferenceKind;
 import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.source.SourceSpan;
+import io.mindspice.lyra.compiler.types.ArrayType;
 import io.mindspice.lyra.compiler.types.BindingContract;
 import io.mindspice.lyra.compiler.types.ConversionKind;
 import io.mindspice.lyra.compiler.types.ConversionStep;
@@ -31,6 +35,7 @@ import io.mindspice.lyra.compiler.types.FunctionType;
 import io.mindspice.lyra.compiler.types.LyraType;
 import io.mindspice.lyra.compiler.types.PrimitiveType;
 import io.mindspice.lyra.compiler.types.QualifiedType;
+import io.mindspice.lyra.compiler.types.TupleType;
 
 import java.lang.classfile.Annotation;
 import java.lang.classfile.ClassFile;
@@ -61,19 +66,19 @@ import java.util.TreeMap;
 import java.util.function.Consumer;
 
 /**
- * Direct Java 25 Class-File API emitter for the scalar/control Phase-15
- * subset.  It consumes a sealed typed IR and the already audited Phase-14
- * shape plan; it does not re-run semantic analysis or synthesize an ABI.
+ * Direct Java 25 Class-File API emitter for scalar/control, aggregate,
+ * function, and module semantics through Phase 16. It consumes a sealed typed
+ * IR and the audited immutable Phase-14 shape plan; it does not re-run semantic
+ * analysis or synthesize an ABI.
  *
- * <p>Arrays, tuples, imports, and multi-module execution remain explicit
- * Phase-16 inputs.  They are rejected before any class bytes are published.
- * Scalar values, typed function interfaces/closures, local/state storage,
- * checked arithmetic, control flow, and direct self-tail calls are emitted
- * here.</p>
+ * <p>Arrays, tuples, typed interfaces and closures, shared cells, recursive
+ * calls, module state/import linkage, and deterministic eager initialization
+ * are emitted in the same production walker.</p>
  */
 final class JvmBytecodeEmitter {
     private static final String RUNTIME = "io.mindspice.lyra.runtime.";
     private static final ClassDesc CD_OBJECT = ConstantDescs.CD_Object;
+    private static final ClassDesc CD_MODULE_ID = cd(RUNTIME + "ModuleId");
     private static final ClassDesc CD_OBJECTS = cd("java.util.Objects");
     private static final ClassDesc CD_STRING = ConstantDescs.CD_String;
     private static final ClassDesc CD_LIST = ConstantDescs.CD_List;
@@ -81,9 +86,12 @@ final class JvmBytecodeEmitter {
     private static final ClassDesc CD_CLOSURE = cd(RUNTIME + "LyraClosure");
     private static final ClassDesc CD_SIGNATURE = cd(RUNTIME + "LyraSignature");
     private static final ClassDesc CD_LIFECYCLE = cd(RUNTIME + "ModuleLifecycle");
+    private static final ClassDesc CD_LIFECYCLE_STATE = cd(RUNTIME + "LifecycleState");
     private static final ClassDesc CD_UNIT = cd(RUNTIME + "LyraUnit");
     private static final ClassDesc CD_FAILURE_CATEGORY = cd(RUNTIME + "LyraFailureCategory");
     private static final ClassDesc CD_RUNTIME_EXCEPTION = cd(RUNTIME + "LyraRuntimeException");
+    private static final ClassDesc CD_JAVA_RUNTIME_EXCEPTION = cd("java.lang.RuntimeException");
+    private static final ClassDesc CD_STACK_OVERFLOW = cd("java.lang.StackOverflowError");
     private static final ClassDesc CD_ARTIFACT_METADATA = cd(RUNTIME + "ArtifactMetadata");
     private static final ClassDesc CD_METADATA_READER = cd(RUNTIME + "ArtifactMetadataReader");
     private static final ClassDesc CD_RUNTIME_CLOSURE_SUPPORT = cd(RUNTIME + "LyraClosureSupport");
@@ -101,7 +109,7 @@ final class JvmBytecodeEmitter {
     private JvmBytecodeEmitter() {
     }
 
-    /** Emits all Phase-15-supported classes in the supplied deterministic plan order. */
+    /** Emits all supported classes in the supplied deterministic plan order. */
     static JvmBytecodeArtifact emit(TypedIr ir, GeneratedTypePlan plan) {
         TypedIr validated = Objects.requireNonNull(ir, "ir").requireValidated();
         Objects.requireNonNull(plan, "plan");
@@ -116,7 +124,7 @@ final class JvmBytecodeEmitter {
         return emitter.emit();
     }
 
-    /** Structured phase boundary for expected Phase-15 subset failures. */
+    /** Structured phase boundary for expected emission failures. */
     static PhaseResult<JvmBytecodeArtifact> emitPhase(TypedIr ir, GeneratedTypePlan plan) {
         Objects.requireNonNull(ir, "ir").requireValidated();
         try {
@@ -232,6 +240,7 @@ final class JvmBytecodeEmitter {
         private final Map<CaptureId, IrCapture> captures;
         private final Map<ModuleId, IrModule> modules;
         private final Map<DeclarationId, IrCell> cells;
+        private final Map<DeclarationId, io.mindspice.lyra.compiler.ir.IrImportBinding> imports;
         private final Map<FlowSiteId, IrFailureSite> failureSites;
         private final Map<String, byte[]> bytes = new LinkedHashMap<>();
         private final Map<String, String> descriptors = new LinkedHashMap<>();
@@ -255,149 +264,62 @@ final class JvmBytecodeEmitter {
             this.cells = ir.cells().stream()
                     .collect(java.util.stream.Collectors.toUnmodifiableMap(
                             IrCell::declarationId, value -> value));
+            this.imports = ir.imports().stream()
+                    .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                            io.mindspice.lyra.compiler.ir.IrImportBinding::declarationId, value -> value));
             this.failureSites = ir.failureSites().stream()
                     .collect(java.util.stream.Collectors.toUnmodifiableMap(
                             IrFailureSite::siteId, value -> value));
+        }
+
+        private boolean usesLocalFunctionSlot(IrCapture capture) {
+            IrDeclaration declaration = declarations.get(capture.declarationId());
+            IrModule declarationModule = declaration == null
+                    ? null : modules.get(declaration.moduleId());
+            return !capture.isSharedCell()
+                    && declaration != null
+                    && declarationModule != null
+                    && !declaration.scopeId().equals(declarationModule.rootScope())
+                    && declaration.signaturePredeclared()
+                    && declaration.initializerLambda().isPresent()
+                    && declaration.contract().map(BindingContract::valueType)
+                    .map(LyraType::withoutQualifiers)
+                    .filter(FunctionType.class::isInstance)
+                    .isPresent();
         }
 
         private void validateSupportedInput() {
             if (ir.modules().isEmpty()) {
                 throw unsupported(rootSpan(), "bytecode emission needs at least one module");
             }
-            if (ir.modules().size() != 1) {
-                throw unsupported(rootSpan(),
-                        "multi-module emission belongs to the later module backend");
-            }
-            if (!ir.imports().isEmpty()) {
-                throw unsupported(ir.imports().getFirst().importSpan(),
-                        "module imports are not part of the scalar/control emission slice");
-            }
-            if (!ir.captures().isEmpty()) {
-                throw unsupported(ir.captures().getFirst().span(),
-                        "capturing closures belong to the later function backend");
-            }
-            if (!ir.cells().isEmpty()) {
-                IrCell cell = ir.cells().getFirst();
-                IrDeclaration declaration = declarations.get(cell.declarationId());
-                throw unsupported(declaration == null ? rootSpan() : declaration.span(),
-                        "shared mutable cells belong to the later function backend");
-            }
-            for (var scc : ir.functionLinkage().components()) {
-                if (scc.recursive() && scc.declarations().size() > 1) {
-                    IrDeclaration first = declarations.get(scc.declarations().getFirst());
-                    throw unsupported(first == null ? rootSpan() : first.span(),
-                            "mutual recursion belongs to the later function backend");
-                }
+            if (ir.initializationPlan().hasCycles()
+                    || !ir.flowMetadata().eagerCycles().isEmpty()) {
+                throw invalidPlan(rootSpan(),
+                        "validated IR contains an eager initialization cycle");
             }
             for (var lambda : ir.lambdas()) {
-                DeclarationId owner = lambda.ownerDeclaration().orElseThrow(() ->
-                        unsupported(lambda.span(),
-                                "anonymous closure values belong to the later function backend"));
-                IrDeclaration declaration = declarations.get(owner);
-                IrModule lambdaModule = modules.get(lambda.moduleId());
-                if (declaration == null || lambdaModule == null
-                        || !declaration.scopeId().equals(lambdaModule.state().rootScope())) {
-                    throw unsupported(lambda.span(),
-                            "nested closure values belong to the later function backend");
+                if (!modules.containsKey(lambda.moduleId())) {
+                    throw invalidPlan(lambda.span(),
+                            "lambda module is absent from the generated module inventory");
                 }
-                validateSelfRecursion(lambda.body(), owner, true);
             }
             for (IrNode node : io.mindspice.lyra.compiler.ir.IrTraversal.preOrder(ir)) {
                 requireSupportedType(node.type(), node.span());
-                if (node instanceof IrNode.ArrayLiteral || node instanceof IrNode.TupleLiteral
-                        || node instanceof IrNode.IndexAccess) {
-                    throw unsupported(node.span(),
-                            "arrays, tuples, and indexing belong to the aggregate backend");
-                }
-                if (node instanceof IrNode.Access access) {
-                    if (access.accessKind() == AccessKind.MEMBER_VALUE
-                            && access.memberName().filter("length"::equals).isPresent()
-                            && access.receiver().orElseThrow().type().withoutQualifiers()
-                            != PrimitiveType.STRING) {
-                        throw unsupported(node.span(), "array length belongs to the aggregate backend");
-                    }
-                    if (access.accessKind() == AccessKind.MEMBER_VALUE
-                            && access.memberName().filter("length"::equals).isEmpty()) {
-                        throw unsupported(node.span(), "unsupported scalar member access");
-                    }
-                }
-                if (node instanceof IrNode.Rebinding rebinding
-                        && rebinding.route().steps().stream().anyMatch(step ->
-                        step.getClass().getSimpleName().contains("Array"))) {
-                    throw unsupported(node.span(), "aggregate mutation belongs to the later backend");
-                }
-                if (node instanceof IrNode.DirectCall call
-                        && call.targetModule().filter(module -> !module.equals(rootModuleId())).isPresent()) {
-                    throw unsupported(node.span(), "cross-module calls belong to the later module backend");
+                if (node instanceof IrNode.Access access
+                        && access.accessKind() == AccessKind.MEMBER_VALUE
+                        && access.memberName().filter(value -> !value.equals("length"))
+                        .isPresent()
+                        && access.tupleIndex().isEmpty()) {
+                    throw unsupported(node.span(), "unsupported scalar member access");
                 }
                 if (node instanceof IrNode.DirectCall call && call.receiver().isPresent()) {
                     throw unsupported(node.span(),
-                            "receiver-bound direct calls are unavailable in the scalar language slice");
+                            "receiver-bound direct calls are unavailable in the current language core");
                 }
             }
             for (IrDeclaration declaration : ir.declarations()) {
                 declaration.contract().ifPresent(contract ->
                         requireSupportedType(contract.valueType(), declaration.span()));
-                if (declaration.imported()) {
-                    throw unsupported(declaration.span(), "imports are not part of the scalar/control slice");
-                }
-            }
-            for (GeneratedClassPlan classPlan : plan.classes()) {
-                if (classPlan.kind() == GeneratedClassKind.TUPLE_VALUE) {
-                    throw unsupported(rootSpan(), "tuple class emission belongs to the aggregate backend");
-                }
-            }
-        }
-
-        private void validateSelfRecursion(IrNode node, DeclarationId owner, boolean tail) {
-            if (node instanceof IrNode.DirectCall call
-                    && call.targetDeclaration().filter(owner::equals).isPresent()) {
-                if (!tail) {
-                    throw unsupported(call.span(),
-                            "non-tail self recursion belongs to the later function backend");
-                }
-                for (IrNode argument : call.arguments()) {
-                    validateSelfRecursion(argument, owner, false);
-                }
-                return;
-            }
-            if (node instanceof IrNode.CallableCall call
-                    && call.target() instanceof IrNode.Reference reference
-                    && reference.targetDeclaration().filter(owner::equals).isPresent()) {
-                throw unsupported(call.span(),
-                        "callable self recursion belongs to the later function backend");
-            }
-            if (node instanceof IrNode.Sequence sequence) {
-                for (int index = 0; index < sequence.forms().size(); index++) {
-                    validateSelfRecursion(sequence.forms().get(index), owner,
-                            tail && index == sequence.forms().size() - 1);
-                }
-                return;
-            }
-            if (node instanceof IrNode.Block block) {
-                for (int index = 0; index < block.forms().size(); index++) {
-                    validateSelfRecursion(block.forms().get(index), owner,
-                            tail && index == block.forms().size() - 1);
-                }
-                return;
-            }
-            if (node instanceof IrNode.RuntimeCheck check) {
-                validateSelfRecursion(check.operand(), owner, tail);
-                return;
-            }
-            if (node instanceof IrNode.Branch branch) {
-                validateSelfRecursion(branch.predicate(), owner, false);
-                validateSelfRecursion(branch.thenBranch(), owner, tail);
-                branch.elseBranch().ifPresent(value -> validateSelfRecursion(value, owner, tail));
-                return;
-            }
-            if (node instanceof IrNode.Coalesce coalesce) {
-                validateSelfRecursion(coalesce.value(), owner, false);
-                validateSelfRecursion(coalesce.fallback(), owner, tail);
-                return;
-            }
-            for (IrNode child : node.childrenInEvaluationOrder()) {
-                validateSelfRecursion(child, owner, false);
             }
         }
 
@@ -406,14 +328,20 @@ final class JvmBytecodeEmitter {
             if (base instanceof PrimitiveType) {
                 return;
             }
+            if (base instanceof ArrayType array) {
+                requireSupportedType(array.elementType(), span);
+                return;
+            }
+            if (base instanceof TupleType tuple) {
+                tuple.memberTypes().forEach(member -> requireSupportedType(member, span));
+                return;
+            }
             if (base instanceof FunctionType function) {
-                for (LyraType parameter : function.parameterTypes()) {
-                    requireSupportedType(parameter, span);
-                }
+                function.parameterTypes().forEach(parameter -> requireSupportedType(parameter, span));
                 requireSupportedType(function.returnType(), span);
                 return;
             }
-            throw unsupported(span, "aggregate types are not supported by Phase-15 emission: " + type);
+            throw unsupported(span, "unsupported Lyra type in bytecode emission: " + type);
         }
 
         private JvmBytecodeArtifact emit() {
@@ -534,6 +462,15 @@ final class JvmBytecodeEmitter {
         private final GeneratedMemberPlan member;
         private final CodeBuilder code;
         private final Map<DeclarationId, BindingStorage> locals = new HashMap<>();
+        /** Local declarations whose mutable identity is represented by a shared cell. */
+        private final Map<DeclarationId, Integer> localCells = new HashMap<>();
+        /** One-element typed arrays link immutable local function declarations. */
+        private final Map<DeclarationId, Integer> localFunctionSlots = new HashMap<>();
+        /** Function declaration forms available for on-demand forward linking. */
+        private final Map<DeclarationId, IrNode.Declaration> localFunctionForms = new HashMap<>();
+        /** Local function closures already materialized on the current code path. */
+        private final Set<DeclarationId> initializedLocalFunctions = new HashSet<>();
+        private final Set<DeclarationId> initializingLocalFunctions = new HashSet<>();
         private final Map<DeclarationId, IrDeclaration> declarations;
         private final Map<CaptureId, IrCapture> captures;
         private final IrModule module;
@@ -544,6 +481,8 @@ final class JvmBytecodeEmitter {
         private final List<FailureHandler> failureHandlers = new ArrayList<>();
         private final List<CallFailureHandler> callFailureHandlers = new ArrayList<>();
         private final Deque<IrFailureSite> activeFailureSites = new ArrayDeque<>();
+        private final Set<DeclarationId> initializedRootDeclarations = new HashSet<>();
+        private final Set<DeclarationId> initializingRootDeclarations = new HashSet<>();
 
         private MethodEmitter(Emitter owner, GeneratedClassPlan classPlan,
                               GeneratedMemberPlan member, CodeBuilder code) {
@@ -567,11 +506,12 @@ final class JvmBytecodeEmitter {
         private void emit() {
             line(memberSpan());
             switch (classPlan.kind()) {
+                case TUPLE_VALUE -> emitTupleMethod();
                 case CELL -> emitCellMethod();
                 case CLOSURE -> emitClosureMethod();
                 case MODULE_STATE -> emitStateMethod();
                 case MODULE_FACADE -> emitFacadeMethod();
-                case FUNCTION_INTERFACE, TUPLE_VALUE ->
+                case FUNCTION_INTERFACE ->
                         throw invalidPlan(memberSpan(), "method cannot be emitted for " + classPlan.kind());
             }
             emitFailureHandlers();
@@ -583,6 +523,30 @@ final class JvmBytecodeEmitter {
                 code.exceptionCatch(handler.start(), handler.end(), handler.handler(),
                         CD_RUNTIME_EXCEPTION);
                 code.labelBinding(handler.handler());
+                emitSourceFrame(handler.span());
+                code.iconst_0();
+                code.invokeinterface(CD_LIST, "get", method("(I)Ljava/lang/Object;"));
+                code.checkcast(cd(RUNTIME + "SourceFrame"));
+                code.invokevirtual(CD_RUNTIME_EXCEPTION, "withFrame", method(
+                        "(L" + RUNTIME + "SourceFrame;)L" + RUNTIME + "LyraRuntimeException;"));
+                code.athrow();
+
+                // A recursive ordinary call is the one generated boundary
+                // that translates StackOverflowError.  Other VM errors are
+                // deliberately not caught by generated code.
+                code.exceptionCatch(handler.start(), handler.end(), handler.stackHandler(),
+                        CD_STACK_OVERFLOW);
+                code.labelBinding(handler.stackHandler());
+                int cause = code.allocateLocal(TypeKind.REFERENCE);
+                code.astore(cause);
+                code.ldc("LYR-STACK");
+                code.invokestatic(CD_FAILURE_CATEGORY, "fromCode",
+                        method("(Ljava/lang/String;)L" + RUNTIME + "LyraFailureCategory;"));
+                code.ldc("Lyra call stack overflow");
+                code.aload(cause);
+                code.invokestatic(CD_RUNTIME_EXCEPTION, "of", method(
+                        "(L" + RUNTIME + "LyraFailureCategory;Ljava/lang/String;Ljava/lang/Throwable;)L"
+                                + RUNTIME + "LyraRuntimeException;"));
                 emitSourceFrame(handler.span());
                 code.iconst_0();
                 code.invokeinterface(CD_LIST, "get", method("(I)Ljava/lang/Object;"));
@@ -602,8 +566,51 @@ final class JvmBytecodeEmitter {
         private void emitFailureHandlers() {
             for (FailureHandler handler : failureHandlers) {
                 code.labelBinding(handler.label());
-                throwFailureRecorded(handler.span(), handler.code(), handler.summary());
+                if (stateMethod) {
+                    throwStateInitializationFailure(handler.span(), handler.code(), handler.summary());
+                } else {
+                    throwFailureRecorded(handler.span(), handler.code(), handler.summary());
+                }
             }
+        }
+
+        /**
+         * A failure label is outside the ordinary initialization try range,
+         * because handlers must not catch their own throw.  State-only labels
+         * therefore perform the same terminal FAILED transition and LYR-INIT
+         * wrapping explicitly instead of relying on that range.
+         */
+        private void throwStateInitializationFailure(SourceSpan span, String codeValue,
+                                                      String summary) {
+            line(span);
+            code.ldc(codeValue);
+            code.invokestatic(CD_FAILURE_CATEGORY, "fromCode",
+                    method("(Ljava/lang/String;)L" + RUNTIME + "LyraFailureCategory;"));
+            code.ldc(summary);
+            emitSourceFrame(span);
+            code.invokestatic(CD_RUNTIME_EXCEPTION, "of", method(
+                    "(L" + RUNTIME + "LyraFailureCategory;Ljava/lang/String;Ljava/util/List;)L"
+                            + RUNTIME + "LyraRuntimeException;"));
+            int cause = code.allocateLocal(TypeKind.REFERENCE);
+            code.astore(cause);
+            loadStateLifecycle();
+            code.aload(cause);
+            code.invokevirtual(CD_LIFECYCLE, "fail", method("(Ljava/lang/Throwable;)V"));
+            code.ldc("LYR-INIT");
+            code.invokestatic(CD_FAILURE_CATEGORY, "fromCode",
+                    method("(Ljava/lang/String;)L" + RUNTIME + "LyraFailureCategory;"));
+            code.ldc("module initialization failed");
+            code.aload(cause);
+            code.invokestatic(CD_RUNTIME_EXCEPTION, "of", method(
+                    "(L" + RUNTIME + "LyraFailureCategory;Ljava/lang/String;Ljava/lang/Throwable;)L"
+                            + RUNTIME + "LyraRuntimeException;"));
+            emitSourceFrame(module.span());
+            code.iconst_0();
+            code.invokeinterface(CD_LIST, "get", method("(I)Ljava/lang/Object;"));
+            code.checkcast(cd(RUNTIME + "SourceFrame"));
+            code.invokevirtual(CD_RUNTIME_EXCEPTION, "withFrame", method(
+                    "(L" + RUNTIME + "SourceFrame;)L" + RUNTIME + "LyraRuntimeException;"));
+            code.athrow();
         }
 
         private SourceSpan memberSpan() {
@@ -611,6 +618,46 @@ final class JvmBytecodeEmitter {
                 return lambda.span();
             }
             return module.span();
+        }
+
+        private void emitTupleMethod() {
+            switch (member.kind()) {
+                case TUPLE_CONSTRUCTOR -> emitTupleConstructor();
+                case TUPLE_COMPONENT_GET -> emitTupleComponentGetter();
+                default -> throw invalidPlan(memberSpan(), "unexpected tuple method: " + member.kind());
+            }
+        }
+
+        private void emitTupleConstructor() {
+            emitObjectSuperConstructor();
+            List<GeneratedMemberPlan> fields = classPlan.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.TUPLE_FIELD)
+                    .sorted(Comparator.comparingInt(GeneratedMemberPlan::componentIndex))
+                    .toList();
+            for (int index = 0; index < fields.size(); index++) {
+                aloadReceiver();
+                loadParameter(index);
+                code.putfield(cd(classPlan.binaryName()), fields.get(index).name(),
+                        type(fields.get(index).descriptor()));
+            }
+            code.return_();
+        }
+
+        private void emitTupleComponentGetter() {
+            int index;
+            try {
+                index = Integer.parseInt(member.name().substring("$lyra$get$".length()));
+            } catch (RuntimeException failure) {
+                throw invalidPlan(memberSpan(), "tuple accessor has no component index");
+            }
+            GeneratedMemberPlan field = classPlan.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.TUPLE_FIELD)
+                    .filter(value -> value.componentIndex() == index)
+                    .findFirst().orElseThrow(() -> invalidPlan(memberSpan(),
+                            "tuple accessor has no matching field"));
+            aloadReceiver();
+            code.getfield(cd(classPlan.binaryName()), field.name(), type(field.descriptor()));
+            returnPhysicalDescriptor(member.descriptor().substring(member.descriptor().indexOf(')') + 1));
         }
 
         private void emitCellMethod() {
@@ -712,7 +759,7 @@ final class JvmBytecodeEmitter {
             // invocation boundary.  A self-tail loop then reuses the checked
             // frame without growing the JVM stack.
             aloadReceiver();
-            code.invokevirtual(CD_CLOSURE, "checkInvocation", method("()V"));
+            code.invokevirtual(CD_CLOSURE, "checkInvocationFromGeneratedCode", method("()V"));
             loopLabel = code.newLabel();
             code.labelBinding(loopLabel);
             line(lambda.bodySpan());
@@ -721,13 +768,80 @@ final class JvmBytecodeEmitter {
         }
 
         private void installLambdaParameters() {
+            locals.clear();
+            localCells.clear();
             for (int index = 0; index < lambda.parameterIds().size(); index++) {
                 DeclarationId id = lambda.parameterIds().get(index);
                 LyraType logical = lambda.signature().parameterType(index);
                 JvmTypePlan physical = owner.mapper.map(logical, JvmMappingContext.JAVA_PARAMETER);
+                boolean authenticated = authenticateFunctionParameter(index, logical, physical);
                 int slot = code.parameterSlot(index);
-                locals.put(id, BindingStorage.local(logical, physical, List.of(slot)));
+                if (authenticated) {
+                    code.storeLocal(typeKind(physical.descriptor()), slot);
+                }
+                IrDeclaration declaration = declarations.get(id);
+                if (declaration != null && owner.cells.containsKey(id)) {
+                    JvmTypePlan storage = owner.mapper.mapBinding(
+                            declaration.contract().orElseThrow()).value();
+                    List<Integer> values = allocateLocals(storage);
+                    loadPhysical(physical.physicalComponents().getFirst(), slot);
+                    // Java-visible nullable primitives arrive boxed, while a
+                    // mutable parameter's shared cell uses the internal
+                    // presence/payload representation.  Adapt the complete
+                    // value plan rather than only its first component.
+                    adapt(physical, storage);
+                    storeLocal(storage, values);
+                    emitNewCell(id, values);
+                    int cell = allocateLocal(JvmType.reference(cellClassName(id)));
+                    code.astore(cell);
+                    localCells.put(id, cell);
+                } else {
+                    locals.put(id, BindingStorage.local(logical, physical, List.of(slot)));
+                }
             }
+        }
+
+        private boolean authenticateFunctionParameter(int index, LyraType logical,
+                                                      JvmTypePlan physical) {
+            if (!(logical.withoutQualifiers() instanceof FunctionType function)) {
+                return false;
+            }
+            if (!physical.isSingleValue() || !physical.physicalComponents().getFirst().isReference()) {
+                throw invalidPlan(memberSpan(), "function parameter has no reference representation");
+            }
+            String signature = function.signature().canonicalSpelling();
+            String functionName = owner.mapper.names().functionBinaryName(signature);
+            if (logical.hasQualifier(io.mindspice.lyra.compiler.types.TypeQualifier.NIL)) {
+                loadParameter(index);
+                code.dup();
+                Label nil = code.newLabel();
+                Label authenticated = code.newLabel();
+                code.ifnull(nil);
+                emitCurrentAuthority();
+                code.ldc(signature);
+                code.invokestatic(CD_SIGNATURE, "parse",
+                        method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+                code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT,
+                        "requireAuthenticatedForGeneratedInvocation",
+                        method("(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
+                                + RUNTIME + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
+                code.checkcast(cd(functionName));
+                code.goto_(authenticated);
+                code.labelBinding(nil);
+                code.labelBinding(authenticated);
+            } else {
+                loadParameter(index);
+                emitCurrentAuthority();
+                code.ldc(signature);
+                code.invokestatic(CD_SIGNATURE, "parse",
+                        method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+                code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT,
+                        "requireAuthenticatedForGeneratedInvocation",
+                        method("(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
+                                + RUNTIME + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
+                code.checkcast(cd(functionName));
+            }
+            return true;
         }
 
         private void emitStateMethod() {
@@ -738,31 +852,30 @@ final class JvmBytecodeEmitter {
                 case STATE_AUTHORITY_GET -> emitStateAuthorityGetter();
                 case STATE_CHECK_OPEN -> emitStateCheckOpen();
                 case STATE_CLOSE -> emitStateClose();
-                case STATE_IMPORT_LINK ->
-                        throw unsupported(memberSpan(), "module import linkage is outside the scalar slice");
+                case STATE_IMPORT_LINK -> emitStateImportLink();
                 default -> throw invalidPlan(memberSpan(), "unexpected module-state method: " + member.kind());
             }
         }
 
         private void emitStateConstructor() {
+            // State construction is deliberately a shell operation.  The
+            // facade factory supplies one opaque artifact key to every state,
+            // so closures can cross module boundaries without authenticating
+            // against an unrelated module instance.
             emitObjectSuperConstructor();
-            aloadReceiver();
-            code.new_(CD_LIFECYCLE);
+            loadParameter(0);
+            code.new_(CD_MODULE_ID);
             code.dup();
-            code.invokespecial(CD_LIFECYCLE, "<init>", method("()V"));
+            code.ldc(module.moduleId().value());
+            code.invokespecial(CD_MODULE_ID, "<init>", method("(Ljava/lang/String;)V"));
+            code.swap();
+            code.invokestatic(CD_LIFECYCLE, "forArtifact", method(
+                    "(L" + RUNTIME + "ModuleId;L" + RUNTIME
+                            + "LyraArtifactKey;)L" + RUNTIME + "ModuleLifecycle;"));
+            aloadReceiver();
+            code.swap();
             GeneratedMemberPlan lifecycle = stateLifecycleField();
             code.putfield(cd(classPlan.binaryName()), lifecycle.name(), type(lifecycle.descriptor()));
-            // The state fields provide the predeclared function slots needed
-            // for recursion.  Initializers themselves still run in source
-            // order: captures must observe the value that existed when their
-            // lambda was evaluated, and shared cells must already exist when
-            // a function declaration captures one.
-            for (IrNode form : module.body().forms()) {
-                JvmTypePlan value = emitNode(form);
-                discard(value);
-            }
-            loadStateLifecycle();
-            code.invokevirtual(CD_LIFECYCLE, "open", method("()V"));
             code.return_();
         }
 
@@ -788,13 +901,201 @@ final class JvmBytecodeEmitter {
 
         private void emitStateCheckOpen() {
             loadStateLifecycle();
+            code.invokevirtual(CD_LIFECYCLE, "isOpen", method("()Z"));
+            Label alreadyOpen = code.newLabel();
+            Label initializationStart = code.newLabel();
+            Label initializationEnd = code.newLabel();
+            Label initializationFailure = code.newLabel();
+            code.ifne(alreadyOpen);
+            // Only INITIALIZING states may enter the one-shot initializer.
+            // CLOSED and FAILED states must be delegated to the runtime so
+            // callers receive LYR-CLOSED or LYR-INIT rather than an invalid
+            // second transition attempt.
+            loadStateLifecycle();
+            code.invokevirtual(CD_LIFECYCLE, "state", method("()L" + RUNTIME
+                    + "LifecycleState;"));
+            code.getstatic(CD_LIFECYCLE_STATE, "INITIALIZING", CD_LIFECYCLE_STATE);
+            code.if_acmpeq(initializationStart);
+            loadStateLifecycle();
             code.invokevirtual(CD_LIFECYCLE, "checkOpen", method("()V"));
             code.return_();
+            code.labelBinding(initializationStart);
+            // Keep the protected range non-empty for import-only modules.  A
+            // zero-width exception table entry is rejected by the JVM class
+            // verifier even though the initializer has no source forms.
+            code.nop();
+            // Function signatures are predeclared, so every root function slot
+            // must contain its closure before any eager initializer can invoke
+            // it.  Capture dependencies are initialized on demand first; this
+            // preserves the source order required by immutable capture
+            // semantics without exposing a null forward slot.
+            for (IrNode form : module.body().forms()) {
+                if (isRootFunctionSlotDeclaration(form)) {
+                    initializeRootDeclaration(declarationId(form));
+                }
+            }
+            for (IrNode form : module.body().forms()) {
+                if (form instanceof IrNode.Declaration declaration
+                        && declaration.declarationId().isPresent()
+                        && isRootDeclaration(declaration.declarationId().orElseThrow())) {
+                    initializeRootDeclaration(declaration.declarationId().orElseThrow());
+                } else {
+                    discard(emitNode(form));
+                }
+            }
+            code.labelBinding(initializationEnd);
+            loadStateLifecycle();
+            code.invokevirtual(CD_LIFECYCLE, "open", method("()V"));
+            code.labelBinding(alreadyOpen);
+            loadStateLifecycle();
+            code.invokevirtual(CD_LIFECYCLE, "checkOpen", method("()V"));
+            code.return_();
+
+            // An initializer failure makes this state terminally FAILED and
+            // is never exposed as a partially constructed facade.  Preserve
+            // the original runtime exception as the Java cause while giving
+            // callers the stable initialization category.
+            code.exceptionCatch(initializationStart, initializationEnd,
+                    initializationFailure, CD_JAVA_RUNTIME_EXCEPTION);
+            code.labelBinding(initializationFailure);
+            int cause = code.allocateLocal(TypeKind.REFERENCE);
+            code.astore(cause);
+            loadStateLifecycle();
+            code.aload(cause);
+            code.invokevirtual(CD_LIFECYCLE, "fail", method("(Ljava/lang/Throwable;)V"));
+            code.ldc("LYR-INIT");
+            code.invokestatic(CD_FAILURE_CATEGORY, "fromCode",
+                    method("(Ljava/lang/String;)L" + RUNTIME + "LyraFailureCategory;"));
+            code.ldc("module initialization failed");
+            code.aload(cause);
+            code.invokestatic(CD_RUNTIME_EXCEPTION, "of", method(
+                    "(L" + RUNTIME + "LyraFailureCategory;Ljava/lang/String;Ljava/lang/Throwable;)L"
+                            + RUNTIME + "LyraRuntimeException;"));
+            emitSourceFrame(module.span());
+            code.iconst_0();
+            code.invokeinterface(CD_LIST, "get", method("(I)Ljava/lang/Object;"));
+            code.checkcast(cd(RUNTIME + "SourceFrame"));
+            code.invokevirtual(CD_RUNTIME_EXCEPTION, "withFrame", method(
+                    "(L" + RUNTIME + "SourceFrame;)L" + RUNTIME + "LyraRuntimeException;"));
+            code.athrow();
+        }
+
+        private boolean isRootFunctionSlotDeclaration(IrNode form) {
+            if (!(form instanceof IrNode.Declaration declaration)
+                    || declaration.declarationId().isEmpty()) {
+                return false;
+            }
+            IrDeclaration metadata = declarations.get(declaration.declarationId().orElseThrow());
+            return metadata != null
+                    && metadata.scopeId().equals(module.rootScope())
+                    && metadata.initializerLambda().isPresent()
+                    && module.state().functionSlots().contains(metadata.id());
+        }
+
+        private DeclarationId declarationId(IrNode form) {
+            if (!(form instanceof IrNode.Declaration declaration)
+                    || declaration.declarationId().isEmpty()) {
+                throw invalidPlan(form.span(), "root initialization form has no declaration identity");
+            }
+            return declaration.declarationId().orElseThrow();
+        }
+
+        private void initializeRootDeclaration(DeclarationId id) {
+            if (initializedRootDeclarations.contains(id)) {
+                return;
+            }
+            if (!initializingRootDeclarations.add(id)) {
+                throw invalidPlan(memberSpan(),
+                        "root initialization has a cyclic capture dependency: " + id);
+            }
+            try {
+                IrDeclaration metadata = declarations.get(id);
+                if (metadata == null || !metadata.moduleId().equals(module.moduleId())
+                        || !metadata.scopeId().equals(module.rootScope())) {
+                    throw invalidPlan(memberSpan(), "root initialization declaration is absent: " + id);
+                }
+                if (metadata.initializerLambda().isPresent()) {
+                    io.mindspice.lyra.compiler.ir.IrLambda rootLambda = owner.lambdas.values().stream()
+                            .filter(value -> value.id().equals(metadata.initializerLambda().orElseThrow()))
+                            .findFirst().orElseThrow(() -> invalidPlan(metadata.span(),
+                                    "root function initializer has no lambda metadata"));
+                    for (CaptureId captureId : rootLambda.captures()) {
+                        IrCapture capture = captures.get(captureId);
+                        if (capture == null) {
+                            throw invalidPlan(metadata.span(), "root function capture is absent: " + captureId);
+                        }
+                        IrDeclaration captured = declarations.get(capture.declarationId());
+                        if (captured != null && captured.moduleId().equals(module.moduleId())
+                                && captured.scopeId().equals(module.rootScope())
+                                && !captured.imported()) {
+                            initializeRootDeclarationsThrough(captured.id());
+                        }
+                    }
+                }
+                IrNode form = module.body().forms().stream()
+                        .filter(candidate -> candidate instanceof IrNode.Declaration declaration
+                                && declaration.declarationId().filter(id::equals).isPresent())
+                        .findFirst().orElseThrow(() -> invalidPlan(metadata.span(),
+                                "root declaration is absent from the module body: " + id));
+                discard(emitNode(form));
+                initializedRootDeclarations.add(id);
+            } finally {
+                initializingRootDeclarations.remove(id);
+            }
+        }
+
+        private void initializeRootDeclarationsThrough(DeclarationId target) {
+            boolean found = false;
+            for (IrNode form : module.body().forms()) {
+                if (!(form instanceof IrNode.Declaration declaration)
+                        || declaration.declarationId().isEmpty()
+                        || !isRootDeclaration(declaration.declarationId().orElseThrow())) {
+                    continue;
+                }
+                DeclarationId id = declaration.declarationId().orElseThrow();
+                initializeRootDeclaration(id);
+                if (id.equals(target)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                throw invalidPlan(memberSpan(),
+                        "captured root declaration is absent from source order: " + target);
+            }
         }
 
         private void emitStateClose() {
             loadStateLifecycle();
+            code.invokevirtual(CD_LIFECYCLE, "isClosed", method("()Z"));
+            Label alreadyClosed = code.newLabel();
+            code.ifne(alreadyClosed);
+            loadStateLifecycle();
             code.invokevirtual(CD_LIFECYCLE, "close", method("()V"));
+            for (io.mindspice.lyra.compiler.ir.IrImportBinding binding : importsForModule(module.moduleId())) {
+                GeneratedMemberPlan field = stateFields(module.moduleId(), binding.declarationId()).stream()
+                        .filter(value -> value.kind() == GeneratedMemberKind.STATE_IMPORT_FIELD)
+                        .findFirst().orElseThrow(() -> invalidPlan(memberSpan(),
+                                "import state field is absent"));
+                aloadReceiver();
+                code.invokevirtual(cd(classPlan.binaryName()),
+                        "$lyra$get$binding$" + binding.declarationId().value(),
+                        method("()" + field.descriptor()));
+                code.invokevirtual(type(field.descriptor()), "$lyra$close", method("()V"));
+            }
+            code.labelBinding(alreadyClosed);
+            code.return_();
+        }
+
+        private void emitStateImportLink() {
+            DeclarationId id = declarationIdFromMember(member.name());
+            GeneratedMemberPlan field = stateFields(module.moduleId(), id).stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.STATE_IMPORT_FIELD)
+                    .findFirst().orElseThrow(() -> invalidPlan(memberSpan(),
+                            "import link has no state field"));
+            aloadReceiver();
+            loadParameter(0);
+            code.putfield(cd(classPlan.binaryName()), field.name(), type(field.descriptor()));
             code.return_();
         }
 
@@ -860,18 +1161,63 @@ final class JvmBytecodeEmitter {
         }
 
         private void emitFacadeFactory() {
-            GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
-                    .get(classPlan.moduleId().orElseThrow())).orElseThrow();
-            int stateSlot = code.allocateLocal(TypeKind.REFERENCE);
-            code.new_(cd(state.binaryName()));
-            code.dup();
-            code.invokespecial(cd(state.binaryName()), "<init>", method("()V"));
-            code.astore(stateSlot);
+            Map<ModuleId, Integer> stateSlots = new TreeMap<>();
+            int artifactKey = code.allocateLocal(TypeKind.REFERENCE);
+            code.invokestatic(CD_LIFECYCLE, "newArtifactKey",
+                    method("()L" + RUNTIME + "LyraArtifactKey;"));
+            code.astore(artifactKey);
+            for (ModuleId moduleId : owner.plan.initializationOrder()) {
+                GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
+                        .get(moduleId)).orElseThrow();
+                int slot = code.allocateLocal(TypeKind.REFERENCE);
+                code.new_(cd(state.binaryName()));
+                code.dup();
+                code.aload(artifactKey);
+                code.invokespecial(cd(state.binaryName()), "<init>",
+                        method("(L" + RUNTIME + "LyraArtifactKey;)V"));
+                code.astore(slot);
+                stateSlots.put(moduleId, slot);
+            }
+
+            // All state objects are shells at this point.  Link every import
+            // before running any eager initializer so recursive function SCCs
+            // observe one coherent set of module instances.
+            for (io.mindspice.lyra.compiler.ir.IrImportBinding binding : owner.ir.imports()) {
+                Integer consumer = stateSlots.get(ModuleId.fromSourceId(
+                        binding.importSpan().sourceId()));
+                Integer target = stateSlots.get(binding.targetModule());
+                if (consumer == null || target == null) {
+                    throw invalidPlan(memberSpan(), "import state shell is absent");
+                }
+                GeneratedClassPlan consumerPlan = owner.plan.classPlan(owner.plan.moduleStates()
+                        .get(ModuleId.fromSourceId(binding.importSpan().sourceId()))).orElseThrow();
+                GeneratedMemberPlan link = consumerPlan.members().stream()
+                        .filter(value -> value.kind() == GeneratedMemberKind.STATE_IMPORT_LINK
+                                && value.name().equals("$lyra$link$binding$"
+                                + binding.declarationId().value()))
+                        .findFirst().orElseThrow(() -> invalidPlan(memberSpan(),
+                                "import state link is absent"));
+                code.aload(consumer);
+                code.aload(target);
+                code.invokevirtual(cd(consumerPlan.binaryName()), link.name(),
+                        method(link.descriptor()));
+            }
+
+            for (ModuleId moduleId : owner.plan.initializationOrder()) {
+                GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
+                        .get(moduleId)).orElseThrow();
+                code.aload(stateSlots.get(moduleId));
+                code.invokevirtual(cd(state.binaryName()), "$lyra$checkOpen", method("()V"));
+            }
+
+            ModuleId facadeModule = classPlan.moduleId().orElseThrow();
+            GeneratedClassPlan facadeState = owner.plan.classPlan(owner.plan.moduleStates()
+                    .get(facadeModule)).orElseThrow();
             code.new_(cd(classPlan.binaryName()));
             code.dup();
-            code.aload(stateSlot);
+            code.aload(stateSlots.get(facadeModule));
             code.invokespecial(cd(classPlan.binaryName()), "<init>",
-                    method("(" + descriptorOf(state) + ")V"));
+                    method("(" + descriptorOf(facadeState) + ")V"));
             code.areturn();
         }
 
@@ -968,6 +1314,7 @@ final class JvmBytecodeEmitter {
 
         private void emitFacadeExport() {
             GeneratedExportPlan export = owner.plan.exports().stream()
+                    .filter(value -> value.moduleId().equals(module.moduleId()))
                     .filter(value -> value.members().stream().anyMatch(candidate ->
                             candidate.kind() == member.kind()
                                     && candidate.name().equals(member.name())
@@ -990,10 +1337,22 @@ final class JvmBytecodeEmitter {
 
         private void emitFacadeFunctionInvocation(GeneratedExportPlan export) {
             loadFacadeState();
-            emitStateFunction(export.declarationId());
+            emitStateFunction(facadeStateDeclaration(export));
             FunctionType function = functionBase(declarations.get(export.declarationId()).contract()
                     .orElseThrow().valueType());
             JvmSignaturePlan signature = export.functionSignature().orElseThrow();
+            loadFacadeState();
+            code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
+                    "$lyra$closureAuthority",
+                    method("()L" + RUNTIME + "LyraClosureAuthority;"));
+            code.ldc(signature.canonicalLyraSignature());
+            code.invokestatic(CD_SIGNATURE, "parse", method(
+                    "(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+            code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "requireAuthenticated", method(
+                    "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L" + RUNTIME
+                            + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
+            code.checkcast(cd(owner.plan.functionInterfaces().get(
+                    function.canonicalSpelling())));
             for (int index = 0; index < function.arity(); index++) {
                 emitParameterFromFacade(index, function.parameterType(index), signature.parameters().get(index));
             }
@@ -1008,12 +1367,12 @@ final class JvmBytecodeEmitter {
 
         private void emitFacadeFunctionValueGetter(GeneratedExportPlan export) {
             loadFacadeState();
-            emitStateFunction(export.declarationId());
+            emitStateFunction(facadeStateDeclaration(export));
             code.areturn();
         }
 
         private void emitFacadeValueGetter(GeneratedExportPlan export) {
-            loadFacadeStateValue(export.declarationId());
+            loadFacadeStateValue(facadeStateDeclaration(export));
             JvmTypePlan internal = owner.mapper.map(
                     declarations.get(export.declarationId()).contract().orElseThrow().valueType(),
                     JvmMappingContext.INTERNAL_VALUE);
@@ -1022,16 +1381,38 @@ final class JvmBytecodeEmitter {
         }
 
         private void emitFacadeSetter(GeneratedExportPlan export) {
+            if (stateBindingIsCell(export.declarationId())) {
+                emitFacadeCellSetter(export);
+                return;
+            }
+            String stateName = owner.plan.moduleStates().get(module.moduleId());
+            if (stateName == null) {
+                throw invalidPlan(memberSpan(), "facade setter has no module state class");
+            }
+            JvmType stateType = JvmType.reference(stateName);
+            int stateSlot = allocateLocal(stateType);
             loadFacadeState();
+            storePhysical(stateType, stateSlot);
+
+            JvmTypePlan internal = owner.mapper.map(
+                    declarations.get(export.declarationId()).contract().orElseThrow().valueType(),
+                    JvmMappingContext.INTERNAL_BINDING);
+            JvmTypePlan external = export.valueType();
+            int argument = allocateLocal(external);
+            loadParameter(0);
             if (export.isFunction()) {
-                // Preserve the receiver below the authenticated replacement.
-                int argument = code.allocateLocal(TypeKind.REFERENCE);
-                loadParameter(0);
-                code.astore(argument);
-                code.aload(argument);
-                loadFacadeState();
-                code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
-                        "$lyra$closureAuthority",
+                // Authenticate the replacement while retaining a balanced
+                // stack for the nullable-function case.  The state receiver
+                // is reloaded only after authentication, so it cannot be
+                // mistaken for the candidate object.
+                Label acceptedNull = code.newLabel();
+                Label argumentReady = code.newLabel();
+                if (export.valueType().isNilable()) {
+                    code.dup();
+                    code.ifnull(acceptedNull);
+                }
+                loadPhysical(stateType, stateSlot);
+                code.invokevirtual(cd(stateName), "$lyra$closureAuthority",
                         method("()L" + RUNTIME + "LyraClosureAuthority;"));
                 code.ldc(export.functionSignature().orElseThrow().canonicalLyraSignature());
                 code.invokestatic(CD_SIGNATURE, "parse", method(
@@ -1042,17 +1423,80 @@ final class JvmBytecodeEmitter {
                 code.checkcast(cd(owner.plan.functionInterfaces().get(
                         functionBase(declarations.get(export.declarationId()).contract().orElseThrow().valueType())
                                 .canonicalSpelling())));
-                invokeStateSetter(export.declarationId(), member.descriptor());
-            } else {
-                JvmTypePlan internal = owner.mapper.map(
-                        declarations.get(export.declarationId()).contract().orElseThrow().valueType(),
-                        JvmMappingContext.INTERNAL_BINDING);
-                JvmTypePlan external = export.valueType();
-                // The state receiver is already underneath the argument.
-                loadParameter(0);
-                adapt(external, internal);
-                invokeStateSetter(export.declarationId(), member.descriptor());
+                code.goto_(argumentReady);
+                if (export.valueType().isNilable()) {
+                    code.labelBinding(acceptedNull);
+                }
+                code.labelBinding(argumentReady);
             }
+            storePhysical(external.physicalComponents().getFirst(), argument);
+            loadPhysical(stateType, stateSlot);
+            loadPhysical(external.physicalComponents().getFirst(), argument);
+            if (!export.isFunction()) {
+                adapt(external, internal);
+            }
+            invokeStateSetter(export.declarationId(), member.descriptor());
+            code.return_();
+        }
+
+        private boolean stateBindingIsCell(DeclarationId id) {
+            return stateFields(id).stream()
+                    .anyMatch(value -> value.kind() == GeneratedMemberKind.STATE_CELL_FIELD);
+        }
+
+        private void emitFacadeCellSetter(GeneratedExportPlan export) {
+            JvmTypePlan external = export.valueType();
+            JvmTypePlan internal = owner.mapper.map(
+                    declarations.get(export.declarationId()).contract().orElseThrow().valueType(),
+                    JvmMappingContext.INTERNAL_BINDING);
+            int argument = allocateLocal(external);
+            loadParameter(0);
+            if (export.isFunction()) {
+                Label acceptedNull = code.newLabel();
+                Label argumentReady = code.newLabel();
+                if (export.valueType().isNilable()) {
+                    code.dup();
+                    code.ifnull(acceptedNull);
+                }
+                loadFacadeState();
+                code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
+                        "$lyra$closureAuthority",
+                        method("()L" + RUNTIME + "LyraClosureAuthority;"));
+                code.ldc(export.functionSignature().orElseThrow().canonicalLyraSignature());
+                code.invokestatic(CD_SIGNATURE, "parse", method(
+                        "(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+                code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "requireAuthenticated", method(
+                        "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L" + RUNTIME
+                                + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
+                code.checkcast(cd(owner.plan.functionInterfaces().get(functionBase(
+                        declarations.get(export.declarationId()).contract().orElseThrow().valueType())
+                        .canonicalSpelling())));
+                code.goto_(argumentReady);
+                if (export.valueType().isNilable()) {
+                    code.labelBinding(acceptedNull);
+                }
+                code.labelBinding(argumentReady);
+            }
+            storePhysical(external.physicalComponents().getFirst(), argument);
+            loadFacadeState();
+            GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
+                    .get(module.moduleId())).orElseThrow();
+            GeneratedMemberPlan field = stateFields(export.declarationId()).stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.STATE_CELL_FIELD)
+                    .findFirst().orElseThrow(() -> invalidPlan(memberSpan(),
+                            "mutable export has no state cell field"));
+            code.invokevirtual(cd(state.binaryName()),
+                    "$lyra$get$binding$" + export.declarationId().value(),
+                    method("()" + field.descriptor()));
+            loadPhysical(external.physicalComponents().getFirst(), argument);
+            adapt(external, internal);
+            GeneratedClassPlan cell = owner.plan.classPlan(field.descriptor()
+                    .substring(1, field.descriptor().length() - 1).replace('/', '.')).orElseThrow();
+            GeneratedMemberPlan setter = cell.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.CELL_SET)
+                    .findFirst().orElseThrow(() -> invalidPlan(memberSpan(),
+                            "mutable export cell has no setter"));
+            code.invokevirtual(cd(cell.binaryName()), setter.name(), method(setter.descriptor()));
             code.return_();
         }
 
@@ -1081,34 +1525,112 @@ final class JvmBytecodeEmitter {
             emitStateFunctionOrValue(id);
         }
 
+        private DeclarationId facadeStateDeclaration(GeneratedExportPlan export) {
+            if (!export.reExport()) {
+                return export.declarationId();
+            }
+            return owner.imports.values().stream()
+                    .filter(binding -> declarations.get(binding.declarationId()) != null)
+                    .filter(binding -> declarations.get(binding.declarationId()).moduleId()
+                            .equals(module.moduleId()))
+                    .filter(binding -> binding.reExport()
+                            && binding.localName().equals(export.sourceName())
+                            && binding.targetDeclaration().equals(Optional.of(export.originDeclaration())))
+                    .map(IrImportBinding::declarationId)
+                    .findFirst()
+                    .orElseThrow(() -> invalidPlan(memberSpan(),
+                            "re-export has no local state binding: " + export.sourceName()));
+        }
+
         private void emitStateFunction(DeclarationId id) {
             emitStateFunctionOrValue(id);
         }
 
+        /**
+         * Loads a value from a module state already on the operand stack.  An
+         * imported binding contributes another state object, so follow the
+         * chain until its origin declaration rather than treating a
+         * re-export's origin identity as a field in the facade module.
+         */
         private void emitStateFunctionOrValue(DeclarationId id) {
+            emitStateValueFromState(module.moduleId(), id);
+        }
+
+        private void emitStateValueFromState(ModuleId stateModule, DeclarationId id) {
             GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
-                    .get(module.moduleId())).orElseThrow();
-            List<GeneratedMemberPlan> fields = stateFields(id);
+                    .get(stateModule)).orElseThrow(() -> invalidPlan(memberSpan(),
+                    "module state is absent: " + stateModule));
+            JvmType stateType = JvmType.reference(state.binaryName());
+            int stateSlot = allocateLocal(stateType);
+            storePhysical(stateType, stateSlot);
+
+            IrImportBinding importBinding = owner.imports.get(id);
+            if (importBinding != null) {
+                IrDeclaration declaration = declarations.get(id);
+                if (!importBinding.targetDeclaration().isPresent()
+                        || declaration == null || !declaration.moduleId().equals(stateModule)) {
+                    throw invalidPlan(memberSpan(), "state import is not a value binding: " + id);
+                }
+                List<GeneratedMemberPlan> fields = stateFields(stateModule, id);
+                if (fields.size() != 1
+                        || fields.getFirst().kind() != GeneratedMemberKind.STATE_IMPORT_FIELD) {
+                    throw invalidPlan(memberSpan(), "import binding has an invalid state shape");
+                }
+                loadPhysical(stateType, stateSlot);
+                code.invokevirtual(cd(state.binaryName()),
+                        "$lyra$get$binding$" + id.value(),
+                        method("()" + fields.getFirst().descriptor()));
+                DeclarationId targetDeclaration = owner.ir.exports().stream()
+                        .filter(export -> export.moduleId().equals(importBinding.targetModule()))
+                        .filter(export -> importBinding.targetExport()
+                                .map(target -> export.exportId().equals(Optional.of(target)))
+                                .orElseGet(() -> export.name().equals(
+                                        importBinding.importedName().orElseThrow())))
+                        .map(IrExport::declarationId)
+                        .findFirst()
+                        .orElseThrow(() -> invalidPlan(memberSpan(),
+                                "import target export is absent: " + importBinding.targetModule()));
+                IrDeclaration targetMetadata = declarations.get(targetDeclaration);
+                if (targetMetadata == null || targetMetadata.contract().isEmpty()) {
+                    throw invalidPlan(memberSpan(), "import target declaration is absent: " + targetDeclaration);
+                }
+                if (!(targetMetadata.contract().orElseThrow().valueType().withoutQualifiers()
+                        instanceof FunctionType)) {
+                    GeneratedClassPlan targetState = owner.plan.classPlan(owner.plan.moduleStates()
+                            .get(importBinding.targetModule())).orElseThrow(() -> invalidPlan(memberSpan(),
+                            "import target state is absent: " + importBinding.targetModule()));
+                    // A re-export can hide the state that actually owns the
+                    // value. Open that state before following the link; the
+                    // semantic schedule normally makes this redundant, but
+                    // this preserves eager initialization when the
+                    // intermediate module only re-exports the declaration.
+                    code.dup();
+                    code.invokevirtual(cd(targetState.binaryName()), "$lyra$checkOpen", method("()V"));
+                }
+                emitStateValueFromState(importBinding.targetModule(), targetDeclaration);
+                return;
+            }
+
+            List<GeneratedMemberPlan> fields = stateFields(stateModule, id);
             if (fields.isEmpty()) {
                 throw invalidPlan(memberSpan(), "state has no declaration field: " + id);
             }
             if (fields.size() == 1) {
                 GeneratedMemberPlan field = fields.getFirst();
-                if (field.kind() == GeneratedMemberKind.STATE_CELL_FIELD) {
-                    throw unsupported(memberSpan(), "shared cell is not a facade value");
-                }
+                loadPhysical(stateType, stateSlot);
                 code.invokevirtual(cd(state.binaryName()),
                         "$lyra$get$binding$" + id.value(),
                         method("()" + field.descriptor()));
+                if (field.kind() == GeneratedMemberKind.STATE_CELL_FIELD) {
+                    emitCellValue(id);
+                }
                 return;
             }
             if (fields.size() == 2) {
+                loadPhysical(stateType, stateSlot);
                 code.invokevirtual(cd(state.binaryName()),
                         "$lyra$isPresent$binding$" + id.value(), method("()Z"));
-                // The first accessor consumes the state receiver.  Reload it
-                // before asking for the payload; the JVM operand stack must
-                // never use the presence bit as a receiver.
-                loadFacadeState();
+                loadPhysical(stateType, stateSlot);
                 GeneratedMemberPlan payload = fields.stream()
                         .filter(value -> value.name().endsWith("$payload"))
                         .findFirst().orElseThrow();
@@ -1152,14 +1674,26 @@ final class JvmBytecodeEmitter {
             }
             if (node instanceof IrNode.Block block) {
                 Map<DeclarationId, BindingStorage> saved = new HashMap<>(locals);
+                Map<DeclarationId, Integer> savedCells = new HashMap<>(localCells);
+                Map<DeclarationId, Integer> savedFunctionSlots =
+                        new HashMap<>(localFunctionSlots);
                 JvmTypePlan result = emitSequence(block.forms(), block.type());
                 locals.clear();
                 locals.putAll(saved);
+                localCells.clear();
+                localCells.putAll(savedCells);
+                localFunctionSlots.clear();
+                localFunctionSlots.putAll(savedFunctionSlots);
                 return result;
             }
-            if (node instanceof IrNode.ArrayLiteral || node instanceof IrNode.TupleLiteral
-                    || node instanceof IrNode.IndexAccess) {
-                throw unsupported(node.span(), "aggregate node reached scalar emitter");
+            if (node instanceof IrNode.ArrayLiteral array) {
+                return emitArrayLiteral(array);
+            }
+            if (node instanceof IrNode.TupleLiteral tuple) {
+                return emitTupleLiteral(tuple);
+            }
+            if (node instanceof IrNode.IndexAccess index) {
+                return emitIndexAccess(index);
             }
             if (node instanceof IrNode.Operator operator) {
                 return emitOperator(operator);
@@ -1196,6 +1730,194 @@ final class JvmBytecodeEmitter {
                 return emitRuntimeCheck(check);
             }
             throw unsupported(node.span(), "unhandled IR node: " + node.getClass().getName());
+        }
+
+        private JvmTypePlan emitArrayLiteral(IrNode.ArrayLiteral array) {
+            LyraType arrayBase = array.type().withoutQualifiers();
+            if (!(arrayBase instanceof ArrayType)) {
+                throw invalidPlan(array.span(), "array literal has a non-array type");
+            }
+            ArrayType arrayType = (ArrayType) arrayBase;
+            JvmTypePlan arrayPlan = owner.mapper.map(array.type(), JvmMappingContext.INTERNAL_VALUE);
+            JvmTypePlan elementPlan = owner.mapper.map(arrayType.elementType(),
+                    JvmMappingContext.INTERNAL_ARRAY_ELEMENT);
+            if (!arrayPlan.isSingleValue() || !arrayPlan.physicalComponents().getFirst().isReference()
+                    || !elementPlan.isSingleValue() || elementPlan.descriptor().equals("V")) {
+                throw invalidPlan(array.span(), "array literal has an invalid JVM representation");
+            }
+            emitInt(array.elements().size());
+            String elementDescriptor = elementPlan.descriptor();
+            if (elementDescriptor.charAt(0) == 'L' || elementDescriptor.charAt(0) == '[') {
+                code.anewarray(type(elementDescriptor));
+            } else {
+                code.newarray(typeKind(elementDescriptor));
+            }
+            int arraySlot = allocateLocal(arrayPlan.physicalComponents().getFirst());
+            storePhysical(arrayPlan.physicalComponents().getFirst(), arraySlot);
+            for (int index = 0; index < array.elements().size(); index++) {
+                loadPhysical(arrayPlan.physicalComponents().getFirst(), arraySlot);
+                emitInt(index);
+                emitAt(array.elements().get(index), elementPlan);
+                code.arrayStore(typeKind(elementDescriptor));
+            }
+            loadPhysical(arrayPlan.physicalComponents().getFirst(), arraySlot);
+            return arrayPlan;
+        }
+
+        private JvmTypePlan emitTupleLiteral(IrNode.TupleLiteral tupleNode) {
+            LyraType tupleBase = tupleNode.type().withoutQualifiers();
+            if (!(tupleBase instanceof TupleType)) {
+                throw invalidPlan(tupleNode.span(), "tuple literal has a non-tuple type");
+            }
+            TupleType tuple = (TupleType) tupleBase;
+            if (tuple.arity() != tupleNode.elements().size()) {
+                throw invalidPlan(tupleNode.span(), "tuple literal arity disagrees with its type");
+            }
+            JvmTypePlan tuplePlan = owner.mapper.map(tupleNode.type(), JvmMappingContext.INTERNAL_VALUE);
+            String tupleName = owner.mapper.names().tupleBinaryName(tuple.canonicalSpelling());
+            GeneratedClassPlan tupleClass = owner.plan.classPlan(tupleName).orElseThrow(() ->
+                    invalidPlan(tupleNode.span(), "tuple class is absent from the generated plan"));
+            GeneratedMemberPlan constructor = tupleClass.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.TUPLE_CONSTRUCTOR)
+                    .findFirst().orElseThrow(() -> invalidPlan(tupleNode.span(),
+                            "tuple constructor is absent from the generated plan"));
+            List<JvmTypePlan> fields = new ArrayList<>(tuple.arity());
+            List<List<Integer>> fieldSlots = new ArrayList<>(tuple.arity());
+            for (int index = 0; index < tuple.arity(); index++) {
+                JvmTypePlan field = owner.mapper.map(
+                        tuple.memberType(index), JvmMappingContext.TUPLE_FIELD);
+                if (!field.isSingleValue() || field.descriptor().equals("V")) {
+                    throw invalidPlan(tupleNode.span(),
+                            "tuple field has no single JVM representation");
+                }
+                emitAt(tupleNode.elements().get(index), field);
+                List<Integer> slots = allocateLocals(field);
+                storeLocal(field, slots);
+                fields.add(field);
+                fieldSlots.add(slots);
+            }
+            code.new_(cd(tupleName));
+            code.dup();
+            for (int index = 0; index < fields.size(); index++) {
+                loadLocal(BindingStorage.local(
+                        tuple.memberType(index), fields.get(index), fieldSlots.get(index)));
+            }
+            code.invokespecial(cd(tupleName), "<init>", method(constructor.descriptor()));
+            return tuplePlan;
+        }
+
+        private JvmTypePlan emitIndexAccess(IrNode.IndexAccess index) {
+            IrFailureSite failure = activeFailureSites.peek();
+            if (failure == null || failure.checkKind() != IrCheckKind.BOUNDS
+                    || !failure.failureCode().equals("LYR-BOUNDS")) {
+                throw invalidPlan(index.span(), "index access has no active bounds failure site");
+            }
+            JvmTypePlan receiverPlan = owner.mapper.map(index.receiver().type(),
+                    JvmMappingContext.INTERNAL_VALUE);
+            if (!receiverPlan.isSingleValue() || !receiverPlan.physicalComponents().getFirst().isReference()) {
+                throw invalidPlan(index.span(), "index receiver has no JVM reference representation");
+            }
+            JvmTypePlan indexPlan = owner.mapper.map(index.index().type(),
+                    JvmMappingContext.INTERNAL_VALUE);
+            if (!indexPlan.isSingleValue() || !indexPlan.physicalComponents().getFirst().isPrimitive()) {
+                throw invalidPlan(index.span(), "index has no JVM integer representation");
+            }
+            int receiverSlot = allocateLocal(receiverPlan.physicalComponents().getFirst());
+            emitAt(index.receiver(), receiverPlan);
+            storePhysical(receiverPlan.physicalComponents().getFirst(), receiverSlot);
+            List<Integer> indexSlots = allocateLocals(indexPlan);
+            emitAt(index.index(), indexPlan);
+            PrimitiveType indexPrimitive = primitiveBase(index.index().type());
+            if (indexPrimitive == PrimitiveType.U8 || indexPrimitive == PrimitiveType.U16) {
+                normalizeUnsigned(indexPrimitive);
+            }
+            storeLocal(indexPlan, indexSlots);
+
+            Label boundsFailure = failureLabel(index.span(), failure.failureCode(),
+                    "index is outside the aggregate bounds");
+            LyraType receiverType = index.receiver().type().withoutQualifiers();
+            emitIndexBoundsCheck(indexPlan, indexSlots, receiverSlot, boundsFailure,
+                    indexPrimitive, receiverPlan.physicalComponents().getFirst(),
+                    receiverType == PrimitiveType.STRING);
+
+            loadPhysical(receiverPlan.physicalComponents().getFirst(), receiverSlot);
+            loadIndexForJvm(indexPlan, indexSlots);
+            JvmTypePlan resultPlan;
+            if (receiverType == PrimitiveType.STRING) {
+                code.invokevirtual(CD_STRING, "charAt", method("(I)C"));
+                resultPlan = owner.mapper.map(PrimitiveType.CHAR,
+                        JvmMappingContext.INTERNAL_ARRAY_ELEMENT);
+            } else if (receiverType instanceof ArrayType arrayType) {
+                resultPlan = owner.mapper.map(arrayType.elementType(),
+                        JvmMappingContext.INTERNAL_ARRAY_ELEMENT);
+                code.arrayLoad(typeKind(resultPlan.descriptor()));
+                LyraType elementBase = arrayType.elementType().withoutQualifiers();
+                if (resultPlan.isSingleValue() && elementBase instanceof PrimitiveType primitive
+                        && (primitive == PrimitiveType.U8 || primitive == PrimitiveType.U16)) {
+                    normalizeUnsigned(primitive);
+                }
+            } else {
+                throw invalidPlan(index.span(), "index receiver is neither String nor Array");
+            }
+            JvmTypePlan desired = owner.mapper.map(index.type(), JvmMappingContext.INTERNAL_VALUE);
+            adapt(resultPlan, desired);
+            return desired;
+        }
+
+        private void emitIndexBoundsCheck(JvmTypePlan indexPlan, List<Integer> indexSlots,
+                                          int receiverSlot, Label failure,
+                                          PrimitiveType indexType, JvmType receiverPhysical,
+                                          boolean stringReceiver) {
+            String descriptor = indexPlan.physicalComponents().getFirst().descriptor();
+            if (indexType == PrimitiveType.U64) {
+                loadPhysical(indexPlan.physicalComponents().getFirst(), indexSlots.getFirst());
+                loadLength(receiverSlot, receiverPhysical, stringReceiver);
+                code.i2l();
+                code.invokestatic(CD_LONG, "compareUnsigned", method("(JJ)I"));
+                code.ifge(failure);
+                return;
+            }
+            if (indexType == PrimitiveType.U32) {
+                loadPhysical(indexPlan.physicalComponents().getFirst(), indexSlots.getFirst());
+                loadLength(receiverSlot, receiverPhysical, stringReceiver);
+                code.invokestatic(CD_INTEGER, "compareUnsigned", method("(II)I"));
+                code.ifge(failure);
+                return;
+            }
+            if (descriptor.equals("J")) {
+                loadPhysical(indexPlan.physicalComponents().getFirst(), indexSlots.getFirst());
+                code.lconst_0();
+                code.lcmp();
+                code.iflt(failure);
+                loadPhysical(indexPlan.physicalComponents().getFirst(), indexSlots.getFirst());
+                loadLength(receiverSlot, receiverPhysical, stringReceiver);
+                code.i2l();
+                code.lcmp();
+                code.ifge(failure);
+                return;
+            }
+            loadPhysical(indexPlan.physicalComponents().getFirst(), indexSlots.getFirst());
+            code.iflt(failure);
+            loadPhysical(indexPlan.physicalComponents().getFirst(), indexSlots.getFirst());
+            loadLength(receiverSlot, receiverPhysical, stringReceiver);
+            code.if_icmpge(failure);
+        }
+
+        private void loadLength(int receiverSlot, JvmType receiverPhysical,
+                                boolean stringReceiver) {
+            loadPhysical(receiverPhysical, receiverSlot);
+            if (stringReceiver) {
+                code.invokevirtual(CD_STRING, "length", method("()I"));
+            } else {
+                code.arraylength();
+            }
+        }
+
+        private void loadIndexForJvm(JvmTypePlan indexPlan, List<Integer> slots) {
+            loadPhysical(indexPlan.physicalComponents().getFirst(), slots.getFirst());
+            if (!indexPlan.physicalComponents().getFirst().descriptor().equals("I")) {
+                emitRawConversion(indexPlan.physicalComponents().getFirst().descriptor(), "I");
+            }
         }
 
         private JvmTypePlan emitConstant(IrNode.Constant constant) {
@@ -1294,6 +2016,10 @@ final class JvmBytecodeEmitter {
             if (capture.isSharedCell()) {
                 emitLoadClosureCaptureCell(id);
                 emitCellValue(capture.declarationId());
+            } else if (owner.usesLocalFunctionSlot(capture)) {
+                emitLoadClosureFunctionSlot(id);
+                emitInt(0);
+                code.aaload();
             } else {
                 emitLoadClosureCaptureValue(id, capture.contract().valueType());
             }
@@ -1317,13 +2043,39 @@ final class JvmBytecodeEmitter {
             adapt(value, storage);
             if (stateMethod && isRootDeclaration(id)) {
                 storeStateDeclaration(id, storage);
-            } else {
-                if (metadata.bindingMutability().isMutable() && owner.cells.containsKey(id)) {
-                    throw unsupported(declaration.span(), "captured local mutable cells are outside the scalar slice");
+            } else if (owner.cells.containsKey(id)) {
+                if (localCells.containsKey(id)) {
+                    emitStoreCell(id, storage);
+                } else {
+                    List<Integer> slots = allocateLocals(storage);
+                    storeLocal(storage, slots);
+                    emitNewCell(id, slots);
+                    int cellSlot = allocateLocal(JvmType.reference(cellClassName(id)));
+                    code.astore(cellSlot);
+                    localCells.put(id, cellSlot);
                 }
+                if (isLocalFunctionDeclaration(id)) {
+                    initializedLocalFunctions.add(id);
+                }
+            } else {
                 List<Integer> slots = allocateLocals(storage);
                 storeLocal(storage, slots);
                 locals.put(id, BindingStorage.local(contract.valueType(), storage, slots));
+                if (isLocalFunctionDeclaration(id)) {
+                    initializedLocalFunctions.add(id);
+                }
+                Integer functionSlot = localFunctionSlots.get(id);
+                if (functionSlot != null) {
+                    if (!storage.isSingleValue()
+                            || !storage.physicalComponents().getFirst().isReference()) {
+                        throw invalidPlan(declaration.span(),
+                                "local function linkage has a non-reference value");
+                    }
+                    code.aload(functionSlot);
+                    emitInt(0);
+                    loadPhysical(storage.physicalComponents().getFirst(), slots.getFirst());
+                    code.aastore();
+                }
             }
             emitUnit();
             return owner.mapper.map(declaration.type(), JvmMappingContext.INTERNAL_VALUE);
@@ -1336,22 +2088,101 @@ final class JvmBytecodeEmitter {
         private JvmTypePlan emitRebinding(IrNode.Rebinding rebinding) {
             DeclarationId id = rebinding.targetDeclaration().orElseThrow(() ->
                     invalidPlan(rebinding.span(), "rebinding has no target declaration"));
-            if (rebinding.route().steps().size() != 0) {
-                throw unsupported(rebinding.span(), "aggregate rebinding route reached scalar emitter");
+            if (rebinding.route().isRoot()) {
+                if (!(rootReferenceNode(rebinding.target()) instanceof IrNode.Reference)
+                        && !(rootReferenceNode(rebinding.target()) instanceof IrNode.CaptureReference)) {
+                    throw unsupported(rebinding.span(), "scalar rebinding target is not a binding reference");
+                }
+                // A scalar target has no observable load effect.  The IR still
+                // records it as the first evaluation child; the value is then
+                // evaluated and stored exactly once.
+                JvmTypePlan storage = storagePlan(id);
+                JvmTypePlan value = emitNode(rebinding.value());
+                adapt(value, storage);
+                storeDeclaration(id, storage);
+            } else {
+                if (rebinding.mutationKind().filter(io.mindspice.lyra.compiler.semantic.MutationKind.ARRAY_ELEMENT::equals)
+                        .isEmpty()) {
+                    throw unsupported(rebinding.span(), "aggregate rebinding is not an array-element mutation");
+                }
+                ArrayStoreTarget target = emitArrayStoreTarget(rebinding.target());
+                JvmTypePlan value = emitNode(rebinding.value());
+                adapt(value, target.elementPlan());
+                List<Integer> valueSlots = allocateLocals(target.elementPlan());
+                storeLocal(target.elementPlan(), valueSlots);
+                loadPhysical(target.receiverPlan().physicalComponents().getFirst(), target.receiverSlot());
+                loadIndexForJvm(target.indexPlan(), target.indexSlots());
+                loadPhysical(target.elementPlan().physicalComponents().getFirst(), valueSlots.getFirst());
+                code.arrayStore(typeKind(target.elementPlan().descriptor()));
             }
-            if (!(rootReferenceNode(rebinding.target()) instanceof IrNode.Reference)
-                    && !(rootReferenceNode(rebinding.target()) instanceof IrNode.CaptureReference)) {
-                throw unsupported(rebinding.span(), "scalar rebinding target is not a binding reference");
-            }
-            // The scalar target has no observable load effect.  The IR still
-            // records it as the first evaluation child; the value is then
-            // evaluated and stored exactly once.
-            JvmTypePlan storage = storagePlan(id);
-            JvmTypePlan value = emitNode(rebinding.value());
-            adapt(value, storage);
-            storeDeclaration(id, storage);
             emitUnit();
             return owner.mapper.map(rebinding.type(), JvmMappingContext.INTERNAL_VALUE);
+        }
+
+        /** Emits an aggregate assignment target without reading its final element. */
+        private ArrayStoreTarget emitArrayStoreTarget(IrNode node) {
+            if (node instanceof IrNode.RuntimeCheck check) {
+                FlowSiteId siteId = check.failureSiteId().orElseThrow(() ->
+                        invalidPlan(check.span(), "array assignment check has no failure site"));
+                IrFailureSite failure = owner.failureSites.get(siteId);
+                if (failure == null || failure.checkKind() != check.checkKind()
+                        || check.checkKind() != IrCheckKind.BOUNDS
+                        || !failure.failureCode().equals(check.failureCode())
+                        || !"LYR-BOUNDS".equals(check.failureCode())
+                        || !failure.span().equals(check.span())) {
+                    throw invalidPlan(check.span(), "array assignment check disagrees with its failure site");
+                }
+                activeFailureSites.push(failure);
+                try {
+                    return emitArrayStoreTarget(check.operand());
+                } finally {
+                    activeFailureSites.pop();
+                }
+            }
+            if (!(node instanceof IrNode.IndexAccess index)) {
+                throw unsupported(node.span(), "array assignment target is not an index access");
+            }
+            IrFailureSite failure = activeFailureSites.peek();
+            if (failure == null || failure.checkKind() != IrCheckKind.BOUNDS
+                    || !"LYR-BOUNDS".equals(failure.failureCode())) {
+                throw invalidPlan(index.span(), "array assignment has no active bounds failure site");
+            }
+            JvmTypePlan receiverPlan = owner.mapper.map(index.receiver().type(),
+                    JvmMappingContext.INTERNAL_VALUE);
+            if (!receiverPlan.isSingleValue()
+                    || !receiverPlan.physicalComponents().getFirst().isReference()) {
+                throw invalidPlan(index.span(), "array assignment receiver has no JVM reference representation");
+            }
+            JvmTypePlan indexPlan = owner.mapper.map(index.index().type(),
+                    JvmMappingContext.INTERNAL_VALUE);
+            if (!indexPlan.isSingleValue()
+                    || !indexPlan.physicalComponents().getFirst().isPrimitive()) {
+                throw invalidPlan(index.span(), "array assignment index has no JVM integer representation");
+            }
+            int receiverSlot = allocateLocal(receiverPlan.physicalComponents().getFirst());
+            emitAt(index.receiver(), receiverPlan);
+            storePhysical(receiverPlan.physicalComponents().getFirst(), receiverSlot);
+            List<Integer> indexSlots = allocateLocals(indexPlan);
+            emitAt(index.index(), indexPlan);
+            PrimitiveType indexType = primitiveBase(index.index().type());
+            if (indexType == PrimitiveType.U8 || indexType == PrimitiveType.U16) {
+                normalizeUnsigned(indexType);
+            }
+            storeLocal(indexPlan, indexSlots);
+            Label boundsFailure = failureLabel(index.span(), failure.failureCode(),
+                    "index is outside the aggregate bounds");
+            LyraType receiverType = index.receiver().type().withoutQualifiers();
+            if (!(receiverType instanceof ArrayType)) {
+                throw invalidPlan(index.span(), "array assignment receiver is not an Array");
+            }
+            emitIndexBoundsCheck(indexPlan, indexSlots, receiverSlot, boundsFailure,
+                    primitiveBase(index.index().type()), receiverPlan.physicalComponents().getFirst(), false);
+            JvmTypePlan elementPlan = owner.mapper.map(((ArrayType) receiverType).elementType(),
+                    JvmMappingContext.INTERNAL_ARRAY_ELEMENT);
+            if (!elementPlan.isSingleValue() || "V".equals(elementPlan.descriptor())) {
+                throw invalidPlan(index.span(), "array assignment element has no JVM representation");
+            }
+            return new ArrayStoreTarget(receiverPlan, receiverSlot, indexPlan, indexSlots, elementPlan);
         }
 
         private IrNode rootReferenceNode(IrNode node) {
@@ -1366,10 +2197,172 @@ final class JvmBytecodeEmitter {
                 emitUnit();
                 return owner.mapper.map(type, JvmMappingContext.INTERNAL_VALUE);
             }
+            prepareLocalFunctionLinkage(forms);
             for (int index = 0; index < forms.size() - 1; index++) {
-                discard(emitNode(forms.get(index)));
+                IrNode form = forms.get(index);
+                if (skipAlreadyInitializedLocalFunction(form)) {
+                    discardUnitForm();
+                    continue;
+                }
+                ensureFunctionsReferencedBy(form);
+                discard(emitNode(form));
             }
-            return emitNode(forms.getLast());
+            IrNode last = forms.getLast();
+            if (skipAlreadyInitializedLocalFunction(last)) {
+                emitUnit();
+                return owner.mapper.map(type, JvmMappingContext.INTERNAL_VALUE);
+            }
+            ensureFunctionsReferencedBy(last);
+            return emitNode(last);
+        }
+
+        /**
+         * Function signatures are visible throughout their lexical scope. A
+         * typed slot therefore exists before any closure in that scope is
+         * built, allowing self/forward/mutual captures without constructing a
+         * closure around a null peer. Mutable functions already use their
+         * generated shared-cell shape; only their cell shell is preallocated.
+         */
+        private void prepareLocalFunctionLinkage(List<IrNode> forms) {
+            for (IrNode form : forms) {
+                if (form instanceof IrNode.Declaration declaration
+                        && declaration.declarationId().isPresent()
+                        && isLocalFunctionDeclaration(declaration.declarationId().orElseThrow())) {
+                    localFunctionForms.put(declaration.declarationId().orElseThrow(), declaration);
+                }
+            }
+            for (IrNode form : forms) {
+                if (!(form instanceof IrNode.Declaration declarationNode)
+                        || declarationNode.declarationId().isEmpty()) {
+                    continue;
+                }
+                DeclarationId id = declarationNode.declarationId().orElseThrow();
+                IrDeclaration declaration = declarations.get(id);
+                if (declaration == null || isRootDeclaration(id)
+                        || !declaration.signaturePredeclared()
+                        || declaration.initializerLambda().isEmpty()
+                        || declaration.contract().map(BindingContract::valueType)
+                        .map(LyraType::withoutQualifiers)
+                        .filter(FunctionType.class::isInstance)
+                        .isEmpty()) {
+                    continue;
+                }
+                if (owner.cells.containsKey(id)) {
+                    preallocateFunctionCell(id);
+                } else if (!localFunctionSlots.containsKey(id)) {
+                    FunctionType function = functionBase(
+                            declaration.contract().orElseThrow().valueType());
+                    String functionName = owner.plan.functionInterfaces()
+                            .get(function.canonicalSpelling());
+                    if (functionName == null) {
+                        throw invalidPlan(declaration.span(),
+                                "local function slot has no generated interface");
+                    }
+                    emitInt(1);
+                    code.anewarray(cd(functionName));
+                    int slot = allocateLocal(JvmType.array(
+                            "L" + functionName.replace('.', '/') + ";"));
+                    code.astore(slot);
+                    localFunctionSlots.put(id, slot);
+                }
+            }
+        }
+
+        private boolean isLocalFunctionDeclaration(DeclarationId id) {
+            IrDeclaration declaration = declarations.get(id);
+            return declaration != null
+                    && !isRootDeclaration(id)
+                    && declaration.signaturePredeclared()
+                    && declaration.initializerLambda().isPresent()
+                    && declaration.contract().map(BindingContract::valueType)
+                    .map(LyraType::withoutQualifiers)
+                    .filter(FunctionType.class::isInstance)
+                    .isPresent();
+        }
+
+        private boolean skipAlreadyInitializedLocalFunction(IrNode form) {
+            return form instanceof IrNode.Declaration declaration
+                    && declaration.declarationId().filter(initializedLocalFunctions::contains).isPresent()
+                    && isLocalFunctionDeclaration(declaration.declarationId().orElseThrow());
+        }
+
+        private void discardUnitForm() {
+            emitUnit();
+            discard(owner.mapper.map(PrimitiveType.UNIT, JvmMappingContext.INTERNAL_VALUE));
+        }
+
+        /**
+         * A forward function slot is only materialized when the current eager
+         * expression can reach it.  This preserves source-ordered immutable
+         * captures while making predeclared function references executable
+         * before their textual declaration.
+         */
+        private void ensureFunctionsReferencedBy(IrNode form) {
+            for (IrNode node : io.mindspice.lyra.compiler.ir.IrTraversal.preOrder(form)) {
+                if (node instanceof IrNode.Reference reference) {
+                    reference.targetDeclaration().ifPresent(this::ensureLocalFunctionInitialized);
+                } else if (node instanceof IrNode.CaptureReference reference) {
+                    reference.declarationId().ifPresent(this::ensureLocalFunctionInitialized);
+                } else if (node instanceof IrNode.DirectCall call) {
+                    call.targetDeclaration().ifPresent(this::ensureLocalFunctionInitialized);
+                }
+            }
+        }
+
+        private void ensureLocalFunctionInitialized(DeclarationId id) {
+            if (!isLocalFunctionDeclaration(id)
+                    || !localFunctionForms.containsKey(id)
+                    || initializedLocalFunctions.contains(id)) {
+                return;
+            }
+            IrNode.Declaration form = localFunctionForms.get(id);
+            // Function captures carry preallocated slots/cells, so a recursive
+            // capture cycle needs no eager value recursion.  The outermost
+            // walk will materialize each declaration once and the later slot
+            // stores complete the SCC linkage.
+            if (!initializingLocalFunctions.add(id)) {
+                return;
+            }
+            try {
+                IrDeclaration declaration = declarations.get(id);
+                io.mindspice.lyra.compiler.ir.IrLambda lambda = owner.lambdas.values().stream()
+                        .filter(value -> value.id().equals(declaration.initializerLambda().orElseThrow()))
+                        .findFirst().orElseThrow(() -> invalidPlan(form.span(),
+                                "local function initializer has no lambda metadata"));
+                for (CaptureId captureId : lambda.captures()) {
+                    IrCapture capture = captures.get(captureId);
+                    if (capture == null) {
+                        throw invalidPlan(form.span(), "local function capture is absent: " + captureId);
+                    }
+                    ensureLocalFunctionInitialized(capture.declarationId());
+                }
+                discard(emitDeclaration(form));
+            } finally {
+                initializingLocalFunctions.remove(id);
+            }
+        }
+
+        private void preallocateFunctionCell(DeclarationId id) {
+            if (localCells.containsKey(id)) {
+                return;
+            }
+            String cellName = cellClassName(id);
+            GeneratedClassPlan cell = owner.plan.classPlan(cellName).orElseThrow();
+            GeneratedMemberPlan constructor = cell.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.CELL_CONSTRUCTOR)
+                    .findFirst().orElseThrow();
+            if (!constructor.descriptor().startsWith("(L")
+                    || !constructor.descriptor().endsWith(";)V")) {
+                throw invalidPlan(declarations.get(id).span(),
+                        "local function cell has an invalid constructor");
+            }
+            code.new_(cd(cellName));
+            code.dup();
+            code.aconst_null();
+            code.invokespecial(cd(cellName), "<init>", method(constructor.descriptor()));
+            int slot = allocateLocal(JvmType.reference(cellName));
+            code.astore(slot);
+            localCells.put(id, slot);
         }
 
         private JvmTypePlan emitOperator(IrNode.Operator operator) {
@@ -1716,7 +2709,17 @@ final class JvmBytecodeEmitter {
                 case PLUS -> { if (wide(primitive)) code.ladd(); else code.iadd(); }
                 case MINUS -> { if (wide(primitive)) code.lsub(); else code.isub(); }
                 case ASTERISK -> { if (wide(primitive)) code.lmul(); else code.imul(); }
-                case SLASH -> { if (wide(primitive)) code.ldiv(); else code.idiv(); }
+                case SLASH -> {
+                    if (primitive == PrimitiveType.U32) {
+                        code.invokestatic(CD_INTEGER, "divideUnsigned", method("(II)I"));
+                    } else if (primitive == PrimitiveType.U64) {
+                        code.invokestatic(CD_LONG, "divideUnsigned", method("(JJ)J"));
+                    } else if (wide(primitive)) {
+                        code.ldiv();
+                    } else {
+                        code.idiv();
+                    }
+                }
                 case PERCENT -> {
                     if (primitive == PrimitiveType.U32) {
                         code.invokestatic(CD_INTEGER, "remainderUnsigned", method("(II)I"));
@@ -1946,6 +2949,10 @@ final class JvmBytecodeEmitter {
                         conversion.span());
                 return target;
             }
+            if (conversion.step() == ConversionStep.MUTABILITY_DROP) {
+                adapt(actual, target);
+                return target;
+            }
             PrimitiveType sourcePrimitive = primitiveBase(conversion.sourceType());
             PrimitiveType targetPrimitive = primitiveBase(conversion.type());
             if (sourcePrimitive.isNumeric() && targetPrimitive.isNumeric()) {
@@ -2026,13 +3033,12 @@ final class JvmBytecodeEmitter {
                 loadPrimitive(source, slot);
                 emitFloatingBound(source, target, true);
                 if (source == PrimitiveType.F32) code.fcmpl(); else code.dcmpl();
-                Label upperFailure = failureLabel(span, "LYR-CONVERT",
-                        "numeric conversion is out of range");
-                if (target == PrimitiveType.I64 || target == PrimitiveType.U64) {
-                    code.ifge(upperFailure);
-                } else {
-                    code.ifgt(upperFailure);
-                }
+                // The upper bound is the exclusive mathematical boundary
+                // (2^N for both signed and unsigned N-bit integers).  Using
+                // maxValue with an F32 operand can round I32/U32's max up to
+                // the invalid boundary and accidentally admit it.
+                code.ifge(failureLabel(span, "LYR-CONVERT",
+                        "numeric conversion is out of range"));
                 loadPrimitive(source, slot);
                 emitPrimitiveConversion(source, target);
                 int roundTrip = allocateLocal(target);
@@ -2169,20 +3175,10 @@ final class JvmBytecodeEmitter {
         }
 
         private void emitFloatingBound(PrimitiveType source, PrimitiveType target, boolean upper) {
-            if (upper && target == PrimitiveType.I64) {
-                emitFloatingConstant(source, 0x1.0p63);
-                return;
-            }
-            if (upper && target == PrimitiveType.U64) {
-                emitFloatingConstant(source, 0x1.0p64);
-                return;
-            }
-            BigDecimal value;
-            if (upper) {
-                value = new BigDecimal(target.numericDomain().orElseThrow().maximumInteger());
-            } else {
-                value = new BigDecimal(target.numericDomain().orElseThrow().minimumInteger());
-            }
+            BigInteger boundary = upper
+                    ? target.numericDomain().orElseThrow().maximumInteger().add(BigInteger.ONE)
+                    : target.numericDomain().orElseThrow().minimumInteger();
+            BigDecimal value = new BigDecimal(boundary);
             if (source == PrimitiveType.F32) code.loadConstant(value.floatValue());
             else code.loadConstant(value.doubleValue());
         }
@@ -2226,12 +3222,15 @@ final class JvmBytecodeEmitter {
             emitPredicateBranch(predicate, thenLabel, elseLabel);
             code.labelBinding(thenLabel);
             Map<DeclarationId, BindingStorage> saved = new HashMap<>(locals);
+            Map<DeclarationId, Integer> savedCells = new HashMap<>(localCells);
             installPredicateBinding(branch, predicate);
             JvmTypePlan thenValue = emitNode(branch.thenBranch());
             adapt(thenValue, target);
             code.goto_(end);
             locals.clear();
             locals.putAll(saved);
+            localCells.clear();
+            localCells.putAll(savedCells);
             code.labelBinding(elseLabel);
             if (branch.elseBranch().isPresent()) {
                 JvmTypePlan elseValue = emitNode(branch.elseBranch().orElseThrow());
@@ -2328,9 +3327,6 @@ final class JvmBytecodeEmitter {
                 throw invalidPlan(call.span(), "direct call target declaration is absent");
             }
             FunctionType function = functionBase(declaration.contract().orElseThrow().valueType());
-            if (!declaration.moduleId().equals(module.moduleId())) {
-                throw unsupported(call.span(), "cross-module direct calls are outside Phase 15");
-            }
             emitLoadDeclaration(id, owner.mapper.map(declaration.contract().orElseThrow().valueType(),
                     JvmMappingContext.INTERNAL_VALUE));
             JvmSignaturePlan signature = owner.mapper.mapSignature(function.signature(),
@@ -2354,7 +3350,10 @@ final class JvmBytecodeEmitter {
             FunctionType function = functionBase(call.target().type());
             JvmSignaturePlan signature = owner.mapper.mapSignature(function.signature(),
                     JvmAbiBoundary.JAVA_VISIBLE);
-            emitAt(call.target(), owner.mapper.map(call.target().type(), JvmMappingContext.INTERNAL_VALUE));
+            emitAt(call.target(), owner.mapper.map(
+                    call.target().type(), JvmMappingContext.INTERNAL_VALUE));
+            recordCallFailureFrame(call.span(),
+                    () -> authenticateGeneratedFunctionValue(function));
             for (int index = 0; index < function.arity(); index++) {
                 emitAt(call.arguments().get(index), signature.parameters().get(index));
             }
@@ -2367,14 +3366,29 @@ final class JvmBytecodeEmitter {
             return result;
         }
 
+        private void authenticateGeneratedFunctionValue(FunctionType function) {
+            emitCurrentAuthority();
+            code.ldc(function.signature().canonicalSpelling());
+            code.invokestatic(CD_SIGNATURE, "parse", method(
+                    "(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+            code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT,
+                    "requireAuthenticatedForGeneratedInvocation", method(
+                            "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
+                                    + RUNTIME + "LyraSignature;)L" + RUNTIME
+                                    + "LyraClosure;"));
+            code.checkcast(cd(owner.plan.functionInterfaces().get(
+                    function.canonicalSpelling())));
+        }
+
         private void recordCallFailureFrame(SourceSpan span, Runnable invocation) {
             Label start = code.newLabel();
             Label end = code.newLabel();
             Label handler = code.newLabel();
+            Label stackHandler = code.newLabel();
             code.labelBinding(start);
             invocation.run();
             code.labelBinding(end);
-            callFailureHandlers.add(new CallFailureHandler(start, end, handler, span));
+            callFailureHandlers.add(new CallFailureHandler(start, end, handler, stackHandler, span));
         }
 
         private JvmTypePlan emitLambda(IrNode.Lambda lambdaNode) {
@@ -2395,6 +3409,8 @@ final class JvmBytecodeEmitter {
                 if (capture == null) throw invalidPlan(lambdaNode.span(), "lambda capture is absent");
                 if (capture.isSharedCell()) {
                     emitLoadCellForDeclaration(capture.declarationId());
+                } else if (owner.usesLocalFunctionSlot(capture)) {
+                    emitLoadFunctionSlotForDeclaration(capture.declarationId());
                 } else {
                     JvmTypePlan capturePlan = owner.mapper.map(capture.contract().valueType(),
                             JvmMappingContext.INTERNAL_CAPTURE);
@@ -2442,22 +3458,62 @@ final class JvmBytecodeEmitter {
         private JvmTypePlan emitAccess(IrNode.Access access) {
             if (access.accessKind() == AccessKind.MEMBER_VALUE
                     && access.memberName().filter("length"::equals).isPresent()) {
-                emitAt(access.receiver().orElseThrow(), owner.mapper.map(
-                        access.receiver().orElseThrow().type(), JvmMappingContext.INTERNAL_VALUE));
-                code.invokevirtual(CD_STRING, "length", method("()I"));
+                IrNode receiver = access.receiver().orElseThrow();
+                JvmTypePlan receiverPlan = owner.mapper.map(receiver.type(),
+                        JvmMappingContext.INTERNAL_VALUE);
+                emitAt(receiver, receiverPlan);
+                if (receiver.type().withoutQualifiers() == PrimitiveType.STRING) {
+                    code.invokevirtual(CD_STRING, "length", method("()I"));
+                } else if (receiver.type().withoutQualifiers() instanceof ArrayType) {
+                    code.arraylength();
+                } else {
+                    throw invalidPlan(access.span(), "length access has an invalid receiver type");
+                }
                 return owner.mapper.map(access.type(), JvmMappingContext.INTERNAL_VALUE);
             }
-            DeclarationId id = access.declarationId().orElseThrow(() ->
-                    invalidPlan(access.span(), "namespace access has no declaration identity"));
+            if (access.tupleIndex().isPresent()) {
+                IrNode receiver = access.receiver().orElseThrow();
+                LyraType receiverType = receiver.type().withoutQualifiers();
+                if (!(receiverType instanceof TupleType tuple)) {
+                    throw invalidPlan(access.span(), "tuple access has a non-tuple receiver");
+                }
+                int index = access.tupleIndex().orElseThrow().intValueExact();
+                if (index < 0 || index >= tuple.arity()) {
+                    throw invalidPlan(access.span(), "tuple access index is outside the tuple shape");
+                }
+                JvmTypePlan receiverPlan = owner.mapper.map(receiver.type(),
+                        JvmMappingContext.INTERNAL_VALUE);
+                JvmTypePlan fieldPlan = owner.mapper.map(tuple.memberType(index),
+                        JvmMappingContext.TUPLE_FIELD);
+                emitAt(receiver, receiverPlan);
+                String tupleName = owner.mapper.names().tupleBinaryName(tuple.canonicalSpelling());
+                code.invokevirtual(cd(tupleName), "$lyra$get$" + index,
+                        method("()" + fieldPlan.descriptor()));
+                JvmTypePlan desired = owner.mapper.map(access.type(), JvmMappingContext.INTERNAL_VALUE);
+                adapt(fieldPlan, desired);
+                return desired;
+            }
             JvmTypePlan desired = owner.mapper.map(access.type(), JvmMappingContext.INTERNAL_VALUE);
+            if (access.accessKind() == AccessKind.NAMESPACE_VALUE) {
+                ModuleId targetModule = access.moduleId().orElseThrow(() ->
+                        invalidPlan(access.span(), "namespace access has no target module"));
+                String name = access.memberName().orElseThrow(() ->
+                        invalidPlan(access.span(), "namespace access has no export name"));
+                IrExport export = owner.ir.exports().stream()
+                        .filter(value -> value.moduleId().equals(targetModule)
+                                && value.name().equals(name))
+                        .findFirst().orElseThrow(() -> invalidPlan(access.span(),
+                                "namespace access has no matching export"));
+                emitLoadDeclarationFromModule(targetModule, export.declarationId(), desired);
+                return desired;
+            }
+            DeclarationId id = access.declarationId().orElseThrow(() ->
+                    invalidPlan(access.span(), "member access has no declaration identity"));
             emitLoadDeclaration(id, desired);
             return desired;
         }
 
         private JvmTypePlan emitRuntimeCheck(IrNode.RuntimeCheck check) {
-            if (check.checkKind() == IrCheckKind.BOUNDS) {
-                throw unsupported(check.span(), "bounds checks belong to the aggregate backend");
-            }
             FlowSiteId siteId = check.failureSiteId().orElseThrow(() ->
                     invalidPlan(check.span(), "runtime check has no IR failure-site identity"));
             IrFailureSite failure = owner.failureSites.get(siteId);
@@ -2482,31 +3538,61 @@ final class JvmBytecodeEmitter {
                     emitReturn(owner.mapper.map(PrimitiveType.UNIT, JvmMappingContext.INTERNAL_VALUE));
                     return;
                 }
+                prepareLocalFunctionLinkage(sequence.forms());
                 for (IrNode form : sequence.forms().subList(0, sequence.forms().size() - 1)) {
+                    if (skipAlreadyInitializedLocalFunction(form)) {
+                        discardUnitForm();
+                        continue;
+                    }
+                    ensureFunctionsReferencedBy(form);
                     discard(emitNode(form));
                 }
-                emitTail(sequence.forms().getLast());
+                IrNode last = sequence.forms().getLast();
+                if (skipAlreadyInitializedLocalFunction(last)) {
+                    emitUnit();
+                    emitReturn(owner.mapper.map(PrimitiveType.UNIT, JvmMappingContext.INTERNAL_VALUE));
+                } else {
+                    ensureFunctionsReferencedBy(last);
+                    emitTail(last);
+                }
                 return;
             }
             if (node instanceof IrNode.Block block) {
                 Map<DeclarationId, BindingStorage> saved = new HashMap<>(locals);
+                Map<DeclarationId, Integer> savedCells = new HashMap<>(localCells);
+                Map<DeclarationId, Integer> savedFunctionSlots =
+                        new HashMap<>(localFunctionSlots);
                 if (block.forms().isEmpty()) {
                     emitUnit();
                     emitReturn(owner.mapper.map(PrimitiveType.UNIT, JvmMappingContext.INTERNAL_VALUE));
                 } else {
+                    prepareLocalFunctionLinkage(block.forms());
                     for (IrNode form : block.forms().subList(0, block.forms().size() - 1)) {
+                        if (skipAlreadyInitializedLocalFunction(form)) {
+                            discardUnitForm();
+                            continue;
+                        }
+                        ensureFunctionsReferencedBy(form);
                         discard(emitNode(form));
                     }
-                    emitTail(block.forms().getLast());
+                    IrNode last = block.forms().getLast();
+                    if (skipAlreadyInitializedLocalFunction(last)) {
+                        emitUnit();
+                        emitReturn(owner.mapper.map(PrimitiveType.UNIT, JvmMappingContext.INTERNAL_VALUE));
+                    } else {
+                        ensureFunctionsReferencedBy(last);
+                        emitTail(last);
+                    }
                 }
                 locals.clear();
                 locals.putAll(saved);
+                localCells.clear();
+                localCells.putAll(savedCells);
+                localFunctionSlots.clear();
+                localFunctionSlots.putAll(savedFunctionSlots);
                 return;
             }
             if (node instanceof IrNode.RuntimeCheck check) {
-                if (check.checkKind() == IrCheckKind.BOUNDS) {
-                    throw unsupported(check.span(), "bounds checks belong to the aggregate backend");
-                }
                 FlowSiteId siteId = check.failureSiteId().orElseThrow(() ->
                         invalidPlan(check.span(), "runtime check has no IR failure-site identity"));
                 IrFailureSite failure = owner.failureSites.get(siteId);
@@ -2549,9 +3635,11 @@ final class JvmBytecodeEmitter {
             emitPredicateBranch(predicate, thenLabel, elseLabel);
             code.labelBinding(thenLabel);
             Map<DeclarationId, BindingStorage> saved = new HashMap<>(locals);
+            Map<DeclarationId, Integer> savedCells = new HashMap<>(localCells);
             installPredicateBinding(branch, predicate);
             emitTail(branch.thenBranch());
             locals.clear(); locals.putAll(saved);
+            localCells.clear(); localCells.putAll(savedCells);
             code.labelBinding(elseLabel);
             if (branch.elseBranch().isPresent()) emitTail(branch.elseBranch().orElseThrow());
             else {
@@ -2681,6 +3769,17 @@ final class JvmBytecodeEmitter {
                 code.goto_(thenLabel);
                 return;
             }
+            if (base instanceof ArrayType) {
+                if (logical.hasQualifier(io.mindspice.lyra.compiler.types.TypeQualifier.NIL)) {
+                    loadPhysical(physical, slot);
+                    code.ifnull(elseLabel);
+                }
+                loadPhysical(physical, slot);
+                code.arraylength();
+                code.ifeq(elseLabel);
+                code.goto_(thenLabel);
+                return;
+            }
             if (base instanceof FunctionType) {
                 loadPhysical(physical, slot);
                 code.ifnonnull(thenLabel);
@@ -2703,10 +3802,15 @@ final class JvmBytecodeEmitter {
                 code.goto_(elseLabel);
                 return;
             }
-            if (base == PrimitiveType.BOOL || base == PrimitiveType.CHAR) {
+            if (base == PrimitiveType.BOOL) {
                 loadPhysical(physical, slot);
                 code.ifne(thenLabel);
                 code.goto_(elseLabel);
+                return;
+            }
+            if (base == PrimitiveType.CHAR) {
+                // Every non-nil character is truthy, including U+0000.
+                code.goto_(thenLabel);
                 return;
             }
             if (physical.isReference()) {
@@ -2723,18 +3827,20 @@ final class JvmBytecodeEmitter {
             if (token == TokenKind.IDENTITY_EQUAL || token == TokenKind.IDENTITY_NOT_EQUAL) {
                 return emitIdentityComparison(operator);
             }
-            if (operator.operands().getFirst().type().withoutQualifiers() == PrimitiveType.STRING) {
-                return emitValueEquality(operator, true);
+            LyraType firstType = operator.operands().getFirst().type().withoutQualifiers();
+            if (firstType == PrimitiveType.STRING) {
+                return emitValueEquality(operator);
             }
-            if (primitiveBase(operator.operands().getFirst().type()).isNumeric()
-                    || primitiveBase(operator.operands().getFirst().type()) == PrimitiveType.BOOL
-                    || primitiveBase(operator.operands().getFirst().type()) == PrimitiveType.CHAR) {
-                if (token == TokenKind.EQUAL_EQUAL || token == TokenKind.NOT_EQUAL) {
-                    return emitValueEquality(operator, false);
+            if (firstType instanceof PrimitiveType primitive) {
+                if (primitive.isNumeric() || primitive == PrimitiveType.BOOL
+                        || primitive == PrimitiveType.CHAR) {
+                    if (token == TokenKind.EQUAL_EQUAL || token == TokenKind.NOT_EQUAL) {
+                        return emitValueEquality(operator);
+                    }
+                    return emitNumericComparison(operator);
                 }
-                return emitNumericComparison(operator);
             }
-            return emitValueEquality(operator, false);
+            return emitValueEquality(operator);
         }
 
         private JvmTypePlan emitIdentityComparison(IrNode.Operator operator) {
@@ -2762,7 +3868,7 @@ final class JvmBytecodeEmitter {
             return owner.mapper.map(operator.type(), JvmMappingContext.INTERNAL_VALUE);
         }
 
-        private JvmTypePlan emitValueEquality(IrNode.Operator operator, boolean strings) {
+        private JvmTypePlan emitValueEquality(IrNode.Operator operator) {
             List<BindingStorage> values = new ArrayList<>();
             for (IrNode operand : operator.operands()) {
                 JvmTypePlan physical = owner.mapper.map(operand.type(), JvmMappingContext.INTERNAL_VALUE);
@@ -2777,55 +3883,147 @@ final class JvmBytecodeEmitter {
             for (int index = 1; index < values.size(); index++) {
                 BindingStorage left = values.get(index - 1);
                 BindingStorage right = values.get(index);
-                if (left.physical().isSplitValue() || right.physical().isSplitValue()) {
-                    emitSplitEquality(left, right, falseLabel, equal, operator.span());
-                } else if (strings || left.physical().physicalComponents().getFirst().isReference()) {
-                    loadLocal(left);
-                    loadLocal(right);
-                    code.invokestatic(CD_OBJECTS, "equals",
-                            method("(Ljava/lang/Object;Ljava/lang/Object;)Z"));
-                    code.branch(equal ? java.lang.classfile.Opcode.IFEQ
-                            : java.lang.classfile.Opcode.IFNE, falseLabel);
-                } else {
-                    loadLocal(left);
-                    normalizeEqualityValue(left);
-                    loadLocal(right);
-                    normalizeEqualityValue(right);
-                    emitPrimitiveEqualityBranch(left.physical().physicalComponents().getFirst(),
-                            equal, falseLabel);
-                }
+                Label pairEqual = code.newLabel();
+                Label pairUnequal = code.newLabel();
+                Label pairEnd = code.newLabel();
+                emitEqualityPair(left, right, pairEqual, pairUnequal, operator.span());
+                code.labelBinding(pairEqual);
+                code.goto_(equal ? pairEnd : falseLabel);
+                code.labelBinding(pairUnequal);
+                code.goto_(equal ? falseLabel : pairEnd);
+                code.labelBinding(pairEnd);
             }
             emitInt(1); code.goto_(end);
             code.labelBinding(falseLabel); emitInt(0); code.labelBinding(end);
             return owner.mapper.map(operator.type(), JvmMappingContext.INTERNAL_VALUE);
         }
 
-        private void emitSplitEquality(BindingStorage left, BindingStorage right,
-                                       Label falseLabel, boolean equal, SourceSpan span) {
-            if (left.physical().isSplitValue() != right.physical().isSplitValue()) {
+        private void emitEqualityPair(BindingStorage left, BindingStorage right,
+                                      Label equal, Label unequal, SourceSpan span) {
+            LyraType base = left.logical().withoutQualifiers();
+            if (base instanceof ArrayType || base instanceof TupleType) {
+                emitStructuralEquality(left, right, equal, unequal, span);
+                return;
+            }
+            if (left.physical().isSplitValue() || right.physical().isSplitValue()) {
+                emitNullablePrimitiveEquality(left, right, equal, unequal, span);
+                return;
+            }
+            if (base instanceof FunctionType) {
+                loadLocal(left);
+                loadLocal(right);
+                code.if_acmpeq(equal);
+                code.goto_(unequal);
+                return;
+            }
+            if (left.physical().physicalComponents().getFirst().isReference()) {
+                if (base instanceof PrimitiveType primitive
+                        && primitive != PrimitiveType.STRING
+                        && primitive != PrimitiveType.UNIT
+                        && left.logical().hasQualifier(
+                        io.mindspice.lyra.compiler.types.TypeQualifier.NIL)) {
+                    emitBoxedNullablePrimitiveEquality(
+                            left, right, primitive, equal, unequal);
+                    return;
+                }
+                loadLocal(left);
+                loadLocal(right);
+                code.invokestatic(CD_OBJECTS, "equals",
+                        method("(Ljava/lang/Object;Ljava/lang/Object;)Z"));
+                code.ifne(equal);
+                code.goto_(unequal);
+                return;
+            }
+            loadLocal(left);
+            normalizeEqualityValue(left);
+            loadLocal(right);
+            normalizeEqualityValue(right);
+            emitPrimitiveEqualityToLabels(left.physical().physicalComponents().getFirst(),
+                    equal, unequal, span);
+        }
+
+        private void emitBoxedNullablePrimitiveEquality(
+                BindingStorage left,
+                BindingStorage right,
+                PrimitiveType primitive,
+                Label equal,
+                Label unequal) {
+            Label leftPresent = code.newLabel();
+            loadLocal(left);
+            code.ifnonnull(leftPresent);
+            loadLocal(right);
+            code.ifnull(equal);
+            code.goto_(unequal);
+
+            code.labelBinding(leftPresent);
+            loadLocal(right);
+            code.ifnull(unequal);
+            JvmType valueType = owner.mapper.map(
+                            primitive, JvmMappingContext.INTERNAL_VALUE)
+                    .physicalComponents().getFirst();
+            loadLocal(left);
+            unboxPrimitive(valueType);
+            if (primitive == PrimitiveType.U8 || primitive == PrimitiveType.U16) {
+                normalizeUnsigned(primitive);
+            }
+            loadLocal(right);
+            unboxPrimitive(valueType);
+            if (primitive == PrimitiveType.U8 || primitive == PrimitiveType.U16) {
+                normalizeUnsigned(primitive);
+            }
+            emitPrimitiveEqualityToLabels(valueType, equal, unequal, module.span());
+        }
+
+        private void emitNullablePrimitiveEquality(BindingStorage left, BindingStorage right,
+                                                   Label equal, Label unequal, SourceSpan span) {
+            if (left.physical().isSplitValue() != right.physical().isSplitValue()
+                    || !left.physical().isSplitValue()) {
                 throw unsupported(span, "incompatible nullable scalar equality representation");
             }
-            if (!left.physical().isSplitValue()) {
-                throw unsupported(span, "unsupported nullable reference equality representation");
-            }
+            loadPhysical(left.physical().physicalComponents().getFirst(), left.slots().getFirst());
+            loadPhysical(right.physical().physicalComponents().getFirst(), right.slots().getFirst());
+            Label samePresence = code.newLabel();
+            code.if_icmpeq(samePresence);
+            code.goto_(unequal);
+            code.labelBinding(samePresence);
+            Label bothNil = code.newLabel();
             Label bothPresent = code.newLabel();
-            Label equalValue = code.newLabel();
-            Label unequal = code.newLabel();
             loadPhysical(left.physical().physicalComponents().getFirst(), left.slots().getFirst());
+            code.ifeq(bothNil);
             loadPhysical(right.physical().physicalComponents().getFirst(), right.slots().getFirst());
-            code.if_icmpeq(bothPresent);
-            code.goto_(equal ? falseLabel : equalValue);
+            code.ifne(bothPresent);
+            code.goto_(unequal);
+            code.labelBinding(bothNil);
+            code.goto_(equal);
             code.labelBinding(bothPresent);
-            loadPhysical(left.physical().physicalComponents().getFirst(), left.slots().getFirst());
-            code.ifeq(equal ? equalValue : falseLabel);
-            loadPhysical(right.physical().physicalComponents().getFirst(), right.slots().getFirst());
-            code.ifeq(equal ? falseLabel : equalValue);
             loadPhysical(left.physical().physicalComponents().get(1), left.slots().get(1));
             normalizeEqualityValue(left);
             loadPhysical(right.physical().physicalComponents().get(1), right.slots().get(1));
             normalizeEqualityValue(right);
-            emitPrimitiveEqualityBranch(left.physical().physicalComponents().get(1), equal, falseLabel);
-            code.labelBinding(equalValue);
+            emitPrimitiveEqualityToLabels(left.physical().physicalComponents().get(1),
+                    equal, unequal, span);
+        }
+
+        private void emitPrimitiveEqualityToLabels(JvmType type, Label equal,
+                                                   Label unequal, SourceSpan span) {
+            switch (type.kind()) {
+                case LONG -> {
+                    code.lcmp();
+                    code.ifeq(equal);
+                }
+                case FLOAT -> {
+                    code.fcmpl();
+                    code.ifeq(equal);
+                }
+                case DOUBLE -> {
+                    code.dcmpl();
+                    code.ifeq(equal);
+                }
+                case BYTE, SHORT, INT, BOOLEAN, CHAR -> code.if_icmpeq(equal);
+                default -> throw unsupported(span,
+                        "value equality requires a primitive scalar, got " + type);
+            }
+            code.goto_(unequal);
         }
 
         private void normalizeEqualityValue(BindingStorage value) {
@@ -2862,6 +4060,113 @@ final class JvmBytecodeEmitter {
                         "value equality requires a primitive scalar, got " + type);
             }
             code.branch(mismatch, falseLabel);
+        }
+
+        private void emitStructuralEquality(BindingStorage left, BindingStorage right,
+                                            Label equal, Label unequal, SourceSpan span) {
+            LyraType base = left.logical().withoutQualifiers();
+            if (left.physical().isSingleValue()
+                    && left.physical().physicalComponents().getFirst().isReference()
+                    && left.logical().hasQualifier(io.mindspice.lyra.compiler.types.TypeQualifier.NIL)) {
+                Label nonNilLeft = code.newLabel();
+                Label bothNil = code.newLabel();
+                loadLocal(left);
+                code.ifnonnull(nonNilLeft);
+                loadLocal(right);
+                code.ifnull(bothNil);
+                code.goto_(unequal);
+                code.labelBinding(bothNil);
+                code.goto_(equal);
+                code.labelBinding(nonNilLeft);
+                loadLocal(right);
+                // A non-nil left value is never equal to a nil right value;
+                // only the both-non-nil path may continue structurally.
+                code.ifnull(unequal);
+            }
+            if (base instanceof ArrayType array) {
+                emitArrayStructuralEquality(left, right, array, equal, unequal, span);
+            } else if (base instanceof TupleType tuple) {
+                emitTupleStructuralEquality(left, right, tuple, equal, unequal, span);
+            } else {
+                throw unsupported(span, "unsupported structural equality type: " + base);
+            }
+        }
+
+        private void emitArrayStructuralEquality(BindingStorage left, BindingStorage right,
+                                                 ArrayType array, Label equal, Label unequal,
+                                                 SourceSpan span) {
+            JvmType leftArray = left.physical().physicalComponents().getFirst();
+            JvmType rightArray = right.physical().physicalComponents().getFirst();
+            if (!leftArray.isReference() || !rightArray.isReference()) {
+                throw invalidPlan(span, "array equality has no reference representation");
+            }
+            JvmTypePlan elementPlan = owner.mapper.map(array.elementType(),
+                    JvmMappingContext.INTERNAL_ARRAY_ELEMENT);
+            if (!elementPlan.isSingleValue() || elementPlan.descriptor().equals("V")) {
+                throw invalidPlan(span, "array equality element has no single representation");
+            }
+            int length = allocateLocal(JvmType.primitive("I"));
+            loadLocal(left);
+            code.arraylength();
+            storePrimitive(PrimitiveType.I32, length);
+            loadLocal(right);
+            code.arraylength();
+            loadPrimitive(PrimitiveType.I32, length);
+            code.if_icmpne(unequal);
+            int cursor = allocateLocal(JvmType.primitive("I"));
+            emitInt(0);
+            storePrimitive(PrimitiveType.I32, cursor);
+            Label loop = code.newLabel();
+            Label next = code.newLabel();
+            code.labelBinding(loop);
+            loadPrimitive(PrimitiveType.I32, cursor);
+            loadPrimitive(PrimitiveType.I32, length);
+            code.if_icmpge(equal);
+            loadLocal(left);
+            loadPrimitive(PrimitiveType.I32, cursor);
+            code.arrayLoad(typeKind(elementPlan.descriptor()));
+            List<Integer> leftElementSlots = allocateLocals(elementPlan);
+            storeLocal(elementPlan, leftElementSlots);
+            loadLocal(right);
+            loadPrimitive(PrimitiveType.I32, cursor);
+            code.arrayLoad(typeKind(elementPlan.descriptor()));
+            List<Integer> rightElementSlots = allocateLocals(elementPlan);
+            storeLocal(elementPlan, rightElementSlots);
+            emitEqualityPair(BindingStorage.local(array.elementType(), elementPlan, leftElementSlots),
+                    BindingStorage.local(array.elementType(), elementPlan, rightElementSlots),
+                    next, unequal, span);
+            code.labelBinding(next);
+            code.iinc(cursor, 1);
+            code.goto_(loop);
+        }
+
+        private void emitTupleStructuralEquality(BindingStorage left, BindingStorage right,
+                                                 TupleType tuple, Label equal, Label unequal,
+                                                 SourceSpan span) {
+            String tupleName = owner.mapper.names().tupleBinaryName(tuple.canonicalSpelling());
+            for (int index = 0; index < tuple.arity(); index++) {
+                JvmTypePlan fieldPlan = owner.mapper.map(tuple.memberType(index),
+                        JvmMappingContext.TUPLE_FIELD);
+                List<Integer> leftSlots = allocateLocals(fieldPlan);
+                List<Integer> rightSlots = allocateLocals(fieldPlan);
+                loadLocal(left);
+                code.invokevirtual(cd(tupleName), "$lyra$get$" + index,
+                        method("()" + fieldPlan.descriptor()));
+                storeLocal(fieldPlan, leftSlots);
+                loadLocal(right);
+                code.invokevirtual(cd(tupleName), "$lyra$get$" + index,
+                        method("()" + fieldPlan.descriptor()));
+                storeLocal(fieldPlan, rightSlots);
+                Label memberEqual = code.newLabel();
+                Label memberNext = code.newLabel();
+                emitEqualityPair(BindingStorage.local(tuple.memberType(index), fieldPlan, leftSlots),
+                        BindingStorage.local(tuple.memberType(index), fieldPlan, rightSlots),
+                        memberEqual, unequal, span);
+                code.labelBinding(memberEqual);
+                code.goto_(memberNext);
+                code.labelBinding(memberNext);
+            }
+            code.goto_(equal);
         }
 
         private JvmTypePlan emitNumericComparison(IrNode.Operator operator) {
@@ -2923,7 +4228,14 @@ final class JvmBytecodeEmitter {
                     default -> throw new IllegalArgumentException("not relational: " + token);
                 }, falseLabel);
             } else if (primitive == PrimitiveType.F32) {
-                code.fcmpl();
+                // Use the NaN result ordering that makes every relational
+                // comparison false: fcmpg for the less-than directions and
+                // fcmpl for the greater-than directions.
+                if (token == TokenKind.LESS || token == TokenKind.LESS_EQUAL) {
+                    code.fcmpg();
+                } else {
+                    code.fcmpl();
+                }
                 code.branch(switch (token) {
                     case LESS -> java.lang.classfile.Opcode.IFGE;
                     case LESS_EQUAL -> java.lang.classfile.Opcode.IFGT;
@@ -2932,7 +4244,11 @@ final class JvmBytecodeEmitter {
                     default -> throw new IllegalArgumentException("not relational: " + token);
                 }, falseLabel);
             } else {
-                code.dcmpl();
+                if (token == TokenKind.LESS || token == TokenKind.LESS_EQUAL) {
+                    code.dcmpg();
+                } else {
+                    code.dcmpl();
+                }
                 code.branch(switch (token) {
                     case LESS -> java.lang.classfile.Opcode.IFGE;
                     case LESS_EQUAL -> java.lang.classfile.Opcode.IFGT;
@@ -3045,6 +4361,7 @@ final class JvmBytecodeEmitter {
             code.iconst_1();
             loadPhysical(source.physicalComponents().getFirst(), value);
             unboxPrimitive(target.physicalComponents().get(1));
+            normalizeUnsignedPlan(target);
             code.labelBinding(end);
         }
 
@@ -3143,6 +4460,10 @@ final class JvmBytecodeEmitter {
                 emitUnsignedToFloating(source, to);
                 return;
             }
+            if (source.isFloating() && target == PrimitiveType.U32) {
+                emitFloatingToUnsigned32(source);
+                return;
+            }
             if (source.isFloating() && target == PrimitiveType.U64) {
                 emitFloatingToUnsigned64(source);
                 return;
@@ -3155,6 +4476,14 @@ final class JvmBytecodeEmitter {
                 emitInt(0xff); code.iand();
             } else if (primitive == PrimitiveType.U16) {
                 emitInt(0xffff); code.iand();
+            }
+        }
+
+        private void normalizeUnsignedPlan(JvmTypePlan plan) {
+            switch (plan.baseCanonicalLyraType()) {
+                case "U8" -> normalizeUnsigned(PrimitiveType.U8);
+                case "U16" -> normalizeUnsigned(PrimitiveType.U16);
+                default -> { }
             }
         }
 
@@ -3203,6 +4532,28 @@ final class JvmBytecodeEmitter {
             code.labelBinding(finite);
         }
 
+        private void emitFloatingToUnsigned32(PrimitiveType source) {
+            int value = allocateLocal(source);
+            storePrimitive(source, value);
+            Label high = code.newLabel();
+            Label end = code.newLabel();
+            loadPrimitive(source, value);
+            emitFloatingConstant(source, 0x1.0p31);
+            if (source == PrimitiveType.F32) code.fcmpl(); else code.dcmpl();
+            code.ifge(high);
+            loadPrimitive(source, value);
+            emitRawConversion(source == PrimitiveType.F32 ? "F" : "D", "I");
+            code.goto_(end);
+            code.labelBinding(high);
+            loadPrimitive(source, value);
+            emitFloatingConstant(source, 0x1.0p31);
+            if (source == PrimitiveType.F32) code.fsub(); else code.dsub();
+            emitRawConversion(source == PrimitiveType.F32 ? "F" : "D", "I");
+            emitInt(Integer.MIN_VALUE);
+            code.iadd();
+            code.labelBinding(end);
+        }
+
         private void emitFloatingToUnsigned64(PrimitiveType source) {
             int value = allocateLocal(source);
             storePrimitive(source, value);
@@ -3247,22 +4598,141 @@ final class JvmBytecodeEmitter {
                 adapt(local.physical(), desired);
                 return;
             }
-            if (!declarations.containsKey(id)) {
-                throw invalidPlan(module.span(), "declaration identity is absent: " + id);
+            Integer localCell = localCells.get(id);
+            if (localCell != null) {
+                loadPhysical(JvmType.reference(cellClassName(id)), localCell);
+                emitCellValue(id);
+                adapt(storagePlan(id), desired);
+                return;
+            }
+            if (closureMethod && lambda != null) {
+                IrCapture capture = lambda.captures().stream()
+                        .map(captures::get)
+                        .filter(Objects::nonNull)
+                        .filter(value -> value.declarationId().equals(id))
+                        .findFirst().orElse(null);
+                if (capture != null) {
+                    if (capture.isSharedCell()) {
+                        emitLoadClosureCaptureCell(capture.id());
+                        emitCellValue(id);
+                        adapt(storagePlan(id), desired);
+                    } else if (owner.usesLocalFunctionSlot(capture)) {
+                        emitLoadClosureFunctionSlot(capture.id());
+                        emitInt(0);
+                        code.aaload();
+                        JvmTypePlan source = owner.mapper.map(
+                                capture.contract().valueType(),
+                                JvmMappingContext.INTERNAL_CAPTURE);
+                        adapt(source, desired);
+                    } else {
+                        emitLoadClosureCaptureValue(
+                                capture.id(), capture.contract().valueType());
+                        JvmTypePlan source = owner.mapper.map(
+                                capture.contract().valueType(),
+                                JvmMappingContext.INTERNAL_CAPTURE);
+                        adapt(source, desired);
+                    }
+                    return;
+                }
+                IrDeclaration self = lambda.ownerDeclaration()
+                        .filter(id::equals)
+                        .map(declarations::get)
+                        .orElse(null);
+                if (self != null && !self.isMutable() && self.isFunction()) {
+                    aloadReceiver();
+                    adapt(storagePlan(id), desired);
+                    return;
+                }
             }
             IrDeclaration declaration = declarations.get(id);
-            if (!declaration.moduleId().equals(module.moduleId())) {
-                throw unsupported(module.span(), "foreign module declaration reached scalar emitter");
+            if (declaration == null) {
+                throw invalidPlan(module.span(), "declaration identity is absent: " + id);
             }
-            emitLoadStateBinding(id);
-            JvmTypePlan storage = storagePlan(id);
+            if (stateMethod
+                    && declaration.moduleId().equals(module.moduleId())
+                    && declaration.scopeId().equals(module.rootScope())
+                    && !declaration.imported()
+                    && !initializedRootDeclarations.contains(id)) {
+                initializeRootDeclaration(id);
+            }
+            IrImportBinding importBinding = owner.imports.get(id);
+            if (importBinding != null) {
+                if (importBinding.kind() != ImportBindingKind.SELECTIVE_VALUE
+                        || importBinding.targetDeclaration().isEmpty()) {
+                    throw invalidPlan(module.span(),
+                            "module namespace binding cannot be used as a value: " + id);
+                }
+                emitLoadDeclarationFromModule(importBinding.targetModule(),
+                        importBinding.targetDeclaration().orElseThrow(), desired);
+                return;
+            }
+            emitLoadDeclarationFromModule(declaration.moduleId(), id, desired);
+        }
+
+        private void emitLoadDeclarationFromModule(ModuleId targetModule, DeclarationId id,
+                                                    JvmTypePlan desired) {
+            if (!owner.modules.containsKey(targetModule)) {
+                throw invalidPlan(module.span(), "declaration module is absent: " + targetModule);
+            }
+            IrDeclaration declaration = declarations.get(id);
+            if (declaration == null || declaration.contract().isEmpty()) {
+                throw invalidPlan(module.span(), "declaration has no storage contract: " + id);
+            }
+            StateLocation location = reachableStateLocation(targetModule, id, declaration);
+            JvmTypePlan storage = owner.mapper.mapBinding(declaration.contract().orElseThrow()).value();
+            emitLoadModuleState(location.moduleId());
+            emitStateValueFromState(location.moduleId(), location.declarationId());
             adapt(storage, desired);
+        }
+
+        /**
+         * Selects a state reachable by one of the current module's explicit
+         * import links. References retain the canonical origin declaration,
+         * while a chained re-export is physically reached through its
+         * immediate imported module. The state-value walker follows the
+         * remaining links from there.
+         */
+        private StateLocation reachableStateLocation(ModuleId targetModule, DeclarationId id,
+                                                      IrDeclaration declaration) {
+            DeclarationId stateDeclaration = stateFields(targetModule, id).isEmpty()
+                    ? owner.ir.exports().stream()
+                    .filter(export -> export.moduleId().equals(targetModule))
+                    .filter(export -> export.originModule().equals(declaration.moduleId())
+                            && export.originDeclaration().equals(id))
+                    .map(IrExport::declarationId)
+                    .findFirst()
+                    .orElseThrow(() -> invalidPlan(module.span(),
+                            "module state field is absent: " + id))
+                    : id;
+            if (targetModule.equals(module.moduleId())
+                    || importsForModule(module.moduleId()).stream()
+                    .anyMatch(binding -> binding.targetModule().equals(targetModule))) {
+                return new StateLocation(targetModule, stateDeclaration);
+            }
+
+            List<StateLocation> reachable = importsForModule(module.moduleId()).stream()
+                    .map(IrImportBinding::targetModule)
+                    .distinct()
+                    .sorted()
+                    .flatMap(importedModule -> owner.ir.exports().stream()
+                            .filter(export -> export.moduleId().equals(importedModule))
+                            .filter(export -> export.originModule().equals(targetModule)
+                                    && export.originDeclaration().equals(id))
+                            .map(export -> new StateLocation(importedModule,
+                                    export.declarationId())))
+                    .distinct()
+                    .toList();
+            if (reachable.isEmpty()) {
+                throw invalidPlan(module.span(),
+                        "foreign module is not reachable through an import state link: "
+                                + targetModule);
+            }
+            return reachable.getFirst();
         }
 
         private void emitReferenceByDeclaration(DeclarationId id, LyraType logical,
                                                 JvmTypePlan target) {
             emitLoadDeclaration(id, target);
-            adaptPhysicalPlan(storagePlan(id), target);
         }
 
         private JvmTypePlan storagePlan(DeclarationId id) {
@@ -3273,36 +4743,41 @@ final class JvmBytecodeEmitter {
             return owner.mapper.mapBinding(declaration.contract().orElseThrow()).value();
         }
 
-        private void emitLoadStateBinding(DeclarationId id) {
-            GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
-                    .get(module.moduleId())).orElseThrow(() -> invalidPlan(module.span(),
-                    "module state class is absent"));
-            List<GeneratedMemberPlan> fields = stateFields(id);
-            if (fields.isEmpty()) {
-                throw invalidPlan(module.span(), "module state field is absent: " + id);
-            }
-            if (stateMethod) {
-                for (GeneratedMemberPlan field : fields) {
+        private void emitLoadModuleState(ModuleId targetModule) {
+            if (targetModule.equals(module.moduleId())) {
+                if (stateMethod) {
                     aloadReceiver();
-                    code.getfield(cd(state.binaryName()), field.name(), type(field.descriptor()));
-                }
-            } else if (closureMethod) {
-                for (GeneratedMemberPlan field : fields) {
-                    // Each component accessor consumes its receiver.  A
-                    // split nullable binding therefore needs a fresh
-                    // closure-state receiver for every component.
+                } else if (closureMethod) {
                     emitLoadClosureState();
-                    String getter = field.name().endsWith("$present")
-                            ? "$lyra$isPresent$binding$" + id.value()
-                            : field.name().endsWith("$payload")
-                            ? "$lyra$payload$binding$" + id.value()
-                            : "$lyra$get$binding$" + id.value();
-                    code.invokevirtual(cd(state.binaryName()), getter,
-                            method("()" + field.descriptor()));
+                } else if (classPlan.kind() == GeneratedClassKind.MODULE_FACADE) {
+                    loadFacadeState();
+                } else {
+                    throw unsupported(module.span(), "module state access outside an owned context");
                 }
-            } else {
-                throw unsupported(module.span(), "state binding access outside module/closure");
+                return;
             }
+            IrImportBinding binding = importsForModule(module.moduleId()).stream()
+                    .filter(value -> value.targetModule().equals(targetModule))
+                    .findFirst().orElseThrow(() -> invalidPlan(module.span(),
+                            "foreign module is not linked from the current module: " + targetModule));
+            GeneratedClassPlan currentState = owner.plan.classPlan(owner.plan.moduleStates()
+                    .get(module.moduleId())).orElseThrow();
+            if (stateMethod) {
+                aloadReceiver();
+            } else if (closureMethod) {
+                emitLoadClosureState();
+            } else if (classPlan.kind() == GeneratedClassKind.MODULE_FACADE) {
+                loadFacadeState();
+            } else {
+                throw unsupported(module.span(), "foreign module access outside an owned context");
+            }
+            GeneratedMemberPlan field = stateFields(module.moduleId(), binding.declarationId()).stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.STATE_IMPORT_FIELD)
+                    .findFirst().orElseThrow(() -> invalidPlan(module.span(),
+                            "module import state field is absent"));
+            code.invokevirtual(cd(currentState.binaryName()),
+                    "$lyra$get$binding$" + binding.declarationId().value(),
+                    method("()" + field.descriptor()));
         }
 
         private void loadFacadeStateValueInternal(DeclarationId id) {
@@ -3346,7 +4821,11 @@ final class JvmBytecodeEmitter {
                 return;
             }
             if (stateMethod && isRootDeclaration(id)) {
-                storeStateDeclaration(id, storage);
+                if (owner.cells.containsKey(id)) {
+                    emitStoreCell(id, storage);
+                } else {
+                    storeStateDeclaration(id, storage);
+                }
                 return;
             }
             if (closureMethod && owner.cells.containsKey(id)) {
@@ -3390,6 +4869,22 @@ final class JvmBytecodeEmitter {
         }
 
         private void emitLoadCellForDeclaration(DeclarationId id) {
+            Integer localCell = localCells.get(id);
+            if (localCell != null) {
+                loadPhysical(JvmType.reference(cellClassName(id)), localCell);
+                return;
+            }
+            if (closureMethod && lambda != null) {
+                IrCapture capture = captures.values().stream()
+                        .filter(value -> value.lambdaId().equals(lambda.id())
+                                && value.declarationId().equals(id)
+                                && value.isSharedCell())
+                        .findFirst().orElse(null);
+                if (capture != null) {
+                    emitLoadClosureCaptureCell(capture.id());
+                    return;
+                }
+            }
             GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
                     .get(module.moduleId())).orElseThrow();
             List<GeneratedMemberPlan> fields = stateFields(id);
@@ -3446,6 +4941,38 @@ final class JvmBytecodeEmitter {
             code.getfield(cd(classPlan.binaryName()), field.name(), type(field.descriptor()));
         }
 
+        private void emitLoadClosureFunctionSlot(CaptureId id) {
+            GeneratedMemberPlan field = closureCaptureFields(id).stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.CLOSURE_CAPTURE_FIELD
+                            && value.descriptor().startsWith("["))
+                    .findFirst().orElseThrow(() -> invalidPlan(
+                            module.span(), "linked function capture field absent"));
+            aloadReceiver();
+            code.getfield(cd(classPlan.binaryName()), field.name(), type(field.descriptor()));
+        }
+
+        private void emitLoadFunctionSlotForDeclaration(DeclarationId id) {
+            Integer slot = localFunctionSlots.get(id);
+            if (slot != null) {
+                code.aload(slot);
+                return;
+            }
+            if (closureMethod && lambda != null) {
+                IrCapture capture = lambda.captures().stream()
+                        .map(captures::get)
+                        .filter(Objects::nonNull)
+                        .filter(value -> value.declarationId().equals(id)
+                                && owner.usesLocalFunctionSlot(value))
+                        .findFirst().orElse(null);
+                if (capture != null) {
+                    emitLoadClosureFunctionSlot(capture.id());
+                    return;
+                }
+            }
+            throw invalidPlan(module.span(),
+                    "local function capture has no linked slot: " + id);
+        }
+
         private void emitLoadClosureCaptureValue(CaptureId id, LyraType logical) {
             List<GeneratedMemberPlan> fields = closureCaptureFields(id);
             if (fields.size() == 1) {
@@ -3477,13 +5004,37 @@ final class JvmBytecodeEmitter {
         }
 
         private List<GeneratedMemberPlan> stateFields(DeclarationId id) {
-            GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
-                    .get(module.moduleId())).orElseThrow();
+            return stateFields(module.moduleId(), id);
+        }
+
+        private List<GeneratedMemberPlan> stateFields(ModuleId moduleId, DeclarationId id) {
+            String stateName = owner.plan.moduleStates().get(moduleId);
+            if (stateName == null) {
+                throw invalidPlan(memberSpan(), "module state class is absent: " + moduleId);
+            }
+            GeneratedClassPlan state = owner.plan.classPlan(stateName).orElseThrow();
             String prefix = "$lyra$binding$" + id.value();
             return state.members().stream().filter(GeneratedMemberPlan::isField)
                     .filter(value -> value.name().equals(prefix)
                             || value.name().startsWith(prefix + "$"))
                     .toList();
+        }
+
+        private List<IrImportBinding> importsForModule(ModuleId moduleId) {
+            return owner.ir.imports().stream()
+                    .filter(value -> owner.declarations.get(value.declarationId()) != null)
+                    .filter(value -> owner.declarations.get(value.declarationId()).moduleId()
+                            .equals(moduleId))
+                    .sorted()
+                    .toList();
+        }
+
+        private String cellClassName(DeclarationId id) {
+            String name = owner.plan.cellClasses().get(id);
+            if (name == null) {
+                throw invalidPlan(memberSpan(), "cell class is absent: " + id);
+            }
+            return name;
         }
 
         private DeclarationId declarationIdFromMember(String name) {
@@ -3775,6 +5326,27 @@ final class JvmBytecodeEmitter {
                     .orElseThrow().valueType(), physical, slots));
         }
 
+        private record StateLocation(ModuleId moduleId, DeclarationId declarationId) {
+            private StateLocation {
+                Objects.requireNonNull(moduleId, "moduleId");
+                Objects.requireNonNull(declarationId, "declarationId");
+            }
+        }
+
+        private record ArrayStoreTarget(
+                JvmTypePlan receiverPlan,
+                int receiverSlot,
+                JvmTypePlan indexPlan,
+                List<Integer> indexSlots,
+                JvmTypePlan elementPlan) {
+            private ArrayStoreTarget {
+                Objects.requireNonNull(receiverPlan, "receiverPlan");
+                Objects.requireNonNull(indexPlan, "indexPlan");
+                indexSlots = List.copyOf(indexSlots);
+                Objects.requireNonNull(elementPlan, "elementPlan");
+            }
+        }
+
         private record BindingStorage(LyraType logical, JvmTypePlan physical, List<Integer> slots) {
             private BindingStorage {
                 Objects.requireNonNull(logical, "logical");
@@ -3800,7 +5372,8 @@ final class JvmBytecodeEmitter {
         private record FailureHandler(Label label, SourceSpan span, String code, String summary) {
         }
 
-        private record CallFailureHandler(Label start, Label end, Label handler, SourceSpan span) {
+        private record CallFailureHandler(Label start, Label end, Label handler,
+                                          Label stackHandler, SourceSpan span) {
         }
     }
 

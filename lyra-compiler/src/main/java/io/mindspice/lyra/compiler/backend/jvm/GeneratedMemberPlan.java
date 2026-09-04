@@ -248,7 +248,7 @@ record GeneratedMemberPlan(
         return switch (kind) {
             case TUPLE_FIELD, CLOSURE_AUTHORITY_FIELD, CLOSURE_STATE_FIELD,
                     CLOSURE_CAPTURE_FIELD, CLOSURE_CAPTURE_PRESENCE_FIELD,
-                    CLOSURE_CAPTURE_PAYLOAD_FIELD, STATE_CELL_FIELD,
+                    CLOSURE_CAPTURE_PAYLOAD_FIELD,
                     STATE_LIFECYCLE_FIELD, FACADE_STATE_FIELD -> true;
             default -> false;
         };

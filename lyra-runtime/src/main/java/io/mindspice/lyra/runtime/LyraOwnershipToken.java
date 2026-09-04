@@ -49,6 +49,14 @@ final class LyraOwnershipToken {
     }
 
     void checkUsable() {
+        checkUsable(false);
+    }
+
+    void checkGeneratedInvocation() {
+        checkUsable(true);
+    }
+
+    private void checkUsable(boolean allowInitializing) {
         owner.check();
         LifecycleState state = lifecycle.rawState();
         if (state == LifecycleState.FAILED) {
@@ -57,7 +65,8 @@ final class LyraOwnershipToken {
         if (state == LifecycleState.CLOSED || !valid.get()) {
             throw new LyraClosedException("module-owned closure is closed or invalidated");
         }
-        if (state != LifecycleState.OPEN) {
+        if (state != LifecycleState.OPEN
+                && !(allowInitializing && state == LifecycleState.INITIALIZING)) {
             throw new LyraLifecycleException("module-owned closure is not open");
         }
     }

@@ -182,12 +182,12 @@ public final class GeneratedTypePlannerTest {
                 GeneratedClassKind.MODULE_STATE, "a", Optional.of(ModuleId.path("a.lyra")), true, false,
                 List.of(), List.of(), List.of(aToB), List.of(
                         GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CONSTRUCTOR,
-                                "<init>", "()V", false)));
+                                "<init>", "(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V", false)));
         GeneratedClassPlan b = new GeneratedClassPlan("custom.generated.$lyra$state$b",
                 GeneratedClassKind.MODULE_STATE, "b", Optional.of(ModuleId.path("b.lyra")), true, false,
                 List.of(), List.of(), List.of(bToA), List.of(
                         GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CONSTRUCTOR,
-                                "<init>", "()V", false)));
+                                "<init>", "(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V", false)));
         GeneratedClassDependency cToA = new GeneratedClassDependency(
                 "custom.generated.$lyra$state$a", GeneratedDependencyKind.FACADE_STATE, true,
                 "c is blocked by the cycle but is not cyclic");
@@ -195,7 +195,7 @@ public final class GeneratedTypePlannerTest {
                 GeneratedClassKind.MODULE_STATE, "c", Optional.of(ModuleId.path("c.lyra")), true, false,
                 List.of(), List.of(), List.of(cToA), List.of(
                         GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CONSTRUCTOR,
-                                "<init>", "()V", false)));
+                                "<init>", "(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V", false)));
         IllegalArgumentException cycle = assertThrows(IllegalArgumentException.class,
                 () -> GeneratedTypePlanner.order(List.of(c, a, b)));
         assertTrue(cycle.getMessage().contains("dependency cycle"));
@@ -243,7 +243,7 @@ public final class GeneratedTypePlannerTest {
                         new GeneratedClassDependency(state, GeneratedDependencyKind.MODULE_IMPORT_LINKAGE,
                                 false, "second")), List.of(
                         GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CONSTRUCTOR,
-                                "<init>", "()V", false))));
+                                "<init>", "(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V", false))));
 
         GeneratedClassPlan self = new GeneratedClassPlan(
                 state, GeneratedClassKind.MODULE_STATE, "state:self",
@@ -251,7 +251,8 @@ public final class GeneratedTypePlannerTest {
                 List.of(), List.of(), List.of(new GeneratedClassDependency(
                         state, GeneratedDependencyKind.MODULE_IMPORT_LINKAGE, false,
                         "self import")), List.of(GeneratedMemberPlan.rawMethod(
-                        GeneratedMemberKind.STATE_CONSTRUCTOR, "<init>", "()V", false)));
+                        GeneratedMemberKind.STATE_CONSTRUCTOR, "<init>",
+                        "(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V", false)));
         assertThrows(IllegalArgumentException.class,
                 () -> GeneratedTypePlanner.order(List.of(self)));
     }
@@ -355,7 +356,7 @@ public final class GeneratedTypePlannerTest {
             assertEquals(GeneratedMemberVisibility.PACKAGE, link.visibility());
             assertTrue(state.members().stream().anyMatch(member ->
                     member.kind() == GeneratedMemberKind.STATE_CONSTRUCTOR
-                            && member.descriptor().equals("()V")));
+                            && member.descriptor().equals("(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V")));
             assertTrue(state.dependencies().stream().anyMatch(dependency ->
                     dependency.kind() == GeneratedDependencyKind.MODULE_IMPORT_LINKAGE
                             && !dependency.orderingRequired()));
@@ -539,7 +540,7 @@ public final class GeneratedTypePlannerTest {
                         GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_COMPONENT_GET,
                                 "$lyra$get$binding$1", "()" + targetStateDescriptor, false),
                         GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CONSTRUCTOR,
-                                "<init>", "()V", false))));
+                                "<init>", "(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V", false))));
 
         String functionInterface = "lyra.generated.$lyra$fn$forged";
         assertThrows(IllegalArgumentException.class,
@@ -643,13 +644,13 @@ public final class GeneratedTypePlannerTest {
                 Optional.of(ModuleId.path("not-lyra.lyra")), true, false,
                 List.of(), List.of(), List.of(), List.of(
                         GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CONSTRUCTOR,
-                                "<init>", "()V", false))));
+                                "<init>", "(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V", false))));
         assertThrows(IllegalArgumentException.class, () -> new GeneratedClassPlan(
                 "custom.generated.$lyra$tuple$wrong", GeneratedClassKind.MODULE_STATE, "state",
                 Optional.of(ModuleId.path("wrong-role.lyra")), true, false,
                 List.of(), List.of(), List.of(), List.of(
                         GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CONSTRUCTOR,
-                                "<init>", "()V", false))));
+                                "<init>", "(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V", false))));
     }
 
     @Test
@@ -693,7 +694,7 @@ public final class GeneratedTypePlannerTest {
                         GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_COMPONENT_GET,
                                 "$lyra$get$binding$1", "()I", false),
                         GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CONSTRUCTOR,
-                                "<init>", "()V", false))));
+                                "<init>", "(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V", false))));
     }
 
     @Test
@@ -816,7 +817,8 @@ public final class GeneratedTypePlannerTest {
                 Optional.of(ModuleId.path(name + ".lyra")), true, false,
                 List.of(), List.of(), List.of(), List.of(
                         GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CONSTRUCTOR,
-                                "<init>", "()V", false)));
+                                "<init>",
+                                "(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V", false)));
     }
 
     private static TypedIr ir(String source) {

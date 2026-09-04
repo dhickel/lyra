@@ -40,7 +40,21 @@ public final class ModuleLifecycle implements AutoCloseable {
     }
 
     private ModuleLifecycle(OwnerThread owner, Optional<ModuleId> moduleId) {
-        this(owner, moduleId, new Object());
+        this(owner, moduleId, new LyraArtifactKey());
+    }
+
+    /** Creates an opaque key shared by the module states of one artifact. */
+    public static LyraArtifactKey newArtifactKey() {
+        return new LyraArtifactKey();
+    }
+
+    /**
+     * Creates lifecycle state for generated modules that belong to one loaded
+     * artifact.  Sharing the opaque key lets closures move between module
+     * states in the same artifact while keeping independent artifacts isolated.
+     */
+    public static ModuleLifecycle forArtifact(ModuleId moduleId, LyraArtifactKey artifactKey) {
+        return new ModuleLifecycle(OwnerThread.capture(), moduleId, artifactKey);
     }
 
     /** Runtime-internal constructor for modules belonging to one loaded artifact. */

@@ -36,6 +36,15 @@ public abstract class LyraClosure {
         authority.checkOpen();
     }
 
+    /**
+     * Generated invoke methods use this boundary while an eager initializer is
+     * allowed to call an already-linked function slot. Unpublished closures
+     * cannot escape the factory during INITIALIZING.
+     */
+    protected final void checkInvocationFromGeneratedCode() {
+        authority.token().checkGeneratedInvocation();
+    }
+
     /** Checks ownership/lifecycle and exact canonical signature parity. */
     public final void checkInvocation(LyraSignature expectedSignature) {
         Objects.requireNonNull(expectedSignature, "expectedSignature");

@@ -51,15 +51,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class Phase15SmokeTest {
     @Test
-    void rejectsAggregateInputBeforePublishingBytes() {
-        assertAggregateEmissionRejected("let @pub values :Array<I32> = Array[1 2 3]");
-        assertAggregateEmissionRejected("let @pub values :Tuple<I32,I32> = Tuple[1 2]");
-        assertAggregateEmissionRejected("let @pub length :Fn<Array<I32>;I32> = "
+    void acceptsAggregateInputAfterPhase16() {
+        assertEmissionSucceeds("let @pub values :Array<I32> = Array[1 2 3]");
+        assertEmissionSucceeds("let @pub values :Tuple<I32,I32> = Tuple[1 2]");
+        assertEmissionSucceeds("let @pub length :Fn<Array<I32>;I32> = "
                 + "(=> |values| values:.length)");
     }
 
-    private static void assertAggregateEmissionRejected(String source) {
-        assertUnsupportedEmission(source);
+    private static void assertEmissionSucceeds(String source) {
+        TypedIr ir = lower(source);
+        GeneratedTypePlan plan = GeneratedTypePlanner.plan(ir);
+        PhaseResult<JvmBytecodeArtifact> result = JvmBytecodeEmitter.emitPhase(ir, plan);
+        assertTrue(result.isSuccess());
+        assertTrue(result.optionalValue().isPresent());
     }
 
     private static void assertUnsupportedEmission(String source) {
@@ -72,10 +76,10 @@ final class Phase15SmokeTest {
     }
 
     @Test
-    void rejectsOutOfScopeRecursionShapesBeforePublishingBytes() {
-        assertUnsupportedEmission("let @pub recursive :Fn<I32;I32> = "
+    void acceptsSupportedRecursionShapesAfterPhase16() {
+        assertEmissionSucceeds("let @pub recursive :Fn<I32;I32> = "
                 + "(=> |n| { let value :I32 = ::recursive[(- n 1)] (+ value 1) })");
-        assertUnsupportedEmission("let @pub recursive :Fn<I32;I32> = "
+        assertEmissionSucceeds("let @pub recursive :Fn<I32;I32> = "
                 + "(=> |n| (recursive (- n 1)))");
     }
 
@@ -321,8 +325,8 @@ final class Phase15SmokeTest {
     }
 
     @Test
-    void rejectsReferenceValuesInSharedMutableCellsUntilPhase16() {
-        assertUnsupportedEmission("let @mut text :String = \"a\" "
+    void emitsReferenceValuesInSharedMutableCells() {
+        assertEmissionSucceeds("let @mut text :String = \"a\" "
                 + "let @pub append :Fn<;String> = (=> | | { text := (+ text \"b\") text })");
     }
 
@@ -466,16 +470,16 @@ final class Phase15SmokeTest {
     }
 
     @Test
-    void rejectsMutualRecursionUntilPhase16() {
-        assertUnsupportedEmission("let @pub first :Fn<I32;I32> = "
+    void emitsMutualRecursionAfterPhase16() {
+        assertEmissionSucceeds("let @pub first :Fn<I32;I32> = "
                 + "(=> |n| ((<= n 0) -> 0 : ::second[(- n 1)])) "
                 + "let @pub second :Fn<I32;I32> = "
                 + "(=> |n| ((<= n 0) -> 0 : ::first[(- n 1)]))");
     }
 
     @Test
-    void rejectsCapturingClosuresUntilPhase16() {
-        assertUnsupportedEmission(
+    void emitsCapturingClosuresAfterPhase16() {
+        assertEmissionSucceeds(
                 "let @pub maker :Fn<I32;Fn<;I32>> = (=> |value| (=> | | value))");
     }
 

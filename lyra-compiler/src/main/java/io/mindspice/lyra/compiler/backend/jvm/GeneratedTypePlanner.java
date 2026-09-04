@@ -3,6 +3,7 @@ package io.mindspice.lyra.compiler.backend.jvm;
 import io.mindspice.lyra.compiler.identity.CaptureId;
 import io.mindspice.lyra.compiler.identity.DeclarationId;
 import io.mindspice.lyra.compiler.identity.LambdaId;
+import io.mindspice.lyra.compiler.identity.ScopeId;
 import io.mindspice.lyra.compiler.ir.IrCapture;
 import io.mindspice.lyra.compiler.ir.IrCell;
 import io.mindspice.lyra.compiler.ir.IrClosureInitialization;
@@ -103,8 +104,16 @@ final class GeneratedTypePlanner {
         addTupleClasses(classes, inventory, mapper, names);
         addFunctionInterfaces(classes, inventory, mapper, names);
         addCellClasses(classes, ir.cells(), mapper, names, cellClasses);
+        Map<ModuleId, ScopeId> rootScopes =
+                ir.modules().stream().collect(java.util.stream.Collectors.toUnmodifiableMap(
+                        IrModule::moduleId, IrModule::rootScope));
+        Set<DeclarationId> rootDeclarations = ir.declarations().stream()
+                .filter(declaration -> declaration.scopeId().equals(
+                        rootScopes.get(declaration.moduleId())))
+                .map(IrDeclaration::id)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
         addClosureClasses(classes, ir, mapper, names, closureClasses, cellClasses, moduleStates,
-                captures, lambdasByOwner);
+                captures, lambdasByOwner, declarations, rootDeclarations);
         addModuleStateClasses(classes, ir, mapper, names, moduleStates, cellClasses,
                 declarations, cellsByDeclaration);
         addModuleFacadeClasses(classes, ir, names, moduleStates, moduleFacades,
@@ -379,7 +388,9 @@ final class GeneratedTypePlanner {
             Map<DeclarationId, String> cellClasses,
             Map<ModuleId, String> moduleStates,
             Map<CaptureId, IrCapture> captures,
-            Map<DeclarationId, IrLambda> lambdasByOwner) {
+            Map<DeclarationId, IrLambda> lambdasByOwner,
+            Map<DeclarationId, IrDeclaration> declarations,
+            Set<DeclarationId> rootDeclarations) {
         for (IrLambda lambda : ir.lambdas().stream().sorted(Comparator.comparing(IrLambda::id)).toList()) {
             JvmSignaturePlan signature = mapper.mapSignature(
                     lambda.signature(), JvmAbiBoundary.JAVA_VISIBLE);
@@ -427,6 +438,22 @@ final class GeneratedTypePlanner {
                     dependencies.add(new GeneratedClassDependency(cellName,
                             GeneratedDependencyKind.CLOSURE_SHARED_CELL, true,
                             "shared mutable capture cell"));
+                } else if (usesLocalFunctionSlot(capture, declarations, rootDeclarations)) {
+                    JvmTypePlan captureType = mapper.map(capture.contract().valueType(),
+                            JvmMappingContext.INTERNAL_CAPTURE);
+                    if (!captureType.isSingleValue()
+                            || !captureType.physicalComponents().getFirst().isReference()) {
+                        throw new IllegalArgumentException(
+                                "local function slot has no reference representation: " + captureId);
+                    }
+                    String descriptor = "[" + captureType.descriptor();
+                    members.add(GeneratedMemberPlan.rawField(
+                            GeneratedMemberKind.CLOSURE_CAPTURE_FIELD,
+                            "$lyra$capture$" + captureId.value(), descriptor));
+                    constructorDescriptors.add(descriptor);
+                    addTypeDependencies(dependencies, capture.contract().valueType(),
+                            GeneratedDependencyKind.CLOSURE_CAPTURE_TYPE, true, names,
+                            "linked local function capture type");
                 } else {
                     JvmTypePlan captureType = mapper.map(capture.contract().valueType(),
                             JvmMappingContext.INTERNAL_CAPTURE);
@@ -485,6 +512,22 @@ final class GeneratedTypePlanner {
                     Optional.of(lambda.moduleId()), true, false, List.of(functionName), List.of(),
                     new ArrayList<>(dependencies), members));
         }
+    }
+
+    private static boolean usesLocalFunctionSlot(
+            IrCapture capture,
+            Map<DeclarationId, IrDeclaration> declarations,
+            Set<DeclarationId> rootDeclarations) {
+        IrDeclaration declaration = declarations.get(capture.declarationId());
+        return !capture.isSharedCell()
+                && declaration != null
+                && !rootDeclarations.contains(declaration.id())
+                && declaration.signaturePredeclared()
+                && declaration.initializerLambda().isPresent()
+                && declaration.contract().map(BindingContract::valueType)
+                .map(LyraType::withoutQualifiers)
+                .filter(FunctionType.class::isInstance)
+                .isPresent();
     }
 
     private static void addModuleStateClasses(
@@ -612,7 +655,7 @@ final class GeneratedTypePlanner {
                         "module state binding type");
             }
             members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CONSTRUCTOR,
-                    "<init>", "()V", false));
+                    "<init>", "(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V", false));
             members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_AUTHORITY_GET,
                     "$lyra$closureAuthority", "()" + AUTHORITY_DESCRIPTOR, false));
             members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CHECK_OPEN,
@@ -847,6 +890,10 @@ final class GeneratedTypePlanner {
 
             Set<DeclarationId> functionSlots = ir.declarations().stream()
                     .filter(value -> value.moduleId().equals(module.moduleId()) && value.isFunction())
+                    .filter(value -> value.kind()
+                            != io.mindspice.lyra.compiler.semantic.DeclarationKind.PARAMETER)
+                    .filter(value -> value.kind()
+                            != io.mindspice.lyra.compiler.semantic.DeclarationKind.PREDICATE_BINDING)
                     .map(IrDeclaration::id).collect(java.util.stream.Collectors.toSet());
             requireExactIds("module function slots for " + module.moduleId(),
                     Set.copyOf(state.functionSlots()), functionSlots);
@@ -957,7 +1004,8 @@ final class GeneratedTypePlanner {
 
     private static void requireExactIds(String role, Set<?> actual, Set<?> expected) {
         if (!actual.equals(expected)) {
-            throw new IllegalArgumentException(role + " is incomplete or contains foreign identities");
+            throw new IllegalArgumentException(role + " is incomplete or contains foreign identities"
+                    + "; actual=" + actual + "; expected=" + expected);
         }
     }
 

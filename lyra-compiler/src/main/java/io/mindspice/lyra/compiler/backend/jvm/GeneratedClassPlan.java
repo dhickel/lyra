@@ -207,7 +207,8 @@ record GeneratedClassPlan(
                         GeneratedMemberKind.STATE_CLOSE), "module-state");
                 GeneratedMemberPlan constructor = requireFacadeMember(
                         members, GeneratedMemberKind.STATE_CONSTRUCTOR,
-                        member -> member.name().equals("<init>") && member.descriptor().equals("()V"));
+                        member -> member.name().equals("<init>")
+                                && member.descriptor().equals("(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V"));
                 if (constructor.isStatic()) {
                     throw new IllegalArgumentException("module-state constructor cannot be static");
                 }
@@ -526,13 +527,21 @@ record GeneratedClassPlan(
             captureGroups.computeIfAbsent(base, ignored -> new ArrayList<>()).add(capture);
             if (capture.kind() == GeneratedMemberKind.CLOSURE_CAPTURE_FIELD) {
                 String descriptor = capture.descriptor();
-                String internalName = descriptor.startsWith("L") && descriptor.endsWith(";")
+                boolean functionSlot = descriptor.startsWith("[L")
+                        && descriptor.endsWith(";");
+                String internalName = functionSlot
+                        ? descriptor.substring(2, descriptor.length() - 1)
+                        : descriptor.startsWith("L") && descriptor.endsWith(";")
                         ? descriptor.substring(1, descriptor.length() - 1) : "";
                 String simpleName = internalName.substring(internalName.lastIndexOf('/') + 1);
-                if (!simpleName.startsWith("$lyra$cell$")
-                        || simpleName.length() == "$lyra$cell$".length()) {
+                boolean validCell = simpleName.startsWith("$lyra$cell$")
+                        && simpleName.length() > "$lyra$cell$".length();
+                boolean validFunctionSlot = functionSlot
+                        && simpleName.startsWith("$lyra$fn$")
+                        && simpleName.length() > "$lyra$fn$".length();
+                if (!validCell && !validFunctionSlot) {
                     throw new IllegalArgumentException(
-                            "shared closure capture must reference a generated cell class");
+                            "linked closure capture must reference a generated cell or function slot");
                 }
             }
             if (capture.kind() == GeneratedMemberKind.CLOSURE_CAPTURE_PRESENCE_FIELD) {
@@ -564,7 +573,7 @@ record GeneratedClassPlan(
                 }
                 if (only.kind() == GeneratedMemberKind.CLOSURE_CAPTURE_FIELD
                         && !only.name().equals(groupName(group))) {
-                    throw new IllegalArgumentException("shared closure capture has a noncanonical name");
+                    throw new IllegalArgumentException("linked closure capture has a noncanonical name");
                 }
             } else if (group.size() == 2) {
                 GeneratedMemberPlan presence = group.stream()

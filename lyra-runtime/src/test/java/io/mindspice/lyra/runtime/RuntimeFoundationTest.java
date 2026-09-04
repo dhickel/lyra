@@ -235,6 +235,9 @@ public final class RuntimeFoundationTest {
         LyraClosureAuthority authority = lifecycle.closureAuthority();
         TestClosure closure = new TestClosure(authority, VALUE_SIGNATURE);
         assertThrows(LyraLifecycleException.class, closure::checkInvocation);
+        assertDoesNotThrow(closure::checkGeneratedInvocation);
+        assertSame(closure, LyraClosureSupport.requireAuthenticatedForGeneratedInvocation(
+                closure, authority, VALUE_SIGNATURE));
         lifecycle.open();
         assertThrows(LyraLifecycleException.class, lifecycle::open);
         closure.checkInvocation(VALUE_SIGNATURE);
@@ -374,6 +377,10 @@ public final class RuntimeFoundationTest {
     private static final class TestClosure extends LyraClosure {
         private TestClosure(LyraClosureAuthority authority, LyraSignature signature) {
             super(authority, signature);
+        }
+
+        private void checkGeneratedInvocation() {
+            checkInvocationFromGeneratedCode();
         }
     }
 }
