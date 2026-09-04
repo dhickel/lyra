@@ -83,6 +83,8 @@ final class JvmBytecodeEmitter {
     private static final ClassDesc CD_STRING = ConstantDescs.CD_String;
     private static final ClassDesc CD_LIST = ConstantDescs.CD_List;
     private static final ClassDesc CD_AUTHORITY = cd(RUNTIME + "LyraClosureAuthority");
+    private static final ClassDesc CD_RUNTIME_OPTIONS = cd(RUNTIME + "RuntimeOptions");
+    private static final ClassDesc CD_OWNER_THREAD = cd(RUNTIME + "OwnerThread");
     private static final ClassDesc CD_CLOSURE = cd(RUNTIME + "LyraClosure");
     private static final ClassDesc CD_SIGNATURE = cd(RUNTIME + "LyraSignature");
     private static final ClassDesc CD_LIFECYCLE = cd(RUNTIME + "ModuleLifecycle");
@@ -1083,6 +1085,19 @@ final class JvmBytecodeEmitter {
                         method("()" + field.descriptor()));
                 code.invokevirtual(type(field.descriptor()), "$lyra$close", method("()V"));
             }
+            // Keep the lifecycle object as the small closed-state sentinel,
+            // but release all compiler-owned value, cell, and dependency
+            // references retained by this state.  Raw arrays and closures
+            // already returned to Java remain independent caller-owned
+            // values, as required by the trusted Java ABI.
+            for (GeneratedMemberPlan field : classPlan.members().stream()
+                    .filter(GeneratedMemberPlan::isField)
+                    .filter(value -> value.kind() != GeneratedMemberKind.STATE_LIFECYCLE_FIELD)
+                    .toList()) {
+                aloadReceiver();
+                emitZero(jvmType(field.descriptor()));
+                code.putfield(cd(classPlan.binaryName()), field.name(), type(field.descriptor()));
+            }
             code.labelBinding(alreadyClosed);
             code.return_();
         }
@@ -1161,10 +1176,39 @@ final class JvmBytecodeEmitter {
         }
 
         private void emitFacadeFactory() {
+            // Both factory overloads enter through the same immutable runtime
+            // option contract.  The no-argument form explicitly uses the
+            // runtime defaults; the overload rejects a null options object
+            // before any module shell is allocated.  Compatibility is checked
+            // before construction so a bad profile cannot leave a partially
+            // initialized graph behind.
+            int options = code.allocateLocal(TypeKind.REFERENCE);
+            if (member.kind() == GeneratedMemberKind.FACTORY) {
+                code.invokestatic(CD_RUNTIME_OPTIONS, "defaults", method(
+                        "()L" + RUNTIME + "RuntimeOptions;"));
+            } else {
+                loadParameter(0);
+                code.invokestatic(CD_OBJECTS, "requireNonNull",
+                        method("(Ljava/lang/Object;)Ljava/lang/Object;"));
+                code.checkcast(CD_RUNTIME_OPTIONS);
+            }
+            code.astore(options);
+            code.aload(options);
+            code.invokestatic(cd(classPlan.binaryName()), "$lyra$metadata", method(
+                    "()L" + RUNTIME + "ArtifactMetadata;"));
+            code.invokevirtual(CD_RUNTIME_OPTIONS, "requireCompatible", method(
+                    "(L" + RUNTIME + "ArtifactMetadata;)V"));
+            code.aload(options);
+            code.invokevirtual(CD_RUNTIME_OPTIONS, "owner", method(
+                    "()L" + RUNTIME + "OwnerThread;"));
+            code.invokevirtual(CD_OWNER_THREAD, "check", method("()V"));
+
             Map<ModuleId, Integer> stateSlots = new TreeMap<>();
             int artifactKey = code.allocateLocal(TypeKind.REFERENCE);
+            code.aload(options);
             code.invokestatic(CD_LIFECYCLE, "newArtifactKey",
-                    method("()L" + RUNTIME + "LyraArtifactKey;"));
+                    method("(L" + RUNTIME + "RuntimeOptions;)L" + RUNTIME
+                            + "LyraArtifactKey;"));
             code.astore(artifactKey);
             for (ModuleId moduleId : owner.plan.initializationOrder()) {
                 GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
@@ -1381,6 +1425,10 @@ final class JvmBytecodeEmitter {
         }
 
         private void emitFacadeSetter(GeneratedExportPlan export) {
+            if (export.reExport()) {
+                emitFacadeReExportSetter(export);
+                return;
+            }
             if (stateBindingIsCell(export.declarationId())) {
                 emitFacadeCellSetter(export);
                 return;
@@ -1442,6 +1490,155 @@ final class JvmBytecodeEmitter {
         private boolean stateBindingIsCell(DeclarationId id) {
             return stateFields(id).stream()
                     .anyMatch(value -> value.kind() == GeneratedMemberKind.STATE_CELL_FIELD);
+        }
+
+        /**
+         * A public re-export has an import-state slot rather than a writable
+         * field in the facade module.  Route its setter through every
+         * re-export hop to the declaration that owns the value, preserving the
+         * origin cell and the exact internal presence/payload representation.
+         */
+        private void emitFacadeReExportSetter(GeneratedExportPlan export) {
+            IrDeclaration imported = declarations.get(export.declarationId());
+            if (imported == null || imported.contract().isEmpty()) {
+                throw invalidPlan(memberSpan(), "re-export setter has no local binding contract");
+            }
+            JvmTypePlan external = export.isFunction()
+                    ? owner.mapper.map(imported.contract().orElseThrow().valueType(),
+                    JvmMappingContext.JAVA_FUNCTION_VALUE)
+                    : export.valueType();
+            JvmTypePlan internal = owner.mapper.map(imported.contract().orElseThrow().valueType(),
+                    JvmMappingContext.INTERNAL_BINDING);
+            if (!external.isSingleValue()
+                    || (!internal.isSingleValue() && !internal.isSplitValue())) {
+                throw invalidPlan(memberSpan(), "re-export setter has an invalid value representation");
+            }
+
+            int argument = allocateLocal(external);
+            loadParameter(0);
+            if (export.isFunction()) {
+                authenticateFacadeFunctionArgument(export);
+            }
+            storePhysical(external.physicalComponents().getFirst(), argument);
+            loadPhysical(external.physicalComponents().getFirst(), argument);
+            adapt(external, internal);
+            List<Integer> values = allocateLocals(internal);
+            storeLocal(internal, values);
+
+            emitLoadModuleState(module.moduleId());
+            emitStoreStateValueThroughImports(module.moduleId(), export.declarationId(),
+                    internal, values);
+            code.return_();
+        }
+
+        private void authenticateFacadeFunctionArgument(GeneratedExportPlan export) {
+            Label acceptedNull = code.newLabel();
+            Label argumentReady = code.newLabel();
+            if (export.valueType().isNilable()) {
+                code.dup();
+                code.ifnull(acceptedNull);
+            }
+            loadFacadeState();
+            code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
+                    "$lyra$closureAuthority",
+                    method("()L" + RUNTIME + "LyraClosureAuthority;"));
+            code.ldc(export.functionSignature().orElseThrow().canonicalLyraSignature());
+            code.invokestatic(CD_SIGNATURE, "parse", method(
+                    "(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+            code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "requireAuthenticated", method(
+                    "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
+                            + RUNTIME + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
+            code.checkcast(cd(owner.plan.functionInterfaces().get(
+                    functionBase(declarations.get(export.declarationId()).contract()
+                            .orElseThrow().valueType()).canonicalSpelling())));
+            code.goto_(argumentReady);
+            if (export.valueType().isNilable()) {
+                code.labelBinding(acceptedNull);
+            }
+            code.labelBinding(argumentReady);
+        }
+
+        /** Consumes a state object and follows selective-import state links. */
+        private void emitStoreStateValueThroughImports(
+                ModuleId stateModule, DeclarationId id, JvmTypePlan storage, List<Integer> values) {
+            GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
+                    .get(stateModule)).orElseThrow(() -> invalidPlan(memberSpan(),
+                    "module state is absent: " + stateModule));
+            JvmType stateType = JvmType.reference(state.binaryName());
+            int stateSlot = allocateLocal(stateType);
+            storePhysical(stateType, stateSlot);
+
+            IrImportBinding importBinding = owner.imports.get(id);
+            if (importBinding != null) {
+                if (importBinding.kind() != ImportBindingKind.SELECTIVE_VALUE
+                        || importBinding.targetDeclaration().isEmpty()) {
+                    throw invalidPlan(memberSpan(), "re-export setter does not target a value import");
+                }
+                List<GeneratedMemberPlan> fields = stateFields(stateModule, id);
+                GeneratedMemberPlan importField = fields.stream()
+                        .filter(value -> value.kind() == GeneratedMemberKind.STATE_IMPORT_FIELD)
+                        .findFirst().orElseThrow(() -> invalidPlan(memberSpan(),
+                                "re-export setter import state field is absent"));
+                loadPhysical(stateType, stateSlot);
+                code.invokevirtual(cd(state.binaryName()),
+                        "$lyra$get$binding$" + id.value(),
+                        method("()" + importField.descriptor()));
+                DeclarationId target = importedStateDeclaration(importBinding);
+                emitStoreStateValueThroughImports(importBinding.targetModule(), target,
+                        storage, values);
+                return;
+            }
+
+            List<GeneratedMemberPlan> fields = stateFields(stateModule, id);
+            if (fields.stream().anyMatch(value -> value.kind() == GeneratedMemberKind.STATE_CELL_FIELD)) {
+                GeneratedMemberPlan cellField = fields.stream()
+                        .filter(value -> value.kind() == GeneratedMemberKind.STATE_CELL_FIELD)
+                        .findFirst().orElseThrow();
+                loadPhysical(stateType, stateSlot);
+                code.invokevirtual(cd(state.binaryName()),
+                        "$lyra$get$binding$" + id.value(),
+                        method("()" + cellField.descriptor()));
+                String cellName = cellField.descriptor()
+                        .substring(1, cellField.descriptor().length() - 1).replace('/', '.');
+                GeneratedClassPlan cell = owner.plan.classPlan(cellName).orElseThrow(() ->
+                        invalidPlan(memberSpan(), "re-export setter cell class is absent"));
+                GeneratedMemberPlan setter = cell.members().stream()
+                        .filter(value -> value.kind() == GeneratedMemberKind.CELL_SET)
+                        .findFirst().orElseThrow(() -> invalidPlan(memberSpan(),
+                                "re-export setter cell has no setter"));
+                for (int index = 0; index < values.size(); index++) {
+                    loadPhysical(storage.physicalComponents().get(index), values.get(index));
+                }
+                code.invokevirtual(cd(cell.binaryName()), setter.name(), method(setter.descriptor()));
+                return;
+            }
+
+            GeneratedMemberPlan setter = state.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.STATE_COMPONENT_SET)
+                    .filter(value -> value.name().equals("$lyra$set$binding$" + id.value()))
+                    .findFirst().orElseThrow(() -> invalidPlan(memberSpan(),
+                            "re-export setter has no writable state binding"));
+            if (setter.descriptor().equals("()V")) {
+                throw invalidPlan(memberSpan(), "re-export state setter has no parameters");
+            }
+            loadPhysical(stateType, stateSlot);
+            for (int index = 0; index < values.size(); index++) {
+                loadPhysical(storage.physicalComponents().get(index), values.get(index));
+            }
+            code.invokevirtual(cd(state.binaryName()), setter.name(), method(setter.descriptor()));
+        }
+
+        private DeclarationId importedStateDeclaration(IrImportBinding binding) {
+            return owner.ir.exports().stream()
+                    .filter(export -> export.moduleId().equals(binding.targetModule()))
+                    .filter(export -> binding.targetExport()
+                            .map(target -> export.exportId().equals(Optional.of(target)))
+                            .orElseGet(() -> export.name().equals(
+                                    binding.importedName().orElseThrow())))
+                    .map(IrExport::declarationId)
+                    .findFirst()
+                    .orElseThrow(() -> invalidPlan(memberSpan(),
+                            "re-export setter target export is absent: " + binding.targetModule()));
         }
 
         private void emitFacadeCellSetter(GeneratedExportPlan export) {
@@ -5144,11 +5341,15 @@ final class JvmBytecodeEmitter {
         }
 
         private void emitZero(JvmType type) {
-            switch (type.descriptor()) {
+            String descriptor = type.descriptor();
+            if (descriptor.startsWith("L") || descriptor.startsWith("[")) {
+                code.aconst_null();
+                return;
+            }
+            switch (descriptor) {
                 case "J" -> code.lconst_0();
                 case "F" -> code.fconst_0();
                 case "D" -> code.dconst_0();
-                case "L", "[" -> code.aconst_null();
                 default -> code.iconst_0();
             }
         }
