@@ -56,6 +56,24 @@ final class LyraOwnershipToken {
         checkUsable(true);
     }
 
+    void checkIoAccess() {
+        owner.check();
+        LifecycleState state = lifecycle.rawState();
+        if (state == LifecycleState.FAILED) {
+            throw new LyraInitializationException("module initialization failed", java.util.List.of(), lifecycle.failureCauseUnchecked());
+        }
+        if (state == LifecycleState.CLOSED || !valid.get()) {
+            throw new LyraClosedException("module-owned I/O authority is closed or invalidated");
+        }
+        if (state != LifecycleState.OPEN && state != LifecycleState.INITIALIZING) {
+            throw new LyraLifecycleException("module-owned I/O authority is not open");
+        }
+    }
+
+    RuntimeIoEnvironment ioEnvironment() {
+        return lifecycle.ioEnvironment();
+    }
+
     private void checkUsable(boolean allowInitializing) {
         owner.check();
         LifecycleState state = lifecycle.rawState();

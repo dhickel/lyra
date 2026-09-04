@@ -98,6 +98,7 @@ final class JvmBytecodeEmitter {
     private static final ClassDesc CD_METADATA_READER = cd(RUNTIME + "ArtifactMetadataReader");
     private static final ClassDesc CD_RUNTIME_CLOSURE_SUPPORT = cd(RUNTIME + "LyraClosureSupport");
     private static final ClassDesc CD_RUNTIME_LYRA_CLOSURE = cd(RUNTIME + "LyraClosure");
+    private static final ClassDesc CD_LYRA_IO = cd(RUNTIME + "LyraIo");
     private static final ClassDesc CD_INTEGER = cd("java.lang.Integer");
     private static final ClassDesc CD_LONG = cd("java.lang.Long");
     private static final ClassDesc CD_FLOAT = cd("java.lang.Float");
@@ -242,6 +243,7 @@ final class JvmBytecodeEmitter {
         private final Map<CaptureId, IrCapture> captures;
         private final Map<ModuleId, IrModule> modules;
         private final Map<DeclarationId, IrCell> cells;
+        private final Map<String, IrDeclaration> intrinsicFunctionsByClass;
         private final Map<DeclarationId, io.mindspice.lyra.compiler.ir.IrImportBinding> imports;
         private final Map<FlowSiteId, IrFailureSite> failureSites;
         private final Map<String, byte[]> bytes = new LinkedHashMap<>();
@@ -266,12 +268,20 @@ final class JvmBytecodeEmitter {
             this.cells = ir.cells().stream()
                     .collect(java.util.stream.Collectors.toUnmodifiableMap(
                             IrCell::declarationId, value -> value));
+            this.intrinsicFunctionsByClass = ir.declarations().stream()
+                    .filter(value -> value.kind() == DeclarationKind.INTRINSIC_EXPORT)
+                    .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                            value -> plan.intrinsicFunctionClasses().get(value.id()), value -> value));
             this.imports = ir.imports().stream()
                     .collect(java.util.stream.Collectors.toUnmodifiableMap(
                             io.mindspice.lyra.compiler.ir.IrImportBinding::declarationId, value -> value));
             this.failureSites = ir.failureSites().stream()
                     .collect(java.util.stream.Collectors.toUnmodifiableMap(
                             IrFailureSite::siteId, value -> value));
+        }
+
+        private IrDeclaration intrinsicFunction(String binaryName) {
+            return intrinsicFunctionsByClass.get(binaryName);
         }
 
         private boolean usesLocalFunctionSlot(IrCapture capture) {
@@ -477,6 +487,7 @@ final class JvmBytecodeEmitter {
         private final Map<CaptureId, IrCapture> captures;
         private final IrModule module;
         private final io.mindspice.lyra.compiler.ir.IrLambda lambda;
+        private final IrDeclaration intrinsicFunction;
         private final boolean stateMethod;
         private final boolean closureMethod;
         private Label loopLabel;
@@ -501,6 +512,8 @@ final class JvmBytecodeEmitter {
                     .filter(value -> owner.plan.closureClasses().get(value.id())
                             .equals(classPlan.binaryName())).findFirst().orElse(null)
                     : null;
+            this.intrinsicFunction = classPlan.kind() == GeneratedClassKind.CLOSURE
+                    ? owner.intrinsicFunction(classPlan.binaryName()) : null;
             this.stateMethod = classPlan.kind() == GeneratedClassKind.MODULE_STATE;
             this.closureMethod = classPlan.kind() == GeneratedClassKind.CLOSURE;
         }
@@ -745,7 +758,11 @@ final class JvmBytecodeEmitter {
         private void emitObjectSuperClosureConstructor() {
             aloadReceiver();
             loadParameter(0);
-            code.ldc(lambda.signature().canonicalSpelling());
+            String signature = intrinsicFunction != null
+                    ? functionBase(intrinsicFunction.contract().orElseThrow().valueType())
+                    .signature().canonicalSpelling()
+                    : lambda.signature().canonicalSpelling();
+            code.ldc(signature);
             code.invokestatic(CD_SIGNATURE, "parse",
                     method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
             code.invokespecial(CD_CLOSURE, "<init>",
@@ -754,6 +771,10 @@ final class JvmBytecodeEmitter {
         }
 
         private void emitClosureInvoke() {
+            if (intrinsicFunction != null) {
+                emitIntrinsicClosureInvoke();
+                return;
+            }
             if (lambda == null || lambda.signature() == null) {
                 throw invalidPlan(memberSpan(), "closure invocation has no lambda metadata");
             }
@@ -767,6 +788,22 @@ final class JvmBytecodeEmitter {
             line(lambda.bodySpan());
             installLambdaParameters();
             emitTail(lambda.body());
+        }
+
+        private void emitIntrinsicClosureInvoke() {
+            FunctionType function = functionBase(intrinsicFunction.contract().orElseThrow().valueType());
+            JvmSignaturePlan signature = owner.mapper.mapSignature(
+                    function.signature(), JvmAbiBoundary.JAVA_VISIBLE);
+            aloadReceiver();
+            code.invokevirtual(CD_CLOSURE, "checkInvocationFromGeneratedCode", method("()V"));
+            line(memberSpan());
+            emitCurrentAuthority();
+            for (int index = 0; index < function.arity(); index++) {
+                loadParameter(index);
+            }
+            recordCallFailureFrame(memberSpan(), () -> code.invokestatic(
+                    CD_LYRA_IO, intrinsicFunction.name(), method(intrinsicDescriptor(signature))));
+            returnPhysicalDescriptor(signature.returnValue().descriptor());
         }
 
         private void installLambdaParameters() {
@@ -878,7 +915,39 @@ final class JvmBytecodeEmitter {
             code.swap();
             GeneratedMemberPlan lifecycle = stateLifecycleField();
             code.putfield(cd(classPlan.binaryName()), lifecycle.name(), type(lifecycle.descriptor()));
+            initializeIntrinsicFunctions();
             code.return_();
+        }
+
+        private void initializeIntrinsicFunctions() {
+            if (owner.plan.intrinsicFunctionClasses().isEmpty()) {
+                return;
+            }
+            for (IrDeclaration declaration : declarations.values().stream()
+                    .filter(value -> value.kind() == DeclarationKind.INTRINSIC_EXPORT)
+                    .filter(value -> value.moduleId().equals(module.moduleId()))
+                    .sorted(java.util.Comparator.comparing(IrDeclaration::id)).toList()) {
+                String adapterName = owner.plan.intrinsicFunctionClasses().get(declaration.id());
+                if (adapterName == null) {
+                    throw invalidPlan(memberSpan(), "intrinsic function adapter is absent: "
+                            + declaration.id());
+                }
+                List<GeneratedMemberPlan> fields = stateFields(declaration.id());
+                if (fields.size() != 1) {
+                    throw invalidPlan(memberSpan(), "intrinsic function state storage is invalid: "
+                            + declaration.id());
+                }
+                aloadReceiver();
+                code.new_(cd(adapterName));
+                code.dup();
+                emitCurrentAuthority();
+                aloadReceiver();
+                code.invokespecial(cd(adapterName), "<init>", method("(L" + RUNTIME
+                        + "LyraClosureAuthority;L" + owner.plan.moduleStates().get(module.moduleId())
+                        .replace('.', '/') + ";)V"));
+                code.putfield(cd(classPlan.binaryName()), fields.getFirst().name(),
+                        type(fields.getFirst().descriptor()));
+            }
         }
 
         private GeneratedMemberPlan stateLifecycleField() {
@@ -1287,7 +1356,8 @@ final class JvmBytecodeEmitter {
                 runtimeModules.add(new io.mindspice.lyra.runtime.ModuleMetadata(
                         moduleId,
                         io.mindspice.lyra.runtime.ModuleRevision.of(
-                                io.mindspice.lyra.compiler.source.ModuleRevision.compute(snapshot)),
+                                owner.ir.typedSemanticGraph().resolvedGraph().moduleGraph()
+                                        .module(value.moduleId()).orElseThrow().revision()),
                         snapshot.sourceId().value()));
                 io.mindspice.lyra.runtime.SourceId sourceId = snapshot.sourceId().isUri()
                         ? io.mindspice.lyra.runtime.SourceId.uri(snapshot.sourceId().asUri())
@@ -1402,11 +1472,17 @@ final class JvmBytecodeEmitter {
         }
 
         private void emitFacadeFunctionInvocation(GeneratedExportPlan export) {
-            loadFacadeState();
-            emitStateFunction(facadeStateDeclaration(export));
+            IrDeclaration intrinsic = intrinsicDeclaration(export.declarationId());
             FunctionType function = functionBase(declarations.get(export.declarationId()).contract()
                     .orElseThrow().valueType());
             JvmSignaturePlan signature = export.functionSignature().orElseThrow();
+            if (intrinsic != null) {
+                emitIntrinsicFacadeCall(intrinsic, function, signature);
+                returnPhysicalDescriptor(member.descriptor().substring(member.descriptor().indexOf(')') + 1));
+                return;
+            }
+            loadFacadeState();
+            emitStateFunction(facadeStateDeclaration(export));
             loadFacadeState();
             code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
                     "$lyra$closureAuthority",
@@ -1429,6 +1505,17 @@ final class JvmBytecodeEmitter {
             // internal Lyra expression, it must not materialize LyraUnit on
             // the operand stack before returning.
             returnPhysicalDescriptor(member.descriptor().substring(member.descriptor().indexOf(')') + 1));
+        }
+
+        private void emitIntrinsicFacadeCall(
+                IrDeclaration intrinsic, FunctionType function, JvmSignaturePlan signature) {
+            emitIoAuthority();
+            for (int index = 0; index < function.arity(); index++) {
+                emitParameterFromFacade(index, function.parameterType(index),
+                        signature.parameters().get(index));
+            }
+            recordCallFailureFrame(memberSpan(), () -> code.invokestatic(
+                    CD_LYRA_IO, intrinsic.name(), method(intrinsicDescriptor(signature))));
         }
 
         private void emitFacadeFunctionValueGetter(GeneratedExportPlan export) {
@@ -3541,6 +3628,10 @@ final class JvmBytecodeEmitter {
         private JvmTypePlan emitDirectCall(IrNode.DirectCall call) {
             DeclarationId id = call.targetDeclaration().orElseThrow(() ->
                     invalidPlan(call.span(), "direct call has no target declaration"));
+            IrDeclaration intrinsic = intrinsicDeclaration(id);
+            if (intrinsic != null) {
+                return emitIntrinsicCall(intrinsic, call.arguments(), call.type(), call.span());
+            }
             IrDeclaration declaration = declarations.get(id);
             if (declaration == null || declaration.contract().isEmpty()) {
                 throw invalidPlan(call.span(), "direct call target declaration is absent");
@@ -3567,6 +3658,11 @@ final class JvmBytecodeEmitter {
 
         private JvmTypePlan emitCallableCall(IrNode.CallableCall call) {
             FunctionType function = functionBase(call.target().type());
+            DeclarationId target = targetDeclaration(call.target());
+            IrDeclaration intrinsic = target == null ? null : intrinsicDeclaration(target);
+            if (intrinsic != null) {
+                return emitIntrinsicCall(intrinsic, call.arguments(), call.type(), call.span());
+            }
             JvmSignaturePlan signature = owner.mapper.mapSignature(function.signature(),
                     JvmAbiBoundary.JAVA_VISIBLE);
             emitAt(call.target(), owner.mapper.map(
@@ -3583,6 +3679,40 @@ final class JvmBytecodeEmitter {
             if (signature.returnValue().descriptor().equals("V")) emitUnit();
             else adaptPhysicalPlan(signature.returnValue(), result);
             return result;
+        }
+
+        private JvmTypePlan emitIntrinsicCall(
+                IrDeclaration intrinsic, List<IrNode> arguments, LyraType resultType,
+                SourceSpan span) {
+            if (intrinsic.contract().isEmpty()
+                    || !(intrinsic.contract().orElseThrow().valueType().withoutQualifiers()
+                    instanceof FunctionType function)) {
+                throw invalidPlan(span, "intrinsic target has no function contract: " + intrinsic.id());
+            }
+            if (arguments.size() != function.arity()) {
+                throw invalidPlan(span, "intrinsic argument count disagrees with its contract");
+            }
+            JvmSignaturePlan signature = owner.mapper.mapSignature(
+                    function.signature(), JvmAbiBoundary.JAVA_VISIBLE);
+            emitIoAuthority();
+            for (int index = 0; index < arguments.size(); index++) {
+                emitAt(arguments.get(index), signature.parameters().get(index));
+            }
+            recordCallFailureFrame(span, () -> code.invokestatic(
+                    CD_LYRA_IO, intrinsic.name(), method(intrinsicDescriptor(signature))));
+            JvmTypePlan result = owner.mapper.map(resultType, JvmMappingContext.INTERNAL_VALUE);
+            if (signature.returnValue().descriptor().equals("V")) {
+                emitUnit();
+            } else {
+                adaptPhysicalPlan(signature.returnValue(), result);
+            }
+            return result;
+        }
+
+        private String intrinsicDescriptor(JvmSignaturePlan signature) {
+            String descriptor = signature.descriptor();
+            return "(L" + RUNTIME + "LyraClosureAuthority;"
+                    + descriptor.substring(1);
         }
 
         private void authenticateGeneratedFunctionValue(FunctionType function) {
@@ -3658,6 +3788,51 @@ final class JvmBytecodeEmitter {
             } else {
                 throw unsupported(module.span(), "lambda creation requires a Lyra-owned invocation/state context");
             }
+        }
+
+        private void emitIoAuthority() {
+            if (stateMethod || closureMethod) {
+                emitCurrentAuthority();
+                return;
+            }
+            if (classPlan.kind() == GeneratedClassKind.MODULE_FACADE) {
+                loadFacadeState();
+                code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
+                        "$lyra$closureAuthority",
+                        method("()L" + RUNTIME + "LyraClosureAuthority;"));
+                return;
+            }
+            throw unsupported(module.span(), "intrinsic I/O requires a Lyra-owned invocation context");
+        }
+
+        private DeclarationId targetDeclaration(IrNode node) {
+            if (node instanceof IrNode.Reference reference) {
+                return reference.targetDeclaration().orElse(null);
+            }
+            if (node instanceof IrNode.CaptureReference capture) {
+                return capture.declarationId().orElse(null);
+            }
+            return null;
+        }
+
+        private IrDeclaration intrinsicDeclaration(DeclarationId start) {
+            DeclarationId current = start;
+            Set<DeclarationId> visited = new HashSet<>();
+            while (current != null && visited.add(current)) {
+                IrDeclaration declaration = declarations.get(current);
+                if (declaration == null) {
+                    return null;
+                }
+                if (declaration.kind() == DeclarationKind.INTRINSIC_EXPORT) {
+                    return declaration;
+                }
+                IrImportBinding binding = owner.imports.get(current);
+                if (binding == null || binding.targetDeclaration().isEmpty()) {
+                    return null;
+                }
+                current = binding.targetDeclaration().orElseThrow();
+            }
+            return null;
         }
 
         private void emitCurrentState() {

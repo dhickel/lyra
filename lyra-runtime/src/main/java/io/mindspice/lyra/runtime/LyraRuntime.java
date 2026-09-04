@@ -898,7 +898,8 @@ public final class LyraRuntime {
         private final LoadOptions options;
         private final ArtifactClassLoader loader;
         private final Map<ModuleId, Class<?>> facades;
-        private final LyraArtifactKey artifactKey = ModuleLifecycle.newArtifactKey();
+        private final LyraArtifactKey artifactKey;
+
         private final Set<ModuleHandleImpl> instances = new HashSet<>();
         private int activeInstantiations;
         private boolean closed;
@@ -910,6 +911,11 @@ public final class LyraRuntime {
             this.options = options;
             this.loader = loader;
             this.facades = facades;
+            // The key is shared by every instance of this loaded artifact so
+            // closure authentication remains artifact-local.  Its immutable
+            // I/O environment is likewise shared, while each generated state
+            // still captures its own caller/owner thread.
+            this.artifactKey = new LyraArtifactKey(options.ioEnvironment());
         }
 
         @Override

@@ -9,16 +9,30 @@ import java.util.Optional;
  */
 public final class LyraArtifactKey {
     private final Optional<OwnerThread> configuredOwner;
+    private final RuntimeIoEnvironment ioEnvironment;
 
     LyraArtifactKey() {
-        configuredOwner = Optional.empty();
+        this(null, RuntimeIoEnvironment.defaults());
+    }
+
+    LyraArtifactKey(RuntimeIoEnvironment ioEnvironment) {
+        this(null, ioEnvironment);
     }
 
     LyraArtifactKey(OwnerThread owner) {
-        configuredOwner = Optional.of(Objects.requireNonNull(owner, "owner"));
+        this(owner, RuntimeIoEnvironment.defaults());
+    }
+
+    LyraArtifactKey(OwnerThread owner, RuntimeIoEnvironment ioEnvironment) {
+        configuredOwner = Optional.ofNullable(owner);
+        this.ioEnvironment = Objects.requireNonNull(ioEnvironment, "ioEnvironment");
     }
 
     Optional<OwnerThread> configuredOwner() {
         return configuredOwner;
+    }
+
+    RuntimeIoEnvironment ioEnvironment() {
+        return ioEnvironment;
     }
 }

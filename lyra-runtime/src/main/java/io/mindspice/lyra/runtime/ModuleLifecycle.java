@@ -17,6 +17,7 @@ public final class ModuleLifecycle implements AutoCloseable {
             new AtomicReference<>(LifecycleState.INITIALIZING);
     private final LyraOwnershipToken ownership;
     private final LyraClosureAuthority closureAuthority;
+    private final RuntimeIoEnvironment ioEnvironment;
     private volatile Throwable failureCause;
 
     public ModuleLifecycle() {
@@ -52,7 +53,8 @@ public final class ModuleLifecycle implements AutoCloseable {
     public static LyraArtifactKey newArtifactKey(RuntimeOptions options) {
         RuntimeOptions value = Objects.requireNonNull(options, "options");
         LyraArtifactKey existing = value.artifactKey();
-        return existing != null ? existing : new LyraArtifactKey(value.owner());
+        return existing != null ? existing
+                : new LyraArtifactKey(value.owner(), value.ioEnvironment());
     }
 
     /**
@@ -74,9 +76,11 @@ public final class ModuleLifecycle implements AutoCloseable {
     private ModuleLifecycle(OwnerThread owner, Optional<ModuleId> moduleId, Object artifactKey) {
         this.owner = Objects.requireNonNull(owner, "owner");
         this.moduleId = Objects.requireNonNull(moduleId, "moduleId");
-        this.ownership = new LyraOwnershipToken(this, owner, moduleId,
-                Objects.requireNonNull(artifactKey, "artifactKey"));
+        Object key = Objects.requireNonNull(artifactKey, "artifactKey");
+        this.ownership = new LyraOwnershipToken(this, owner, moduleId, key);
         this.closureAuthority = new LyraClosureAuthority(ownership);
+        this.ioEnvironment = key instanceof LyraArtifactKey artifact
+                ? artifact.ioEnvironment() : RuntimeIoEnvironment.defaults();
     }
 
     public OwnerThread owner() {
@@ -157,6 +161,11 @@ public final class ModuleLifecycle implements AutoCloseable {
             throw initializationFailure();
         }
         return closureAuthority;
+    }
+
+    RuntimeIoEnvironment ioEnvironment() {
+        owner.check();
+        return ioEnvironment;
     }
 
     @Override

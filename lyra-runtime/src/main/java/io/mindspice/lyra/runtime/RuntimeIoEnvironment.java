@@ -2,9 +2,15 @@ package io.mindspice.lyra.runtime;
 
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 
 /** Immutable stream/charset configuration; supplied streams are never owned or closed. */
 public final class RuntimeIoEnvironment {
@@ -12,6 +18,10 @@ public final class RuntimeIoEnvironment {
     private final OutputStream output;
     private final OutputStream error;
     private final Charset charset;
+    private final ReentrantLock inputLock = new ReentrantLock(true);
+    private final ReentrantLock outputLock = new ReentrantLock(true);
+    private final ReentrantLock errorLock;
+    private final InputState inputState;
 
     public RuntimeIoEnvironment(InputStream input, OutputStream output,
                                 OutputStream error, Charset charset) {
@@ -19,6 +29,9 @@ public final class RuntimeIoEnvironment {
         this.output = Objects.requireNonNull(output, "output");
         this.error = Objects.requireNonNull(error, "error");
         this.charset = Objects.requireNonNull(charset, "charset");
+        this.errorLock = this.error == this.output
+                ? outputLock : new ReentrantLock(true);
+        this.inputState = new InputState(this.charset);
     }
 
     public static RuntimeIoEnvironment defaults() {
@@ -35,6 +48,108 @@ public final class RuntimeIoEnvironment {
     public OutputStream errorStream() { return error; }
     public OutputStream err() { return error; }
     public Charset charset() { return charset; }
+
+    ReentrantLock inputLock() { return inputLock; }
+    ReentrantLock outputLock() { return outputLock; }
+    ReentrantLock errorLock() { return errorLock; }
+    InputState inputState() { return inputState; }
+
+    /** Decoder state belongs to one configured input stream and is only
+     * accessed while {@link #inputLock} is held. */
+    static final class InputState {
+        private final CharsetDecoder decoder;
+        private ByteBuffer pending = ByteBuffer.allocate(0);
+        private final StringBuilder decoded = new StringBuilder();
+        private boolean endOfInput;
+
+        private InputState(Charset charset) {
+            this.decoder = charset.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT);
+        }
+
+        void accept(int value) throws CharacterCodingException {
+            if (endOfInput) {
+                throw new IllegalStateException("input decoder was used after EOF");
+            }
+            ByteBuffer source = ByteBuffer.allocate(pending.remaining() + 1);
+            source.put(pending);
+            source.put((byte) value);
+            source.flip();
+            decode(source, false);
+            saveRemaining(source);
+        }
+
+        void finish() throws CharacterCodingException {
+            if (endOfInput) {
+                return;
+            }
+            ByteBuffer source = pending;
+            pending = ByteBuffer.allocate(0);
+            decode(source, true);
+            flush();
+            endOfInput = true;
+        }
+
+        String pollLine() {
+            int newline = decoded.indexOf("\n");
+            if (newline < 0) {
+                return null;
+            }
+            String line = decoded.substring(0, newline);
+            decoded.delete(0, newline + 1);
+            return line.endsWith("\r")
+                    ? line.substring(0, line.length() - 1) : line;
+        }
+
+        String takeRemainder() {
+            String result = decoded.toString();
+            decoded.setLength(0);
+            return result;
+        }
+
+        boolean endOfInput() {
+            return endOfInput;
+        }
+
+        private void decode(ByteBuffer source, boolean endOfInput)
+                throws CharacterCodingException {
+            while (true) {
+                CharBuffer output = CharBuffer.allocate(16);
+                var result = decoder.decode(source, output, endOfInput);
+                output.flip();
+                decoded.append(output);
+                if (result.isError()) {
+                    result.throwException();
+                }
+                if (result.isUnderflow()) {
+                    return;
+                }
+            }
+        }
+
+        private void flush() throws CharacterCodingException {
+            while (true) {
+                CharBuffer output = CharBuffer.allocate(16);
+                var result = decoder.flush(output);
+                output.flip();
+                decoded.append(output);
+                if (result.isError()) {
+                    result.throwException();
+                }
+                if (result.isUnderflow()) {
+                    return;
+                }
+            }
+        }
+
+        private void saveRemaining(ByteBuffer source) {
+            ByteBuffer remaining = ByteBuffer.allocate(source.remaining());
+            remaining.put(source);
+            remaining.flip();
+            pending = remaining;
+        }
+    }
 
     @Override
     public boolean equals(Object other) {
