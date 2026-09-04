@@ -385,6 +385,8 @@ public final class ArtifactMetadata {
 
     private void validateExports() {
         java.util.HashSet<String> exportIds = new java.util.HashSet<>();
+        java.util.HashMap<ModuleId, java.util.HashSet<String>> exportNamesByModule =
+                new java.util.HashMap<>();
         java.util.HashMap<ModuleId, java.util.HashSet<String>> javaNamesByModule =
                 new java.util.HashMap<>();
         for (ExportMetadata export : exports) {
@@ -392,7 +394,15 @@ public final class ArtifactMetadata {
                 throw new IllegalArgumentException("export refers to an absent module: " + export);
             }
             String exportId = export.id().id();
-            exportIds.add(exportId);
+            if (!exportIds.add(exportId)) {
+                throw new IllegalArgumentException("duplicate export ID: " + exportId);
+            }
+            java.util.HashSet<String> exportNames = exportNamesByModule.computeIfAbsent(
+                    export.moduleId(), ignored -> new java.util.HashSet<>());
+            if (!exportNames.add(export.name())) {
+                throw new IllegalArgumentException("duplicate export name in module: "
+                        + export.moduleId() + "#" + export.name());
+            }
             String mappedName = javaNameMap.get(exportId);
             if (!export.javaName().equals(mappedName)) {
                 throw new IllegalArgumentException("Java name map disagrees with export metadata: " + export);

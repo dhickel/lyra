@@ -31,11 +31,13 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipException;
 import java.util.zip.ZipFile;
 
-/** Runtime loading boundary for verified Lyra class-directory and thin artifacts. */
+/** Runtime loading boundary for verified Lyra class-directory, thin, and bundled artifacts. */
 public final class LyraRuntime {
     private static final String GENERATED_PREFIX = "$lyra$";
     private static final String FACADE_PREFIX = "$lyra$facade$";
     private static final String RUNTIME_PACKAGE = "io.mindspice.lyra.runtime.";
+    private static final String REQUIRED_LAUNCHER_ENTRY =
+            "io/mindspice/lyra/runtime/LyraLauncher.class";
     private static final String MANIFEST_PATH = "META-INF/MANIFEST.MF";
     private static final String SOURCES_PATH = "META-INF/lyra/sources/";
     private static final int CLASS_FILE_MAGIC = 0xcafebabe;
@@ -70,7 +72,7 @@ public final class LyraRuntime {
         return load(artifact, LoadOptions.defaults());
     }
 
-    /** Loads a class directory or a thin JAR from a filesystem path. */
+    /** Loads a class directory, thin JAR, or bundled JAR from a filesystem path. */
     public static LoadedArtifact load(Path classesOrJar, LoadOptions options) throws IOException {
         Objects.requireNonNull(classesOrJar, "classesOrJar");
         Objects.requireNonNull(options, "options");
@@ -84,7 +86,7 @@ public final class LyraRuntime {
         return load(readJar(path), options, Container.JAR);
     }
 
-    /** Loads a class directory or thin JAR using default options. */
+    /** Loads a class directory, thin JAR, or bundled JAR using default options. */
     public static LoadedArtifact load(Path classesOrJar) throws IOException {
         return load(classesOrJar, LoadOptions.defaults());
     }
@@ -128,14 +130,10 @@ public final class LyraRuntime {
     private static LoadedArtifact load(ArtifactData data, LoadOptions options,
                                        Container container) {
         ArtifactMetadata metadata = preflight(data, options, container);
-        if (metadata.packagingMode() == PackagingMode.BUNDLED_JAR) {
-            // Phase 21 owns the launcher boundary. Loading a bundled image here
-            // must remain fail-closed rather than accidentally defining a
-            // second copy of the runtime or pretending that java -jar works.
-            throw new LyraLinkException(
-                    "bundled Lyra artifacts require the standalone launcher and cannot be loaded by this API");
-        }
-
+        // Bundled artifacts carry a copy of the runtime for java -jar, but
+        // generated classes must still resolve against this one shared parent
+        // runtime.  classEntries() therefore excludes bundled runtime classes
+        // instead of defining a duplicate runtime domain in the child loader.
         Map<String, byte[]> classes = classEntries(data.entries(), metadata);
         ArtifactClassLoader loader = new ArtifactClassLoader(SHARED_RUNTIME_LOADER, classes);
         try {
@@ -416,6 +414,10 @@ public final class LyraRuntime {
 
     private static void validateClassEntries(Map<String, byte[]> entries,
                                              ArtifactMetadata metadata) {
+        if (metadata.packagingMode() == PackagingMode.BUNDLED_JAR
+                && !entries.containsKey(REQUIRED_LAUNCHER_ENTRY)) {
+            throw compatibility("bundled artifact is missing its Lyra launcher", null);
+        }
         if (metadata.javaPackage().equals("java") || metadata.javaPackage().startsWith("java.")) {
             throw compatibility("generated artifact namespace is reserved by the JVM: "
                     + metadata.javaPackage(), null);
@@ -446,11 +448,14 @@ public final class LyraRuntime {
                 }
             }
             byte[] bytes = entry.getValue();
-            // Leave malformed class bodies to the controlled definition
-            // boundary. ClassFormatError/other LinkageError is translated to
-            // LYR-LINK there, while version/profile mismatches are rejected
-            // before any class is defined.
+            // Generated class bodies are checked at the controlled definition
+            // boundary. Bundled runtime classes are intentionally not defined
+            // by this child loader, so at least reject a visibly malformed
+            // runtime entry during preflight instead of silently ignoring it.
             if (bytes.length < 8 || u4(bytes, 0) != CLASS_FILE_MAGIC) {
+                if (bundledRuntime) {
+                    throw compatibility("bundled runtime entry is not a class file: " + name, null);
+                }
                 continue;
             }
             int minor = u2(bytes, 4);
@@ -474,9 +479,15 @@ public final class LyraRuntime {
                                                     ArtifactMetadata metadata) {
         TreeMap<String, byte[]> classes = new TreeMap<>();
         for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
-            if (entry.getKey().endsWith(".class")) {
-                classes.put(binaryNameForClassEntry(entry.getKey()), entry.getValue().clone());
+            if (!entry.getKey().endsWith(".class")) {
+                continue;
             }
+            String binaryName = binaryNameForClassEntry(entry.getKey());
+            if (metadata.packagingMode() == PackagingMode.BUNDLED_JAR
+                    && binaryName.startsWith(RUNTIME_PACKAGE)) {
+                continue;
+            }
+            classes.put(binaryName, entry.getValue().clone());
         }
         return Collections.unmodifiableMap(classes);
     }

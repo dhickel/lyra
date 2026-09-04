@@ -1,0 +1,39 @@
+#!/bin/sh
+# The CLI is compiled for Java 25. Do not add --enable-preview here: pass
+# LYRA_JAVA_OPTS=--enable-preview when starting a preview-requiring artifact.
+set -eu
+
+SOURCE=$0
+while [ -h "$SOURCE" ]; do
+    SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)
+    LINK=$(readlink "$SOURCE")
+    case "$LINK" in
+        /*) SOURCE=$LINK ;;
+        *) SOURCE=$SCRIPT_DIR/$LINK ;;
+    esac
+done
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)
+CLI_JAR=
+for candidate in \
+    "$SCRIPT_DIR/lyra-cli-1.0-SNAPSHOT.jar" \
+    "$SCRIPT_DIR/../lyra-cli-1.0-SNAPSHOT.jar" \
+    "$SCRIPT_DIR/../lib/lyra-cli-1.0-SNAPSHOT.jar" \
+    "$SCRIPT_DIR/../target/lyra-cli-1.0-SNAPSHOT.jar" \
+    "$SCRIPT_DIR/../../../target/lyra-cli-1.0-SNAPSHOT.jar" \
+    "$SCRIPT_DIR/../../lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar"
+do
+    if [ -f "$candidate" ]; then
+        CLI_JAR=$candidate
+        break
+    fi
+done
+
+if [ -z "$CLI_JAR" ]; then
+    printf '%s\n' 'lyra: cannot locate lyra-cli-1.0-SNAPSHOT.jar' >&2
+    exit 2
+fi
+
+JAVA_COMMAND=${JAVA_COMMAND:-java}
+# Intentionally leave option word-splitting to the caller so multiple JVM
+# options can be supplied without changing or re-parsing Lyra arguments.
+exec "$JAVA_COMMAND" ${LYRA_JAVA_OPTS:-} -jar "$CLI_JAR" "$@"

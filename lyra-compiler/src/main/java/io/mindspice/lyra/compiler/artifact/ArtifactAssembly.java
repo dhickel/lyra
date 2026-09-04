@@ -114,6 +114,21 @@ public final class ArtifactAssembly implements ArtifactSource {
         }
 
         DebugMapMetadata debugMap = DebugMapBuilder.build(bytecode);
+        if (options.packagingMode() == PackagingMode.BUNDLED_JAR) {
+            List<ExportMetadata> mains = exports.stream()
+                    .filter(export -> export.moduleId().equals(
+                            runtimeModuleId(bytecode.typedIr().rootModule().moduleId())))
+                    .filter(export -> export.name().equals("main"))
+                    .toList();
+            if (mains.size() != 1
+                    || !mains.getFirst().isFunction()
+                    || !mains.getFirst().canonicalContract()
+                    .equals("Fn<Array<String>;I32>")) {
+                throw new ArtifactAssemblyException(
+                        "bundled artifacts require exactly one root export main "
+                                + ":Fn<Array<String>;I32> for LyraLauncher execution");
+            }
+        }
         Map<String, byte[]> runtimeEntries = options.packagingMode() == PackagingMode.BUNDLED_JAR
                 ? BundledRuntime.collect(classes.keySet()) : Map.of();
         boolean previewRequired = bytecode.previewRequired()
