@@ -669,6 +669,7 @@ public final class GeneratedTypePlannerTest {
                 .collect(java.util.stream.Collectors.toSet());
         java.util.Set<String> actualFields = state.members().stream()
                 .filter(GeneratedMemberPlan::isField)
+                .filter(member -> member.kind() != GeneratedMemberKind.STATE_LIFECYCLE_FIELD)
                 .map(GeneratedMemberPlan::name)
                 .map(name -> name.replaceFirst("\\$(present|payload)$", ""))
                 .collect(java.util.stream.Collectors.toSet());

@@ -192,6 +192,7 @@ record GeneratedClassPlan(
                     throw new IllegalArgumentException("module-state class cannot have interfaces or annotations");
                 }
                 requireKinds(memberKinds, Set.of(
+                        GeneratedMemberKind.STATE_LIFECYCLE_FIELD,
                         GeneratedMemberKind.STATE_BINDING_FIELD,
                         GeneratedMemberKind.STATE_PRESENCE_FIELD,
                         GeneratedMemberKind.STATE_PAYLOAD_FIELD,
@@ -200,7 +201,10 @@ record GeneratedClassPlan(
                         GeneratedMemberKind.STATE_IMPORT_LINK,
                         GeneratedMemberKind.STATE_COMPONENT_GET,
                         GeneratedMemberKind.STATE_COMPONENT_SET,
-                        GeneratedMemberKind.STATE_CONSTRUCTOR), "module-state");
+                        GeneratedMemberKind.STATE_CONSTRUCTOR,
+                        GeneratedMemberKind.STATE_AUTHORITY_GET,
+                        GeneratedMemberKind.STATE_CHECK_OPEN,
+                        GeneratedMemberKind.STATE_CLOSE), "module-state");
                 GeneratedMemberPlan constructor = requireFacadeMember(
                         members, GeneratedMemberKind.STATE_CONSTRUCTOR,
                         member -> member.name().equals("<init>") && member.descriptor().equals("()V"));
@@ -353,7 +357,9 @@ record GeneratedClassPlan(
         String fieldPrefix = "$lyra$binding$";
         java.util.TreeMap<String, List<GeneratedMemberPlan>> bindingGroups = new java.util.TreeMap<>();
         for (GeneratedMemberPlan field : members.stream()
-                .filter(GeneratedMemberPlan::isField).toList()) {
+                .filter(GeneratedMemberPlan::isField)
+                .filter(member -> member.kind() != GeneratedMemberKind.STATE_LIFECYCLE_FIELD)
+                .toList()) {
             if (!field.name().startsWith(fieldPrefix)) {
                 throw new IllegalArgumentException("module-state field has a noncanonical name");
             }

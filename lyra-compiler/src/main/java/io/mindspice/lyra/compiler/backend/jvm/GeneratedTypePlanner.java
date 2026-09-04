@@ -47,6 +47,8 @@ final class GeneratedTypePlanner {
     public static final String DEFAULT_BASE_PACKAGE = JvmTypeNameTable.DEFAULT_BASE_PACKAGE;
     private static final String AUTHORITY_DESCRIPTOR =
             "Lio/mindspice/lyra/runtime/LyraClosureAuthority;";
+    private static final String LIFECYCLE_DESCRIPTOR =
+            "Lio/mindspice/lyra/runtime/ModuleLifecycle;";
     private static final String OPTIONS_DESCRIPTOR =
             "Lio/mindspice/lyra/runtime/RuntimeOptions;";
     private static final String METADATA_DESCRIPTOR =
@@ -500,6 +502,9 @@ final class GeneratedTypePlanner {
         for (IrModule module : ir.modules()) {
             ArrayList<GeneratedMemberPlan> members = new ArrayList<>();
             LinkedHashSet<GeneratedClassDependency> dependencies = new LinkedHashSet<>();
+            members.add(GeneratedMemberPlan.rawField(
+                    GeneratedMemberKind.STATE_LIFECYCLE_FIELD,
+                    "$lyra$lifecycle", LIFECYCLE_DESCRIPTOR));
             for (IrImportBinding importBinding : ir.imports()) {
                 IrDeclaration importDeclaration = declarations.get(importBinding.declarationId());
                 if (importDeclaration == null || !importDeclaration.moduleId().equals(module.moduleId())) {
@@ -608,6 +613,12 @@ final class GeneratedTypePlanner {
             }
             members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CONSTRUCTOR,
                     "<init>", "()V", false));
+            members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_AUTHORITY_GET,
+                    "$lyra$closureAuthority", "()" + AUTHORITY_DESCRIPTOR, false));
+            members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CHECK_OPEN,
+                    "$lyra$checkOpen", "()V", false));
+            members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CLOSE,
+                    "$lyra$close", "()V", false));
             classes.add(new GeneratedClassPlan(moduleStates.get(module.moduleId()),
                     GeneratedClassKind.MODULE_STATE,
                     "state:" + moduleKey(module.moduleId()), Optional.of(module.moduleId()),

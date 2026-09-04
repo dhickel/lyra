@@ -230,7 +230,8 @@ record GeneratedMemberPlan(
             case TUPLE_COMPONENT_GET, CELL_CONSTRUCTOR, CELL_GET, CELL_SET,
                     CELL_PRESENCE_GET, CELL_PAYLOAD_GET, CLOSURE_CONSTRUCTOR,
                     STATE_IMPORT_LINK, STATE_COMPONENT_GET, STATE_COMPONENT_SET,
-                    STATE_CONSTRUCTOR -> GeneratedMemberVisibility.PACKAGE;
+                    STATE_CONSTRUCTOR, STATE_AUTHORITY_GET, STATE_CHECK_OPEN,
+                    STATE_CLOSE -> GeneratedMemberVisibility.PACKAGE;
             default -> GeneratedMemberVisibility.PRIVATE;
         };
     }
@@ -248,7 +249,7 @@ record GeneratedMemberPlan(
             case TUPLE_FIELD, CLOSURE_AUTHORITY_FIELD, CLOSURE_STATE_FIELD,
                     CLOSURE_CAPTURE_FIELD, CLOSURE_CAPTURE_PRESENCE_FIELD,
                     CLOSURE_CAPTURE_PAYLOAD_FIELD, STATE_CELL_FIELD,
-                    FACADE_STATE_FIELD -> true;
+                    STATE_LIFECYCLE_FIELD, FACADE_STATE_FIELD -> true;
             default -> false;
         };
     }

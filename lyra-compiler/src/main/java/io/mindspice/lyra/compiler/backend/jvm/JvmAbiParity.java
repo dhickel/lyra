@@ -265,9 +265,32 @@ final class JvmAbiParity {
             if (state == null) {
                 continue;
             }
+            boolean lifecycleShape = state.members().stream().anyMatch(member ->
+                    member.kind() == GeneratedMemberKind.STATE_LIFECYCLE_FIELD
+                            && member.name().equals("$lyra$lifecycle")
+                            && member.descriptor().equals(
+                            "Lio/mindspice/lyra/runtime/ModuleLifecycle;"))
+                    && state.members().stream().anyMatch(member ->
+                    member.kind() == GeneratedMemberKind.STATE_AUTHORITY_GET
+                            && member.name().equals("$lyra$closureAuthority")
+                            && member.descriptor().equals(
+                            "()Lio/mindspice/lyra/runtime/LyraClosureAuthority;"))
+                    && state.members().stream().anyMatch(member ->
+                    member.kind() == GeneratedMemberKind.STATE_CHECK_OPEN
+                            && member.name().equals("$lyra$checkOpen")
+                            && member.descriptor().equals("()V"))
+                    && state.members().stream().anyMatch(member ->
+                    member.kind() == GeneratedMemberKind.STATE_CLOSE
+                            && member.name().equals("$lyra$close")
+                            && member.descriptor().equals("()V"));
+            if (!lifecycleShape) {
+                differences.add("module-state lifecycle composition differs: " + module.moduleId());
+            }
             TreeMap<DeclarationId, List<GeneratedMemberPlan>> fields = new TreeMap<>();
             for (GeneratedMemberPlan member : state.members().stream()
-                    .filter(GeneratedMemberPlan::isField).toList()) {
+                    .filter(GeneratedMemberPlan::isField)
+                    .filter(member -> member.kind() != GeneratedMemberKind.STATE_LIFECYCLE_FIELD)
+                    .toList()) {
                 Optional<DeclarationId> id = stateFieldDeclaration(member.name());
                 if (id.isEmpty()) {
                     differences.add("module state has an unidentifiable field: " + member.name());
