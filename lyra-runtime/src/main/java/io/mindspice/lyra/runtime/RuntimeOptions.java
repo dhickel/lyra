@@ -12,10 +12,17 @@ public final class RuntimeOptions {
     private final RuntimeProfile profile;
     private final RuntimeAbi runtimeAbi;
     private final boolean previewEnabled;
+    private final LyraArtifactKey artifactKey;
 
     public RuntimeOptions(OwnerThread owner, RuntimeIoEnvironment ioEnvironment,
                           RuntimeProfile profile, RuntimeAbi runtimeAbi,
                           boolean previewEnabled) {
+        this(owner, ioEnvironment, profile, runtimeAbi, previewEnabled, null);
+    }
+
+    RuntimeOptions(OwnerThread owner, RuntimeIoEnvironment ioEnvironment,
+                   RuntimeProfile profile, RuntimeAbi runtimeAbi,
+                   boolean previewEnabled, LyraArtifactKey artifactKey) {
         this.owner = Objects.requireNonNull(owner, "owner");
         this.ioEnvironment = Objects.requireNonNull(ioEnvironment, "ioEnvironment");
         this.profile = Objects.requireNonNull(profile, "profile");
@@ -27,6 +34,7 @@ public final class RuntimeOptions {
             throw new IllegalArgumentException("preview is enabled for a non-preview-capable profile");
         }
         this.previewEnabled = previewEnabled;
+        this.artifactKey = artifactKey;
     }
 
     public RuntimeOptions(Thread ownerThread, RuntimeIoEnvironment ioEnvironment,
@@ -70,16 +78,25 @@ public final class RuntimeOptions {
     public RuntimeAbi runtimeAbi() { return runtimeAbi; }
     public boolean previewEnabled() { return previewEnabled; }
 
+    LyraArtifactKey artifactKey() { return artifactKey; }
+
     public RuntimeOptions forOwner(Thread thread) {
-        return new RuntimeOptions(thread, ioEnvironment, profile, runtimeAbi, previewEnabled);
+        return copy(OwnerThread.of(thread), ioEnvironment, previewEnabled);
     }
 
     public RuntimeOptions withIoEnvironment(RuntimeIoEnvironment environment) {
-        return new RuntimeOptions(owner, environment, profile, runtimeAbi, previewEnabled);
+        return copy(owner, environment, previewEnabled);
     }
 
     public RuntimeOptions withPreviewEnabled(boolean enabled) {
-        return new RuntimeOptions(owner, ioEnvironment, profile, runtimeAbi, enabled);
+        return copy(owner, ioEnvironment, enabled);
+    }
+
+    private RuntimeOptions copy(OwnerThread newOwner, RuntimeIoEnvironment environment,
+                                boolean preview) {
+        return artifactKey == null
+                ? new RuntimeOptions(newOwner, environment, profile, runtimeAbi, preview)
+                : new RuntimeOptions(newOwner, environment, profile, runtimeAbi, preview, artifactKey);
     }
 
     /** Performs the small compatibility check available before a loader exists. */

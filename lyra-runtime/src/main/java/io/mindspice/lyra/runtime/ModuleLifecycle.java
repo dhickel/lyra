@@ -50,7 +50,9 @@ public final class ModuleLifecycle implements AutoCloseable {
 
     /** Creates an artifact key whose owner is supplied by immutable runtime options. */
     public static LyraArtifactKey newArtifactKey(RuntimeOptions options) {
-        return new LyraArtifactKey(Objects.requireNonNull(options, "options").owner());
+        RuntimeOptions value = Objects.requireNonNull(options, "options");
+        LyraArtifactKey existing = value.artifactKey();
+        return existing != null ? existing : new LyraArtifactKey(value.owner());
     }
 
     /**

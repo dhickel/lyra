@@ -1316,9 +1316,12 @@ final class JvmBytecodeEmitter {
                         export.isMutable()
                                 ? io.mindspice.lyra.runtime.BindingMutability.MUTABLE
                                 : io.mindspice.lyra.runtime.BindingMutability.IMMUTABLE;
+                String javaInvocationName = export.isFunction()
+                        ? export.invocationName().orElseThrow()
+                        : export.javaName();
                 io.mindspice.lyra.runtime.ExportMetadata runtimeExport = new io.mindspice.lyra.runtime.ExportMetadata(
                         moduleId, export.sourceName(), contract, jvmDescriptor, mutability,
-                        export.javaName(), getter, functionGetter,
+                        javaInvocationName, getter, functionGetter,
                         export.setterName().map(value -> value));
                 runtimeExports.add(runtimeExport);
                 javaNames.put(runtimeExport.id().id(), runtimeExport.javaName());
@@ -1338,7 +1341,7 @@ final class JvmBytecodeEmitter {
             io.mindspice.lyra.runtime.ModuleMetadata root = runtimeModules.stream()
                     .filter(value -> value.id().equals(runtimeRoot))
                     .findFirst().orElseThrow();
-            return io.mindspice.lyra.runtime.ArtifactMetadata.builder()
+            String canonical = io.mindspice.lyra.runtime.ArtifactMetadata.builder()
                     .compilerVersion("lyra-phase15")
                     .compilerBuild("lyra-phase15")
                     .runtimeAbi(io.mindspice.lyra.runtime.RuntimeAbi.CURRENT)
@@ -1357,6 +1360,11 @@ final class JvmBytecodeEmitter {
                     .debugMapHash(JvmStableHash.sha256("LYRA-JVM-DEBUG-MAP", owner.plan.canonical()))
                     .packagingMode(io.mindspice.lyra.runtime.PackagingMode.CLASSES)
                     .build().canonicalJson();
+            // Keep one compiler-owned marker in the provisional constant so
+            // assembly cannot mistake a user string with the same JSON prefix
+            // for the metadata that must be replaced at publication time.
+            return canonical.substring(0, canonical.length() - 1)
+                    + ",\"_lyraProvisional\":true}";
         }
 
         private void emitFacadeClose() {

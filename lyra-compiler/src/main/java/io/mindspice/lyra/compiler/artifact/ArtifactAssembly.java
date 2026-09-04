@@ -5,7 +5,9 @@ import io.mindspice.lyra.compiler.source.ModuleGraph;
 import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.source.SourceId;
 import io.mindspice.lyra.compiler.source.SourceSnapshot;
+import io.mindspice.lyra.compiler.api.WriteOptions;
 import io.mindspice.lyra.runtime.ArtifactMetadata;
+import io.mindspice.lyra.runtime.ArtifactSource;
 import io.mindspice.lyra.runtime.ArtifactRevision;
 import io.mindspice.lyra.runtime.BindingMutability;
 import io.mindspice.lyra.runtime.DebugMapMetadata;
@@ -17,6 +19,10 @@ import io.mindspice.lyra.runtime.RuntimeProfile;
 import io.mindspice.lyra.runtime.RuntimeRequirement;
 import io.mindspice.lyra.runtime.SourceMetadata;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -36,7 +42,7 @@ import java.util.TreeMap;
  * It contains generated class bytes and compatibility/debug metadata, but no
  * public serialized IR or live module instance.
  */
-public final class ArtifactAssembly {
+public final class ArtifactAssembly implements ArtifactSource {
     public static final String ARTIFACT_METADATA_PATH = "META-INF/lyra/artifact.json";
     public static final String DEBUG_MAP_PATH = "META-INF/lyra/debug-map.json";
     public static final String SOURCES_PATH = "META-INF/lyra/sources/";
@@ -149,6 +155,12 @@ public final class ArtifactAssembly {
                 .runtimeRequirement(requirement)
                 .build();
 
+        // The emitter must produce facades before packaging metadata exists,
+        // so it embeds a provisional metadata string.  Replace that string at
+        // the final artifact boundary; otherwise the facade's public metadata
+        // would silently describe a Phase-15/classes artifact even when this
+        // publication is a thin JAR or includes source/option revisions.
+        classes = patchFacadeMetadata(classes, bytecode.javaBasePackage(), metadata.canonicalJson());
         Map<String, byte[]> sourceEntries = sourceEntries(snapshots, sources);
         TreeMap<String, byte[]> allEntries = new TreeMap<>(EntryNames.utf8Comparator());
         for (Map.Entry<String, byte[]> entry : classes.entrySet()) {
@@ -239,13 +251,27 @@ public final class ArtifactAssembly {
                 Objects.requireNonNull(options, "options"));
     }
 
-    /** Convenience for internal tests; the public Phase-19 WriteOptions is absent. */
+    /** Writes this assembly as a class directory with public options. */
+    public void writeClasses(java.nio.file.Path output, WriteOptions options)
+            throws java.io.IOException {
+        Objects.requireNonNull(options, "options");
+        writeClasses(output, ArtifactWriteOptions.builder().force(options.force()).build());
+    }
+
+    /** Writes this assembly as a JAR with public options. */
+    public void writeJar(java.nio.file.Path output, WriteOptions options)
+            throws java.io.IOException {
+        Objects.requireNonNull(options, "options");
+        writeJar(output, ArtifactWriteOptions.builder().force(options.force()).build());
+    }
+
+    /** Convenience for internal tests and legacy callers. */
     public void writeClasses(java.nio.file.Path output, boolean force)
             throws java.io.IOException {
         writeClasses(output, ArtifactWriteOptions.builder().force(force).build());
     }
 
-    /** Convenience for internal tests; the public Phase-19 WriteOptions is absent. */
+    /** Convenience for internal tests and legacy callers. */
     public void writeJar(java.nio.file.Path output, boolean force)
             throws java.io.IOException {
         writeJar(output, ArtifactWriteOptions.builder().force(force).build());
@@ -293,11 +319,12 @@ public final class ArtifactAssembly {
                 throw new ArtifactAssemblyException("module graph snapshot disagrees with typed IR: "
                         + node.moduleId());
             }
-            String expectedRevision = io.mindspice.lyra.compiler.source.ModuleRevision.compute(snapshot);
-            if (!io.mindspice.lyra.compiler.source.ModuleRevision.isRevision(node.revision())
-                    || !expectedRevision.equals(node.revision())) {
-                throw new ArtifactAssemblyException("module revision disagrees with its source snapshot: "
-                        + node.moduleId());
+            // The graph owns the revision because it includes the request's
+            // canonical semantics-affecting options.  Recomputing here with
+            // empty options would reject valid public API requests and would
+            // discard those options from the published artifact.
+            if (!io.mindspice.lyra.compiler.source.ModuleRevision.isRevision(node.revision())) {
+                throw new ArtifactAssemblyException("module revision is invalid: " + node.moduleId());
             }
             result.add(new ModuleMetadata(runtimeModuleId(node.moduleId()),
                     io.mindspice.lyra.runtime.ModuleRevision.of(node.revision()),
@@ -383,6 +410,136 @@ public final class ArtifactAssembly {
         return Collections.unmodifiableMap(result);
     }
 
+    private static Map<String, byte[]> patchFacadeMetadata(
+            Map<String, byte[]> classes, String javaPackage, String metadataJson) {
+        String facadePrefix = Objects.requireNonNull(javaPackage, "javaPackage")
+                + ".$lyra$facade$";
+        LinkedHashMap<String, byte[]> result = new LinkedHashMap<>();
+        int facadeCount = 0;
+        for (Map.Entry<String, byte[]> entry : classes.entrySet()) {
+            String binaryName = entry.getKey();
+            byte[] bytes = entry.getValue();
+            if (!binaryName.startsWith(facadePrefix)) {
+                result.put(binaryName, bytes.clone());
+                continue;
+            }
+            facadeCount++;
+            byte[] patched = replaceEmbeddedMetadata(binaryName, bytes, metadataJson);
+            ClassFileReader.read(binaryName, patched);
+            result.put(binaryName, patched);
+        }
+        if (facadeCount == 0) {
+            throw new ArtifactAssemblyException("generated artifact has no module facade to publish");
+        }
+        return Collections.unmodifiableMap(result);
+    }
+
+    /**
+     * Replaces the one provisional metadata CONSTANT_Utf8 in a generated
+     * facade.  Class files are a length-prefixed stream, so changing this
+     * constant requires rebuilding the tail of the file rather than mutating
+     * bytes in place.  No class semantics or member offsets are encoded as
+     * absolute file offsets.
+     */
+    private static byte[] replaceEmbeddedMetadata(
+            String binaryName, byte[] bytes, String metadataJson) {
+        Objects.requireNonNull(bytes, "bytes");
+        Objects.requireNonNull(metadataJson, "metadataJson");
+        if (bytes.length < 10 || u4(bytes, 0) != 0xCAFEBABE) {
+            throw new ArtifactAssemblyException("facade is not a class file: " + binaryName);
+        }
+        int constantPoolCount = u2(bytes, 8);
+        int offset = 10;
+        int matches = 0;
+        int replacementStart = -1;
+        int replacementEnd = -1;
+        byte[] replacement = null;
+        for (int index = 1; index < constantPoolCount; index++) {
+            if (offset >= bytes.length) {
+                throw new ArtifactAssemblyException("truncated facade constant pool: " + binaryName);
+            }
+            int tag = bytes[offset++]
+                    & 0xff;
+            switch (tag) {
+                case 1 -> {
+                    if (offset > bytes.length - 2) {
+                        throw new ArtifactAssemblyException("truncated facade UTF-8 constant: " + binaryName);
+                    }
+                    int length = u2(bytes, offset);
+                    int dataStart = offset + 2;
+                    int dataEnd = dataStart + length;
+                    if (dataEnd < dataStart || dataEnd > bytes.length) {
+                        throw new ArtifactAssemblyException("truncated facade UTF-8 constant: " + binaryName);
+                    }
+                    String value = modifiedUtf8(bytes, offset, length, binaryName);
+                    if (value.startsWith("{\"schemaVersion\":1,\"languageContractVersion\":1,"
+                            + "\"compilerVersion\":")
+                            && value.endsWith(",\"_lyraProvisional\":true}")) {
+                        matches++;
+                        replacementStart = offset;
+                        replacementEnd = dataEnd;
+                        replacement = modifiedUtf8Bytes(metadataJson, binaryName);
+                    }
+                    offset = dataEnd;
+                }
+                case 3, 4 -> offset = checkedAdvance(offset, 4, bytes, binaryName);
+                case 5, 6 -> {
+                    offset = checkedAdvance(offset, 8, bytes, binaryName);
+                    index++;
+                }
+                case 7, 8, 16, 19, 20 -> offset = checkedAdvance(offset, 2, bytes, binaryName);
+                case 9, 10, 11, 12, 17, 18 -> offset = checkedAdvance(offset, 4, bytes, binaryName);
+                case 15 -> offset = checkedAdvance(offset, 3, bytes, binaryName);
+                default -> throw new ArtifactAssemblyException(
+                        "invalid facade constant-pool tag: " + tag);
+            }
+        }
+        if (matches != 1 || replacement == null) {
+            throw new ArtifactAssemblyException("facade metadata constant count is " + matches
+                    + " for " + binaryName);
+        }
+        ByteArrayOutputStream output = new ByteArrayOutputStream(
+                bytes.length - (replacementEnd - replacementStart) + replacement.length);
+        try {
+            output.write(bytes, 0, replacementStart);
+            output.write(replacement);
+            output.write(bytes, replacementEnd, bytes.length - replacementEnd);
+        } catch (IOException impossible) {
+            throw new AssertionError(impossible);
+        }
+        return output.toByteArray();
+    }
+
+    private static int checkedAdvance(int offset, int length, byte[] bytes, String binaryName) {
+        if (length < 0 || offset > bytes.length - length) {
+            throw new ArtifactAssemblyException("truncated facade constant pool: " + binaryName);
+        }
+        return offset + length;
+    }
+
+    private static String modifiedUtf8(byte[] bytes, int lengthOffset, int length, String binaryName) {
+        byte[] encoded = new byte[length + 2];
+        encoded[0] = bytes[lengthOffset];
+        encoded[1] = bytes[lengthOffset + 1];
+        System.arraycopy(bytes, lengthOffset + 2, encoded, 2, length);
+        try (DataInputStream input = new DataInputStream(new java.io.ByteArrayInputStream(encoded))) {
+            return input.readUTF();
+        } catch (IOException failure) {
+            throw new ArtifactAssemblyException("invalid modified UTF-8 in facade: " + binaryName, failure);
+        }
+    }
+
+    private static byte[] modifiedUtf8Bytes(String value, String binaryName) {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (DataOutputStream data = new DataOutputStream(output)) {
+            data.writeUTF(value);
+            data.flush();
+            return output.toByteArray();
+        } catch (IOException failure) {
+            throw new ArtifactAssemblyException("facade metadata is too large: " + binaryName, failure);
+        }
+    }
+
     private static void validateRuntimeClass(String entryName, byte[] bytes) {
         if (!entryName.startsWith("io/mindspice/lyra/runtime/") || !entryName.endsWith(".class")) {
             throw new ArtifactAssemblyException("bundled runtime contains an invalid entry: " + entryName);
@@ -465,6 +622,15 @@ public final class ArtifactAssembly {
             }
         }
         return Collections.unmodifiableMap(result);
+    }
+
+    private static int u2(byte[] bytes, int offset) {
+        return ((bytes[offset] & 0xff) << 8) | (bytes[offset + 1] & 0xff);
+    }
+
+    private static int u4(byte[] bytes, int offset) {
+        return ((bytes[offset] & 0xff) << 24) | ((bytes[offset + 1] & 0xff) << 16)
+                | ((bytes[offset + 2] & 0xff) << 8) | (bytes[offset + 3] & 0xff);
     }
 
     private static boolean previewClassFile(byte[] bytes) {

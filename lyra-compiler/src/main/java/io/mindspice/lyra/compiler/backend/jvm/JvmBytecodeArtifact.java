@@ -1,6 +1,7 @@
 package io.mindspice.lyra.compiler.backend.jvm;
 
 import io.mindspice.lyra.compiler.diagnostic.ImmutablePhaseArtifact;
+import io.mindspice.lyra.compiler.diagnostic.PhaseResult;
 import io.mindspice.lyra.compiler.ir.IrDeclaration;
 import io.mindspice.lyra.compiler.ir.IrExport;
 import io.mindspice.lyra.compiler.ir.IrLambda;
@@ -27,6 +28,14 @@ import java.util.Optional;
  * input/output identities.</p>
  */
 public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
+    /** Public compiler-pipeline bridge; the generated type plan remains internal. */
+    public static PhaseResult<JvmBytecodeArtifact> emit(TypedIr ir, String basePackage) {
+        Objects.requireNonNull(ir, "ir").requireValidated();
+        GeneratedTypePlan plan = GeneratedTypePlanner.plan(ir,
+                Objects.requireNonNull(basePackage, "basePackage"));
+        return JvmBytecodeEmitter.emitPhase(ir, plan);
+    }
+
     /** Immutable export projection consumed by the internal artifact assembler. */
     public record EmittedExport(
             String stableId,
@@ -201,8 +210,11 @@ public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
             String descriptor = export.functionSignature()
                     .map(JvmSignaturePlan::descriptor)
                     .orElse("()" + export.valueType().descriptor());
+            String javaInvocationName = export.isFunction()
+                    ? export.invocationName().orElseThrow()
+                    : export.javaName();
             result.add(new EmittedExport(export.stableId(), export.moduleId(), export.sourceName(),
-                    signature, descriptor, export.isMutable(), export.javaName(),
+                    signature, descriptor, export.isMutable(), javaInvocationName,
                     export.getterName().orElse("get$" + export.javaName()),
                     export.functionValueName().orElse("value$" + export.javaName()),
                     export.setterName()));
