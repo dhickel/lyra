@@ -230,12 +230,20 @@ public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
         for (GeneratedClassPlan classPlan : typePlan.classes()) {
             ModuleId module = classPlan.moduleId().orElse(root);
             IrLambda lambda = null;
+            IrDeclaration intrinsic = null;
             if (classPlan.kind() == GeneratedClassKind.CLOSURE) {
                 lambda = ir.lambdas().stream()
                         .filter(candidate -> classPlan.binaryName().equals(
                                 typePlan.closureClasses().get(candidate.id())))
-                        .findFirst().orElseThrow(() -> new IllegalStateException(
-                                "closure class has no lambda origin: " + classPlan.binaryName()));
+                        .findFirst().orElse(null);
+                if (lambda == null) {
+                    intrinsic = ir.declarations().stream()
+                            .filter(candidate -> classPlan.binaryName().equals(
+                                    typePlan.intrinsicFunctionClasses().get(candidate.id())))
+                            .findFirst().orElseThrow(() -> new IllegalStateException(
+                                    "closure class has no lambda or intrinsic origin: "
+                                            + classPlan.binaryName()));
+                }
             }
             for (GeneratedMemberPlan member : classPlan.members()) {
                 if (!member.isMethod()) {
@@ -252,6 +260,9 @@ public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
                                     .map(IrDeclaration::name).findFirst())
                             .orElse("<lambda>");
                     synthetic = member.kind() != GeneratedMemberKind.CLOSURE_INVOKE;
+                } else if (intrinsic != null) {
+                    span = intrinsic.span();
+                    functionName = intrinsic.name();
                 } else {
                     GeneratedExportPlan export = typePlan.exports().stream()
                             .filter(candidate -> candidate.moduleId().equals(module))
