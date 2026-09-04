@@ -25,6 +25,7 @@ public final class ArtifactMetadata {
     private final int languageContractVersion;
     private final String compilerVersion;
     private final String compilerBuild;
+    private final String javaPackage;
     private final RuntimeAbi runtimeAbi;
     private final RuntimeProfile profile;
     private final int javaClassFileTarget;
@@ -34,6 +35,7 @@ public final class ArtifactMetadata {
     private final ModuleId rootModuleId;
     private final ModuleRevision rootModuleRevision;
     private final List<ModuleMetadata> modules;
+    private final List<SourceMetadata> sources;
     private final List<ExportMetadata> exports;
     private final Map<String, String> javaNameMap;
     private final int debugMapVersion;
@@ -61,6 +63,62 @@ public final class ArtifactMetadata {
             String debugMapHash,
             PackagingMode packagingMode,
             Optional<RuntimeRequirement> runtimeRequirement) {
+        this(schemaVersion, languageContractVersion, compilerVersion, compilerBuild, runtimeAbi,
+                profile, javaClassFileTarget, previewRequired, artifactId, artifactRevision,
+                rootModuleId, rootModuleRevision, modules, List.of(), "lyra.generated", exports,
+                javaNameMap, debugMapVersion, debugMapHash, packagingMode, runtimeRequirement);
+    }
+
+    public ArtifactMetadata(
+            int schemaVersion,
+            int languageContractVersion,
+            String compilerVersion,
+            String compilerBuild,
+            RuntimeAbi runtimeAbi,
+            RuntimeProfile profile,
+            int javaClassFileTarget,
+            boolean previewRequired,
+            String artifactId,
+            ArtifactRevision artifactRevision,
+            ModuleId rootModuleId,
+            ModuleRevision rootModuleRevision,
+            List<? extends ModuleMetadata> modules,
+            List<? extends SourceMetadata> sources,
+            List<? extends ExportMetadata> exports,
+            Map<String, String> javaNameMap,
+            int debugMapVersion,
+            String debugMapHash,
+            PackagingMode packagingMode,
+            Optional<RuntimeRequirement> runtimeRequirement) {
+        this(schemaVersion, languageContractVersion, compilerVersion, compilerBuild,
+                runtimeAbi, profile, javaClassFileTarget, previewRequired, artifactId,
+                artifactRevision, rootModuleId, rootModuleRevision, modules, sources,
+                "lyra.generated", exports, javaNameMap, debugMapVersion, debugMapHash,
+                packagingMode, runtimeRequirement);
+    }
+
+    public ArtifactMetadata(
+            int schemaVersion,
+            int languageContractVersion,
+            String compilerVersion,
+            String compilerBuild,
+            RuntimeAbi runtimeAbi,
+            RuntimeProfile profile,
+            int javaClassFileTarget,
+            boolean previewRequired,
+            String artifactId,
+            ArtifactRevision artifactRevision,
+            ModuleId rootModuleId,
+            ModuleRevision rootModuleRevision,
+            List<? extends ModuleMetadata> modules,
+            List<? extends SourceMetadata> sources,
+            String javaPackage,
+            List<? extends ExportMetadata> exports,
+            Map<String, String> javaNameMap,
+            int debugMapVersion,
+            String debugMapHash,
+            PackagingMode packagingMode,
+            Optional<RuntimeRequirement> runtimeRequirement) {
         if (schemaVersion != LyraRuntimeConstants.ARTIFACT_SCHEMA_VERSION
                 || languageContractVersion != LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION
                 || debugMapVersion != LyraRuntimeConstants.DEBUG_MAP_SCHEMA_VERSION) {
@@ -70,6 +128,7 @@ public final class ArtifactMetadata {
         this.languageContractVersion = languageContractVersion;
         this.compilerVersion = text(compilerVersion, "compilerVersion");
         this.compilerBuild = text(compilerBuild, "compilerBuild");
+        this.javaPackage = requireJavaPackage(javaPackage);
         this.runtimeAbi = Objects.requireNonNull(runtimeAbi, "runtimeAbi");
         this.profile = Objects.requireNonNull(profile, "profile");
         if (javaClassFileTarget != profile.javaClassFileTarget()) {
@@ -88,6 +147,7 @@ public final class ArtifactMetadata {
         this.rootModuleId = Objects.requireNonNull(rootModuleId, "rootModuleId");
         this.rootModuleRevision = Objects.requireNonNull(rootModuleRevision, "rootModuleRevision");
         this.modules = sortedModules(modules);
+        this.sources = sortedSources(sources);
         this.exports = sortedExports(exports);
         this.javaNameMap = sortedNames(javaNameMap);
         this.debugMapVersion = debugMapVersion;
@@ -100,11 +160,23 @@ public final class ArtifactMetadata {
         if (packagingMode != PackagingMode.THIN_JAR && runtimeRequirement.isPresent()) {
             throw new IllegalArgumentException("only thin artifacts record an external runtime requirement");
         }
+        runtimeRequirement.ifPresent(requirement -> {
+            if (!requirement.groupId().equals(LyraRuntimeConstants.RUNTIME_GROUP_ID)
+                    || !requirement.artifactId().equals(LyraRuntimeConstants.RUNTIME_ARTIFACT_ID)
+                    || !requirement.version().equals(LyraRuntimeConstants.RUNTIME_VERSION)
+                    || !requirement.profile().runtimeAbi().equals(requirement.minimumRuntimeAbi())
+                    || !runtimeAbi.isCompatibleWith(requirement.minimumRuntimeAbi())
+                    || !profile.isCompatibleWith(requirement.profile(), requirement.previewRequired())) {
+                throw new IllegalArgumentException("thin runtime requirement exceeds artifact compatibility");
+            }
+        });
         validateModuleIdentity();
+        validateSources();
         validateExports();
         ArtifactRevision expectedRevision = ArtifactRevision.compute(
                 this.compilerBuild, this.modules, this.javaNameMap, this.profile,
-                this.packagingMode, this.previewRequired);
+                this.packagingMode, this.previewRequired, this.javaPackage, this.sources,
+                this.runtimeRequirement);
         if (!expectedRevision.equals(this.artifactRevision)) {
             throw new IllegalArgumentException("artifact revision disagrees with metadata inputs");
         }
@@ -143,6 +215,8 @@ public final class ArtifactMetadata {
     public int languageContractVersion() { return languageContractVersion; }
     public String compilerVersion() { return compilerVersion; }
     public String compilerBuild() { return compilerBuild; }
+    public String javaPackage() { return javaPackage; }
+    public String basePackage() { return javaPackage; }
     public RuntimeAbi runtimeAbi() { return runtimeAbi; }
     public RuntimeProfile profile() { return profile; }
     public String javaProfile() { return profile.name(); }
@@ -155,6 +229,8 @@ public final class ArtifactMetadata {
     public ModuleRevision rootModuleRevision() { return rootModuleRevision; }
     public List<ModuleMetadata> modules() { return modules; }
     public List<ModuleMetadata> moduleMetadata() { return modules; }
+    public List<SourceMetadata> sources() { return sources; }
+    public List<SourceMetadata> sourceMetadata() { return sources; }
     public List<ExportMetadata> exports() { return exports; }
     public Map<String, String> javaNameMap() { return javaNameMap; }
     public Map<String, String> nameMap() { return javaNameMap; }
@@ -174,6 +250,7 @@ public final class ArtifactMetadata {
         fieldString(result, first, "compilerBuild", compilerBuild);
         fieldObject(result, first, "runtimeAbi", runtimeAbiJson(runtimeAbi));
         fieldString(result, first, "profile", profile.name());
+        fieldString(result, first, "javaPackage", javaPackage);
         if (!profile.previewSupported()) {
             field(result, first, "previewSupported", "false");
         }
@@ -184,6 +261,7 @@ public final class ArtifactMetadata {
         fieldString(result, first, "rootModuleId", rootModuleId.canonicalSpelling());
         fieldString(result, first, "rootModuleRevision", rootModuleRevision.value());
         fieldObject(result, first, "modules", modulesJson());
+        fieldObject(result, first, "sources", sourcesJson());
         fieldObject(result, first, "exports", exportsJson());
         fieldObject(result, first, "javaNameMap", namesJson());
         field(result, first, "debugMapVersion", Integer.toString(debugMapVersion));
@@ -219,6 +297,7 @@ public final class ArtifactMetadata {
                 && languageContractVersion == metadata.languageContractVersion
                 && compilerVersion.equals(metadata.compilerVersion)
                 && compilerBuild.equals(metadata.compilerBuild)
+                && javaPackage.equals(metadata.javaPackage)
                 && runtimeAbi.equals(metadata.runtimeAbi)
                 && profile.equals(metadata.profile)
                 && javaClassFileTarget == metadata.javaClassFileTarget
@@ -228,6 +307,7 @@ public final class ArtifactMetadata {
                 && rootModuleId.equals(metadata.rootModuleId)
                 && rootModuleRevision.equals(metadata.rootModuleRevision)
                 && modules.equals(metadata.modules)
+                && sources.equals(metadata.sources)
                 && exports.equals(metadata.exports)
                 && javaNameMap.equals(metadata.javaNameMap)
                 && debugMapVersion == metadata.debugMapVersion
@@ -239,8 +319,8 @@ public final class ArtifactMetadata {
     @Override
     public int hashCode() {
         return Objects.hash(schemaVersion, languageContractVersion, compilerVersion, compilerBuild,
-                runtimeAbi, profile, javaClassFileTarget, previewRequired, artifactId,
-                artifactRevision, rootModuleId, rootModuleRevision, modules, exports, javaNameMap,
+                javaPackage, runtimeAbi, profile, javaClassFileTarget, previewRequired, artifactId,
+                artifactRevision, rootModuleId, rootModuleRevision, modules, sources, exports, javaNameMap,
                 debugMapVersion, debugMapHash, packagingMode, runtimeRequirement);
     }
 
@@ -255,6 +335,51 @@ public final class ArtifactMetadata {
                         "root module is absent from artifact metadata"));
         if (!root.revision().equals(rootModuleRevision)) {
             throw new IllegalArgumentException("root module revision disagrees with module metadata");
+        }
+    }
+
+    private void validateSources() {
+        // Retain the Phase-13 in-memory constructor contract. Schema-1 bytes
+        // are stricter and reject this legacy empty projection in the reader.
+        if (sources.isEmpty()) {
+            return;
+        }
+        java.util.HashSet<SourceId> sourceIds = new java.util.HashSet<>();
+        java.util.HashSet<String> entryNames = new java.util.HashSet<>();
+        java.util.HashSet<ModuleId> moduleIds = new java.util.HashSet<>();
+        Boolean sourcesIncluded = null;
+        for (ModuleMetadata module : modules) {
+            moduleIds.add(module.id());
+        }
+        for (SourceMetadata source : sources) {
+            if (!sourceIds.add(source.sourceId())) {
+                throw new IllegalArgumentException("duplicate source metadata: " + source.sourceId());
+            }
+            boolean included = source.entryName().isPresent();
+            if (sourcesIncluded == null) {
+                sourcesIncluded = included;
+            } else if (sourcesIncluded != included) {
+                throw new IllegalArgumentException(
+                        "source metadata must include either every source or no sources");
+            }
+            source.entryName().ifPresent(entry -> {
+                if (!entryNames.add(entry)) {
+                    throw new IllegalArgumentException("duplicate source entry metadata: " + entry);
+                }
+            });
+            ModuleId module = ModuleId.fromSourceId(source.sourceId());
+            if (!moduleIds.contains(module)) {
+                throw new IllegalArgumentException("source metadata refers to an absent module: "
+                        + source.sourceId());
+            }
+        }
+        if (sourceIds.size() != moduleIds.size()) {
+            throw new IllegalArgumentException("source metadata must cover every module");
+        }
+        for (ModuleId module : moduleIds) {
+            if (!sourceIds.contains(module.sourceId())) {
+                throw new IllegalArgumentException("source metadata is missing module: " + module);
+            }
         }
     }
 
@@ -299,6 +424,25 @@ public final class ArtifactMetadata {
         return result.append(']').toString();
     }
 
+    private String sourcesJson() {
+        StringBuilder result = new StringBuilder("[");
+        boolean[] first = {true};
+        for (SourceMetadata source : sources) {
+            CanonicalJson.comma(result, first);
+            result.append('{');
+            boolean[] fields = {true};
+            fieldString(result, fields, "sourceKind", source.sourceId().kindTag());
+            fieldString(result, fields, "sourceId", source.sourceId().canonicalSpelling());
+            fieldString(result, fields, "sourceLabel", source.sourceLabel());
+            fieldString(result, fields, "sha256", source.sha256());
+            CanonicalJson.comma(result, fields);
+            CanonicalJson.fieldName(result, "entry");
+            result.append(source.entryName().map(CanonicalJson::quote).orElse("null"));
+            result.append('}');
+        }
+        return result.append(']').toString();
+    }
+
     private String exportsJson() {
         StringBuilder result = new StringBuilder("[");
         boolean[] first = {true};
@@ -309,7 +453,7 @@ public final class ArtifactMetadata {
             fieldString(result, fields, "id", export.id().id());
             fieldString(result, fields, "moduleId", export.moduleId().canonicalSpelling());
             fieldString(result, fields, "name", export.name());
-            fieldString(result, fields, "signature", export.signature().canonicalSpelling());
+            fieldString(result, fields, "signature", export.canonicalContract());
             fieldString(result, fields, "jvmDescriptor", export.jvmDescriptor());
             fieldString(result, fields, "bindingMutability", export.bindingMutability().canonicalSpelling());
             fieldString(result, fields, "javaName", export.javaName());
@@ -384,6 +528,22 @@ public final class ArtifactMetadata {
         return List.copyOf(copy);
     }
 
+    private static List<SourceMetadata> sortedSources(List<? extends SourceMetadata> values) {
+        Objects.requireNonNull(values, "sources");
+        ArrayList<SourceMetadata> copy = new ArrayList<>(values.size());
+        for (SourceMetadata value : values) {
+            copy.add(Objects.requireNonNull(value, "sources must not contain null"));
+        }
+        copy.sort(SourceMetadata::compareTo);
+        for (int index = 1; index < copy.size(); index++) {
+            if (copy.get(index - 1).sourceId().equals(copy.get(index).sourceId())) {
+                throw new IllegalArgumentException("duplicate source metadata: "
+                        + copy.get(index).sourceId());
+            }
+        }
+        return List.copyOf(copy);
+    }
+
     private static List<ExportMetadata> sortedExports(List<? extends ExportMetadata> values) {
         Objects.requireNonNull(values, "exports");
         ArrayList<ExportMetadata> copy = new ArrayList<>(values.size());
@@ -409,6 +569,46 @@ public final class ArtifactMetadata {
             copy.put(key, text(entry.getValue(), "javaNameMap value"));
         }
         return Collections.unmodifiableMap(copy);
+    }
+
+    private static String requireJavaPackage(String value) {
+        CanonicalJson.requireUtf8(value, "javaPackage");
+        if (value.isBlank() || value.startsWith(".") || value.endsWith(".")
+                || value.indexOf('/') >= 0 || value.chars().anyMatch(character -> character == 92)) {
+            throw new IllegalArgumentException("invalid Java package: " + value);
+        }
+        for (String part : value.split("[.]", -1)) {
+            if (part.isEmpty() || isJavaKeyword(part)) {
+                throw new IllegalArgumentException("invalid Java package: " + value);
+            }
+            int first = part.codePointAt(0);
+            if (!Character.isJavaIdentifierStart(first)) {
+                throw new IllegalArgumentException("invalid Java package: " + value);
+            }
+            for (int offset = Character.charCount(first); offset < part.length();) {
+                int codePoint = part.codePointAt(offset);
+                if (!Character.isJavaIdentifierPart(codePoint)) {
+                    throw new IllegalArgumentException("invalid Java package: " + value);
+                }
+                offset += Character.charCount(codePoint);
+            }
+        }
+        return value;
+    }
+
+    private static boolean isJavaKeyword(String value) {
+        return switch (value) {
+            case "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char",
+                    "class", "const", "continue", "default", "do", "double", "else", "enum",
+                    "extends", "final", "finally", "float", "for", "goto", "if", "implements",
+                    "import", "instanceof", "int", "interface", "long", "native", "new", "package",
+                    "private", "protected", "public", "return", "short", "static", "strictfp",
+                    "super", "switch", "synchronized", "this", "throw", "throws", "transient",
+                    "try", "void", "volatile", "while", "true", "false", "null", "_", "record",
+                    "sealed", "permits", "non-sealed", "var", "yield", "module", "open", "opens",
+                    "requires", "transitive", "exports", "to", "uses", "provides", "with", "when" -> true;
+            default -> false;
+        };
     }
 
     private static String text(String value, String field) {
@@ -437,6 +637,7 @@ public final class ArtifactMetadata {
         private int languageContractVersion = LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION;
         private String compilerVersion;
         private String compilerBuild;
+        private String javaPackage = "lyra.generated";
         private RuntimeAbi runtimeAbi = RuntimeAbi.CURRENT;
         private RuntimeProfile profile = RuntimeProfile.CURRENT;
         private int javaClassFileTarget = LyraRuntimeConstants.JAVA_CLASS_FILE_TARGET;
@@ -446,6 +647,7 @@ public final class ArtifactMetadata {
         private ModuleId rootModuleId;
         private ModuleRevision rootModuleRevision;
         private List<ModuleMetadata> modules = List.of();
+        private List<SourceMetadata> sources = List.of();
         private List<ExportMetadata> exports = List.of();
         private Map<String, String> javaNameMap = Map.of();
         private int debugMapVersion = LyraRuntimeConstants.DEBUG_MAP_SCHEMA_VERSION;
@@ -457,6 +659,8 @@ public final class ArtifactMetadata {
         public Builder languageContractVersion(int value) { languageContractVersion = value; return this; }
         public Builder compilerVersion(String value) { compilerVersion = value; return this; }
         public Builder compilerBuild(String value) { compilerBuild = value; return this; }
+        public Builder javaPackage(String value) { javaPackage = value; return this; }
+        public Builder basePackage(String value) { javaPackage = value; return this; }
         public Builder runtimeAbi(RuntimeAbi value) { runtimeAbi = value; return this; }
         public Builder profile(RuntimeProfile value) { profile = value; return this; }
         public Builder javaClassFileTarget(int value) { javaClassFileTarget = value; return this; }
@@ -469,6 +673,8 @@ public final class ArtifactMetadata {
         public Builder rootModuleRevision(ModuleRevision value) { rootModuleRevision = value; return this; }
         public Builder rootModuleRevision(String value) { rootModuleRevision = ModuleRevision.of(value); return this; }
         public Builder modules(List<? extends ModuleMetadata> value) { modules = List.copyOf(value); return this; }
+        public Builder sources(List<? extends SourceMetadata> value) { sources = List.copyOf(value); return this; }
+        public Builder sourceMetadata(List<? extends SourceMetadata> value) { sources = List.copyOf(value); return this; }
         public Builder exports(List<? extends ExportMetadata> value) { exports = List.copyOf(value); return this; }
         public Builder javaNameMap(Map<String, String> value) { javaNameMap = Map.copyOf(value); return this; }
         public Builder debugMapVersion(int value) { debugMapVersion = value; return this; }
@@ -480,8 +686,8 @@ public final class ArtifactMetadata {
         public ArtifactMetadata build() {
             return new ArtifactMetadata(schemaVersion, languageContractVersion, compilerVersion, compilerBuild,
                     runtimeAbi, profile, javaClassFileTarget, previewRequired, artifactId, artifactRevision,
-                    rootModuleId, rootModuleRevision, modules, exports, javaNameMap, debugMapVersion,
-                    debugMapHash, packagingMode, runtimeRequirement);
+                    rootModuleId, rootModuleRevision, modules, sources, javaPackage, exports, javaNameMap,
+                    debugMapVersion, debugMapHash, packagingMode, runtimeRequirement);
         }
     }
 }

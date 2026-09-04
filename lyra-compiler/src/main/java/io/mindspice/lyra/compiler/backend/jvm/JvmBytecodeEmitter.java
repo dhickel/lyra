@@ -1277,27 +1277,35 @@ final class JvmBytecodeEmitter {
             // embedded as canonical UTF-8 text.  The generated method has no
             // Object/varargs ABI and runtime validation remains authoritative.
             List<io.mindspice.lyra.runtime.ModuleMetadata> runtimeModules = new ArrayList<>();
+            List<io.mindspice.lyra.runtime.SourceMetadata> runtimeSources = new ArrayList<>();
             for (IrModule value : owner.ir.modules()) {
                 io.mindspice.lyra.compiler.source.SourceSnapshot snapshot =
                         owner.ir.sourceSnapshot(value.moduleId()).orElseThrow();
-                io.mindspice.lyra.runtime.ModuleId moduleId =
-                        io.mindspice.lyra.runtime.ModuleId.of(value.moduleId().value());
+                io.mindspice.lyra.runtime.ModuleId moduleId = value.moduleId().isUri()
+                        ? io.mindspice.lyra.runtime.ModuleId.uri(value.moduleId().asUri())
+                        : io.mindspice.lyra.runtime.ModuleId.path(value.moduleId().value());
                 runtimeModules.add(new io.mindspice.lyra.runtime.ModuleMetadata(
                         moduleId,
                         io.mindspice.lyra.runtime.ModuleRevision.of(
                                 io.mindspice.lyra.compiler.source.ModuleRevision.compute(snapshot)),
                         snapshot.sourceId().value()));
+                io.mindspice.lyra.runtime.SourceId sourceId = snapshot.sourceId().isUri()
+                        ? io.mindspice.lyra.runtime.SourceId.uri(snapshot.sourceId().asUri())
+                        : io.mindspice.lyra.runtime.SourceId.path(snapshot.sourceId().value());
+                runtimeSources.add(new io.mindspice.lyra.runtime.SourceMetadata(
+                        sourceId, snapshot.sourceId().value(), snapshot.sha256()));
             }
             List<io.mindspice.lyra.runtime.ExportMetadata> runtimeExports = new ArrayList<>();
             Map<String, String> javaNames = new TreeMap<>();
             for (GeneratedExportPlan export : owner.plan.exports()) {
-                io.mindspice.lyra.runtime.ModuleId moduleId =
-                        io.mindspice.lyra.runtime.ModuleId.of(export.moduleId().value());
-                String signatureSpelling = export.functionSignature()
-                        .map(JvmSignaturePlan::canonicalLyraSignature)
-                        .orElseGet(() -> "Fn<;" + export.valueType().canonicalLyraType() + ">");
-                io.mindspice.lyra.runtime.LyraSignature signature =
-                        io.mindspice.lyra.runtime.LyraSignature.parse(signatureSpelling);
+                io.mindspice.lyra.runtime.ModuleId moduleId = export.moduleId().isUri()
+                        ? io.mindspice.lyra.runtime.ModuleId.uri(export.moduleId().asUri())
+                        : io.mindspice.lyra.runtime.ModuleId.path(export.moduleId().value());
+                // Metadata identities use the complete exported value
+                // contract, including a top-level @nil on function values.
+                String contractSpelling = export.valueType().canonicalLyraType();
+                io.mindspice.lyra.runtime.LyraType contract =
+                        io.mindspice.lyra.runtime.LyraType.parse(contractSpelling);
                 String getter = export.getterName().orElse("get$" + export.javaName());
                 String functionGetter = export.functionValueName()
                         .orElse("value$" + export.javaName());
@@ -1309,22 +1317,26 @@ final class JvmBytecodeEmitter {
                                 ? io.mindspice.lyra.runtime.BindingMutability.MUTABLE
                                 : io.mindspice.lyra.runtime.BindingMutability.IMMUTABLE;
                 io.mindspice.lyra.runtime.ExportMetadata runtimeExport = new io.mindspice.lyra.runtime.ExportMetadata(
-                        moduleId, export.sourceName(), signature, jvmDescriptor, mutability,
+                        moduleId, export.sourceName(), contract, jvmDescriptor, mutability,
                         export.javaName(), getter, functionGetter,
                         export.setterName().map(value -> value));
                 runtimeExports.add(runtimeExport);
                 javaNames.put(runtimeExport.id().id(), runtimeExport.javaName());
             }
             runtimeModules.sort(io.mindspice.lyra.runtime.ModuleMetadata::compareTo);
+            runtimeSources.sort(io.mindspice.lyra.runtime.SourceMetadata::compareTo);
             runtimeExports.sort(io.mindspice.lyra.runtime.ExportMetadata::compareTo);
             io.mindspice.lyra.runtime.ArtifactRevision revision =
                     io.mindspice.lyra.runtime.ArtifactRevision.compute(
                             "lyra-phase15", runtimeModules, javaNames,
                             io.mindspice.lyra.runtime.RuntimeProfile.CURRENT,
-                            io.mindspice.lyra.runtime.PackagingMode.CLASSES, false);
+                            io.mindspice.lyra.runtime.PackagingMode.CLASSES, false,
+                            owner.plan.basePackage(), runtimeSources, java.util.Optional.empty());
+            io.mindspice.lyra.runtime.ModuleId runtimeRoot = owner.rootModuleId().isUri()
+                    ? io.mindspice.lyra.runtime.ModuleId.uri(owner.rootModuleId().asUri())
+                    : io.mindspice.lyra.runtime.ModuleId.path(owner.rootModuleId().value());
             io.mindspice.lyra.runtime.ModuleMetadata root = runtimeModules.stream()
-                    .filter(value -> value.id().equals(
-                            io.mindspice.lyra.runtime.ModuleId.of(owner.rootModuleId().value())))
+                    .filter(value -> value.id().equals(runtimeRoot))
                     .findFirst().orElseThrow();
             return io.mindspice.lyra.runtime.ArtifactMetadata.builder()
                     .compilerVersion("lyra-phase15")
@@ -1338,6 +1350,8 @@ final class JvmBytecodeEmitter {
                     .rootModuleId(root.id())
                     .rootModuleRevision(root.revision())
                     .modules(runtimeModules)
+                    .sources(runtimeSources)
+                    .javaPackage(owner.plan.basePackage())
                     .exports(runtimeExports)
                     .javaNameMap(javaNames)
                     .debugMapHash(JvmStableHash.sha256("LYRA-JVM-DEBUG-MAP", owner.plan.canonical()))

@@ -75,8 +75,11 @@ public final class RuntimeFoundationTest {
                 new SourceFrame(module, "value", new SourceSpan(module.sourceId(), 0, 5)));
         DebugMapMetadata debugMap = new DebugMapMetadata(1, List.of(entry));
         Map<String, String> names = Map.of(export.id().id(), "value");
+        SourceMetadata sourceMetadata = new SourceMetadata(module.sourceId(), "app/main.lyra",
+                ZERO_HASH);
         ArtifactRevision artifactRevision = ArtifactRevision.compute("test-build",
-                List.of(moduleMetadata), names, RuntimeProfile.CURRENT, PackagingMode.CLASSES);
+                List.of(moduleMetadata), names, RuntimeProfile.CURRENT, PackagingMode.CLASSES,
+                false, List.of(sourceMetadata));
         ArtifactMetadata metadata = ArtifactMetadata.builder()
                 .compilerVersion("1.0-SNAPSHOT")
                 .compilerBuild("test-build")
@@ -85,6 +88,7 @@ public final class RuntimeFoundationTest {
                 .rootModuleId(module)
                 .rootModuleRevision(moduleRevision)
                 .modules(List.of(moduleMetadata))
+                .sources(List.of(sourceMetadata))
                 .exports(List.of(export))
                 .javaNameMap(names)
                 .debugMapHash(debugMap.sha256())
@@ -125,6 +129,11 @@ public final class RuntimeFoundationTest {
                 () -> ArtifactMetadataReader.read(json.replace(
                         "\"rootModuleId\":\"path:main.lyra\"",
                         "\"rootModuleId\":\"path:./main.lyra\"")));
+        int sources = json.indexOf("\"sources\":");
+        int exports = json.indexOf("\"exports\":", sources);
+        String missingSources = json.substring(0, sources) + json.substring(exports);
+        assertThrows(LyraCompatibilityException.class,
+                () -> ArtifactMetadataReader.read(missingSources));
         String optional = json.substring(0, json.length() - 1) + ",\"futureOptional\":true}";
         assertEquals(metadata, ArtifactMetadataReader.read(optional));
         assertThrows(IllegalArgumentException.class,
@@ -139,12 +148,12 @@ public final class RuntimeFoundationTest {
                         .debugMapHash(ZERO_HASH).build());
         RuntimeProfile noPreview = new RuntimeProfile("java-25", 25, false, RuntimeAbi.CURRENT);
         ArtifactRevision noPreviewRevision = ArtifactRevision.compute("build", metadata.modules(),
-                Map.of(), noPreview, PackagingMode.CLASSES);
+                Map.of(), noPreview, PackagingMode.CLASSES, false, metadata.sources());
         ArtifactMetadata noPreviewMetadata = ArtifactMetadata.builder().compilerVersion("1.0")
                 .compilerBuild("build").profile(noPreview).artifactId("app")
                 .artifactRevision(noPreviewRevision).rootModuleId(metadata.rootModuleId())
                 .rootModuleRevision(metadata.rootModuleRevision()).modules(metadata.modules())
-                .javaNameMap(Map.of()).debugMapHash(ZERO_HASH).build();
+                .sources(metadata.sources()).javaNameMap(Map.of()).debugMapHash(ZERO_HASH).build();
         assertEquals(noPreviewMetadata,
                 ArtifactMetadataReader.read(noPreviewMetadata.canonicalUtf8()));
     }
@@ -366,11 +375,14 @@ public final class RuntimeFoundationTest {
         ModuleId module = ModuleId.path("main.lyra");
         ModuleRevision revision = ModuleRevision.compute("source".getBytes(StandardCharsets.UTF_8));
         ModuleMetadata moduleMetadata = new ModuleMetadata(module, revision, "main.lyra");
+        SourceMetadata sourceMetadata = new SourceMetadata(module.sourceId(), "main.lyra", ZERO_HASH);
         ArtifactRevision artifactRevision = ArtifactRevision.compute("build", List.of(moduleMetadata),
-                names, RuntimeProfile.CURRENT, PackagingMode.CLASSES);
+                names, RuntimeProfile.CURRENT, PackagingMode.CLASSES, false,
+                List.of(sourceMetadata));
         return ArtifactMetadata.builder().compilerVersion("1.0").compilerBuild("build")
                 .artifactId("app").artifactRevision(artifactRevision).rootModuleId(module)
-                .rootModuleRevision(revision).modules(List.of(moduleMetadata)).javaNameMap(names)
+                .rootModuleRevision(revision).modules(List.of(moduleMetadata))
+                .sources(List.of(sourceMetadata)).javaNameMap(names)
                 .debugMapHash(ZERO_HASH).build();
     }
 

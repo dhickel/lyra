@@ -27,14 +27,14 @@ public final class ArtifactMetadataReader {
 
     private static final List<String> FIELD_ORDER = List.of(
             "schemaVersion", "languageContractVersion", "compilerVersion", "compilerBuild",
-            "runtimeAbi", "profile", "previewSupported", "javaClassFileTarget", "previewRequired", "artifactId",
-            "artifactRevision", "rootModuleId", "rootModuleRevision", "modules", "exports",
+            "runtimeAbi", "profile", "javaPackage", "previewSupported", "javaClassFileTarget", "previewRequired", "artifactId",
+            "artifactRevision", "rootModuleId", "rootModuleRevision", "modules", "sources", "exports",
             "javaNameMap", "debugMapVersion", "debugMapHash", "packagingMode",
             "runtimeRequirement");
     private static final Set<String> REQUIRED_FIELDS = Set.of(
             "schemaVersion", "languageContractVersion", "compilerVersion", "compilerBuild",
-            "runtimeAbi", "profile", "javaClassFileTarget", "previewRequired", "artifactId",
-            "artifactRevision", "rootModuleId", "rootModuleRevision", "modules", "exports",
+            "runtimeAbi", "profile", "javaPackage", "javaClassFileTarget", "previewRequired", "artifactId",
+            "artifactRevision", "rootModuleId", "rootModuleRevision", "modules", "sources", "exports",
             "javaNameMap", "debugMapVersion", "debugMapHash", "packagingMode");
 
     private ArtifactMetadataReader() {
@@ -63,8 +63,8 @@ public final class ArtifactMetadataReader {
         Map<String, Object> object;
         try {
             object = new JsonParser(json).parseObject();
-        } catch (MetadataParseException exception) {
-            throw compatibility("malformed canonical artifact metadata: " + exception.getMessage(), exception);
+        } catch (RuntimeException exception) {
+            throw compatibility("malformed canonical artifact metadata: " + message(exception), exception);
         }
         try {
             validateObjectKeys(object, FIELD_ORDER, REQUIRED_FIELDS, "artifact metadata");
@@ -105,6 +105,7 @@ public final class ArtifactMetadataReader {
         String compilerBuild = string(object, "compilerBuild");
         RuntimeAbi runtimeAbi = decodeAbi(objectValue(object.get("runtimeAbi"), "runtimeAbi"), "runtimeAbi");
         String profileName = string(object, "profile");
+        String javaPackage = string(object, "javaPackage");
         int target = integer(object, "javaClassFileTarget");
         boolean previewSupported = object.containsKey("previewSupported")
                 ? bool(object, "previewSupported") : true;
@@ -122,6 +123,11 @@ public final class ArtifactMetadataReader {
         }
         ModuleRevision rootModuleRevision = ModuleRevision.of(string(object, "rootModuleRevision"));
         List<ModuleMetadata> modules = decodeModules(array(object, "modules"));
+        List<SourceMetadata> sources = decodeSources(array(object, "sources"));
+        if (sources.size() != modules.size()) {
+            throw new IllegalArgumentException(
+                    "source metadata must cover every module");
+        }
         List<ExportMetadata> exports = decodeExports(array(object, "exports"));
         Map<String, String> names = decodeNames(objectValue(object.get("javaNameMap"), "javaNameMap"));
         int debugMapVersion = integer(object, "debugMapVersion");
@@ -132,7 +138,7 @@ public final class ArtifactMetadataReader {
                 : Optional.empty();
         return new ArtifactMetadata(schemaVersion, languageVersion, compilerVersion, compilerBuild,
                 runtimeAbi, profile, target, previewRequired, artifactId, artifactRevision,
-                rootModuleId, rootModuleRevision, modules, exports, names, debugMapVersion,
+                rootModuleId, rootModuleRevision, modules, sources, javaPackage, exports, names, debugMapVersion,
                 debugMapHash, packagingMode, requirement);
     }
 
@@ -157,6 +163,38 @@ public final class ArtifactMetadataReader {
         return List.copyOf(result);
     }
 
+    private static List<SourceMetadata> decodeSources(List<Object> values) {
+        ArrayList<SourceMetadata> result = new ArrayList<>(values.size());
+        SourceMetadata previous = null;
+        for (Object value : values) {
+            Map<String, Object> object = objectValue(value, "source metadata");
+            validateObjectKeys(object,
+                    List.of("sourceKind", "sourceId", "sourceLabel", "sha256", "entry"),
+                    Set.of("sourceKind", "sourceId", "sourceLabel", "sha256"),
+                    "source metadata");
+            String sourceSpelling = string(object, "sourceId");
+            SourceId sourceId = switch (string(object, "sourceKind")) {
+                case "path" -> SourceId.path(sourceSpelling);
+                case "uri" -> SourceId.uri(URI.create(sourceSpelling));
+                default -> throw new IllegalArgumentException("unknown source identity kind");
+            };
+            if (!sourceId.canonicalSpelling().equals(sourceSpelling)) {
+                throw new IllegalArgumentException("source ID is not canonical");
+            }
+            Optional<String> entry = object.containsKey("entry")
+                    ? Optional.ofNullable(nullableString(object, "entry")) : Optional.empty();
+            SourceMetadata source = new SourceMetadata(sourceId, string(object, "sourceLabel"),
+                    string(object, "sha256"), entry);
+            if (previous != null && previous.compareTo(source) >= 0) {
+                throw new IllegalArgumentException(
+                        "source metadata is not sorted or contains a duplicate");
+            }
+            previous = source;
+            result.add(source);
+        }
+        return List.copyOf(result);
+    }
+
     private static List<ExportMetadata> decodeExports(List<Object> values) {
         ArrayList<ExportMetadata> result = new ArrayList<>(values.size());
         ExportId previous = null;
@@ -174,9 +212,13 @@ public final class ArtifactMetadataReader {
             if (!moduleId.canonicalSpelling().equals(moduleSpelling)) {
                 throw new IllegalArgumentException("export module ID is not canonical");
             }
-            LyraSignature signature = LyraSignature.parse(string(object, "signature"));
+            String contractSpelling = string(object, "signature");
+            LyraType contract = LyraType.parse(contractSpelling);
+            if (!contract.canonicalSpelling().equals(contractSpelling)) {
+                throw new IllegalArgumentException("export contract is not canonical");
+            }
             String name = string(object, "name");
-            ExportId id = new ExportId(moduleId, name, signature);
+            ExportId id = new ExportId(moduleId, name, contract);
             String encodedId = string(object, "id");
             if (!id.id().equals(encodedId)) {
                 throw new IllegalArgumentException("export ID does not match its module/name/signature");
@@ -239,8 +281,10 @@ public final class ArtifactMetadataReader {
             throw compatibility("unsupported language contract version: "
                     + metadata.languageContractVersion(), null);
         }
-        if (metadata.javaClassFileTarget() != LyraRuntimeConstants.JAVA_CLASS_FILE_TARGET) {
-            throw compatibility("unsupported Java class-file target: " + metadata.javaClassFileTarget(), null);
+        if (metadata.javaClassFileTarget() != LyraRuntimeConstants.JAVA_CLASS_FILE_TARGET
+                || !metadata.profile().name().equals(LyraRuntimeConstants.JAVA_PROFILE)
+                || metadata.profile().javaClassFileTarget() != LyraRuntimeConstants.JAVA_CLASS_FILE_TARGET) {
+            throw compatibility("unsupported artifact Java profile: " + metadata.profile(), null);
         }
         if (!runningAbi.isCompatibleWith(metadata.runtimeAbi())) {
             throw compatibility("runtime ABI " + runningAbi + " cannot consume "
@@ -254,7 +298,8 @@ public final class ArtifactMetadataReader {
             throw compatibility("artifact requires Java preview features", null);
         }
         ArtifactRevision expected = ArtifactRevision.compute(metadata.compilerBuild(), metadata.modules(),
-                metadata.javaNameMap(), metadata.profile(), metadata.packagingMode(), metadata.previewRequired());
+                metadata.javaNameMap(), metadata.profile(), metadata.packagingMode(), metadata.previewRequired(),
+                metadata.javaPackage(), metadata.sources(), metadata.runtimeRequirement());
         if (!expected.equals(metadata.artifactRevision())) {
             throw compatibility("artifact revision does not match canonical metadata inputs", null);
         }
@@ -263,7 +308,8 @@ public final class ArtifactMetadataReader {
             if (!runningAbi.isCompatibleWith(requirement.minimumRuntimeAbi())) {
                 throw compatibility("runtime ABI does not satisfy thin-artifact requirement", null);
             }
-            if (!runningProfile.isCompatibleWith(requirement.profile(), requirement.previewRequired())) {
+            if (!requirement.profile().name().equals(LyraRuntimeConstants.JAVA_PROFILE)
+                    || !runningProfile.isCompatibleWith(requirement.profile(), requirement.previewRequired())) {
                 throw compatibility("runtime profile does not satisfy thin-artifact requirement", null);
             }
             if (!requirement.artifactId().equals(LyraRuntimeConstants.RUNTIME_ARTIFACT_ID)
@@ -545,8 +591,12 @@ public final class ArtifactMetadataReader {
                 if (hexadecimal >= 'A' && hexadecimal <= 'F') {
                     throw error("non-minimal Unicode JSON escape");
                 }
-                int digit = Character.digit(hexadecimal, 16);
-                if (digit < 0) {
+                int digit;
+                if (hexadecimal >= '0' && hexadecimal <= '9') {
+                    digit = hexadecimal - '0';
+                } else if (hexadecimal >= 'a' && hexadecimal <= 'f') {
+                    digit = hexadecimal - 'a' + 10;
+                } else {
                     throw error("invalid Unicode JSON escape");
                 }
                 value = (value << 4) | digit;

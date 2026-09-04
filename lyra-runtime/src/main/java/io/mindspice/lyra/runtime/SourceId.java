@@ -4,6 +4,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.Locale;
 import java.util.Objects;
@@ -13,6 +14,8 @@ import java.util.regex.Pattern;
 public final class SourceId implements Comparable<SourceId> {
     private static final Pattern URI_SCHEME = Pattern.compile("^[A-Za-z][A-Za-z0-9+.-]*:.*$");
     private static final Pattern WINDOWS_ABSOLUTE = Pattern.compile("^[A-Za-z]:[/\\\\].*");
+    private static final Comparator<SourceId> CANONICAL_ORDER =
+            Comparator.comparing(SourceId::kindTag).thenComparing(SourceId::value);
 
     private final String value;
     private final boolean uri;
@@ -67,6 +70,11 @@ public final class SourceId implements Comparable<SourceId> {
         return !uri;
     }
 
+    /** Explicit schema tag used with {@link #value()} for canonical identity. */
+    public String kindTag() {
+        return uri ? "uri" : "path";
+    }
+
     public String canonicalSpelling() {
         return value;
     }
@@ -95,9 +103,7 @@ public final class SourceId implements Comparable<SourceId> {
 
     @Override
     public int compareTo(SourceId other) {
-        Objects.requireNonNull(other, "other");
-        int valueComparison = value.compareTo(other.value);
-        return valueComparison != 0 ? valueComparison : Boolean.compare(uri, other.uri);
+        return CANONICAL_ORDER.compare(this, Objects.requireNonNull(other, "other"));
     }
 
     @Override

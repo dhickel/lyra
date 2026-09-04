@@ -47,9 +47,9 @@ public final class DebugMapReader {
             DebugMapEntry previous = null;
             for (Object raw : rawEntries) {
                 Map<String, Object> object = object(raw, "debug-map entry");
-                keys(object, List.of("className", "methodName", "startBci", "endBci", "moduleId",
+                keys(object, List.of("className", "methodName", "methodDescriptor", "startBci", "endBci", "moduleId",
                                 "functionName", "sourceId", "sourceLabel", "startOffset", "endOffset", "synthetic", "origin"),
-                        Set.of("className", "methodName", "startBci", "endBci", "moduleId",
+                        Set.of("className", "methodName", "methodDescriptor", "startBci", "endBci", "moduleId",
                                 "functionName", "sourceId", "startOffset", "endOffset", "synthetic"),
                         "debug-map entry");
                 ModuleId module = new ModuleId(string(object, "moduleId"));
@@ -71,7 +71,8 @@ public final class DebugMapReader {
                         new SourceSpan(source, integer(object, "startOffset"), integer(object, "endOffset")),
                         java.util.Optional.empty(), sourceLabel, bool(object, "synthetic"), origin);
                 DebugMapEntry entry = new DebugMapEntry(string(object, "className"),
-                        string(object, "methodName"), integer(object, "startBci"), integer(object, "endBci"), frame);
+                        string(object, "methodName"), string(object, "methodDescriptor"),
+                        integer(object, "startBci"), integer(object, "endBci"), frame);
                 if (previous != null && previous.compareTo(entry) >= 0) {
                     throw new IllegalArgumentException("debug-map entries are not sorted or duplicated");
                 }
@@ -96,7 +97,37 @@ public final class DebugMapReader {
         if (!actual.equals(artifact.debugMapHash())) {
             throw compat("debug-map hash does not match artifact metadata", null);
         }
+        for (DebugMapEntry entry : map.entries()) {
+            validateFrame(entry.frame(), artifact);
+        }
         return map;
+    }
+
+    private static void validateFrame(SourceFrame frame, ArtifactMetadata artifact) {
+        if (artifact.modules().stream().noneMatch(module ->
+                module.id().equals(frame.moduleId()))) {
+            throw compat("debug-map frame refers to an absent module", null);
+        }
+        if (!frame.moduleId().sourceId().equals(frame.span().sourceId())) {
+            throw compat("debug-map frame source does not belong to its module", null);
+        }
+        if (!artifact.sources().isEmpty()) {
+            SourceMetadata source = artifact.sources().stream()
+                    .filter(candidate -> candidate.sourceId().equals(frame.span().sourceId()))
+                    .findFirst().orElseThrow(() ->
+                            compat("debug-map frame refers to an absent source", null));
+            if (frame.sourceLabel().isPresent()
+                    && !frame.sourceLabel().orElseThrow().equals(source.sourceLabel())) {
+                throw compat("debug-map frame source label disagrees with artifact metadata", null);
+            }
+        }
+        frame.origin().ifPresent(origin -> {
+            if (!origin.moduleId().equals(frame.moduleId())
+                    || !origin.span().sourceId().equals(frame.span().sourceId())) {
+                throw compat("debug-map synthetic origin belongs to another source", null);
+            }
+            validateFrame(origin, artifact);
+        });
     }
 
     public static DebugMapMetadata read(String json) {
@@ -312,8 +343,14 @@ public final class DebugMapReader {
                 if (hexadecimal >= 'A' && hexadecimal <= 'F') {
                     throw error("non-minimal Unicode escape");
                 }
-                int digit = Character.digit(hexadecimal, 16);
-                if (digit < 0) throw error("invalid Unicode escape");
+                int digit;
+                if (hexadecimal >= '0' && hexadecimal <= '9') {
+                    digit = hexadecimal - '0';
+                } else if (hexadecimal >= 'a' && hexadecimal <= 'f') {
+                    digit = hexadecimal - 'a' + 10;
+                } else {
+                    throw error("invalid Unicode escape");
+                }
                 value = (value << 4) | digit;
             }
             char c = (char) value;

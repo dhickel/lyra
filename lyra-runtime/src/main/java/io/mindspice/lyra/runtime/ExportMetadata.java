@@ -8,7 +8,7 @@ public final class ExportMetadata implements Comparable<ExportMetadata> {
     private final ExportId id;
     private final ModuleId moduleId;
     private final String name;
-    private final LyraSignature signature;
+    private final LyraType contract;
     private final String jvmDescriptor;
     private final BindingMutability bindingMutability;
     private final String javaName;
@@ -30,9 +30,24 @@ public final class ExportMetadata implements Comparable<ExportMetadata> {
                 name, "get$" + name, "value$" + name, Optional.empty());
     }
 
-    public ExportMetadata(ModuleId moduleId, String name, LyraSignature signature,
+    /** Creates metadata for either a callable or scalar exported contract. */
+    public ExportMetadata(ModuleId moduleId, String name, LyraType contract,
+                          String jvmDescriptor, BindingMutability bindingMutability,
+                          String javaName, String getterName, String functionValueName,
+                          Optional<String> setterName) {
+        this(new ExportId(moduleId, name, contract), jvmDescriptor, bindingMutability,
+                javaName, getterName, functionValueName, setterName);
+    }
+
+    public ExportMetadata(ModuleId moduleId, String name, LyraType contract,
+                          String jvmDescriptor) {
+        this(moduleId, name, contract, jvmDescriptor, BindingMutability.IMMUTABLE,
+                name, "get$" + name, "value$" + name, Optional.empty());
+    }
+
+    public ExportMetadata(ModuleId moduleId, String name, LyraType contract,
                           String jvmDescriptor, BindingMutability bindingMutability) {
-        this(moduleId, name, signature, jvmDescriptor, bindingMutability,
+        this(moduleId, name, contract, jvmDescriptor, bindingMutability,
                 name, "get$" + name, "value$" + name,
                 bindingMutability == BindingMutability.MUTABLE
                         ? Optional.of("set$" + name) : Optional.empty());
@@ -45,7 +60,7 @@ public final class ExportMetadata implements Comparable<ExportMetadata> {
         this.id = Objects.requireNonNull(id, "id");
         this.moduleId = id.moduleId();
         this.name = id.exportName();
-        this.signature = id.signature();
+        this.contract = id.contract();
         this.jvmDescriptor = JvmDescriptorValidator.requireMethodDescriptor(jvmDescriptor);
         this.bindingMutability = Objects.requireNonNull(bindingMutability, "bindingMutability");
         this.javaName = text(javaName, "javaName");
@@ -85,8 +100,21 @@ public final class ExportMetadata implements Comparable<ExportMetadata> {
         return name;
     }
 
+    /** Returns the callable signature; scalar exports have only {@link #contract()}. */
     public LyraSignature signature() {
-        return signature;
+        return id.signature();
+    }
+
+    public LyraType contract() {
+        return contract;
+    }
+
+    public String canonicalContract() {
+        return contract.canonicalSpelling();
+    }
+
+    public boolean isFunction() {
+        return id.isFunction();
     }
 
     public String jvmDescriptor() {
@@ -125,7 +153,8 @@ public final class ExportMetadata implements Comparable<ExportMetadata> {
     @Override
     public boolean equals(Object other) {
         return this == other || other instanceof ExportMetadata metadata
-                && id.equals(metadata.id) && jvmDescriptor.equals(metadata.jvmDescriptor)
+                && id.equals(metadata.id) && contract.equals(metadata.contract)
+                && jvmDescriptor.equals(metadata.jvmDescriptor)
                 && bindingMutability == metadata.bindingMutability
                 && javaName.equals(metadata.javaName) && getterName.equals(metadata.getterName)
                 && functionValueName.equals(metadata.functionValueName)
@@ -134,7 +163,7 @@ public final class ExportMetadata implements Comparable<ExportMetadata> {
 
     @Override
     public int hashCode() {
-        return Objects.hash(id, jvmDescriptor, bindingMutability, javaName, getterName,
+        return Objects.hash(id, contract, jvmDescriptor, bindingMutability, javaName, getterName,
                 functionValueName, setterName);
     }
 

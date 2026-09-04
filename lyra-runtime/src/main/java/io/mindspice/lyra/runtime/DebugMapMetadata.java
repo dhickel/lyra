@@ -33,6 +33,7 @@ public final class DebugMapMetadata {
             DebugMapEntry current = copy.get(index);
             if (previous.className().equals(current.className())
                     && previous.methodName().equals(current.methodName())
+                    && previous.methodDescriptor().equals(current.methodDescriptor())
                     && previous.endBci() > current.startBci()) {
                 throw new IllegalArgumentException("overlapping debug-map BCI ranges");
             }
@@ -55,6 +56,18 @@ public final class DebugMapMetadata {
                 && entry.methodName().equals(methodName) && entry.contains(bci)).findFirst();
     }
 
+    public Optional<DebugMapEntry> lookup(String className, String methodName,
+                                          String methodDescriptor, int bci) {
+        Objects.requireNonNull(className, "className");
+        Objects.requireNonNull(methodName, "methodName");
+        JvmDescriptorValidator.requireMethodDescriptor(methodDescriptor);
+        if (bci < 0) throw new IllegalArgumentException("bci must be non-negative");
+        return entries.stream().filter(entry -> entry.className().equals(className)
+                && entry.methodName().equals(methodName)
+                && entry.methodDescriptor().equals(methodDescriptor)
+                && entry.contains(bci)).findFirst();
+    }
+
     public String canonicalJson() {
         StringBuilder result = new StringBuilder("{\"schemaVersion\":")
                 .append(schemaVersion).append(",\"entries\":[");
@@ -67,6 +80,7 @@ public final class DebugMapMetadata {
             boolean[] fields = {true};
             field(result, fields, "className", CanonicalJson.quote(entry.className()));
             field(result, fields, "methodName", CanonicalJson.quote(entry.methodName()));
+            field(result, fields, "methodDescriptor", CanonicalJson.quote(entry.methodDescriptor()));
             field(result, fields, "startBci", Integer.toString(entry.startBci()));
             field(result, fields, "endBci", Integer.toString(entry.endBci()));
             field(result, fields, "moduleId", CanonicalJson.quote(frame.moduleId().canonicalSpelling()));

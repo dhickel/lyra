@@ -14,22 +14,34 @@ public final class ExportId implements Comparable<ExportId> {
 
     private final ModuleId moduleId;
     private final String exportName;
-    private final LyraSignature signature;
+    private final LyraType contract;
     private final String canonicalInput;
     private final String hash;
 
     public ExportId(ModuleId moduleId, String exportName, LyraSignature signature) {
+        this(moduleId, exportName, Objects.requireNonNull(signature, "signature").asFunctionType());
+    }
+
+    /** Creates an identity for either a callable or scalar exported contract. */
+    public ExportId(ModuleId moduleId, String exportName, LyraType contract) {
         this.moduleId = Objects.requireNonNull(moduleId, "moduleId");
         this.exportName = validateName(exportName);
-        this.signature = Objects.requireNonNull(signature, "signature");
+        this.contract = Objects.requireNonNull(contract, "contract");
+        if (contract instanceof QualifiedType qualified) {
+            qualified.validateFor(TypePosition.NESTED_VALUE);
+        }
         this.canonicalInput = DOMAIN_TAG + "/" + LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION
                 + ";" + field(moduleId.isUri() ? "uri" : "path")
-                + field(moduleId.value()) + field(exportName) + field(signature.canonicalSpelling());
-        this.hash = HexFormat.of().formatHex(digest(moduleId, exportName, signature));
+                + field(moduleId.value()) + field(exportName) + field(contract.canonicalSpelling());
+        this.hash = HexFormat.of().formatHex(digest(moduleId, exportName, contract));
     }
 
     public static ExportId of(ModuleId moduleId, String exportName, LyraSignature signature) {
         return new ExportId(moduleId, exportName, signature);
+    }
+
+    public static ExportId ofContract(ModuleId moduleId, String exportName, LyraType contract) {
+        return new ExportId(moduleId, exportName, contract);
     }
 
     public ModuleId moduleId() {
@@ -48,8 +60,26 @@ public final class ExportId implements Comparable<ExportId> {
         return exportName;
     }
 
+    /** Returns the callable signature; scalar identities have no callable signature. */
     public LyraSignature signature() {
-        return signature;
+        LyraType unqualified = contract.withoutQualifiers();
+        if (!(unqualified instanceof FunctionType function)) {
+            throw new IllegalStateException("scalar export has no callable signature: " + contract);
+        }
+        return LyraSignature.from(function);
+    }
+
+    /** Complete exported Lyra contract, including scalar values. */
+    public LyraType contract() {
+        return contract;
+    }
+
+    public String canonicalContract() {
+        return contract.canonicalSpelling();
+    }
+
+    public boolean isFunction() {
+        return contract.withoutQualifiers() instanceof FunctionType;
     }
 
     public String canonicalInput() {
@@ -77,17 +107,17 @@ public final class ExportId implements Comparable<ExportId> {
     public boolean equals(Object other) {
         return this == other || other instanceof ExportId id
                 && moduleId.equals(id.moduleId) && exportName.equals(id.exportName)
-                && signature.equals(id.signature);
+                && contract.equals(id.contract);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(moduleId, exportName, signature);
+        return Objects.hash(moduleId, exportName, contract);
     }
 
     @Override
     public String toString() {
-        return moduleId.canonicalSpelling() + "#" + exportName + ":" + signature.canonicalSpelling();
+        return moduleId.canonicalSpelling() + "#" + exportName + ":" + contract.canonicalSpelling();
     }
 
     private static String validateName(String name) {
@@ -98,7 +128,7 @@ public final class ExportId implements Comparable<ExportId> {
         return name;
     }
 
-    private static byte[] digest(ModuleId moduleId, String name, LyraSignature signature) {
+    private static byte[] digest(ModuleId moduleId, String name, LyraType contract) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             putBytes(digest, DOMAIN_TAG.getBytes(StandardCharsets.UTF_8));
@@ -106,7 +136,7 @@ public final class ExportId implements Comparable<ExportId> {
             putBytes(digest, (moduleId.isUri() ? "uri" : "path").getBytes(StandardCharsets.UTF_8));
             putBytes(digest, moduleId.value().getBytes(StandardCharsets.UTF_8));
             putBytes(digest, name.getBytes(StandardCharsets.UTF_8));
-            putBytes(digest, signature.canonicalSpelling().getBytes(StandardCharsets.UTF_8));
+            putBytes(digest, contract.canonicalSpelling().getBytes(StandardCharsets.UTF_8));
             return digest.digest();
         } catch (NoSuchAlgorithmException exception) {
             throw new ExceptionInInitializerError(exception);

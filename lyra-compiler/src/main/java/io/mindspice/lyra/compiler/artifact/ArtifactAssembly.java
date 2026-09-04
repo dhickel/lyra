@@ -1,0 +1,518 @@
+package io.mindspice.lyra.compiler.artifact;
+
+import io.mindspice.lyra.compiler.backend.jvm.JvmBytecodeArtifact;
+import io.mindspice.lyra.compiler.source.ModuleGraph;
+import io.mindspice.lyra.compiler.source.ModuleId;
+import io.mindspice.lyra.compiler.source.SourceId;
+import io.mindspice.lyra.compiler.source.SourceSnapshot;
+import io.mindspice.lyra.runtime.ArtifactMetadata;
+import io.mindspice.lyra.runtime.ArtifactRevision;
+import io.mindspice.lyra.runtime.BindingMutability;
+import io.mindspice.lyra.runtime.DebugMapMetadata;
+import io.mindspice.lyra.runtime.ExportMetadata;
+import io.mindspice.lyra.runtime.ModuleMetadata;
+import io.mindspice.lyra.runtime.PackagingMode;
+import io.mindspice.lyra.runtime.RuntimeAbi;
+import io.mindspice.lyra.runtime.RuntimeProfile;
+import io.mindspice.lyra.runtime.RuntimeRequirement;
+import io.mindspice.lyra.runtime.SourceMetadata;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.TreeMap;
+
+/**
+ * Complete immutable internal publication unit for one emitted Lyra graph.
+ * It contains generated class bytes and compatibility/debug metadata, but no
+ * public serialized IR or live module instance.
+ */
+public final class ArtifactAssembly {
+    public static final String ARTIFACT_METADATA_PATH = "META-INF/lyra/artifact.json";
+    public static final String DEBUG_MAP_PATH = "META-INF/lyra/debug-map.json";
+    public static final String SOURCES_PATH = "META-INF/lyra/sources/";
+
+    private final JvmBytecodeArtifact bytecode;
+    private final ArtifactMetadata metadata;
+    private final DebugMapMetadata debugMap;
+    private final Map<String, byte[]> generatedClasses;
+    private final Map<String, byte[]> entries;
+    private final Map<String, byte[]> sourceEntries;
+    private final byte[] artifactJson;
+    private final byte[] debugMapJson;
+
+    private ArtifactAssembly(
+            JvmBytecodeArtifact bytecode,
+            ArtifactMetadata metadata,
+            DebugMapMetadata debugMap,
+            Map<String, byte[]> generatedClasses,
+            Map<String, byte[]> entries,
+            Map<String, byte[]> sourceEntries) {
+        this.bytecode = Objects.requireNonNull(bytecode, "bytecode");
+        this.metadata = Objects.requireNonNull(metadata, "metadata");
+        this.debugMap = Objects.requireNonNull(debugMap, "debugMap");
+        this.generatedClasses = copyBytes(generatedClasses, "generatedClasses");
+        this.entries = copyBytes(entries, "entries");
+        this.sourceEntries = copyBytes(sourceEntries, "sourceEntries");
+        this.artifactJson = metadata.canonicalUtf8();
+        this.debugMapJson = debugMap.canonicalUtf8();
+        if (!MessageDigests.sha256Hex(debugMapJson).equals(metadata.debugMapHash())) {
+            throw new ArtifactAssemblyException("debug-map hash disagrees with artifact metadata");
+        }
+    }
+
+    /** Assembles the canonical class-directory form without embedded source text. */
+    public static ArtifactAssembly assemble(JvmBytecodeArtifact bytecode) {
+        return assemble(bytecode, ArtifactAssemblyOptions.defaults());
+    }
+
+    /** Assembles one mode without embedded source text. */
+    public static ArtifactAssembly assemble(JvmBytecodeArtifact bytecode, PackagingMode mode) {
+        return assemble(bytecode, ArtifactAssemblyOptions.builder().packagingMode(mode).build());
+    }
+
+    /** Assembles one mode and optionally embeds canonical source snapshots. */
+    public static ArtifactAssembly assemble(JvmBytecodeArtifact bytecode,
+                                            PackagingMode mode, boolean includeSources) {
+        return assemble(bytecode, ArtifactAssemblyOptions.builder()
+                .packagingMode(mode).includeSources(includeSources).build());
+    }
+
+    static ArtifactAssembly assemble(JvmBytecodeArtifact bytecode,
+                                     ArtifactAssemblyOptions options) {
+        Objects.requireNonNull(bytecode, "bytecode");
+        Objects.requireNonNull(options, "options");
+        bytecode.typedIr().requireValidated();
+
+        Map<String, byte[]> classes = copyBytes(bytecode.classes(), "generated class files");
+        validateGeneratedClasses(bytecode, classes);
+        Map<ModuleId, SourceSnapshot> snapshots = sourceSnapshots(bytecode);
+        List<ModuleMetadata> modules = moduleMetadata(bytecode, snapshots);
+        List<SourceMetadata> sources = sourceMetadata(bytecode, snapshots, options.includeSources());
+        List<ExportMetadata> exports = exportMetadata(bytecode);
+        Map<String, String> names = new TreeMap<>();
+        for (ExportMetadata export : exports) {
+            if (names.put(export.id().id(), export.javaName()) != null) {
+                throw new ArtifactAssemblyException("duplicate export ID in artifact metadata: "
+                        + export.id().id());
+            }
+        }
+
+        DebugMapMetadata debugMap = DebugMapBuilder.build(bytecode);
+        Map<String, byte[]> runtimeEntries = options.packagingMode() == PackagingMode.BUNDLED_JAR
+                ? BundledRuntime.collect(classes.keySet()) : Map.of();
+        boolean previewRequired = bytecode.previewRequired()
+                || runtimeEntries.values().stream().anyMatch(ArtifactAssembly::previewClassFile);
+        validateProfile(options.profile(), options.runtimeAbi(), previewRequired);
+
+        ModuleMetadata root = modules.stream()
+                .filter(module -> module.id().equals(runtimeModuleId(bytecode.typedIr().rootModule().moduleId())))
+                .findFirst().orElseThrow(() -> new ArtifactAssemblyException(
+                        "root module is absent from artifact metadata"));
+        Optional<RuntimeRequirement> requirement = options.packagingMode() == PackagingMode.THIN_JAR
+                ? options.runtimeRequirement()
+                : Optional.empty();
+        ArtifactRevision revision = ArtifactRevision.compute(
+                options.compilerBuild(), modules, names, options.profile(),
+                options.packagingMode(), previewRequired, bytecode.javaBasePackage(), sources, requirement);
+        String artifactId = options.artifactId().orElseGet(() -> MessageDigests.sha256Hex(
+                "LYRA-ARTIFACT-ID", options.compilerBuild(),
+                root.id().canonicalSpelling(), revision.value()));
+        ArtifactMetadata metadata = ArtifactMetadata.builder()
+                .compilerVersion(options.compilerVersion())
+                .compilerBuild(options.compilerBuild())
+                .runtimeAbi(options.runtimeAbi())
+                .profile(options.profile())
+                .javaClassFileTarget(options.profile().javaClassFileTarget())
+                .previewRequired(previewRequired)
+                .artifactId(artifactId)
+                .artifactRevision(revision)
+                .rootModuleId(root.id())
+                .rootModuleRevision(root.revision())
+                .modules(modules)
+                .sources(sources)
+                .javaPackage(bytecode.javaBasePackage())
+                .exports(exports)
+                .javaNameMap(names)
+                .debugMapVersion(debugMap.schemaVersion())
+                .debugMapHash(debugMap.sha256())
+                .packagingMode(options.packagingMode())
+                .runtimeRequirement(requirement)
+                .build();
+
+        Map<String, byte[]> sourceEntries = sourceEntries(snapshots, sources);
+        TreeMap<String, byte[]> allEntries = new TreeMap<>(EntryNames.utf8Comparator());
+        for (Map.Entry<String, byte[]> entry : classes.entrySet()) {
+            putEntry(allEntries, EntryNames.classEntry(entry.getKey()), entry.getValue());
+        }
+        for (Map.Entry<String, byte[]> entry : runtimeEntries.entrySet()) {
+            validateRuntimeClass(entry.getKey(), entry.getValue());
+            putEntry(allEntries, entry.getKey(), entry.getValue());
+        }
+        putEntry(allEntries, ARTIFACT_METADATA_PATH, metadata.canonicalUtf8());
+        putEntry(allEntries, DEBUG_MAP_PATH, debugMap.canonicalUtf8());
+        for (Map.Entry<String, byte[]> entry : sourceEntries.entrySet()) {
+            putEntry(allEntries, entry.getKey(), entry.getValue());
+        }
+        return new ArtifactAssembly(bytecode, metadata, debugMap, classes, allEntries,
+                sourceEntries);
+    }
+
+    public ArtifactMetadata metadata() {
+        return metadata;
+    }
+
+    public DebugMapMetadata debugMap() {
+        return debugMap;
+    }
+
+    public JvmBytecodeArtifact bytecodeArtifact() {
+        return bytecode;
+    }
+
+    public PackagingMode packagingMode() {
+        return metadata.packagingMode();
+    }
+
+    public byte[] artifactJson() {
+        return artifactJson.clone();
+    }
+
+    public byte[] debugMapJson() {
+        return debugMapJson.clone();
+    }
+
+    /** Generated classes keyed by binary name, with a fresh byte copy on each call. */
+    public Map<String, byte[]> classes() {
+        return copyBytes(generatedClasses, "generatedClasses");
+    }
+
+    public Map<String, byte[]> classFiles() {
+        return classes();
+    }
+
+    /** All non-manifest files that are placed in a class directory/JAR. */
+    public Map<String, byte[]> entries() {
+        return copyBytes(entries, "entries");
+    }
+
+    public Map<String, byte[]> sourceEntries() {
+        return copyBytes(sourceEntries, "sourceEntries");
+    }
+
+    public List<String> entryNames() {
+        return List.copyOf(entries.keySet());
+    }
+
+    public Optional<byte[]> entry(String name) {
+        Objects.requireNonNull(name, "name");
+        byte[] value = entries.get(name);
+        return value == null ? Optional.empty() : Optional.of(value.clone());
+    }
+
+    /** Internal class-directory publication boundary. */
+    void writeClasses(java.nio.file.Path output, ArtifactWriteOptions options)
+            throws java.io.IOException {
+        if (metadata.packagingMode() != PackagingMode.CLASSES) {
+            throw new ArtifactAssemblyException("class-directory output needs classes packaging metadata");
+        }
+        ArtifactOutputWriter.writeClasses(this, output,
+                Objects.requireNonNull(options, "options"));
+    }
+
+    /** Internal JAR publication boundary. */
+    void writeJar(java.nio.file.Path output, ArtifactWriteOptions options)
+            throws java.io.IOException {
+        if (metadata.packagingMode() == PackagingMode.CLASSES) {
+            throw new ArtifactAssemblyException("JAR output needs thin-jar or bundled-jar metadata");
+        }
+        ArtifactOutputWriter.writeJar(this, output,
+                Objects.requireNonNull(options, "options"));
+    }
+
+    /** Convenience for internal tests; the public Phase-19 WriteOptions is absent. */
+    public void writeClasses(java.nio.file.Path output, boolean force)
+            throws java.io.IOException {
+        writeClasses(output, ArtifactWriteOptions.builder().force(force).build());
+    }
+
+    /** Convenience for internal tests; the public Phase-19 WriteOptions is absent. */
+    public void writeJar(java.nio.file.Path output, boolean force)
+            throws java.io.IOException {
+        writeJar(output, ArtifactWriteOptions.builder().force(force).build());
+    }
+
+    static String sourceEntryName(SourceId sourceId) {
+        Objects.requireNonNull(sourceId, "sourceId");
+        if (sourceId.isPath()) {
+            return SOURCES_PATH + sourceId.value();
+        }
+        return SOURCES_PATH + "uri-" + MessageDigests.sha256Hex(
+                "LYRA-SOURCE-ENTRY", sourceId.value()) + ".lyra";
+    }
+
+    private static Map<ModuleId, SourceSnapshot> sourceSnapshots(JvmBytecodeArtifact artifact) {
+        TreeMap<ModuleId, SourceSnapshot> result = new TreeMap<>();
+        for (var module : artifact.typedIr().modules()) {
+            SourceSnapshot snapshot = artifact.typedIr().sourceSnapshot(module.moduleId())
+                    .orElseThrow(() -> new ArtifactAssemblyException(
+                            "validated typed IR is missing source snapshot: " + module.moduleId()));
+            if (!snapshot.sourceId().equals(module.moduleId().sourceId())) {
+                throw new ArtifactAssemblyException("source snapshot identity disagrees with IR module");
+            }
+            if (result.put(module.moduleId(), snapshot) != null) {
+                throw new ArtifactAssemblyException("duplicate source snapshot: " + module.moduleId());
+            }
+        }
+        if (result.size() != artifact.typedIr().modules().size()) {
+            throw new ArtifactAssemblyException("source snapshot inventory is incomplete");
+        }
+        return Collections.unmodifiableMap(result);
+    }
+
+    private static List<ModuleMetadata> moduleMetadata(JvmBytecodeArtifact artifact,
+                                                        Map<ModuleId, SourceSnapshot> snapshots) {
+        ModuleGraph graph = artifact.typedIr().typedSemanticGraph().resolvedGraph().moduleGraph();
+        ArrayList<ModuleMetadata> result = new ArrayList<>();
+        for (ModuleGraph.Node node : graph.modules()) {
+            SourceSnapshot snapshot = snapshots.get(node.moduleId());
+            if (snapshot == null) {
+                throw new ArtifactAssemblyException("module graph has no typed-IR snapshot: "
+                        + node.moduleId());
+            }
+            if (!node.snapshot().equals(snapshot)) {
+                throw new ArtifactAssemblyException("module graph snapshot disagrees with typed IR: "
+                        + node.moduleId());
+            }
+            String expectedRevision = io.mindspice.lyra.compiler.source.ModuleRevision.compute(snapshot);
+            if (!io.mindspice.lyra.compiler.source.ModuleRevision.isRevision(node.revision())
+                    || !expectedRevision.equals(node.revision())) {
+                throw new ArtifactAssemblyException("module revision disagrees with its source snapshot: "
+                        + node.moduleId());
+            }
+            result.add(new ModuleMetadata(runtimeModuleId(node.moduleId()),
+                    io.mindspice.lyra.runtime.ModuleRevision.of(node.revision()),
+                    snapshot.sourceId().value()));
+        }
+        result.sort(ModuleMetadata::compareTo);
+        return List.copyOf(result);
+    }
+
+    private static List<SourceMetadata> sourceMetadata(JvmBytecodeArtifact artifact,
+                                                       Map<ModuleId, SourceSnapshot> snapshots,
+                                                       boolean includeSources) {
+        ArrayList<SourceMetadata> result = new ArrayList<>();
+        for (Map.Entry<ModuleId, SourceSnapshot> entry : snapshots.entrySet()) {
+            SourceSnapshot snapshot = entry.getValue();
+            byte[] bytes = snapshot.utf8Bytes();
+            if (!MessageDigests.sha256Hex(bytes).equals(snapshot.sha256())) {
+                throw new ArtifactAssemblyException("source snapshot hash is inconsistent: "
+                        + snapshot.sourceId());
+            }
+            Optional<String> sourceEntry = includeSources
+                    ? Optional.of(sourceEntryName(snapshot.sourceId())) : Optional.empty();
+            result.add(new SourceMetadata(runtimeSourceId(snapshot.sourceId()),
+                    snapshot.sourceId().value(), snapshot.sha256(), sourceEntry));
+        }
+        result.sort(SourceMetadata::compareTo);
+        return List.copyOf(result);
+    }
+
+    private static List<ExportMetadata> exportMetadata(JvmBytecodeArtifact artifact) {
+        ArrayList<ExportMetadata> result = new ArrayList<>();
+        for (JvmBytecodeArtifact.EmittedExport export : artifact.emittedExports()) {
+            io.mindspice.lyra.runtime.ModuleId module = runtimeModuleId(export.moduleId());
+            io.mindspice.lyra.runtime.LyraType contract =
+                    io.mindspice.lyra.runtime.LyraType.parse(export.canonicalSignature());
+            if (!contract.canonicalSpelling().equals(export.canonicalSignature())) {
+                throw new ArtifactAssemblyException("export contract is not canonical: "
+                        + export.sourceName());
+            }
+            ExportMetadata metadata = new ExportMetadata(module, export.sourceName(), contract,
+                    export.jvmDescriptor(), export.mutable()
+                            ? BindingMutability.MUTABLE : BindingMutability.IMMUTABLE,
+                    export.javaName(), export.getterName(), export.functionValueName(),
+                    export.setterName());
+            if (!metadata.id().id().equals(export.stableId())) {
+                throw new ArtifactAssemblyException("export identity disagrees with runtime metadata: "
+                        + export.sourceName());
+            }
+            result.add(metadata);
+        }
+        result.sort(ExportMetadata::compareTo);
+        return List.copyOf(result);
+    }
+
+    private static Map<String, byte[]> sourceEntries(Map<ModuleId, SourceSnapshot> snapshots,
+                                                      List<SourceMetadata> sources) {
+        Map<SourceId, SourceSnapshot> byId = new TreeMap<>(
+                java.util.Comparator.comparing(SourceId::value)
+                        .thenComparing(SourceId::isUri));
+        for (SourceSnapshot snapshot : snapshots.values()) {
+            byId.put(snapshot.sourceId(), snapshot);
+        }
+        TreeMap<String, byte[]> result = new TreeMap<>(EntryNames.utf8Comparator());
+        for (SourceMetadata source : sources) {
+            String entryName = source.entryName().orElse(null);
+            if (entryName == null) {
+                continue;
+            }
+            SourceId compilerSourceId = source.sourceId().isUri()
+                    ? SourceId.uri(source.sourceId().asUri())
+                    : SourceId.path(source.sourceId().value());
+            SourceSnapshot snapshot = byId.get(compilerSourceId);
+            if (snapshot == null) {
+                throw new ArtifactAssemblyException("embedded source is absent: " + source.sourceId());
+            }
+            byte[] bytes = snapshot.utf8Bytes();
+            if (!MessageDigests.sha256Hex(bytes).equals(source.sha256())) {
+                throw new ArtifactAssemblyException("embedded source hash does not match metadata: "
+                        + source.sourceId());
+            }
+            putEntry(result, entryName, bytes);
+        }
+        return Collections.unmodifiableMap(result);
+    }
+
+    private static void validateRuntimeClass(String entryName, byte[] bytes) {
+        if (!entryName.startsWith("io/mindspice/lyra/runtime/") || !entryName.endsWith(".class")) {
+            throw new ArtifactAssemblyException("bundled runtime contains an invalid entry: " + entryName);
+        }
+        String binaryName = entryName.substring(0, entryName.length() - ".class".length())
+                .replace('/', '.');
+        ClassFileReader.read(binaryName, bytes);
+    }
+
+    private static void validateGeneratedClasses(JvmBytecodeArtifact artifact,
+                                                 Map<String, byte[]> classes) {
+        if (!List.copyOf(classes.keySet()).equals(artifact.classNames())) {
+            throw new ArtifactAssemblyException("generated class inventory is not the validated plan inventory");
+        }
+        for (Map.Entry<String, byte[]> entry : classes.entrySet()) {
+            if (entry.getKey().startsWith("io.mindspice.lyra.runtime.")) {
+                throw new ArtifactAssemblyException(
+                        "generated classes may not occupy the shared runtime namespace: "
+                                + entry.getKey());
+            }
+            ClassFileReader.ParsedClass parsed = ClassFileReader.read(entry.getKey(), entry.getValue());
+            EntryNames.require(entry.getKey().replace('.', '/') + ".class");
+            Set<String> actualMembers = new HashSet<>();
+            parsed.fields().forEach(field -> actualMembers.add(field.name() + field.descriptor()));
+            parsed.methods().forEach(method -> actualMembers.add(method.name() + method.descriptor()));
+            String prefix = entry.getKey() + "#";
+            Set<String> expectedMembers = new HashSet<>();
+            artifact.descriptors().forEach((key, descriptor) -> {
+                if (key.startsWith(prefix)) {
+                    expectedMembers.add(key.substring(prefix.length()));
+                }
+            });
+            if (!actualMembers.equals(expectedMembers)) {
+                throw new ArtifactAssemblyException("class member inventory disagrees with its type plan: "
+                        + entry.getKey());
+            }
+        }
+    }
+
+    private static void validateProfile(RuntimeProfile profile, RuntimeAbi abi,
+                                        boolean previewRequired) {
+        if (profile.javaClassFileTarget() != 25 || !profile.name().equals("java-25")) {
+            throw new ArtifactAssemblyException("artifact profile must be java-25");
+        }
+        if (!profile.runtimeAbi().equals(abi)) {
+            throw new ArtifactAssemblyException("artifact runtime ABI disagrees with profile");
+        }
+        if (previewRequired && !profile.previewSupported()) {
+            throw new ArtifactAssemblyException("preview class files need a preview-capable profile");
+        }
+    }
+
+    private static io.mindspice.lyra.runtime.ModuleId runtimeModuleId(ModuleId module) {
+        return module.isUri()
+                ? io.mindspice.lyra.runtime.ModuleId.uri(module.asUri())
+                : io.mindspice.lyra.runtime.ModuleId.path(module.value());
+    }
+
+    private static io.mindspice.lyra.runtime.SourceId runtimeSourceId(SourceId source) {
+        return source.isUri()
+                ? io.mindspice.lyra.runtime.SourceId.uri(source.asUri())
+                : io.mindspice.lyra.runtime.SourceId.path(source.value());
+    }
+
+    private static void putEntry(Map<String, byte[]> entries, String name, byte[] bytes) {
+        EntryNames.require(name);
+        if (entries.put(name, bytes.clone()) != null) {
+            throw new ArtifactAssemblyException("duplicate artifact entry: " + name);
+        }
+    }
+
+    private static Map<String, byte[]> copyBytes(Map<String, byte[]> values, String label) {
+        Objects.requireNonNull(values, label);
+        LinkedHashMap<String, byte[]> result = new LinkedHashMap<>();
+        for (Map.Entry<String, byte[]> entry : values.entrySet()) {
+            String name = Objects.requireNonNull(entry.getKey(), label + " contains a null key");
+            byte[] bytes = Objects.requireNonNull(entry.getValue(), label + " contains null bytes");
+            if (result.put(name, bytes.clone()) != null) {
+                throw new ArtifactAssemblyException("duplicate " + label + " entry: " + name);
+            }
+        }
+        return Collections.unmodifiableMap(result);
+    }
+
+    private static boolean previewClassFile(byte[] bytes) {
+        return bytes.length >= 6 && (bytes[4] & 0xff) == 0xff && (bytes[5] & 0xff) == 0xff;
+    }
+
+    private static final class MessageDigests {
+        private MessageDigests() {
+        }
+
+        static String sha256Hex(byte[] value) {
+            return hex(digest(value));
+        }
+
+        static String sha256Hex(String domain, String... values) {
+            MessageDigest digest = sha256();
+            put(digest, domain);
+            for (String value : values) {
+                put(digest, value);
+            }
+            return hex(digest.digest());
+        }
+
+        private static byte[] digest(byte[] value) {
+            MessageDigest digest = sha256();
+            digest.update(Objects.requireNonNull(value, "value"));
+            return digest.digest();
+        }
+
+        private static MessageDigest sha256() {
+            try {
+                return MessageDigest.getInstance("SHA-256");
+            } catch (NoSuchAlgorithmException exception) {
+                throw new ExceptionInInitializerError(exception);
+            }
+        }
+
+        private static void put(MessageDigest digest, String value) {
+            byte[] bytes = Objects.requireNonNull(value, "value").getBytes(StandardCharsets.UTF_8);
+            digest.update((byte) (bytes.length >>> 24));
+            digest.update((byte) (bytes.length >>> 16));
+            digest.update((byte) (bytes.length >>> 8));
+            digest.update((byte) bytes.length);
+            digest.update(bytes);
+        }
+
+        private static String hex(byte[] bytes) {
+            return java.util.HexFormat.of().formatHex(bytes);
+        }
+    }
+}

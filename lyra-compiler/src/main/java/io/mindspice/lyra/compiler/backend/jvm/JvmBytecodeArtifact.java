@@ -1,8 +1,16 @@
 package io.mindspice.lyra.compiler.backend.jvm;
 
 import io.mindspice.lyra.compiler.diagnostic.ImmutablePhaseArtifact;
+import io.mindspice.lyra.compiler.ir.IrDeclaration;
+import io.mindspice.lyra.compiler.ir.IrExport;
+import io.mindspice.lyra.compiler.ir.IrLambda;
+import io.mindspice.lyra.compiler.ir.IrModule;
 import io.mindspice.lyra.compiler.ir.TypedIr;
+import io.mindspice.lyra.compiler.source.ModuleId;
+import io.mindspice.lyra.compiler.source.SourceSnapshot;
+import io.mindspice.lyra.compiler.source.SourceSpan;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,18 +26,62 @@ import java.util.Optional;
  * published emission or accidentally make a later phase observe different
  * input/output identities.</p>
  */
-final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
+public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
+    /** Immutable export projection consumed by the internal artifact assembler. */
+    public record EmittedExport(
+            String stableId,
+            ModuleId moduleId,
+            String sourceName,
+            String canonicalSignature,
+            String jvmDescriptor,
+            boolean mutable,
+            String javaName,
+            String getterName,
+            String functionValueName,
+            Optional<String> setterName) {
+        public EmittedExport {
+            Objects.requireNonNull(stableId, "stableId");
+            Objects.requireNonNull(moduleId, "moduleId");
+            Objects.requireNonNull(sourceName, "sourceName");
+            Objects.requireNonNull(canonicalSignature, "canonicalSignature");
+            Objects.requireNonNull(jvmDescriptor, "jvmDescriptor");
+            Objects.requireNonNull(javaName, "javaName");
+            Objects.requireNonNull(getterName, "getterName");
+            Objects.requireNonNull(functionValueName, "functionValueName");
+            setterName = Objects.requireNonNull(setterName, "setterName");
+        }
+    }
+
+    /** One generated method's source origin, before BCI ranges are recovered. */
+    public record EmittedMethod(
+            String internalClassName,
+            String methodName,
+            String methodDescriptor,
+            ModuleId moduleId,
+            String functionName,
+            SourceSpan originSpan,
+            boolean synthetic) {
+        public EmittedMethod {
+            Objects.requireNonNull(internalClassName, "internalClassName");
+            Objects.requireNonNull(methodName, "methodName");
+            Objects.requireNonNull(methodDescriptor, "methodDescriptor");
+            Objects.requireNonNull(moduleId, "moduleId");
+            Objects.requireNonNull(functionName, "functionName");
+            Objects.requireNonNull(originSpan, "originSpan");
+        }
+    }
+
     private final TypedIr ir;
     private final GeneratedTypePlan typePlan;
     private final Map<String, byte[]> classFiles;
     private final Map<String, String> descriptors;
     private final boolean previewRequired;
 
-    JvmBytecodeArtifact(TypedIr ir, GeneratedTypePlan typePlan,
-                        Map<String, byte[]> classFiles,
-                        Map<String, String> descriptors,
-                        boolean previewRequired) {
-        this.ir = Objects.requireNonNull(ir, "ir");
+    public JvmBytecodeArtifact(TypedIr ir, GeneratedTypePlan typePlan,
+                               Map<String, byte[]> classFiles,
+                               Map<String, String> descriptors,
+                               boolean previewRequired) {
+        this.ir = Objects.requireNonNull(ir, "ir").requireValidated();
         this.typePlan = Objects.requireNonNull(typePlan, "typePlan");
         Objects.requireNonNull(classFiles, "classFiles");
         LinkedHashMap<String, byte[]> copied = new LinkedHashMap<>();
@@ -40,6 +92,7 @@ final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
             if (copied.put(name, bytes.clone()) != null) {
                 throw new IllegalArgumentException("duplicate emitted class: " + name);
             }
+            validateClassFile(name, bytes);
         }
         if (!List.copyOf(copied.keySet()).equals(typePlan.classNames())) {
             throw new IllegalArgumentException(
@@ -53,28 +106,47 @@ final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
                     Objects.requireNonNull(entry.getKey(), "descriptors contains null key"),
                     Objects.requireNonNull(entry.getValue(), "descriptors contains null value"));
         }
+        LinkedHashMap<String, String> expectedDescriptors = new LinkedHashMap<>();
+        for (GeneratedClassPlan classPlan : typePlan.classes()) {
+            for (GeneratedMemberPlan member : classPlan.members()) {
+                expectedDescriptors.put(classPlan.binaryName() + "#" + member.declarationKey(),
+                        member.descriptor());
+            }
+        }
+        if (!expectedDescriptors.equals(copiedDescriptors)) {
+            throw new IllegalArgumentException("emitted descriptor inventory disagrees with the generated type plan");
+        }
         this.descriptors = Collections.unmodifiableMap(copiedDescriptors);
+        boolean classPreview = copied.values().stream().anyMatch(JvmBytecodeArtifact::previewClassFile);
+        if (previewRequired != classPreview) {
+            throw new IllegalArgumentException("preview flag disagrees with emitted class-file versions");
+        }
         this.previewRequired = previewRequired;
     }
 
-    TypedIr ir() {
+    public TypedIr ir() {
         return ir;
     }
 
-    TypedIr typedIr() {
+    public TypedIr typedIr() {
         return ir;
     }
 
-    GeneratedTypePlan typePlan() {
+    public GeneratedTypePlan typePlan() {
         return typePlan;
     }
 
-    GeneratedTypePlan plan() {
+    public GeneratedTypePlan plan() {
         return typePlan;
+    }
+
+    /** Base package used for every generated facade and support class. */
+    public String javaBasePackage() {
+        return typePlan.basePackage();
     }
 
     /** Emitted classes in the immutable deterministic plan order. */
-    Map<String, byte[]> classes() {
+    public Map<String, byte[]> classes() {
         LinkedHashMap<String, byte[]> result = new LinkedHashMap<>();
         for (Map.Entry<String, byte[]> entry : classFiles.entrySet()) {
             result.put(entry.getKey(), entry.getValue().clone());
@@ -82,35 +154,227 @@ final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
         return Collections.unmodifiableMap(result);
     }
 
-    Map<String, byte[]> classFiles() {
+    public Map<String, byte[]> classFiles() {
         return classes();
     }
 
-    List<String> classNames() {
+    public List<String> classNames() {
         return List.copyOf(classFiles.keySet());
     }
 
-    Optional<byte[]> classBytes(String binaryName) {
+    public Optional<byte[]> classBytes(String binaryName) {
         Objects.requireNonNull(binaryName, "binaryName");
         byte[] bytes = classFiles.get(binaryName);
         return bytes == null ? Optional.empty() : Optional.of(bytes.clone());
     }
 
-    byte[] bytes(String binaryName) {
+    public byte[] bytes(String binaryName) {
         return classBytes(binaryName).orElseThrow(() ->
                 new IllegalArgumentException("emitted class is absent: " + binaryName));
     }
 
     /** Exact planned descriptors keyed as {@code binaryName#member+descriptor}. */
-    Map<String, String> descriptors() {
+    public Map<String, String> descriptors() {
         return descriptors;
     }
 
-    boolean previewRequired() {
+    public boolean previewRequired() {
         return previewRequired;
     }
 
-    int classCount() {
+    public int classCount() {
         return classFiles.size();
+    }
+
+    /**
+     * Returns the complete export projection needed by schema-1 metadata.
+     * This is deliberately a value projection rather than a public backend
+     * planning SPI.
+     */
+    public List<EmittedExport> emittedExports() {
+        ArrayList<EmittedExport> result = new ArrayList<>();
+        for (GeneratedExportPlan export : typePlan.exports()) {
+            // The export identity is the complete value contract.  A nullable
+            // function is still a function ABI, but its top-level @nil
+            // qualifier must remain part of the metadata identity.
+            String signature = export.valueType().canonicalLyraType();
+            String descriptor = export.functionSignature()
+                    .map(JvmSignaturePlan::descriptor)
+                    .orElse("()" + export.valueType().descriptor());
+            result.add(new EmittedExport(export.stableId(), export.moduleId(), export.sourceName(),
+                    signature, descriptor, export.isMutable(), export.javaName(),
+                    export.getterName().orElse("get$" + export.javaName()),
+                    export.functionValueName().orElse("value$" + export.javaName()),
+                    export.setterName()));
+        }
+        result.sort(java.util.Comparator.comparing(EmittedExport::stableId));
+        return List.copyOf(result);
+    }
+
+    /** Returns generated method origins used to recover exact BCI ranges. */
+    public List<EmittedMethod> emittedMethods() {
+        ArrayList<EmittedMethod> result = new ArrayList<>();
+        ModuleId root = ir.rootModule().moduleId();
+        for (GeneratedClassPlan classPlan : typePlan.classes()) {
+            ModuleId module = classPlan.moduleId().orElse(root);
+            IrLambda lambda = null;
+            if (classPlan.kind() == GeneratedClassKind.CLOSURE) {
+                lambda = ir.lambdas().stream()
+                        .filter(candidate -> classPlan.binaryName().equals(
+                                typePlan.closureClasses().get(candidate.id())))
+                        .findFirst().orElseThrow(() -> new IllegalStateException(
+                                "closure class has no lambda origin: " + classPlan.binaryName()));
+            }
+            for (GeneratedMemberPlan member : classPlan.members()) {
+                if (!member.isMethod()) {
+                    continue;
+                }
+                SourceSpan span = ir.module(module).orElseThrow().span();
+                String functionName = "<module>";
+                boolean synthetic = true;
+                if (lambda != null) {
+                    span = lambda.bodySpan();
+                    functionName = lambda.ownerDeclaration()
+                            .flatMap(id -> ir.declarations().stream()
+                                    .filter(declaration -> declaration.id().equals(id))
+                                    .map(IrDeclaration::name).findFirst())
+                            .orElse("<lambda>");
+                    synthetic = member.kind() != GeneratedMemberKind.CLOSURE_INVOKE;
+                } else {
+                    GeneratedExportPlan export = typePlan.exports().stream()
+                            .filter(candidate -> candidate.moduleId().equals(module))
+                            .filter(candidate -> candidate.members().stream().anyMatch(
+                                    candidateMember -> candidateMember.kind() == member.kind()
+                                            && candidateMember.name().equals(member.name())
+                                            && candidateMember.descriptor().equals(member.descriptor())))
+                            .findFirst().orElse(null);
+                    if (export != null) {
+                        span = ir.exports().stream()
+                                .filter(value -> value.moduleId().equals(export.moduleId())
+                                        && value.name().equals(export.sourceName()))
+                                .map(IrExport::span).findFirst().orElse(span);
+                        functionName = export.sourceName();
+                        synthetic = false;
+                    } else if (member.sourceName().isPresent()) {
+                        String sourceName = member.sourceName().orElseThrow();
+                        IrDeclaration declaration = ir.declarations().stream()
+                                .filter(value -> value.moduleId().equals(module)
+                                        && value.name().equals(sourceName))
+                                .findFirst().orElse(null);
+                        if (declaration != null) {
+                            span = declaration.span();
+                            functionName = declaration.name();
+                        }
+                    }
+                }
+                result.add(new EmittedMethod(classPlan.internalName(), member.name(),
+                        member.descriptor(), module, functionName, span, synthetic));
+            }
+        }
+        result.sort(java.util.Comparator.comparing(EmittedMethod::internalClassName)
+                .thenComparing(EmittedMethod::methodName)
+                .thenComparing(EmittedMethod::methodDescriptor));
+        return List.copyOf(result);
+    }
+
+    private static boolean previewClassFile(byte[] bytes) {
+        return (bytes[4] & 0xff) == 0xff && (bytes[5] & 0xff) == 0xff;
+    }
+
+    private static void validateClassFile(String binaryName, byte[] bytes) {
+        if (bytes.length < 10 || (bytes[0] & 0xff) != 0xca || (bytes[1] & 0xff) != 0xfe
+                || (bytes[2] & 0xff) != 0xba || (bytes[3] & 0xff) != 0xbe) {
+            throw new IllegalArgumentException("emitted class is not a class file: " + binaryName);
+        }
+        int minor = u2(bytes, 4);
+        int major = u2(bytes, 6);
+        if (major != 69 || (minor != 0 && minor != 65535)) {
+            throw new IllegalArgumentException("emitted class has an invalid Java-25 version: "
+                    + binaryName);
+        }
+        String expected = binaryName.replace('.', '/');
+        String actual = classInternalName(bytes);
+        if (!expected.equals(actual)) {
+            throw new IllegalArgumentException("class-file name disagrees with emitted name: "
+                    + binaryName + " versus " + actual);
+        }
+    }
+
+    private static int u2(byte[] bytes, int offset) {
+        return ((bytes[offset] & 0xff) << 8) | (bytes[offset + 1] & 0xff);
+    }
+
+    private static String classInternalName(byte[] bytes) {
+        ClassCursor cursor = new ClassCursor(bytes, 8);
+        int count = cursor.u2();
+        Object[] pool = new Object[count];
+        for (int index = 1; index < count; index++) {
+            int tag = cursor.u1();
+            switch (tag) {
+                case 1 -> pool[index] = cursor.utf8();
+                case 3, 4 -> cursor.skip(4);
+                case 5, 6 -> { cursor.skip(8); index++; }
+                case 7, 8, 16, 19, 20 -> pool[index] = cursor.u2();
+                case 9, 10, 11, 12, 17, 18 -> cursor.skip(4);
+                case 15 -> cursor.skip(3);
+                default -> throw new IllegalArgumentException("invalid constant-pool tag: " + tag);
+            }
+        }
+        cursor.skip(2); // access flags
+        int thisClass = cursor.u2();
+        if (thisClass <= 0 || thisClass >= pool.length || !(pool[thisClass] instanceof Integer nameIndex)
+                || nameIndex <= 0 || nameIndex >= pool.length || !(pool[nameIndex] instanceof String name)) {
+            throw new IllegalArgumentException("class file has an invalid this_class entry");
+        }
+        return name;
+    }
+
+    private static final class ClassCursor {
+        private final byte[] bytes;
+        private int offset;
+
+        private ClassCursor(byte[] bytes, int offset) {
+            this.bytes = bytes;
+            this.offset = offset;
+        }
+
+        private int u1() {
+            require(1);
+            return bytes[offset++] & 0xff;
+        }
+
+        private int u2() {
+            require(2);
+            int value = ((bytes[offset] & 0xff) << 8) | (bytes[offset + 1] & 0xff);
+            offset += 2;
+            return value;
+        }
+
+        private String utf8() {
+            int length = u2();
+            require(length);
+            byte[] encoded = new byte[length + 2];
+            encoded[0] = (byte) (length >>> 8);
+            encoded[1] = (byte) length;
+            System.arraycopy(bytes, offset, encoded, 2, length);
+            offset += length;
+            try (java.io.DataInputStream input = new java.io.DataInputStream(
+                    new java.io.ByteArrayInputStream(encoded))) {
+                return input.readUTF();
+            } catch (java.io.IOException exception) {
+                throw new IllegalArgumentException("invalid modified UTF-8 class constant", exception);
+            }
+        }
+
+        private void skip(int length) {
+            require(length);
+            offset += length;
+        }
+
+        private void require(int length) {
+            if (length < 0 || offset > bytes.length - length) {
+                throw new IllegalArgumentException("truncated class file");
+            }
+        }
     }
 }

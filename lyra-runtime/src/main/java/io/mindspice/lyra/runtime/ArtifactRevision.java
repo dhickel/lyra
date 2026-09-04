@@ -8,6 +8,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /** Deterministic revision of artifact compatibility inputs. */
 public final class ArtifactRevision implements Comparable<ArtifactRevision> {
@@ -44,6 +45,50 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
                                            RuntimeProfile profile,
                                            PackagingMode packagingMode,
                                            boolean previewRequired) {
+        return compute(compilerBuild, modules, javaNameMap, profile, packagingMode,
+                previewRequired, List.of());
+    }
+
+    /**
+     * Computes a revision including the complete source hash/entry projection.
+     * The source projection is part of the packaging contract: adding or
+     * removing embedded source bytes must not retain the revision of a
+     * different published artifact.
+     */
+    public static ArtifactRevision compute(String compilerBuild,
+                                           List<ModuleMetadata> modules,
+                                           Map<String, String> javaNameMap,
+                                           RuntimeProfile profile,
+                                           PackagingMode packagingMode,
+                                           boolean previewRequired,
+                                           List<? extends SourceMetadata> sources) {
+        return compute(compilerBuild, modules, javaNameMap, profile, packagingMode,
+                previewRequired, sources, Optional.empty());
+    }
+
+    /** Computes a revision including the exact external runtime requirement. */
+    public static ArtifactRevision compute(String compilerBuild,
+                                           List<ModuleMetadata> modules,
+                                           Map<String, String> javaNameMap,
+                                           RuntimeProfile profile,
+                                           PackagingMode packagingMode,
+                                           boolean previewRequired,
+                                           List<? extends SourceMetadata> sources,
+                                           Optional<RuntimeRequirement> runtimeRequirement) {
+        return compute(compilerBuild, modules, javaNameMap, profile, packagingMode,
+                previewRequired, "lyra.generated", sources, runtimeRequirement);
+    }
+
+    /** Computes a revision including the configured generated Java package. */
+    public static ArtifactRevision compute(String compilerBuild,
+                                           List<ModuleMetadata> modules,
+                                           Map<String, String> javaNameMap,
+                                           RuntimeProfile profile,
+                                           PackagingMode packagingMode,
+                                           boolean previewRequired,
+                                           String javaPackage,
+                                           List<? extends SourceMetadata> sources,
+                                           Optional<RuntimeRequirement> runtimeRequirement) {
         CanonicalJson.requireUtf8(compilerBuild, "compilerBuild");
         if (compilerBuild.isBlank()) {
             throw new IllegalArgumentException("compilerBuild must not be blank");
@@ -57,6 +102,9 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
         Objects.requireNonNull(javaNameMap, "javaNameMap");
         Objects.requireNonNull(profile, "profile");
         Objects.requireNonNull(packagingMode, "packagingMode");
+        Objects.requireNonNull(sources, "sources");
+        Objects.requireNonNull(runtimeRequirement, "runtimeRequirement");
+        requireJavaPackage(javaPackage);
         List<ModuleMetadata> sortedModules = new ArrayList<>(modules.size());
         for (ModuleMetadata module : modules) {
             sortedModules.add(Objects.requireNonNull(module, "modules must not contain null"));
@@ -68,8 +116,19 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
                         + sortedModules.get(index).id());
             }
         }
+        List<SourceMetadata> sortedSources = new ArrayList<>(sources.size());
+        for (SourceMetadata source : sources) {
+            sortedSources.add(Objects.requireNonNull(source, "sources must not contain null"));
+        }
+        sortedSources.sort(SourceMetadata::compareTo);
+        for (int index = 1; index < sortedSources.size(); index++) {
+            if (sortedSources.get(index - 1).sourceId().equals(sortedSources.get(index).sourceId())) {
+                throw new IllegalArgumentException("duplicate source metadata: "
+                        + sortedSources.get(index).sourceId());
+            }
+        }
         return computeWithMapCount(compilerBuild, sortedModules, javaNameMap, profile, packagingMode,
-                previewRequired);
+                previewRequired, javaPackage, sortedSources, runtimeRequirement);
     }
 
     private static ArtifactRevision computeWithMapCount(String compilerBuild,
@@ -77,13 +136,18 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
                                                         Map<String, String> javaNameMap,
                                                         RuntimeProfile profile,
                                                         PackagingMode packagingMode,
-                                                        boolean previewRequired) {
+                                                        boolean previewRequired,
+                                                        String javaPackage,
+                                                        List<? extends SourceMetadata> sources,
+                                                        Optional<RuntimeRequirement> runtimeRequirement) {
         MessageDigest digest = sha256();
         putString(digest, DOMAIN_TAG);
         putInt(digest, LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION);
         putString(digest, compilerBuild);
+        putString(digest, javaPackage);
         putString(digest, profile.name());
         putInt(digest, profile.javaClassFileTarget());
+        putInt(digest, profile.previewSupported() ? 1 : 0);
         putInt(digest, profile.runtimeAbi().major());
         putInt(digest, profile.runtimeAbi().minor());
         putString(digest, packagingMode.canonicalSpelling());
@@ -105,6 +169,26 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
             putString(digest, entry.getKey());
             putString(digest, entry.getValue());
         }
+        putInt(digest, sources.size());
+        for (SourceMetadata source : sources) {
+            putString(digest, source.sourceId().kindTag());
+            putString(digest, source.sourceId().canonicalSpelling());
+            putString(digest, source.sourceLabel());
+            putString(digest, source.sha256());
+            putString(digest, source.entryName().orElse(""));
+        }
+        putInt(digest, runtimeRequirement.isPresent() ? 1 : 0);
+        runtimeRequirement.ifPresent(requirement -> {
+            putString(digest, requirement.groupId());
+            putString(digest, requirement.artifactId());
+            putString(digest, requirement.version());
+            putString(digest, requirement.profile().name());
+            putInt(digest, requirement.profile().javaClassFileTarget());
+            putInt(digest, requirement.profile().previewSupported() ? 1 : 0);
+            putInt(digest, requirement.previewRequired() ? 1 : 0);
+            putInt(digest, requirement.minimumRuntimeAbi().major());
+            putInt(digest, requirement.minimumRuntimeAbi().minor());
+        });
         return new ArtifactRevision(HexFormat.of().formatHex(digest.digest()));
     }
 
@@ -138,6 +222,42 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
     @Override
     public String toString() {
         return value;
+    }
+
+    private static void requireJavaPackage(String value) {
+        CanonicalJson.requireUtf8(value, "javaPackage");
+        if (value.isBlank() || value.startsWith(".") || value.endsWith(".")
+                || value.contains("/") || value.chars().anyMatch(character -> character == 92)) {
+            throw new IllegalArgumentException("invalid Java package: " + value);
+        }
+        for (String part : value.split("[.]", -1)) {
+            if (part.isEmpty() || isJavaKeyword(part)
+                    || !Character.isJavaIdentifierStart(part.codePointAt(0))) {
+                throw new IllegalArgumentException("invalid Java package: " + value);
+            }
+            for (int offset = Character.charCount(part.codePointAt(0)); offset < part.length();) {
+                int codePoint = part.codePointAt(offset);
+                if (!Character.isJavaIdentifierPart(codePoint)) {
+                    throw new IllegalArgumentException("invalid Java package: " + value);
+                }
+                offset += Character.charCount(codePoint);
+            }
+        }
+    }
+
+    private static boolean isJavaKeyword(String value) {
+        return switch (value) {
+            case "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char",
+                    "class", "const", "continue", "default", "do", "double", "else", "enum",
+                    "extends", "final", "finally", "float", "for", "goto", "if", "implements",
+                    "import", "instanceof", "int", "interface", "long", "native", "new", "package",
+                    "private", "protected", "public", "return", "short", "static", "strictfp",
+                    "super", "switch", "synchronized", "this", "throw", "throws", "transient",
+                    "try", "void", "volatile", "while", "true", "false", "null", "_", "record",
+                    "sealed", "permits", "non-sealed", "var", "yield", "module", "open", "opens",
+                    "requires", "transitive", "exports", "to", "uses", "provides", "with", "when" -> true;
+            default -> false;
+        };
     }
 
     private static MessageDigest sha256() {

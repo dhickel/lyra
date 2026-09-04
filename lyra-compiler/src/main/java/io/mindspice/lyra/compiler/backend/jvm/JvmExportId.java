@@ -55,21 +55,15 @@ final class JvmExportId implements Comparable<JvmExportId> {
                 throw new IllegalArgumentException("semantic export identity disagrees with ABI export");
             }
         });
-        String completeInput = "LYRA-JVM-EXPORT-ID/"
-                + LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION + ";"
-                + field(moduleKey(moduleId)) + field(exportName)
-                + field(canonicalContract);
         boolean semanticSignatureIsComplete = semanticExportId
                 .map(id -> id.signature().canonicalSpelling().equals(canonicalContract))
                 .orElse(false);
         this.canonicalInput = semanticSignatureIsComplete
-                ? semanticExportId.orElseThrow().canonicalInput() : completeInput;
+                ? semanticExportId.orElseThrow().canonicalInput()
+                : canonicalExportInput(moduleId, exportName, canonicalContract);
         this.hash = semanticSignatureIsComplete
                 ? semanticExportId.orElseThrow().hash()
-                : JvmStableHash.sha256(
-                        "LYRA-JVM-EXPORT-ID",
-                        Integer.toString(LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION),
-                        moduleKey(moduleId), exportName, canonicalContract);
+                : canonicalExportHash(moduleId, exportName, canonicalContract);
     }
 
     public JvmExportId(ModuleId moduleId, String exportName, String canonicalContract) {
@@ -160,8 +154,38 @@ final class JvmExportId implements Comparable<JvmExportId> {
         return value;
     }
 
-    private static String moduleKey(ModuleId moduleId) {
-        return (moduleId.isUri() ? "uri:" : "path:") + moduleId.value();
+    private static String canonicalExportInput(ModuleId moduleId, String name, String contract) {
+        return "LYRA-EXPORT-ID/" + LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION
+                + ";" + field(moduleId.isUri() ? "uri" : "path")
+                + field(moduleId.value()) + field(name) + field(contract);
+    }
+
+    private static String canonicalExportHash(ModuleId moduleId, String name, String contract) {
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            putBytes(digest, "LYRA-EXPORT-ID".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            putInt(digest, LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION);
+            putBytes(digest, (moduleId.isUri() ? "uri" : "path")
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            putBytes(digest, moduleId.value().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            putBytes(digest, name.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            putBytes(digest, contract.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest.digest());
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new ExceptionInInitializerError(exception);
+        }
+    }
+
+    private static void putBytes(java.security.MessageDigest digest, byte[] bytes) {
+        putInt(digest, bytes.length);
+        digest.update(bytes);
+    }
+
+    private static void putInt(java.security.MessageDigest digest, int value) {
+        digest.update((byte) (value >>> 24));
+        digest.update((byte) (value >>> 16));
+        digest.update((byte) (value >>> 8));
+        digest.update((byte) value);
     }
 
     private static String field(String value) {
