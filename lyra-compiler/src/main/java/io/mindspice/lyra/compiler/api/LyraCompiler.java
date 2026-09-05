@@ -7,13 +7,18 @@ import io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes;
 import io.mindspice.lyra.compiler.diagnostic.Diagnostic;
 import io.mindspice.lyra.compiler.diagnostic.ImmutablePhaseArtifact;
 import io.mindspice.lyra.compiler.diagnostic.PhaseResult;
+import io.mindspice.lyra.compiler.diagnostic.RelatedSpan;
 import io.mindspice.lyra.compiler.grammar.GrammarMatcher;
 import io.mindspice.lyra.compiler.grammar.GrammarProgram;
+import io.mindspice.lyra.compiler.identity.DeclarationId;
 import io.mindspice.lyra.compiler.ir.TypedIr;
 import io.mindspice.lyra.compiler.ir.TypedIrBuilder;
 import io.mindspice.lyra.compiler.lex.LexedSource;
 import io.mindspice.lyra.compiler.lex.Lexer;
 import io.mindspice.lyra.compiler.parse.Parser;
+import io.mindspice.lyra.compiler.semantic.DeclarationKind;
+import io.mindspice.lyra.compiler.semantic.ResolvedDeclaration;
+import io.mindspice.lyra.compiler.semantic.ResolvedExport;
 import io.mindspice.lyra.compiler.semantic.ResolvedSemanticGraph;
 import io.mindspice.lyra.compiler.semantic.SemanticResolver;
 import io.mindspice.lyra.compiler.semantic.TypeChecker;
@@ -25,6 +30,9 @@ import io.mindspice.lyra.compiler.source.SourceConfiguration;
 import io.mindspice.lyra.compiler.source.SourceId;
 import io.mindspice.lyra.compiler.source.SourceSnapshot;
 import io.mindspice.lyra.compiler.source.SourceSpan;
+import io.mindspice.lyra.compiler.session.ExternalBinding;
+import io.mindspice.lyra.compiler.session.SessionSnapshot;
+import io.mindspice.lyra.compiler.session.StorageIdentity;
 import io.mindspice.lyra.runtime.ArtifactMetadata;
 import io.mindspice.lyra.runtime.PackagingMode;
 
@@ -34,9 +42,12 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /** Public source-to-artifact compiler entry point. */
 public final class LyraCompiler {
@@ -60,6 +71,31 @@ public final class LyraCompiler {
     /** Alias for callers that use an instance-looking operation spelling. */
     public static CompileResult compileSource(CompileRequest request) {
         return compile(request);
+    }
+
+    /**
+     * Compiles one in-memory session submission through the ordinary compiler
+     * phases.  The result is staged against the supplied immutable snapshot;
+     * publishing it and executing the artifact remain session-owner
+     * responsibilities.
+     *
+     * <p>This bounded compiler slice deliberately does not link live values
+     * from an earlier submission.  References to names in the snapshot are
+     * therefore structured session diagnostics rather than unresolved values
+     * or fabricated initializer code.</p>
+     */
+    public static SessionCompileResult compileSession(SessionCompileRequest request) {
+        Objects.requireNonNull(request, "request");
+        try {
+            return new SessionPipeline(request).run();
+        } catch (VirtualMachineError | ThreadDeath failure) {
+            throw failure;
+        } catch (LyraCompilerBugException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new LyraCompilerBugException(
+                    "session compiler invariant failed outside a phase boundary", failure);
+        }
     }
 
     private static final class Pipeline {
@@ -201,6 +237,252 @@ public final class LyraCompiler {
         }
     }
 
+    /** Session-specific pipeline; the ordinary compiler pipeline remains unchanged. */
+    private static final class SessionPipeline {
+        private final SessionCompileRequest request;
+        private final ArrayList<Diagnostic> diagnostics = new ArrayList<>();
+
+        private SessionPipeline(SessionCompileRequest request) {
+            this.request = request;
+        }
+
+        private SessionCompileResult run() {
+            Diagnostic configuration = validateConfiguration();
+            if (configuration != null) {
+                return fail(configuration);
+            }
+            if (!request.snapshot().pinnedModules().isEmpty()) {
+                return fail(Diagnostic.error(
+                        CompilerDiagnosticCodes.SESSION_EXTERNAL_BINDING_UNSUPPORTED,
+                        sourceSpan(),
+                        "pinned session modules cannot be linked into this submission yet"));
+            }
+
+            ModuleGraph graph = phase(discover());
+            if (graph == null) {
+                return failure();
+            }
+
+            Set<String> externalNames = new LinkedHashSet<>(request.snapshot().bindings().keySet());
+            externalNames.addAll(request.snapshot().imports().keySet());
+            ResolvedSemanticGraph resolved = phase(SemanticResolver.resolve(
+                    graph, request.snapshot().allocator(), Set.copyOf(externalNames)));
+            if (resolved == null) {
+                return failure();
+            }
+
+            TypedSemanticGraph typed = phase(TypeChecker.check(resolved));
+            if (typed == null) {
+                return failure();
+            }
+
+            TypedIr ir = phase(TypedIrBuilder.lower(typed));
+            if (ir == null) {
+                return failure();
+            }
+
+            JvmBytecodeArtifact bytecode = phase(JvmBytecodeArtifact.emit(
+                    ir, request.javaBasePackage()));
+            if (bytecode == null) {
+                return failure();
+            }
+
+            StagedNamespace staged = stageNamespace(graph, resolved);
+            if (staged.diagnostic() != null) {
+                return fail(staged.diagnostic());
+            }
+            ArtifactAssembly assembly = ArtifactAssembly.assemble(
+                    bytecode, PackagingMode.CLASSES, request.includeSources());
+            return new SessionCompileResult.Success(
+                    request.baseRevision(),
+                    staged.snapshot().revision(),
+                    staged.snapshot(),
+                    new BuiltCompiledArtifact(bytecode, request.includeSources(), assembly),
+                    graph,
+                    resolved,
+                    typed,
+                    ir,
+                    staged.declarations(),
+                    List.of(),
+                    mapDiagnostics(diagnostics));
+        }
+
+        private PhaseResult<ModuleGraph> discover() {
+            SourceId sourceId = sessionSourceId(request.source());
+            PhysicalSourceKey physical = memoryPhysicalKey(sourceId, request.source().text());
+            PhaseResult<SourceSnapshot> snapshotResult = SourceSnapshot.capture(
+                    sourceId,
+                    physical,
+                    request.source().text().getBytes(StandardCharsets.UTF_8));
+            SourceSnapshot snapshot = sourcePhase(snapshotResult);
+            if (snapshot == null) {
+                return PhaseResult.failure(snapshotResult.diagnostics());
+            }
+
+            PhaseResult<LexedSource> lexedResult = Lexer.lex(snapshot);
+            LexedSource lexed = sourcePhase(lexedResult);
+            if (lexed == null) {
+                return PhaseResult.failure(lexedResult.diagnostics());
+            }
+            PhaseResult<GrammarProgram> grammarResult = GrammarMatcher.match(lexed);
+            GrammarProgram grammar = sourcePhase(grammarResult);
+            if (grammar == null) {
+                return PhaseResult.failure(grammarResult.diagnostics());
+            }
+            PhaseResult<SyntaxProgram> syntaxResult = Parser.parse(lexed, grammar);
+            SyntaxProgram syntax = sourcePhase(syntaxResult);
+            if (syntax == null) {
+                return PhaseResult.failure(syntaxResult.diagnostics());
+            }
+            return ModuleGraphDiscovery.discover(
+                    syntax, snapshot, request.sourceConfiguration());
+        }
+
+        private StagedNamespace stageNamespace(
+                ModuleGraph graph, ResolvedSemanticGraph resolved) {
+            var root = graph.rootModule();
+            var rootSemantic = resolved.module(root).orElseThrow();
+            for (ResolvedDeclaration declaration : resolved.declarations()) {
+                if (!declaration.moduleId().equals(root)
+                        || !declaration.scopeId().equals(rootSemantic.rootScope())) {
+                    continue;
+                }
+                ExternalBinding previous = request.snapshot().bindings().get(declaration.name());
+                boolean protectedBinding = previous != null
+                        && previous.visibility() != ExternalBinding.Visibility.PRIVATE;
+                if (protectedBinding || request.snapshot().imports().containsKey(declaration.name())) {
+                    return StagedNamespace.failure(Diagnostic.error(
+                            CompilerDiagnosticCodes.SESSION_NAME_CONFLICT,
+                            declaration.nameSpan(),
+                            "session name cannot be redeclared: " + declaration.name()));
+                }
+            }
+
+            LinkedHashMap<String, ExternalBinding> nextBindings =
+                    new LinkedHashMap<>(request.snapshot().bindings());
+            for (ResolvedExport export : resolved.exports()) {
+                if (!export.moduleId().equals(root)) {
+                    continue;
+                }
+                if (nextBindings.containsKey(export.name())
+                        || request.snapshot().imports().containsKey(export.name())) {
+                    return StagedNamespace.failure(Diagnostic.error(
+                            CompilerDiagnosticCodes.SESSION_NAME_CONFLICT,
+                            export.span(),
+                            "session name cannot be redeclared: " + export.name()));
+                }
+                var contract = export.contract();
+                boolean mutable = contract.isMutable();
+                nextBindings.put(export.name(), new ExternalBinding(
+                        export.name(),
+                        export.declarationId(),
+                        contract,
+                        ExternalBinding.Visibility.PUBLIC,
+                        mutable
+                                ? ExternalBinding.AssignmentAuthority.ALL
+                                : ExternalBinding.AssignmentAuthority.NONE,
+                        mutable
+                                ? java.util.Optional.of(
+                                        StorageIdentity.forDeclaration(export.declarationId()))
+                                : java.util.Optional.empty(),
+                        request.source().origin()));
+            }
+
+            List<DeclarationId> declarations = resolved.declarations().stream()
+                    .filter(value -> value.moduleId().equals(root))
+                    .filter(value -> value.scopeId().equals(rootSemantic.rootScope()))
+                    .filter(value -> value.kind() == DeclarationKind.LET)
+                    .map(ResolvedDeclaration::id)
+                    .toList();
+            try {
+                return StagedNamespace.success(request.snapshot().nextRevision(
+                        nextBindings,
+                        request.snapshot().imports(),
+                        request.snapshot().pinnedModules(),
+                        resolved.allocator()), declarations);
+            } catch (IllegalArgumentException | IllegalStateException failure) {
+                throw new LyraCompilerBugException(
+                        "session namespace staging violated an immutable contract", failure);
+            }
+        }
+
+        private Diagnostic validateConfiguration() {
+            if (request.javaTarget() != 25) {
+                return Diagnostic.error(CompilerDiagnosticCodes.MODULE_INVALID_CONFIGURATION,
+                        sourceSpan(), "Lyra artifacts require Java target 25");
+            }
+            if (!validJavaPackage(request.javaBasePackage())) {
+                return Diagnostic.error(CompilerDiagnosticCodes.MODULE_INVALID_CONFIGURATION,
+                        sourceSpan(), "invalid Java base package: " + request.javaBasePackage());
+            }
+            return null;
+        }
+
+        private SourceSpan sourceSpan() {
+            return SourceSpan.at(sessionSourceId(request.source()), 0);
+        }
+
+        private SessionCompileResult fail(Diagnostic diagnostic) {
+            diagnostics.add(Objects.requireNonNull(diagnostic, "diagnostic"));
+            return failure();
+        }
+
+        private SessionCompileResult failure() {
+            return new SessionCompileResult.Failure(
+                    request.baseRevision(), mapDiagnostics(diagnostics));
+        }
+
+        private <T extends ImmutablePhaseArtifact> T phase(PhaseResult<T> result) {
+            if (result instanceof PhaseResult.Success<T> success) {
+                diagnostics.addAll(success.diagnostics());
+                return success.value();
+            }
+            diagnostics.addAll(result.diagnostics());
+            return null;
+        }
+
+        private <T extends ImmutablePhaseArtifact> T sourcePhase(PhaseResult<T> result) {
+            if (result instanceof PhaseResult.Success<T> success) {
+                diagnostics.addAll(success.diagnostics());
+                return success.value();
+            }
+            return null;
+        }
+
+        private List<Diagnostic> mapDiagnostics(List<Diagnostic> values) {
+            return LyraCompiler.mapSessionDiagnostics(
+                    values, request.source(), sessionSourceId(request.source()));
+        }
+
+        private record StagedNamespace(
+                SessionSnapshot snapshot,
+                List<DeclarationId> declarations,
+                Diagnostic diagnostic) {
+            private StagedNamespace {
+                if (snapshot == null && diagnostic == null) {
+                    throw new IllegalArgumentException(
+                            "staged namespace needs a snapshot or diagnostic");
+                }
+                if (snapshot != null && diagnostic != null) {
+                    throw new IllegalArgumentException(
+                            "staged namespace cannot contain both a snapshot and diagnostic");
+                }
+                declarations = List.copyOf(Objects.requireNonNull(declarations, "declarations"));
+            }
+
+            private static StagedNamespace success(
+                    SessionSnapshot snapshot, List<DeclarationId> declarations) {
+                return new StagedNamespace(
+                        Objects.requireNonNull(snapshot, "snapshot"), declarations, null);
+            }
+
+            private static StagedNamespace failure(Diagnostic diagnostic) {
+                return new StagedNamespace(null, List.of(),
+                        Objects.requireNonNull(diagnostic, "diagnostic"));
+            }
+        }
+    }
+
     private static final class BuiltCompiledArtifact implements CompiledArtifact {
         private final JvmBytecodeArtifact bytecode;
         private final boolean includeSources;
@@ -256,6 +538,54 @@ public final class LyraCompiler {
             throw new ExceptionInInitializerError(failure);
         }
         return PhysicalSourceKey.uri(URI.create("memory:lyra/" + hash));
+    }
+
+    private static SourceId sessionSourceId(EvaluationSource source) {
+        Objects.requireNonNull(source, "source");
+        if (source.origin().uri().isPresent()) {
+            return SourceId.uri(source.origin().uri().orElseThrow());
+        }
+        try {
+            return SourceId.of(source.origin().label());
+        } catch (IllegalArgumentException ignored) {
+            return SourceId.path("repl/submission-anonymous.lyra");
+        }
+    }
+
+    private static List<Diagnostic> mapSessionDiagnostics(
+            List<Diagnostic> values, EvaluationSource source, SourceId compilerSourceId) {
+        Objects.requireNonNull(values, "values");
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(compilerSourceId, "compilerSourceId");
+        return values.stream()
+                .map(value -> mapSessionDiagnostic(value, source, compilerSourceId))
+                .toList();
+    }
+
+    private static Diagnostic mapSessionDiagnostic(
+            Diagnostic diagnostic, EvaluationSource source, SourceId compilerSourceId) {
+        Objects.requireNonNull(diagnostic, "diagnostic");
+        SourceSpan primary = mapSessionSpan(
+                diagnostic.primarySpan(), source, compilerSourceId);
+        List<RelatedSpan> related = diagnostic.relatedSpans().stream()
+                .map(value -> new RelatedSpan(
+                        mapSessionSpan(value.span(), source, compilerSourceId), value.label()))
+                .toList();
+        return new Diagnostic(
+                diagnostic.code(), diagnostic.severity(), diagnostic.summary(), primary, related);
+    }
+
+    private static SourceSpan mapSessionSpan(
+            SourceSpan span, EvaluationSource source, SourceId compilerSourceId) {
+        Objects.requireNonNull(span, "span");
+        if (!span.sourceId().equals(compilerSourceId)) {
+            return span;
+        }
+        if (span.endOffset() > source.text().length()) {
+            throw new LyraCompilerBugException(
+                    "session diagnostic span exceeds submitted source: " + span);
+        }
+        return source.origin().map(span, compilerSourceId);
     }
 
     private static boolean validJavaPackage(String value) {
