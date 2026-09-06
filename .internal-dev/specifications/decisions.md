@@ -238,3 +238,17 @@
 - **Justification:** imported ownership is a static language obligation even for uninvoked bodies and for `@mut` calls whose callee happens not to write. Explicit summary obligations preserve that rule without a source-level interpreter.
 - **Alternatives rejected:** inferring ownership only from observed writes; executing lambda bodies during creation; publishing per-expression states; or moving the diagnostic after sealing.
 - **Caveat:** type checking may temporarily defer only an outer-mutation-qualifier mismatch long enough for canonical ownership to preserve the established `LYC-RESOLVE-022` precedence. If no ownership violation exists, the original type diagnostic is returned and no graph is published.
+
+### Trusted REPL completion scope, 2026-09-06
+
+- **Decision:** complete the REPL as a trusted development interface with persistent imported modules, explicit REPL-owned reload, and explicitly enabled localhost application attachment. Remove authentication, credential files, hostile-client isolation and security-only filesystem policy from the current completion scope. Keep loopback binding, explicit activation and finite protocol bounds as operational behavior.
+- **Justification:** the delivered direct-bytecode session/compiler foundation already requires exact types, initialization, owner-thread execution and producer lifetime for correctness. The rejected security layer added conflicting requirements without being needed for the expected single-developer workflow. Removing it narrows the product boundary while preserving language and AOT semantics.
+- **Tradeoff:** any process able to reach an enabled listener receives application execution authority. Automatic local-root initialization is also deferred; local REPL users explicitly import/load modules, while only explicitly registered REPL-capable application roots are attached.
+- **Affected specifications:** `repl.md`, `backend-runtime.md`, `deferred-features.md`, CLI/remote protocol documentation and the Phase 24 REPL coverage matrix. Revisit only if a multi-user or hostile-code deployment requirement is accepted separately.
+
+### Trusted typed module linking and conservative retention, 2026-09-06
+
+- **Decision:** imported and attached values use exact typed links to actual initialized module instances. Namespace publication, resident initialized modules, attempted generations and producer lifetime are separate records. Conservative session/root-lifetime retention is preferred over a heap reachability collector or forced class unloading.
+- **Justification:** imported closures, arrays and mutable cells must retain their real generated identity and storage while reload/reset changes what new name lookup sees. Reinstantiating a whole graph or copying values would change semantics.
+- **Caveat:** current mutable root state is not assumed to equal initializer state. Attachable compilation must model safe-point mutation as an explicit effect boundary and derive conservative facts for subsequent evaluations.
+- **Affected specifications:** `repl.md`, `backend-runtime.md`, session compiler/runtime flow, module reload and application attachment tests.
