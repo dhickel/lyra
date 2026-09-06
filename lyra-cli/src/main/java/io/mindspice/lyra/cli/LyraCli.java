@@ -20,10 +20,19 @@ import io.mindspice.lyra.runtime.LyraRuntimeException;
 import io.mindspice.lyra.runtime.LyraLinkException;
 import io.mindspice.lyra.runtime.LoadOptions;
 import io.mindspice.lyra.runtime.LoadedArtifact;
+import io.mindspice.lyra.runtime.RuntimeIoEnvironment;
 import io.mindspice.lyra.runtime.ModuleHandle;
 import io.mindspice.lyra.runtime.SourceData;
 import io.mindspice.lyra.runtime.SourceFrame;
 import io.mindspice.lyra.runtime.SourceFrameRenderer;
+import io.mindspice.lyra.repl.LyraSession;
+import io.mindspice.lyra.repl.PlainConsole;
+import io.mindspice.lyra.repl.SessionOptions;
+import io.mindspice.lyra.repl.remote.LoopbackEndpoint;
+import io.mindspice.lyra.repl.remote.RemoteConsoleSession;
+import io.mindspice.lyra.repl.remote.RemoteEndpoint;
+import io.mindspice.lyra.repl.remote.RemoteOperationException;
+import io.mindspice.lyra.repl.remote.TokenCredential;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -46,6 +55,8 @@ public final class LyraCli {
     public static final String HELP_TEXT = USAGE_TEXT + "\n"
             + "\n"
             + "Commands:\n"
+            + "  repl [ROOT] [--history PATH] [--plain] [--keymap emacs|vi]\n"
+            + "  attach ENDPOINT --token-file PATH\n"
             + "  run ROOT [--source-root DIR]* [-- ARGS...]\n"
             + "  compile ROOT [--source-root DIR]* [--output PATH]\n"
             + "         [--format classes|thin-jar|bundled-jar]\n"
@@ -62,7 +73,7 @@ public final class LyraCli {
     public static void main(String[] args) {
         int status;
         try {
-            status = execute(args, System.in, System.out, System.err);
+            status = execute(args);
         } catch (VirtualMachineError | ThreadDeath failure) {
             throw failure;
         } catch (RuntimeException failure) {
@@ -74,9 +85,15 @@ public final class LyraCli {
         }
     }
 
-    /** Runs one CLI invocation without terminating the hosting JVM. */
+    /** Runs without terminating the hosting JVM; injected-stream REPL invocations always use plain mode. */
     public static int execute(String[] args, InputStream input,
                               OutputStream output, OutputStream error) {
+        return executeInvocation(args, input, output, error, false);
+    }
+
+    private static int executeInvocation(String[] args, InputStream input,
+                                         OutputStream output, OutputStream error,
+                                         boolean processTerminal) {
         Objects.requireNonNull(args, "args");
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(output, "output");
@@ -101,6 +118,8 @@ public final class LyraCli {
 
         try {
             return switch (command) {
+                case ReplCommand repl -> repl(repl, input, output, error, processTerminal);
+                case AttachCommand attach -> attach(attach, input, output, error, processTerminal);
                 case RunCommand run -> run(run, input, output, error);
                 case CompileCommand compile -> compile(compile, error);
                 case HelpCommand ignored -> 0;
@@ -125,7 +144,160 @@ public final class LyraCli {
 
     /** Runs one CLI invocation with the process streams. */
     public static int execute(String[] args) {
-        return execute(args, System.in, System.out, System.err);
+        return executeInvocation(args, System.in, System.out, System.err, true);
+    }
+
+    private static int repl(ReplCommand command, InputStream input,
+                            OutputStream output, OutputStream error,
+                            boolean processTerminal) throws IOException {
+        SessionOptions.Builder options = SessionOptions.builder();
+        if (command.root().isPresent()) {
+            Path root = command.root().orElseThrow();
+            Path normalized = root.toAbsolutePath().normalize();
+            if (Files.isSymbolicLink(normalized)
+                    || !Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS)) {
+                throw new UsageFailure("REPL ROOT must be an existing non-symbolic-link directory: " + root);
+            }
+            options.sourceRoot(normalized);
+        }
+
+        org.jline.terminal.Terminal terminal = null;
+        JLineConsole rich = null;
+        try {
+            if (processTerminal && !command.plain()) {
+                try {
+                    terminal = JLineConsole.openTerminal();
+                    if (terminal != null) {
+                        rich = new JLineConsole(terminal, command.keymap());
+                    }
+                } catch (IOException | RuntimeException | LinkageError failure) {
+                    if (terminal != null) {
+                        terminal.close();
+                        terminal = null;
+                    }
+                    write(error, "lyra: rich console unavailable; using plain console: "
+                            + message(failure) + "\n");
+                }
+            }
+
+            InputStream sessionInput = rich == null ? input : rich.programInput();
+            RuntimeIoEnvironment environment = new RuntimeIoEnvironment(
+                    sessionInput, output, error, StandardCharsets.UTF_8);
+            options.ioEnvironment(environment);
+            try (LyraSession session = LyraSession.open(options.build())) {
+                PlainConsole console = new PlainConsole(session, environment,
+                        command.history().orElse(null));
+                return rich == null
+                        ? console.run()
+                        : console.runInteractive(rich);
+            }
+        } finally {
+            if (terminal != null) {
+                terminal.close();
+            }
+        }
+    }
+
+    private static int attach(AttachCommand command, InputStream input,
+                              OutputStream output, OutputStream error,
+                              boolean processTerminal) {
+        RemoteEndpoint endpoint = attachEndpoint(command);
+        org.jline.terminal.Terminal terminal = null;
+        try (RemoteConsoleSession session = RemoteConsoleSession.connect(endpoint)) {
+            JLineConsole rich = null;
+            if (processTerminal) {
+                try {
+                    terminal = JLineConsole.openTerminal();
+                    if (terminal != null) {
+                        rich = new JLineConsole(terminal, "emacs");
+                    }
+                } catch (IOException | RuntimeException | LinkageError failure) {
+                    if (terminal != null) {
+                        terminal.close();
+                        terminal = null;
+                    }
+                    write(error, "lyra: rich console unavailable; using plain console: "
+                            + message(failure) + "\n");
+                }
+            }
+            // The environment is local console state only. It is never sent
+            // over the attached protocol or used by the host session.
+            RuntimeIoEnvironment environment = new RuntimeIoEnvironment(
+                    input, output, error, StandardCharsets.UTF_8);
+            PlainConsole console = new PlainConsole(session, environment);
+            return rich == null
+                    ? console.run()
+                    : console.runInteractive(rich);
+        } catch (RemoteOperationException failure) {
+            write(error, "lyra: attach failed: " + failure.code() + ": "
+                    + message(failure) + "\n");
+            return 1;
+        } catch (IOException failure) {
+            write(error, "lyra: attach failed: " + message(failure) + "\n");
+            return 1;
+        } finally {
+            if (terminal != null) {
+                try {
+                    terminal.close();
+                } catch (IOException failure) {
+                    write(error, "lyra: attach terminal cleanup failed: "
+                            + message(failure) + "\n");
+                }
+            }
+        }
+    }
+
+    private static RemoteEndpoint attachEndpoint(AttachCommand command) {
+        RemoteEndpoint endpoint = parseAttachEndpoint(command.endpoint(), command.tokenFile());
+        try (TokenCredential ignored = TokenCredential.read(command.tokenFile())) {
+            return endpoint;
+        } catch (IOException | RuntimeException failure) {
+            throw new UsageFailure("invalid token file: " + message(failure));
+        }
+    }
+
+    private static RemoteEndpoint parseAttachEndpoint(String spelling, Path tokenFile) {
+        Objects.requireNonNull(spelling, "spelling");
+        String host;
+        String portSpelling;
+        if (spelling.startsWith("[")) {
+            int closing = spelling.indexOf(']');
+            if (closing <= 1 || closing + 1 >= spelling.length()
+                    || spelling.charAt(closing + 1) != ':') {
+                throw new UsageFailure("invalid attach ENDPOINT (expected HOST:PORT): " + spelling);
+            }
+            host = spelling.substring(1, closing);
+            portSpelling = spelling.substring(closing + 2);
+        } else {
+            int firstColon = spelling.indexOf(':');
+            int lastColon = spelling.lastIndexOf(':');
+            if (firstColon <= 0 || firstColon != lastColon) {
+                throw new UsageFailure(
+                        "invalid attach ENDPOINT (IPv6 addresses must use [HOST]:PORT): "
+                                + spelling);
+            }
+            host = spelling.substring(0, firstColon);
+            portSpelling = spelling.substring(firstColon + 1);
+        }
+        if (host.isBlank() || portSpelling.isBlank()
+                || portSpelling.chars().anyMatch(character -> character < '0' || character > '9')) {
+            throw new UsageFailure("invalid attach ENDPOINT (expected HOST:PORT): " + spelling);
+        }
+        final int port;
+        try {
+            port = Integer.parseInt(portSpelling);
+        } catch (NumberFormatException failure) {
+            throw new UsageFailure("invalid attach endpoint port: " + portSpelling);
+        }
+        if (port < 1 || port > 65535) {
+            throw new UsageFailure("attach endpoint port must be in 1..65535: " + port);
+        }
+        try {
+            return new RemoteEndpoint(LoopbackEndpoint.of(host, port), tokenFile);
+        } catch (java.net.UnknownHostException | IllegalArgumentException failure) {
+            throw new UsageFailure("invalid loopback attach ENDPOINT: " + spelling
+                    + " (" + message(failure) + ")");
+        }
     }
 
     private static int run(RunCommand command, InputStream input,
@@ -534,7 +706,25 @@ public final class LyraCli {
     }
 
     private sealed interface ParsedCommand permits HelpCommand, VersionCommand,
-            RunCommand, CompileCommand {
+            ReplCommand, AttachCommand, RunCommand, CompileCommand {
+    }
+
+    private record ReplCommand(Optional<Path> root, Optional<Path> history,
+                                boolean plain, String keymap) implements ParsedCommand {
+        private ReplCommand {
+            root = Objects.requireNonNull(root, "root");
+            history = Objects.requireNonNull(history, "history");
+        }
+    }
+
+    private record AttachCommand(String endpoint, Path tokenFile) implements ParsedCommand {
+        private AttachCommand {
+            if (endpoint == null || endpoint.isBlank()) {
+                throw new IllegalArgumentException("attach ENDPOINT must not be blank");
+            }
+            tokenFile = Objects.requireNonNull(tokenFile, "tokenFile")
+                    .toAbsolutePath().normalize();
+        }
     }
 
     private record HelpCommand() implements ParsedCommand {
@@ -611,6 +801,12 @@ public final class LyraCli {
             if (command == null) {
                 throw new UsageFailure("argument must not be null");
             }
+            if (command.equals("repl")) {
+                return parseRepl(args);
+            }
+            if (command.equals("attach")) {
+                return parseAttach(args);
+            }
             if (!command.equals("run") && !command.equals("compile")) {
                 throw new UsageFailure("unknown command: " + command);
             }
@@ -630,6 +826,80 @@ public final class LyraCli {
             return command.equals("run")
                     ? parseRun(root, args)
                     : parseCompile(root, args);
+        }
+
+        private static ParsedCommand parseRepl(String[] args) {
+            Optional<Path> root = Optional.empty();
+            Optional<Path> history = Optional.empty();
+            int index = 1;
+            if (index < args.length && args[index] != null
+                    && !args[index].startsWith("--")) {
+                root = Optional.of(pathValue(args, index++, "repl ROOT"));
+            }
+            boolean plain = false;
+            String keymap = "emacs";
+            boolean seenHistory = false;
+            boolean seenKeymap = false;
+            while (index < args.length) {
+                String token = args[index++];
+                if (token == null) {
+                    throw new UsageFailure("argument must not be null");
+                }
+                switch (token) {
+                    case "--plain" -> {
+                        if (plain) {
+                            throw new UsageFailure("duplicate option: --plain");
+                        }
+                        plain = true;
+                    }
+                    case "--history" -> {
+                        if (seenHistory) {
+                            throw new UsageFailure("duplicate option: --history");
+                        }
+                        seenHistory = true;
+                        history = Optional.of(pathValue(args, index++, "--history"));
+                    }
+                    case "--keymap" -> {
+                        if (seenKeymap) {
+                            throw new UsageFailure("duplicate option: --keymap");
+                        }
+                        seenKeymap = true;
+                        keymap = value(args, index++, "--keymap");
+                        if (!keymap.equals("emacs") && !keymap.equals("vi")) {
+                            throw new UsageFailure("unknown --keymap value: " + keymap
+                                    + " (expected emacs or vi)");
+                        }
+                    }
+                    default -> throw new UsageFailure("unknown repl option: " + token);
+                }
+            }
+            return new ReplCommand(root, history, plain, keymap);
+        }
+
+        private static ParsedCommand parseAttach(String[] args) {
+            if (args.length < 2 || args[1] == null || args[1].isBlank()
+                    || args[1].startsWith("--")) {
+                throw new UsageFailure("attach requires explicit ENDPOINT");
+            }
+            String endpoint = args[1];
+            Optional<Path> tokenFile = Optional.empty();
+            for (int index = 2; index < args.length; index++) {
+                String token = args[index];
+                if (token == null) {
+                    throw new UsageFailure("argument must not be null");
+                }
+                if (!token.equals("--token-file")) {
+                    throw new UsageFailure("attach accepts only --token-file: " + token);
+                }
+                if (tokenFile.isPresent()) {
+                    throw new UsageFailure("duplicate option: --token-file");
+                }
+                tokenFile = Optional.of(pathValue(args, ++index, "--token-file"));
+            }
+            if (tokenFile.isEmpty()) {
+                throw new UsageFailure("attach requires --token-file PATH");
+            }
+            return new AttachCommand(endpoint, tokenFile.orElseThrow());
         }
 
         private static ParsedCommand parseRun(String root, String[] args) {

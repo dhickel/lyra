@@ -1,0 +1,163 @@
+package io.mindspice.lyra.repl;
+
+import io.mindspice.lyra.runtime.ArrayType;
+import io.mindspice.lyra.runtime.FunctionType;
+import io.mindspice.lyra.runtime.LyraClosure;
+import io.mindspice.lyra.runtime.LyraLinkException;
+import io.mindspice.lyra.runtime.LyraRuntime;
+import io.mindspice.lyra.runtime.LyraType;
+import io.mindspice.lyra.runtime.LyraUnit;
+import io.mindspice.lyra.runtime.ModuleHandle;
+import io.mindspice.lyra.runtime.OwnerThread;
+import io.mindspice.lyra.runtime.PrimitiveType;
+import io.mindspice.lyra.runtime.TupleType;
+
+import java.lang.reflect.Array;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+
+/** Owner-only, bounded inspection of generated results. Never invokes a source function or toString. */
+final class SnapshotReader {
+    private final OwnerThread owner = OwnerThread.capture();
+    private final SnapshotLimits limits;
+    private final Set<String> generatedClasses;
+    private final IdentityHashMap<Object, String> identities = new IdentityHashMap<>();
+    private int remaining;
+
+    private SnapshotReader(SnapshotLimits limits, Set<String> generatedClasses) {
+        this.limits = limits;
+        this.generatedClasses = Set.copyOf(generatedClasses);
+        remaining = limits.maxRenderedCharacters();
+    }
+
+    static boolean canRepresent(LyraType type, SnapshotLimits limits) {
+        return ValueSnapshot.renderedLength(type, new ValueSnapshot.Truncated(TruncationReason.RENDERED_OUTPUT))
+                <= limits.maxRenderedCharacters();
+    }
+
+    static ValueSnapshot read(ModuleHandle module, LyraType type, SnapshotLimits limits,
+                              Set<String> generatedClasses) {
+        SnapshotReader reader = new SnapshotReader(limits, generatedClasses);
+        return reader.value(type, LyraRuntime.readSubmissionResult(module, type), 0);
+    }
+
+    private ValueSnapshot value(LyraType type, Object value, int depth) {
+        owner.check();
+        if (value == null) return leaf(type, new ValueSnapshot.Nil());
+        LyraType base = type.baseType();
+        if (base instanceof PrimitiveType primitive) return scalar(type, primitive, value);
+        if (base instanceof FunctionType function) {
+            if (!(value instanceof LyraClosure closure) || !generatedClasses.contains(value.getClass().getName())) {
+                throw new LyraLinkException("result is not a generated Lyra closure");
+            }
+            closure.checkInvocation(function.signature());
+            String previous = identities.get(value);
+            if (previous != null) return leaf(type, new ValueSnapshot.Reference(previous));
+            String identity = "fn" + (identities.size() + 1);
+            identities.put(value, identity);
+            return leaf(type, new ValueSnapshot.Function(identity));
+        }
+        if (base instanceof ArrayType) {
+            String previous = identities.get(value);
+            if (previous != null) return leaf(type, new ValueSnapshot.Reference(previous));
+        }
+        if (depth >= limits.maxDepth()) return leaf(type, new ValueSnapshot.Truncated(TruncationReason.DEPTH));
+        String identity = base instanceof ArrayType ? "array" + (identities.size() + 1) : "tuple";
+        if (base instanceof ArrayType) identities.put(value, identity);
+        AggregateKind kind = base instanceof ArrayType ? AggregateKind.ARRAY : AggregateKind.TUPLE;
+        int size = base instanceof ArrayType ? Array.getLength(value) : ((TupleType) base).arity();
+        // Reserve the largest aggregate suffix before descending. This prevents
+        // wide/deep graphs from consuming an unbounded amount of traversal work.
+        long overhead = ValueSnapshot.renderedLength(type, new ValueSnapshot.Aggregate(kind, identity,
+                List.of(), Optional.of(TruncationReason.AGGREGATE_ELEMENTS)));
+        if (overhead > remaining) return leaf(type, new ValueSnapshot.Truncated(TruncationReason.RENDERED_OUTPUT));
+        remaining -= (int) overhead;
+        List<ValueSnapshot> elements = new ArrayList<>();
+        Optional<TruncationReason> truncated = Optional.empty();
+        for (int index = 0; index < size; index++) {
+            if (index == limits.maxAggregateElements()) {
+                truncated = Optional.of(TruncationReason.AGGREGATE_ELEMENTS);
+                break;
+            }
+            LyraType element = base instanceof ArrayType array ? array.elementType() : ((TupleType) base).memberType(index);
+            long minimum = ValueSnapshot.renderedLength(element,
+                    new ValueSnapshot.Truncated(TruncationReason.RENDERED_OUTPUT));
+            if (minimum + 1 > remaining) {
+                truncated = Optional.of(TruncationReason.RENDERED_OUTPUT);
+                break;
+            }
+            remaining--; // inter-element separator
+            Object child = base instanceof ArrayType ? Array.get(value, index) : tupleField(value, index);
+            elements.add(value(element, child, depth + 1));
+        }
+        return new ValueSnapshot(type, new ValueSnapshot.Aggregate(kind, identity, elements, truncated), limits);
+    }
+
+    private Object tupleField(Object tuple, int index) {
+        owner.check();
+        if (!generatedClasses.contains(tuple.getClass().getName())
+                || !tuple.getClass().getSimpleName().startsWith("$lyra$tuple$")) {
+            throw new LyraLinkException("result tuple is not a generated value class");
+        }
+        try {
+            Field field = tuple.getClass().getDeclaredField("$lyra$" + index);
+            if (!Modifier.isPrivate(field.getModifiers()) || !Modifier.isFinal(field.getModifiers())
+                    || Modifier.isStatic(field.getModifiers()) || !field.trySetAccessible()) {
+                throw new LyraLinkException("result tuple has an invalid component layout");
+            }
+            return field.get(tuple);
+        } catch (ReflectiveOperationException failure) {
+            throw new LyraLinkException("result tuple component is unavailable", List.of(), failure);
+        }
+    }
+
+    private ValueSnapshot scalar(LyraType type, PrimitiveType primitive, Object value) {
+        if (primitive == PrimitiveType.STRING && ((String) value).length() > remaining) {
+            return leaf(type, new ValueSnapshot.Truncated(TruncationReason.RENDERED_OUTPUT));
+        }
+        ValueSnapshot.Data data = switch (primitive) {
+            case UNIT -> {
+                if (value != LyraUnit.INSTANCE) throw new LyraLinkException("invalid Unit result");
+                yield new ValueSnapshot.Unit();
+            }
+            case BOOL -> new ValueSnapshot.Scalar(ScalarKind.BOOLEAN, ((Boolean) value) ? "true" : "false");
+            case CHAR -> new ValueSnapshot.Scalar(ScalarKind.CHARACTER, String.valueOf((Character) value));
+            case STRING -> new ValueSnapshot.Scalar(ScalarKind.STRING, (String) value);
+            case I8 -> signed(Byte.toString((Byte) value));
+            case I16 -> signed(Short.toString((Short) value));
+            case I32 -> signed(Integer.toString((Integer) value));
+            case I64 -> signed(Long.toString((Long) value));
+            case U8 -> unsigned(Integer.toString(Byte.toUnsignedInt((Byte) value)));
+            case U16 -> unsigned(Integer.toString(Short.toUnsignedInt((Short) value)));
+            case U32 -> unsigned(Integer.toUnsignedString((Integer) value));
+            case U64 -> unsigned(Long.toUnsignedString((Long) value));
+            case F32 -> new ValueSnapshot.Scalar(ScalarKind.FLOAT, Float.toString((Float) value).replace('E', 'e'));
+            case F64 -> new ValueSnapshot.Scalar(ScalarKind.FLOAT, Double.toString((Double) value).replace('E', 'e'));
+        };
+        return leaf(type, data);
+    }
+
+    private static ValueSnapshot.Scalar signed(String value) {
+        return new ValueSnapshot.Scalar(ScalarKind.SIGNED_INTEGER, value);
+    }
+
+    private static ValueSnapshot.Scalar unsigned(String value) {
+        return new ValueSnapshot.Scalar(ScalarKind.UNSIGNED_INTEGER, value);
+    }
+
+    private ValueSnapshot leaf(LyraType type, ValueSnapshot.Data data) {
+        long size = ValueSnapshot.renderedLength(type, data);
+        if (size > remaining) {
+            data = new ValueSnapshot.Truncated(TruncationReason.RENDERED_OUTPUT);
+            size = ValueSnapshot.renderedLength(type, data);
+        }
+        if (size > remaining) throw new IllegalStateException("snapshot budget was not reserved");
+        remaining -= (int) size;
+        return new ValueSnapshot(type, data, limits);
+    }
+}

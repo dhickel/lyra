@@ -2,6 +2,7 @@ package io.mindspice.lyra.compiler.session;
 
 import io.mindspice.lyra.compiler.identity.DeclarationId;
 import io.mindspice.lyra.compiler.identity.IdentityAllocator;
+import io.mindspice.lyra.compiler.api.SessionFlowCertificate;
 import io.mindspice.lyra.compiler.source.LogicalModuleId;
 import io.mindspice.lyra.compiler.source.ModuleRevision;
 
@@ -14,21 +15,35 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Immutable committed session input. It contains only typed declaration
- * contracts, identities, pinned source revisions, and namespace metadata.
+ * Immutable session compilation input. It contains typed declaration
+ * contracts, identities, pinned source revisions, namespace metadata and an
+ * optional compiler-issued flow certificate for retained source-local values.
+ *
+ * <p>A snapshot may be staged by compilation before any code executes. Its
+ * revision, allocator and certificate establish compiler metadata consistency,
+ * not successful initialization or ownership of live storage. It is not a
+ * runtime link capability and must never substitute for owner-thread link
+ * validation.</p>
  */
 public record SessionSnapshot(
         SessionRevision revision,
         Map<String, ExternalBinding> bindings,
         Map<String, SessionImport> imports,
         Map<LogicalModuleId, PinnedModule> pinnedModules,
-        IdentityAllocator allocator) {
+        IdentityAllocator allocator,
+        Optional<SessionFlowCertificate> flowCertificate) {
     public SessionSnapshot {
         revision = Objects.requireNonNull(revision, "revision");
         bindings = copyBindings(bindings);
         imports = copyImports(imports);
         pinnedModules = copyPinned(pinnedModules);
         allocator = Objects.requireNonNull(allocator, "allocator");
+        flowCertificate = Objects.requireNonNull(flowCertificate, "flowCertificate");
+        if (flowCertificate.isPresent()
+                && !allocator.dominates(flowCertificate.orElseThrow().allocator())) {
+            throw new IllegalArgumentException(
+                    "snapshot allocator regressed its flow certificate");
+        }
         validateIdentities(bindings, allocator);
         for (String name : imports.keySet()) {
             if (bindings.containsKey(name)) {
@@ -37,15 +52,24 @@ public record SessionSnapshot(
         }
     }
 
+    /** Compatibility constructor for snapshots without imports or flow proof. */
     public SessionSnapshot(SessionRevision revision, Map<String, ExternalBinding> bindings,
                            Map<LogicalModuleId, PinnedModule> pinnedModules,
                            IdentityAllocator allocator) {
-        this(revision, bindings, Map.of(), pinnedModules, allocator);
+        this(revision, bindings, Map.of(), pinnedModules, allocator, Optional.empty());
+    }
+
+    /** Compatibility constructor for snapshots without a flow proof. */
+    public SessionSnapshot(SessionRevision revision, Map<String, ExternalBinding> bindings,
+                           Map<String, SessionImport> imports,
+                           Map<LogicalModuleId, PinnedModule> pinnedModules,
+                           IdentityAllocator allocator) {
+        this(revision, bindings, imports, pinnedModules, allocator, Optional.empty());
     }
 
     public static SessionSnapshot empty() {
         return new SessionSnapshot(SessionRevision.initial(), Map.of(), Map.of(), Map.of(),
-                IdentityAllocator.initial());
+                IdentityAllocator.initial(), Optional.empty());
     }
 
     public Optional<ExternalBinding> binding(String name) {
@@ -74,14 +98,16 @@ public record SessionSnapshot(
         Objects.requireNonNull(binding, "binding");
         LinkedHashMap<String, ExternalBinding> next = new LinkedHashMap<>(bindings);
         next.put(binding.name(), binding);
-        return new SessionSnapshot(revision, next, imports, pinnedModules, allocator);
+        return new SessionSnapshot(revision, next, imports, pinnedModules, allocator,
+                flowCertificate);
     }
 
     public SessionSnapshot withImport(SessionImport value) {
         Objects.requireNonNull(value, "value");
         LinkedHashMap<String, SessionImport> next = new LinkedHashMap<>(imports);
         next.put(value.name(), value);
-        return new SessionSnapshot(revision, bindings, next, pinnedModules, allocator);
+        return new SessionSnapshot(revision, bindings, next, pinnedModules, allocator,
+                flowCertificate);
     }
 
     public SessionSnapshot withPinnedModule(PinnedModule module) {
@@ -92,11 +118,13 @@ public record SessionSnapshot(
             throw new IllegalArgumentException(
                     "a logical module is already pinned to another source: " + module.logicalModule());
         }
-        return new SessionSnapshot(revision, bindings, imports, next, allocator);
+        return new SessionSnapshot(revision, bindings, imports, next, allocator,
+                flowCertificate);
     }
 
     public SessionSnapshot withAllocator(IdentityAllocator nextAllocator) {
-        return new SessionSnapshot(revision, bindings, imports, pinnedModules, nextAllocator);
+        return new SessionSnapshot(revision, bindings, imports, pinnedModules, nextAllocator,
+                flowCertificate);
     }
 
     public SessionSnapshot nextRevision(
@@ -112,7 +140,19 @@ public record SessionSnapshot(
             Map<LogicalModuleId, PinnedModule> nextPinnedModules,
             IdentityAllocator nextAllocator) {
         return new SessionSnapshot(revision.next(), nextBindings, nextImports,
-                nextPinnedModules, nextAllocator);
+                nextPinnedModules, nextAllocator, flowCertificate);
+    }
+
+    /** Returns a snapshot carrying the compiler-issued proof for its retained state. */
+    public SessionSnapshot withFlowCertificate(SessionFlowCertificate certificate) {
+        return new SessionSnapshot(revision, bindings, imports, pinnedModules, allocator,
+                Optional.of(Objects.requireNonNull(certificate, "certificate")));
+    }
+
+    /** Removes compiler proof while preserving namespace metadata and identities. */
+    public SessionSnapshot withoutFlowCertificate() {
+        return new SessionSnapshot(revision, bindings, imports, pinnedModules, allocator,
+                Optional.empty());
     }
 
     private static Map<String, ExternalBinding> copyBindings(

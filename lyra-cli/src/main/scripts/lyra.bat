@@ -18,9 +18,10 @@ if not defined CLI_JAR (
 )
 
 if not defined JAVA_COMMAND set "JAVA_COMMAND=java"
+rem The CLI-only JLine FFM provider requires native access on Java 25.
 if defined LYRA_JAVA_OPTS (
-    "%JAVA_COMMAND%" %LYRA_JAVA_OPTS% -jar "%CLI_JAR%" %*
+    "%JAVA_COMMAND%" --enable-native-access=ALL-UNNAMED %LYRA_JAVA_OPTS% -jar "%CLI_JAR%" %*
 ) else (
-    "%JAVA_COMMAND%" -jar "%CLI_JAR%" %*
+    "%JAVA_COMMAND%" --enable-native-access=ALL-UNNAMED -jar "%CLI_JAR%" %*
 )
 exit /b %ERRORLEVEL%

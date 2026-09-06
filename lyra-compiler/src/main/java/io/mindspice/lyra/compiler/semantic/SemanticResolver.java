@@ -9,6 +9,7 @@ import io.mindspice.lyra.compiler.identity.CaptureId;
 import io.mindspice.lyra.compiler.identity.DeclarationId;
 import io.mindspice.lyra.compiler.identity.IdentityAllocator;
 import io.mindspice.lyra.compiler.identity.LambdaId;
+import io.mindspice.lyra.compiler.api.SessionFlowCertificate;
 import io.mindspice.lyra.compiler.identity.ReferenceId;
 import io.mindspice.lyra.compiler.identity.ScopeId;
 import io.mindspice.lyra.compiler.identity.ExportId;
@@ -71,6 +72,9 @@ public final class SemanticResolver {
     private final ModuleGraph graph;
     private final IdentityAllocator initialAllocator;
     private final Set<String> unsupportedExternalNames;
+    private final List<io.mindspice.lyra.compiler.session.ExternalBinding> externalBindings;
+    private final Optional<SessionFlowCertificate> sessionFlowCertificate;
+    private final boolean sessionGraph;
     private Diagnostic diagnostic;
 
     public SemanticResolver(ModuleGraph graph) {
@@ -92,9 +96,34 @@ public final class SemanticResolver {
             ModuleGraph graph,
             IdentityAllocator allocator,
             Set<String> externalNames) {
+        this(graph, allocator, externalNames, List.of(), Optional.empty(), false);
+    }
+
+    private SemanticResolver(ModuleGraph graph, IdentityAllocator allocator, Set<String> unsupported,
+            List<io.mindspice.lyra.compiler.session.ExternalBinding> bindings,
+            Optional<SessionFlowCertificate> sessionFlowCertificate,
+            boolean sessionGraph) {
         this.graph = Objects.requireNonNull(graph, "graph");
         this.initialAllocator = Objects.requireNonNull(allocator, "allocator");
-        this.unsupportedExternalNames = copyExternalNames(externalNames);
+        this.unsupportedExternalNames = copyExternalNames(unsupported);
+        this.externalBindings = List.copyOf(bindings);
+        this.sessionFlowCertificate = Objects.requireNonNull(
+                sessionFlowCertificate, "sessionFlowCertificate");
+        this.sessionGraph = sessionGraph;
+    }
+
+    public static PhaseResult<ResolvedSemanticGraph> resolveSession(ModuleGraph graph,
+            io.mindspice.lyra.compiler.session.SessionSnapshot snapshot) {
+        Optional<SessionFlowCertificate> certificate = snapshot.flowCertificate();
+        var linked = snapshot.orderedBindings().stream()
+                .filter(binding -> binding.supportsSessionStorage()
+                        || certificate.map(value -> value.certifiesBinding(binding)).orElse(false))
+                .toList();
+        Set<String> unsupported = new LinkedHashSet<>(snapshot.imports().keySet());
+        snapshot.bindings().values().stream().filter(binding -> !linked.contains(binding))
+                .map(io.mindspice.lyra.compiler.session.ExternalBinding::name).forEach(unsupported::add);
+        return new SemanticResolver(graph, snapshot.allocator(), unsupported, linked,
+                certificate, true).run();
     }
 
     /** Resolves declaration, scope, import, export, capture, and signature data. */
@@ -260,6 +289,21 @@ public final class SemanticResolver {
 
         private void collectDeclarations() {
             for (ModuleWork work : modules.values()) {
+                if (work.node.moduleId().equals(graph.rootModule())) {
+                    for (var binding : externalBindings) {
+                        SourceSpan at = SourceSpan.at(work.node.moduleId().sourceId(), 0);
+                        DeclDraft declaration = new DeclDraft(binding.declarationId(), binding.name(), at, at,
+                                work.node.moduleId(), work.root.id, DeclarationKind.EXTERNAL,
+                                binding.visibility() == io.mindspice.lyra.compiler.session.ExternalBinding.Visibility.PUBLIC
+                                        ? DeclarationVisibility.PUBLIC : DeclarationVisibility.PRIVATE,
+                                binding.mutability());
+                        declaration.externalBinding = Optional.of(binding);
+                        declaration.declaredContract = Optional.of(binding.contract());
+                        declaration.effectiveContract = declaration.declaredContract;
+                        declarationsById.put(declaration.id, declaration);
+                        work.root.add(declaration);
+                    }
+                }
                 collectImports(work);
                 if (failed()) {
                     return;
@@ -2710,6 +2754,16 @@ public final class SemanticResolver {
                                         : "import binding")));
                 return;
             }
+            if (declaration.externalBinding.isPresent()) {
+                var binding = declaration.externalBinding.orElseThrow();
+                boolean allowed = targetSyntax instanceof SyntaxNode.IndexAccess
+                        ? binding.allowsAggregateMutation() : binding.allowsRebinding();
+                if (!allowed) {
+                    fail(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED, targetSpan,
+                            "external binding does not authorize this assignment");
+                    return;
+                }
+            }
             if (declaration.bindingMutability != BindingMutability.MUTABLE) {
                 fail(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
                         targetSpan,
@@ -2741,6 +2795,11 @@ public final class SemanticResolver {
             }
             if (current.ownerDeclaration.isPresent()
                     && current.ownerDeclaration.orElseThrow().equals(target.id)) {
+                return Optional.empty();
+            }
+            if (target.kind == DeclarationKind.EXTERNAL) {
+                // The closure retains its generation's exact typed storage link.
+                // Replacing a name never retargets this declaration identity.
                 return Optional.empty();
             }
             if (target.kind == DeclarationKind.IMPORT_MODULE) {
@@ -3082,7 +3141,7 @@ public final class SemanticResolver {
                     linkage,
                     new ResolvedReferenceTopology(
                             scopeTree, declarations, references, resolvedCaptures),
-                    allocator);
+                    sessionFlowCertificate, allocator, sessionGraph);
         }
 
         private List<FunctionScc> functionSccs(
@@ -3270,6 +3329,7 @@ public final class SemanticResolver {
         private Optional<ExportId> originExport = Optional.empty();
         private Optional<DeclarationId> replacementOf = Optional.empty();
         private Optional<DeclarationId> functionLinkTarget = Optional.empty();
+        private Optional<io.mindspice.lyra.compiler.session.ExternalBinding> externalBinding = Optional.empty();
 
         private DeclDraft(
                 DeclarationId id,
@@ -3315,7 +3375,8 @@ public final class SemanticResolver {
                     importedName,
                     originDeclaration,
                     originExport,
-                    replacementOf);
+                    replacementOf,
+                    externalBinding);
         }
     }
 

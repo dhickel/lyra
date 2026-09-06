@@ -19,6 +19,12 @@ import java.util.Objects;
  * <p>A successful result contains a staged namespace snapshot.  Compilation
  * does not publish it; a session owner may publish that snapshot only after
  * the generated submission has executed successfully.</p>
+ *
+ * <p>The source-local artifact has an exact typed result contract separate from
+ * its Unit-typed module initialization. Staged root lets include private bindings.
+ * The compiler certificate retains semantic identities and flow, including
+ * conservative execution prefixes for failed attempts, but never authenticates
+ * live runtime storage or proves that an initializer actually ran.</p>
  */
 public sealed interface SessionCompileResult
         permits SessionCompileResult.Success, SessionCompileResult.Failure {
@@ -38,6 +44,7 @@ public sealed interface SessionCompileResult
             SessionRevision baseRevision,
             SessionRevision revision,
             SessionSnapshot stagedSnapshot,
+            SessionSnapshot attemptedSnapshot,
             CompiledArtifact artifact,
             ModuleGraph moduleGraph,
             ResolvedSemanticGraph resolvedGraph,
@@ -51,6 +58,7 @@ public sealed interface SessionCompileResult
             baseRevision = Objects.requireNonNull(baseRevision, "baseRevision");
             revision = Objects.requireNonNull(revision, "revision");
             stagedSnapshot = Objects.requireNonNull(stagedSnapshot, "stagedSnapshot");
+            attemptedSnapshot = Objects.requireNonNull(attemptedSnapshot, "attemptedSnapshot");
             artifact = Objects.requireNonNull(artifact, "artifact");
             moduleGraph = Objects.requireNonNull(moduleGraph, "moduleGraph");
             resolvedGraph = Objects.requireNonNull(resolvedGraph, "resolvedGraph");
@@ -70,14 +78,41 @@ public sealed interface SessionCompileResult
             if (!stagedSnapshot.revision().equals(revision)) {
                 throw new IllegalArgumentException("staged snapshot revision disagrees with result");
             }
-            if (!stagedSnapshot.allocator().equals(resolvedGraph.allocator())) {
-                throw new IllegalArgumentException("staged snapshot allocator disagrees with resolution");
+            if (!stagedSnapshot.allocator().equals(typedGraph.allocator())) {
+                throw new IllegalArgumentException("staged snapshot allocator disagrees with typing");
+            }
+            if (stagedSnapshot.flowCertificate().isEmpty()
+                    || attemptedSnapshot.flowCertificate().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "successful session compilation needs staged and attempted flow proofs");
+            }
+            if (!attemptedSnapshot.allocator().equals(typedGraph.allocator())) {
+                throw new IllegalArgumentException(
+                        "attempted snapshot allocator disagrees with typing");
+            }
+            if (attemptedSnapshot.revision().compareTo(baseRevision) < 0
+                    || attemptedSnapshot.revision().compareTo(revision) > 0) {
+                throw new IllegalArgumentException(
+                        "attempted snapshot revision is outside the submission boundary");
             }
         }
 
         /** The snapshot to publish after successful execution of the artifact. */
         public SessionSnapshot snapshot() {
             return stagedSnapshot;
+        }
+
+        /**
+         * Conservative state to retain when execution fails or is cancelled.
+         * It advances identities but publishes no newly staged names.
+         */
+        public SessionSnapshot retainAttemptedFlow() {
+            return attemptedSnapshot;
+        }
+
+        /** The staged compiler proof for the successful namespace path. */
+        public SessionFlowCertificate flowCertificate() {
+            return stagedSnapshot.flowCertificate().orElseThrow();
         }
 
         public CompiledArtifact compiledArtifact() {

@@ -26,6 +26,23 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
+            <groupId>io.mindspice</groupId>
+            <artifactId>lyra-repl</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-reader</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-terminal</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-terminal-ffm</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
@@ -43,6 +60,13 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <argLine>${lyra.preview.jvm.args} --enable-native-access=ALL-UNNAMED</argLine>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>3.6.0</version>
                 <executions>
@@ -54,9 +78,22 @@
                         <configuration>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
                             <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>module-info.class</exclude>
+                                        <exclude>META-INF/versions/*/module-info.class</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
                             <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>io.mindspice.lyra.cli.LyraCli</mainClass>
+                                    <manifestEntries>
+                                        <Enable-Native-Access>ALL-UNNAMED</Enable-Native-Access>
+                                    </manifestEntries>
                                 </transformer>
                             </transformers>
                         </configuration>

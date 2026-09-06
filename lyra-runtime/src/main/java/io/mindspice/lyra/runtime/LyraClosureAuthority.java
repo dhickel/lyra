@@ -41,7 +41,8 @@ public final class LyraClosureAuthority {
     }
 
     boolean authenticates(LyraClosure closure) {
-        return closure != null && token.sameArtifact(closure.authority().token);
+        return closure != null && (token.sameArtifact(closure.authority().token)
+                || token.sameSession(closure.authority().token));
     }
 
     LyraOwnershipToken token() {

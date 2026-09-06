@@ -16,6 +16,7 @@ public enum LyraFailureCategory {
     LINK("LYR-LINK"),
     VERIFY("LYR-VERIFY"),
     COMPAT("LYR-COMPAT"),
+    CANCEL("LYR-CANCEL"),
     INTERNAL("LYR-INTERNAL");
 
     public static final LyraFailureCategory ARITHMETIC = ARITH;
@@ -23,6 +24,7 @@ public enum LyraFailureCategory {
     public static final LyraFailureCategory INITIALIZATION = INIT;
     public static final LyraFailureCategory VERIFICATION = VERIFY;
     public static final LyraFailureCategory COMPATIBILITY = COMPAT;
+    public static final LyraFailureCategory CANCELLATION = CANCEL;
 
     private final String code;
 

@@ -10,9 +10,15 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * A typed value supplied by an already initialized session or application
- * root.  It is a declaration contract and storage authority, never a generic
- * Java value container.
+ * Immutable compiler metadata describing a binding intended to be supplied
+ * by an initialized session or application root. This record contains no
+ * live value, storage location, or runtime authentication capability.
+ *
+ * <p>Assignment authority describes a static permission, not proof that
+ * storage exists, is initialized, or belongs to the requesting session.
+ * Declaration/storage identities and matching types cannot authorize live
+ * access on their own. Compilation can type-check supported external data uses, but
+ * execution requires the separate authenticated live storage capability.</p>
  */
 public record ExternalBinding(
         String name,
@@ -95,6 +101,29 @@ public record ExternalBinding(
 
     public boolean allowsAggregateMutation() {
         return assignmentAuthority.allowsAggregateMutation();
+    }
+
+    /**
+     * The current live-storage profile admits scalars and session-owned data
+     * aggregates, but not callable-bearing values or imported aggregate authority.
+     * This is a compiler contract only; the runtime separately authenticates the
+     * producing generation and its exact accessors before executing source.
+     */
+    public boolean supportsSessionStorage() {
+        if (!supportsDataStorage(type())) return false;
+        if (type().withoutQualifiers() instanceof io.mindspice.lyra.compiler.types.PrimitiveType) return true;
+        return visibility != Visibility.IMPORTED && assignmentAuthority == (isMutable()
+                ? AssignmentAuthority.ALL : AssignmentAuthority.NONE);
+    }
+
+    public static boolean supportsDataStorage(LyraType type) {
+        return switch (type.withoutQualifiers()) {
+            case io.mindspice.lyra.compiler.types.PrimitiveType ignored -> true;
+            case io.mindspice.lyra.compiler.types.ArrayType array -> supportsDataStorage(array.elementType());
+            case io.mindspice.lyra.compiler.types.TupleType tuple -> tuple.memberTypes().stream()
+                    .allMatch(ExternalBinding::supportsDataStorage);
+            default -> false;
+        };
     }
 
     public enum Visibility {

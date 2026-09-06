@@ -66,6 +66,81 @@ final class Phase21CliTest {
     }
 
     @Test
+    void replSupportsEmptyAndConfiguredPlainWorkspacesWithoutChangingRunCompile() {
+        Invocation empty = invoke(new String[] {"repl", "--plain"},
+                new ByteArrayInputStream(new byte[0]),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(0, empty.status());
+        assertEquals("", empty.stdout());
+        assertEquals("", empty.stderr());
+
+        Invocation implicitPlain = invoke(new String[] {"repl"},
+                new ByteArrayInputStream(":quit\n".getBytes(StandardCharsets.UTF_8)),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(0, implicitPlain.status());
+        assertEquals("", implicitPlain.stdout());
+        assertEquals("", implicitPlain.stderr());
+
+        Path sourceRoot = temp.resolve("configured source root");
+        try {
+            Files.createDirectories(sourceRoot);
+        } catch (IOException failure) {
+            throw new AssertionError(failure);
+        }
+        Invocation configured = invoke(new String[] {"repl", sourceRoot.toString(), "--plain"},
+                new ByteArrayInputStream(":quit\n".getBytes(StandardCharsets.UTF_8)),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(0, configured.status());
+        assertEquals("", configured.stdout());
+        assertEquals("", configured.stderr());
+
+        Path historyFile = temp.resolve("history.txt");
+        Invocation history = invoke(new String[] {"repl", "--history", historyFile.toString()},
+                new ByteArrayInputStream(new byte[0]),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(0, history.status(), history.stderr());
+        assertTrue(Files.isRegularFile(historyFile));
+
+        Path notDirectory = source("not-a-directory.lyra", "");
+        Invocation invalidRoot = invoke("repl", notDirectory.toString());
+        assertEquals(2, invalidRoot.status());
+        assertTrue(invalidRoot.stderr().contains("non-symbolic-link directory"));
+    }
+
+    @Test
+    void replKeymapsAreValidatedAndInjectedStreamsAlwaysStayPlain() {
+        for (String keymap : List.of("emacs", "vi")) {
+            Invocation result = invoke(new String[] {"repl", "--keymap", keymap},
+                    new ByteArrayInputStream(":help\n:quit\n".getBytes(StandardCharsets.UTF_8)),
+                    new ByteArrayOutputStream(), new ByteArrayOutputStream());
+            assertEquals(0, result.status());
+            assertEquals(io.mindspice.lyra.repl.PlainConsole.HELP_TEXT, result.stdout());
+            assertEquals("", result.stderr());
+        }
+        for (String[] arguments : List.of(
+                new String[] {"repl", "--keymap"},
+                new String[] {"repl", "--keymap", "vim"},
+                new String[] {"repl", "--keymap", ""},
+                new String[] {"repl", "--keymap", "vi", "--keymap", "emacs"},
+                new String[] {"repl", "--history", "one", "--history", "two"},
+                new String[] {"repl", "--plain", "--plain"})) {
+            assertEquals(2, invoke(arguments).status());
+        }
+    }
+
+    @Test
+    void replUsesInjectedStreamsWithoutClosingCallerResources() throws IOException {
+        TrackingInput input = new TrackingInput(":quit\n");
+        TrackingOutput output = new TrackingOutput();
+        TrackingOutput error = new TrackingOutput();
+
+        assertEquals(0, LyraCli.execute(new String[] {"repl"}, input, output, error));
+        assertFalse(input.closed);
+        assertFalse(output.closed);
+        assertFalse(error.closed);
+    }
+
+    @Test
     void parserRejectsUnknownMissingAndDuplicateCompileOptions() {
         Path root = source("main.lyra", MAIN);
         for (String[] arguments : List.of(
@@ -156,6 +231,8 @@ final class Phase21CliTest {
             assertTrue(jar.stream().anyMatch(entry -> entry.getName()
                     .equals("io/mindspice/lyra/runtime/LyraLauncher.class")));
             assertTrue(jar.stream().noneMatch(entry -> entry.getName().contains("lyra/compiler")));
+            assertTrue(jar.stream().noneMatch(entry -> entry.getName().contains("jline")
+                    || entry.getName().contains("lyra/repl") || entry.getName().contains("lyra/cli")));
             for (Map.Entry<String, byte[]> entry : classDirectory.entrySet()) {
                 // The facade embeds the mode-specific canonical artifact
                 // metadata.  All executable/helper classes and the debug map
@@ -268,6 +345,8 @@ final class Phase21CliTest {
         assertTrue(windowsText.contains("%*"));
         assertTrue(windowsText.contains("%~dp0"));
         assertTrue(windowsText.contains("JAVA_COMMAND"));
+        assertTrue(unixText.contains("--enable-native-access=ALL-UNNAMED"));
+        assertTrue(windowsText.contains("--enable-native-access=ALL-UNNAMED"));
     }
 
     private Invocation invoke(String... arguments) {
@@ -351,5 +430,29 @@ final class Phase21CliTest {
     }
 
     private record ProcessResult(int status, String stdout, String stderr) {
+    }
+
+    private static final class TrackingInput extends ByteArrayInputStream {
+        private boolean closed;
+
+        private TrackingInput(String text) {
+            super(text.getBytes(StandardCharsets.UTF_8));
+        }
+
+        @Override
+        public void close() throws IOException {
+            closed = true;
+            super.close();
+        }
+    }
+
+    private static final class TrackingOutput extends ByteArrayOutputStream {
+        private boolean closed;
+
+        @Override
+        public void close() throws IOException {
+            closed = true;
+            super.close();
+        }
     }
 }

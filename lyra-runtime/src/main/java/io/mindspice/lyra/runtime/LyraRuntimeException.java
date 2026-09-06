@@ -11,7 +11,7 @@ public sealed abstract class LyraRuntimeException extends RuntimeException
         LyraStackException, LyraIoException, LyraInitializationException,
         LyraThreadException, LyraClosedException, LyraLifecycleException,
         LyraLinkException, LyraVerificationException, LyraCompatibilityException,
-        LyraInternalException {
+        LyraCancellationException, LyraInternalException {
     private final LyraFailureCategory category;
     private final String summary;
     private final List<SourceFrame> frames;
@@ -138,6 +138,7 @@ public sealed abstract class LyraRuntimeException extends RuntimeException
             case LINK -> new LyraLinkException(summary, frames, relatedSources, cause);
             case VERIFY -> new LyraVerificationException(summary, frames, relatedSources, cause);
             case COMPAT -> new LyraCompatibilityException(summary, frames, relatedSources, cause);
+            case CANCEL -> new LyraCancellationException(summary, frames, relatedSources, cause);
             case INTERNAL -> new LyraInternalException(summary, frames, relatedSources, cause);
         };
     }

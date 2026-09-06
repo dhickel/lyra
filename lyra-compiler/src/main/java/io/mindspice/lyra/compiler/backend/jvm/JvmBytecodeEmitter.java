@@ -400,8 +400,28 @@ final class JvmBytecodeEmitter {
                                 methodFlags(member) | ClassFile.ACC_ABSTRACT,
                                 ignored -> { });
                     } else {
-                        classBuilder.withMethodBody(member.name(), method(member.descriptor()),
-                                methodFlags(member), code -> emitMethod(classPlan, member, code));
+                        classBuilder.withMethod(member.name(), method(member.descriptor()),
+                                methodFlags(member), methodBuilder -> {
+                                    if (member.kind() == GeneratedMemberKind.FACADE_SESSION_RESULT_GET) {
+                                        String contract = ir.module(classPlan.moduleId().orElseThrow())
+                                                .orElseThrow().submissionResult().orElseThrow().type().canonicalSpelling();
+                                        methodBuilder.with(RuntimeVisibleAnnotationsAttribute.of(Annotation.of(
+                                                cd(RUNTIME + "LyraSubmissionResult"),
+                                                java.lang.classfile.AnnotationElement.ofString("value", contract))));
+                                    }
+                                    if (member.kind() == GeneratedMemberKind.SESSION_BINDING_GET) {
+                                        long id = Long.parseLong(member.name().substring(member.name().lastIndexOf('$') + 1));
+                                        IrDeclaration declaration = declarations.get(new DeclarationId(id));
+                                        methodBuilder.with(RuntimeVisibleAnnotationsAttribute.of(Annotation.of(
+                                                cd(RUNTIME + "LyraSessionBinding"),
+                                                java.lang.classfile.AnnotationElement.ofLong("id", id),
+                                                java.lang.classfile.AnnotationElement.ofLong("storageIdentity", declaration.isMutable() ? id : -1L),
+                                                java.lang.classfile.AnnotationElement.ofString("name", declaration.name()),
+                                                java.lang.classfile.AnnotationElement.ofString("type", declaration.contract().orElseThrow().valueType().canonicalSpelling()),
+                                                java.lang.classfile.AnnotationElement.ofBoolean("mutable", declaration.isMutable()))));
+                                    }
+                                    methodBuilder.withCode(code -> emitMethod(classPlan, member, code));
+                                });
                     }
                 }
             });
@@ -446,7 +466,16 @@ final class JvmBytecodeEmitter {
             return flags;
         }
 
+        private boolean sharedSessionType(GeneratedClassPlan classPlan) {
+            return ir.rootModule().submissionResult().isPresent()
+                    && (classPlan.kind() == GeneratedClassKind.TUPLE_VALUE
+                    || classPlan.kind() == GeneratedClassKind.FUNCTION_INTERFACE);
+        }
+
         private String sourceFile(GeneratedClassPlan classPlan) {
+            // Structural types contain no source operations. Identical session
+            // contracts must produce identical bytes independent of submission.
+            if (sharedSessionType(classPlan)) return "$lyra$session-types";
             ModuleId module = classPlan.moduleId().orElse(rootModuleId());
             return ir.sourceSnapshot(module).map(value -> value.sourceId().value())
                     .orElse(module.value());
@@ -519,7 +548,7 @@ final class JvmBytecodeEmitter {
         }
 
         private void emit() {
-            line(memberSpan());
+            if (!owner.sharedSessionType(classPlan)) line(memberSpan());
             switch (classPlan.kind()) {
                 case TUPLE_VALUE -> emitTupleMethod();
                 case CELL -> emitCellMethod();
@@ -581,7 +610,7 @@ final class JvmBytecodeEmitter {
         private void emitFailureHandlers() {
             for (FailureHandler handler : failureHandlers) {
                 code.labelBinding(handler.label());
-                if (stateMethod) {
+                if (member.kind() == GeneratedMemberKind.STATE_CHECK_OPEN) {
                     throwStateInitializationFailure(handler.span(), handler.code(), handler.summary());
                 } else {
                     throwFailureRecorded(handler.span(), handler.code(), handler.summary());
@@ -638,7 +667,7 @@ final class JvmBytecodeEmitter {
         private void emitTupleMethod() {
             switch (member.kind()) {
                 case TUPLE_CONSTRUCTOR -> emitTupleConstructor();
-                case TUPLE_COMPONENT_GET -> emitTupleComponentGetter();
+                case TUPLE_COMPONENT_GET, SESSION_TUPLE_COMPONENT_GET -> emitTupleComponentGetter();
                 default -> throw invalidPlan(memberSpan(), "unexpected tuple method: " + member.kind());
             }
         }
@@ -785,6 +814,7 @@ final class JvmBytecodeEmitter {
             code.invokevirtual(CD_CLOSURE, "checkInvocationFromGeneratedCode", method("()V"));
             loopLabel = code.newLabel();
             code.labelBinding(loopLabel);
+            emitSessionSafePoint();
             line(lambda.bodySpan());
             installLambdaParameters();
             emitTail(lambda.body());
@@ -885,6 +915,19 @@ final class JvmBytecodeEmitter {
 
         private void emitStateMethod() {
             switch (member.kind()) {
+                case SESSION_SAFE_POINT -> {
+                    loadStateLifecycle();
+                    code.invokevirtual(CD_LIFECYCLE, "sessionSafePoint", method("()V"));
+                    code.return_();
+                }
+                case STATE_SESSION_ACCESSOR -> {
+                    loadStateLifecycle();
+                    loadParameter(0); loadParameter(1); loadParameter(2); loadParameter(3);
+                    code.invokevirtual(CD_LIFECYCLE, "sessionAccessor", method(member.descriptor()));
+                    code.areturn();
+                }
+                case SESSION_EXECUTE -> emitSessionExecute();
+                case SESSION_RESULT_GET -> emitSessionResultGetter();
                 case STATE_CONSTRUCTOR -> emitStateConstructor();
                 case STATE_COMPONENT_GET -> emitStateGetter();
                 case STATE_COMPONENT_SET -> emitStateSetter();
@@ -915,6 +958,13 @@ final class JvmBytecodeEmitter {
             code.swap();
             GeneratedMemberPlan lifecycle = stateLifecycleField();
             code.putfield(cd(classPlan.binaryName()), lifecycle.name(), type(lifecycle.descriptor()));
+            for (IrDeclaration declaration : declarations.values()) {
+                if (!declaration.moduleId().equals(module.moduleId()) || declaration.externalBinding().isEmpty()) continue;
+                validateExternalAccessor(declaration, false);
+                if (declaration.externalBinding().orElseThrow().allowsRebinding()) {
+                    validateExternalAccessor(declaration, true);
+                }
+            }
             initializeIntrinsicFunctions();
             code.return_();
         }
@@ -1000,19 +1050,18 @@ final class JvmBytecodeEmitter {
             // it.  Capture dependencies are initialized on demand first; this
             // preserves the source order required by immutable capture
             // semantics without exposing a null forward slot.
-            for (IrNode form : module.body().forms()) {
-                if (isRootFunctionSlotDeclaration(form)) {
-                    initializeRootDeclaration(declarationId(form));
-                }
-            }
-            for (IrNode form : module.body().forms()) {
-                if (form instanceof IrNode.Declaration declaration
-                        && declaration.declarationId().isPresent()
-                        && isRootDeclaration(declaration.declarationId().orElseThrow())) {
-                    initializeRootDeclaration(declaration.declarationId().orElseThrow());
-                } else {
-                    discard(emitNode(form));
-                }
+            if (module.submissionResult().isPresent()) {
+                Label prepared = code.newLabel();
+                loadStateLifecycle();
+                code.invokevirtual(CD_LIFECYCLE, "defersSubmission", method("()Z"));
+                code.ifne(prepared);
+                aloadReceiver();
+                code.invokevirtual(cd(classPlan.binaryName()), "$lyra$sessionExecute",
+                        method("()" + sessionResultPlan().descriptor()));
+                discard(sessionResultPlan());
+                code.labelBinding(prepared);
+            } else {
+                emitRootForms(false);
             }
             code.labelBinding(initializationEnd);
             loadStateLifecycle();
@@ -1049,6 +1098,68 @@ final class JvmBytecodeEmitter {
             code.invokevirtual(CD_RUNTIME_EXCEPTION, "withFrame", method(
                     "(L" + RUNTIME + "SourceFrame;)L" + RUNTIME + "LyraRuntimeException;"));
             code.athrow();
+        }
+
+        private void emitSessionSafePoint() {
+            if (module.submissionResult().isEmpty()) return;
+            emitLoadModuleState(module.moduleId());
+            code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
+                    "$lyra$sessionSafePoint", method("()V"));
+        }
+
+        private JvmTypePlan sessionResultPlan() {
+            return owner.mapper.map(module.submissionResult().orElseThrow().type(),
+                    JvmMappingContext.JAVA_VALUE);
+        }
+
+        private void emitSessionExecute() {
+            loadStateLifecycle();
+            code.invokevirtual(CD_LIFECYCLE, "beginSubmission", method("()V"));
+            emitRootForms(true);
+            JvmTypePlan result = sessionResultPlan();
+            int value = allocateLocal(result);
+            storePhysical(result.physicalComponents().getFirst(), value);
+            aloadReceiver();
+            loadPhysical(result.physicalComponents().getFirst(), value);
+            code.putfield(cd(classPlan.binaryName()), "$lyra$sessionResult", type(result.descriptor()));
+            loadStateLifecycle();
+            code.invokevirtual(CD_LIFECYCLE, "completeSubmission", method("()V"));
+            loadPhysical(result.physicalComponents().getFirst(), value);
+            returnPhysicalDescriptor(result.descriptor());
+        }
+
+        private void emitRootForms(boolean keepResult) {
+            for (IrNode form : module.body().forms()) {
+                if (isRootFunctionSlotDeclaration(form)) {
+                    initializeRootDeclaration(declarationId(form));
+                }
+            }
+            List<IrNode> forms = module.body().forms();
+            for (int index = 0; index < forms.size(); index++) {
+                IrNode form = forms.get(index);
+                emitSessionSafePoint();
+                boolean last = keepResult && index == forms.size() - 1;
+                if (form instanceof IrNode.Declaration declaration
+                        && declaration.declarationId().isPresent()
+                        && isRootDeclaration(declaration.declarationId().orElseThrow())) {
+                    initializeRootDeclaration(declaration.declarationId().orElseThrow());
+                    if (last) emitUnit();
+                } else {
+                    JvmTypePlan value = emitNode(form);
+                    if (last) adapt(value, sessionResultPlan());
+                    else discard(value);
+                }
+            }
+            if (keepResult && forms.isEmpty()) emitUnit();
+        }
+
+        private void emitSessionResultGetter() {
+            loadStateLifecycle();
+            code.invokevirtual(CD_LIFECYCLE, "checkSubmissionResult", method("()V"));
+            aloadReceiver();
+            String descriptor = sessionResultPlan().descriptor();
+            code.getfield(cd(classPlan.binaryName()), "$lyra$sessionResult", type(descriptor));
+            returnPhysicalDescriptor(descriptor);
         }
 
         private boolean isRootFunctionSlotDeclaration(IrNode form) {
@@ -1109,6 +1220,11 @@ final class JvmBytecodeEmitter {
                         .findFirst().orElseThrow(() -> invalidPlan(metadata.span(),
                                 "root declaration is absent from the module body: " + id));
                 discard(emitNode(form));
+                if (module.submissionResult().isPresent()) {
+                    loadStateLifecycle();
+                    code.ldc(id.ordinal());
+                    code.invokevirtual(CD_LIFECYCLE, "initializeSessionBinding", method("(J)V"));
+                }
                 initializedRootDeclarations.add(id);
             } finally {
                 initializingRootDeclarations.remove(id);
@@ -1185,6 +1301,7 @@ final class JvmBytecodeEmitter {
 
         private void emitStateGetter() {
             DeclarationId id = declarationIdFromMember(member.name());
+            checkSessionBinding(id);
             GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
                     .get(module.moduleId())).orElseThrow();
             List<GeneratedMemberPlan> fields = stateFields(id);
@@ -1211,6 +1328,7 @@ final class JvmBytecodeEmitter {
 
         private void emitStateSetter() {
             DeclarationId id = declarationIdFromMember(member.name());
+            checkSessionBinding(id);
             List<GeneratedMemberPlan> fields = stateFields(id);
             int parameter = 0;
             for (GeneratedMemberPlan field : fields) {
@@ -1223,6 +1341,22 @@ final class JvmBytecodeEmitter {
 
         private void emitFacadeMethod() {
             switch (member.kind()) {
+                case SESSION_BINDING_GET, SESSION_BINDING_SET -> emitSessionBindingAccessor();
+                case FACADE_SESSION_EXECUTE -> {
+                    checkFacadeStateOpen();
+                    loadFacadeState();
+                    code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
+                            "$lyra$sessionExecute", method("()" + sessionResultPlan().descriptor()));
+                    discard(sessionResultPlan());
+                    code.return_();
+                }
+                case FACADE_SESSION_RESULT_GET -> {
+                    checkFacadeStateOpen();
+                    loadFacadeState();
+                    code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
+                            "$lyra$sessionResult", method(member.descriptor()));
+                    returnPhysicalDescriptor(sessionResultPlan().descriptor());
+                }
                 case FACADE_CONSTRUCTOR -> emitFacadeConstructor();
                 case FACTORY, FACTORY_WITH_OPTIONS -> emitFacadeFactory();
                 case METADATA -> emitFacadeMetadata();
@@ -1231,6 +1365,105 @@ final class JvmBytecodeEmitter {
                         emitFacadeExport();
                 default -> throw invalidPlan(memberSpan(), "unexpected facade method: " + member.kind());
             }
+        }
+
+        private void emitSessionBindingAccessor() {
+            checkFacadeStateOpen();
+            DeclarationId id = declarationIdFromMember(member.name());
+            IrDeclaration declaration = declarations.get(id);
+            JvmTypePlan value = owner.mapper.map(declaration.contract().orElseThrow().valueType(), JvmMappingContext.JAVA_VALUE);
+            JvmTypePlan internal = storagePlan(id);
+            if (member.kind() == GeneratedMemberKind.SESSION_BINDING_GET) {
+                loadFacadeStateValue(id);
+                adapt(internal, value);
+                returnPhysicalDescriptor(value.descriptor());
+                return;
+            }
+            loadParameter(0);
+            authenticateSessionValue(declaration.contract().orElseThrow().valueType());
+            discard(value);
+            loadFacadeState();
+            GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates().get(module.moduleId())).orElseThrow();
+            if (stateBindingIsCell(id)) {
+                GeneratedMemberPlan field = stateFields(id).getFirst();
+                code.invokevirtual(cd(state.binaryName()), "$lyra$get$binding$" + id.value(), method("()" + field.descriptor()));
+                loadParameter(0);
+                adapt(value, internal);
+                var cell = owner.plan.classPlan(owner.plan.cellClasses().get(id)).orElseThrow();
+                var setter = cell.members().stream().filter(candidate -> candidate.kind() == GeneratedMemberKind.CELL_SET)
+                        .findFirst().orElseThrow();
+                code.invokevirtual(cd(cell.binaryName()), setter.name(), method(setter.descriptor()));
+            } else {
+                loadParameter(0);
+                adapt(value, internal);
+                invokeStateSetter(id, member.descriptor());
+            }
+            code.return_();
+        }
+
+        private void checkSessionBinding(DeclarationId id) {
+            if (module.submissionResult().isEmpty()) return;
+            IrDeclaration declaration = declarations.get(id);
+            if (declaration == null || declaration.kind() != DeclarationKind.LET) return;
+            loadStateLifecycle();
+            code.ldc(id.ordinal());
+            code.invokevirtual(CD_LIFECYCLE, "checkSessionBinding", method("(J)V"));
+        }
+
+        /** Checks callable leaves without wrapping or copying the exact typed value. */
+        private void authenticateSessionValue(LyraType logical) {
+            LyraType base = logical.withoutQualifiers();
+            if (base instanceof PrimitiveType) return;
+            JvmTypePlan physical = owner.mapper.map(logical, JvmMappingContext.JAVA_VALUE);
+            int slot = allocateLocal(physical);
+            storePhysical(physical.physicalComponents().getFirst(), slot);
+            Label done = code.newLabel();
+            if (logical.isNilable()) {
+                code.aload(slot);
+                code.ifnull(done);
+            }
+            if (base instanceof FunctionType function) {
+                code.aload(slot);
+                emitIoAuthority();
+                code.ldc(function.signature().canonicalSpelling());
+                code.invokestatic(CD_SIGNATURE, "parse", method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+                code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "requireAuthenticated", method(
+                        "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L" + RUNTIME
+                                + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
+                code.pop();
+            } else if (base instanceof ArrayType array) {
+                if (!(array.elementType().withoutQualifiers() instanceof PrimitiveType)) {
+                    int index = code.allocateLocal(TypeKind.INT);
+                    code.iconst_0();
+                    code.istore(index);
+                    Label loop = code.newLabel();
+                    code.labelBinding(loop);
+                    code.iload(index);
+                    code.aload(slot);
+                    code.arraylength();
+                    code.if_icmpge(done);
+                    code.aload(slot);
+                    code.iload(index);
+                    code.aaload();
+                    authenticateSessionValue(array.elementType());
+                    code.pop();
+                    code.iinc(index, 1);
+                    code.goto_(loop);
+                }
+            } else if (base instanceof TupleType tuple) {
+                String name = owner.plan.tupleClasses().get(tuple.canonicalSpelling());
+                for (int index = 0; index < tuple.arity(); index++) {
+                    LyraType memberType = tuple.memberType(index);
+                    if (memberType.withoutQualifiers() instanceof PrimitiveType) continue;
+                    code.aload(slot);
+                    String descriptor = owner.mapper.map(memberType, JvmMappingContext.TUPLE_FIELD).descriptor();
+                    code.invokevirtual(cd(name), "$lyra$get$" + index, method("()" + descriptor));
+                    authenticateSessionValue(memberType);
+                    code.pop();
+                }
+            }
+            code.labelBinding(done);
+            code.aload(slot);
         }
 
         private void emitFacadeConstructor() {
@@ -4996,7 +5229,39 @@ final class JvmBytecodeEmitter {
             emitRawReturn(descriptor);
         }
 
+        private void validateExternalAccessor(IrDeclaration declaration, boolean write) {
+            String value = owner.mapper.map(declaration.contract().orElseThrow().valueType(),
+                    JvmMappingContext.JAVA_VALUE).descriptor();
+            emitExternalAccessor(declaration, write);
+            code.invokevirtual(cd("java.lang.invoke.MethodHandle"), "type",
+                    method("()Ljava/lang/invoke/MethodType;"));
+            code.ldc(method(write ? "(" + value + ")V" : "()" + value));
+            code.invokevirtual(cd("java.lang.invoke.MethodType"), "equals", method("(Ljava/lang/Object;)Z"));
+            Label valid = code.newLabel();
+            code.ifne(valid);
+            throwFailureRecorded(memberSpan(), "LYR-LINK", "session storage JVM type mismatch");
+            code.labelBinding(valid);
+        }
+
+        private void emitExternalAccessor(IrDeclaration declaration, boolean write) {
+            emitLoadModuleState(declaration.moduleId());
+            code.ldc(declaration.id().ordinal());
+            code.ldc(declaration.externalBinding().orElseThrow().storageIdentity().map(value -> value.ordinal()).orElse(-1L));
+            code.ldc(declaration.contract().orElseThrow().valueType().canonicalSpelling());
+            code.loadConstant(write ? 1 : 0);
+            code.invokevirtual(cd(owner.plan.moduleStates().get(declaration.moduleId())),
+                    "$lyra$sessionAccessor", method("(JJLjava/lang/String;Z)Ljava/lang/invoke/MethodHandle;"));
+        }
+
         private void emitLoadDeclaration(DeclarationId id, JvmTypePlan desired) {
+            IrDeclaration external = declarations.get(id);
+            if (external != null && external.externalBinding().isPresent()) {
+                JvmTypePlan value = owner.mapper.map(external.contract().orElseThrow().valueType(), JvmMappingContext.JAVA_VALUE);
+                emitExternalAccessor(external, false);
+                code.invokevirtual(cd("java.lang.invoke.MethodHandle"), "invokeExact", method("()" + value.descriptor()));
+                adapt(value, desired);
+                return;
+            }
             BindingStorage local = locals.get(id);
             if (local != null) {
                 loadLocal(local);
@@ -5220,6 +5485,17 @@ final class JvmBytecodeEmitter {
         }
 
         private void storeDeclaration(DeclarationId id, JvmTypePlan storage) {
+            IrDeclaration external = declarations.get(id);
+            if (external != null && external.externalBinding().isPresent()) {
+                JvmTypePlan value = owner.mapper.map(external.contract().orElseThrow().valueType(), JvmMappingContext.JAVA_VALUE);
+                adapt(storage, value);
+                int temporary = allocateLocal(value);
+                storePhysical(value.physicalComponents().getFirst(), temporary);
+                emitExternalAccessor(external, true);
+                loadPhysical(value.physicalComponents().getFirst(), temporary);
+                code.invokevirtual(cd("java.lang.invoke.MethodHandle"), "invokeExact", method("(" + value.descriptor() + ")V"));
+                return;
+            }
             BindingStorage local = locals.get(id);
             if (local != null) {
                 storeLocal(storage, local.slots());
@@ -5237,7 +5513,31 @@ final class JvmBytecodeEmitter {
                 emitStoreCell(id, storage);
                 return;
             }
+            if (closureMethod && isRootDeclaration(id)) {
+                storeClosureStateDeclaration(id, storage);
+                return;
+            }
             throw invalidPlan(module.span(), "mutable declaration has no writable storage: " + id);
+        }
+
+        private void storeClosureStateDeclaration(DeclarationId id, JvmTypePlan storage) {
+            GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
+                    .get(module.moduleId())).orElseThrow();
+            List<GeneratedMemberPlan> fields = stateFields(id);
+            if (fields.isEmpty() || fields.stream().anyMatch(value ->
+                    value.kind() == GeneratedMemberKind.STATE_CELL_FIELD)) {
+                throw invalidPlan(module.span(), "root closure storage has an invalid state shape: " + id);
+            }
+            List<Integer> slots = allocateLocals(storage);
+            storeLocal(storage, slots);
+            emitLoadClosureState();
+            for (int index = 0; index < slots.size(); index++) {
+                loadPhysical(storage.physicalComponents().get(index), slots.get(index));
+            }
+            String descriptor = "(" + fields.stream().map(GeneratedMemberPlan::descriptor)
+                    .reduce("", String::concat) + ")V";
+            code.invokevirtual(cd(state.binaryName()),
+                    "$lyra$set$binding$" + id.value(), method(descriptor));
         }
 
         private void emitNewCell(DeclarationId id, List<Integer> values) {
@@ -5596,6 +5896,10 @@ final class JvmBytecodeEmitter {
         private void boxPrimitive(JvmType type) {
             ClassDesc wrapper = wrapper(type.descriptor());
             String primitive = type.descriptor();
+            // JVM B/S parameters still occupy int stack slots. Normalize raw
+            // unsigned payloads before Java wrapper factories inspect them.
+            if (primitive.equals("B")) code.i2b();
+            if (primitive.equals("S")) code.i2s();
             code.invokestatic(wrapper, "valueOf", method("(" + primitive + ")" + wrapper.descriptorString()));
         }
 

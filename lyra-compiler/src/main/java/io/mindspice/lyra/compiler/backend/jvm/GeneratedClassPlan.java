@@ -133,6 +133,7 @@ record GeneratedClassPlan(
                         .count() != 1
                         || !memberKinds.stream().allMatch(value -> value == GeneratedMemberKind.TUPLE_FIELD
                         || value == GeneratedMemberKind.TUPLE_COMPONENT_GET
+                        || value == GeneratedMemberKind.SESSION_TUPLE_COMPONENT_GET
                         || value == GeneratedMemberKind.TUPLE_CONSTRUCTOR)) {
                     throw new IllegalArgumentException("invalid tuple generated class shape");
                 }
@@ -192,6 +193,11 @@ record GeneratedClassPlan(
                     throw new IllegalArgumentException("module-state class cannot have interfaces or annotations");
                 }
                 requireKinds(memberKinds, Set.of(
+                        GeneratedMemberKind.STATE_SESSION_ACCESSOR,
+                        GeneratedMemberKind.SESSION_SAFE_POINT,
+                        GeneratedMemberKind.SESSION_RESULT_FIELD,
+                        GeneratedMemberKind.SESSION_EXECUTE,
+                        GeneratedMemberKind.SESSION_RESULT_GET,
                         GeneratedMemberKind.STATE_LIFECYCLE_FIELD,
                         GeneratedMemberKind.STATE_BINDING_FIELD,
                         GeneratedMemberKind.STATE_PRESENCE_FIELD,
@@ -213,12 +219,17 @@ record GeneratedClassPlan(
                     throw new IllegalArgumentException("module-state constructor cannot be static");
                 }
                 validateStateShape(members);
+                validateSubmissionShape(members);
             }
             case MODULE_FACADE -> {
                 if (!annotations.isEmpty()) {
                     throw new IllegalArgumentException("facade class cannot have annotations");
                 }
                 requireKinds(memberKinds, Set.of(
+                    GeneratedMemberKind.FACADE_SESSION_RESULT_GET,
+                    GeneratedMemberKind.FACADE_SESSION_EXECUTE,
+                    GeneratedMemberKind.SESSION_BINDING_GET,
+                    GeneratedMemberKind.SESSION_BINDING_SET,
                     GeneratedMemberKind.FACADE_STATE_FIELD,
                     GeneratedMemberKind.FACADE_CONSTRUCTOR,
                     GeneratedMemberKind.FUNCTION_INVOCATION,
@@ -248,6 +259,27 @@ record GeneratedClassPlan(
         }
     }
 
+    private static void validateSubmissionShape(List<GeneratedMemberPlan> members) {
+        var result = members.stream().filter(value -> value.kind() == GeneratedMemberKind.SESSION_RESULT_FIELD
+                || value.kind() == GeneratedMemberKind.SESSION_EXECUTE
+                || value.kind() == GeneratedMemberKind.SESSION_RESULT_GET).toList();
+        if (result.isEmpty()) return;
+        GeneratedMemberPlan field = requireFacadeMember(members, GeneratedMemberKind.SESSION_RESULT_FIELD,
+                value -> true);
+        GeneratedMemberPlan execute = requireFacadeMember(members, GeneratedMemberKind.SESSION_EXECUTE,
+                value -> true);
+        GeneratedMemberPlan getter = requireFacadeMember(members, GeneratedMemberKind.SESSION_RESULT_GET,
+                value -> true);
+        if (!field.name().equals("$lyra$sessionResult") || !field.isPrivate()
+                || !execute.name().equals("$lyra$sessionExecute")
+                || execute.visibility() != GeneratedMemberVisibility.PACKAGE
+                || !getter.name().equals("$lyra$sessionResult")
+                || !execute.descriptor().equals("()" + field.descriptor())
+                || !getter.descriptor().equals(execute.descriptor())) {
+            throw new IllegalArgumentException("submission result shape is inconsistent");
+        }
+    }
+
     private static void validateTupleShape(List<GeneratedMemberPlan> members) {
         List<GeneratedMemberPlan> fields = members.stream()
                 .filter(value -> value.kind() == GeneratedMemberKind.TUPLE_FIELD)
@@ -271,7 +303,8 @@ record GeneratedClassPlan(
             throw new IllegalArgumentException("tuple constructor does not match its fields");
         }
         List<GeneratedMemberPlan> getters = members.stream()
-                .filter(value -> value.kind() == GeneratedMemberKind.TUPLE_COMPONENT_GET)
+                .filter(value -> value.kind() == GeneratedMemberKind.TUPLE_COMPONENT_GET
+                        || value.kind() == GeneratedMemberKind.SESSION_TUPLE_COMPONENT_GET)
                 .toList();
         if (getters.size() != fields.size()) {
             throw new IllegalArgumentException("tuple needs one accessor per component");
@@ -359,7 +392,8 @@ record GeneratedClassPlan(
         java.util.TreeMap<String, List<GeneratedMemberPlan>> bindingGroups = new java.util.TreeMap<>();
         for (GeneratedMemberPlan field : members.stream()
                 .filter(GeneratedMemberPlan::isField)
-                .filter(member -> member.kind() != GeneratedMemberKind.STATE_LIFECYCLE_FIELD)
+                .filter(member -> member.kind() != GeneratedMemberKind.STATE_LIFECYCLE_FIELD
+                        && member.kind() != GeneratedMemberKind.SESSION_RESULT_FIELD)
                 .toList()) {
             if (!field.name().startsWith(fieldPrefix)) {
                 throw new IllegalArgumentException("module-state field has a noncanonical name");

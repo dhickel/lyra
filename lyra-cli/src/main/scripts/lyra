@@ -36,4 +36,5 @@ fi
 JAVA_COMMAND=${JAVA_COMMAND:-java}
 # Intentionally leave option word-splitting to the caller so multiple JVM
 # options can be supplied without changing or re-parsing Lyra arguments.
-exec "$JAVA_COMMAND" ${LYRA_JAVA_OPTS:-} -jar "$CLI_JAR" "$@"
+# The CLI-only JLine FFM provider requires native access on Java 25.
+exec "$JAVA_COMMAND" --enable-native-access=ALL-UNNAMED ${LYRA_JAVA_OPTS:-} -jar "$CLI_JAR" "$@"

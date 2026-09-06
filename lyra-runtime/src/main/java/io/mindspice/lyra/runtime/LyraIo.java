@@ -1,8 +1,6 @@
 package io.mindspice.lyra.runtime;
 
 import java.io.IOException;
-import java.io.InterruptedIOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
@@ -15,8 +13,6 @@ import java.util.concurrent.locks.ReentrantLock;
 
 /** Direct runtime entry points used by compiler-lowered {@code std->io} calls. */
 public final class LyraIo {
-    private static final String INTERRUPTED = "standard input was interrupted";
-
     private LyraIo() {
     }
 
@@ -40,19 +36,7 @@ public final class LyraIo {
     public static String readLine(LyraClosureAuthority authority) {
         Objects.requireNonNull(authority, "authority");
         authority.token().checkIoAccess();
-        RuntimeIoEnvironment environment = authority.token().ioEnvironment();
-        ReentrantLock lock = environment.inputLock();
-        try {
-            lock.lockInterruptibly();
-        } catch (InterruptedException failure) {
-            Thread.currentThread().interrupt();
-            throw ioFailure(INTERRUPTED, failure);
-        }
-        try {
-            return readLineLocked(environment);
-        } finally {
-            lock.unlock();
-        }
+        return authority.token().ioEnvironment().readLine();
     }
 
     private static void write(LyraClosureAuthority authority, String value,
@@ -96,48 +80,6 @@ public final class LyraIo {
         } catch (CharacterCodingException failure) {
             throw ioFailure("standard output cannot encode text", failure);
         }
-    }
-
-    private static String readLineLocked(RuntimeIoEnvironment environment) {
-        InputStream input = environment.input();
-        RuntimeIoEnvironment.InputState state = environment.inputState();
-        try {
-            while (true) {
-                String line = state.pollLine();
-                if (line != null) {
-                    return line;
-                }
-                if (state.endOfInput()) {
-                    String remainder = state.takeRemainder();
-                    return remainder.isEmpty() ? null : remainder;
-                }
-                if (Thread.currentThread().isInterrupted()) {
-                    throw interrupted();
-                }
-                int next = input.read();
-                if (next < 0) {
-                    state.finish();
-                } else {
-                    state.accept(next);
-                }
-            }
-        } catch (VirtualMachineError | ThreadDeath fatal) {
-            throw fatal;
-        } catch (InterruptedIOException failure) {
-            Thread.currentThread().interrupt();
-            throw ioFailure(INTERRUPTED, failure);
-        } catch (CharacterCodingException failure) {
-            throw ioFailure("standard input contains malformed text", failure);
-        } catch (IOException | RuntimeException failure) {
-            if (failure instanceof LyraIoException io) {
-                throw io;
-            }
-            throw ioFailure("standard input failed", failure);
-        }
-    }
-
-    private static InterruptedIOException interrupted() {
-        return new InterruptedIOException(INTERRUPTED);
     }
 
     private static LyraIoException ioFailure(String summary, Throwable cause) {

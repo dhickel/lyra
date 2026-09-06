@@ -1,6 +1,8 @@
 package io.mindspice.lyra.runtime;
 
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
@@ -22,6 +24,7 @@ public final class RuntimeIoEnvironment {
     private final ReentrantLock outputLock = new ReentrantLock(true);
     private final ReentrantLock errorLock;
     private final InputState inputState;
+    private volatile LyraIoException inputFailure;
 
     public RuntimeIoEnvironment(InputStream input, OutputStream output,
                                 OutputStream error, Charset charset) {
@@ -48,6 +51,71 @@ public final class RuntimeIoEnvironment {
     public OutputStream errorStream() { return error; }
     public OutputStream err() { return error; }
     public Charset charset() { return charset; }
+
+    /** Prevents a failed program line from becoming source when a console changes readers. */
+    public void checkInputAvailable() {
+        LyraIoException failure = inputFailure;
+        if (failure != null) throw failure;
+    }
+
+    /**
+     * Reads exactly one logical line from this environment's input owner.
+     * The decoder and pending bytes are shared with {@link LyraIo#readLine},
+     * so a local console can acquire source lines without buffering bytes that
+     * belong to a generated program read. The returned line excludes one
+     * terminal LF and its preceding CR; clean EOF returns {@code null}, while
+     * a non-empty EOF remainder is returned once. The configured streams are
+     * never closed by this method. A read/decoding failure retires input for
+     * this environment because its partial line is no longer safe to transfer
+     * to a different reader or console history.
+     */
+    public String readLine() {
+        try {
+            inputLock.lockInterruptibly();
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            throw ioFailure("standard input was interrupted", failure);
+        }
+        try {
+            checkInputAvailable();
+            while (true) {
+                String line = inputState.pollLine();
+                if (line != null) {
+                    return line;
+                }
+                if (inputState.endOfInput()) {
+                    String remainder = inputState.takeRemainder();
+                    return remainder.isEmpty() ? null : remainder;
+                }
+                if (Thread.currentThread().isInterrupted()) {
+                    throw interrupted();
+                }
+                int next = input.read();
+                if (next < 0) {
+                    inputState.finish();
+                } else {
+                    inputState.accept(next);
+                }
+            }
+        } catch (VirtualMachineError | ThreadDeath fatal) {
+            throw fatal;
+        } catch (InterruptedIOException failure) {
+            Thread.currentThread().interrupt();
+            inputFailure = ioFailure("standard input was interrupted", failure);
+            throw inputFailure;
+        } catch (CharacterCodingException failure) {
+            inputFailure = ioFailure("standard input contains malformed text", failure);
+            throw inputFailure;
+        } catch (IOException | RuntimeException failure) {
+            // A failed read has lost its line boundary. Never expose the partial
+            // program line to a later console source/history acquisition.
+            inputFailure = failure instanceof LyraIoException io
+                    ? io : ioFailure("standard input failed", failure);
+            throw inputFailure;
+        } finally {
+            inputLock.unlock();
+        }
+    }
 
     ReentrantLock inputLock() { return inputLock; }
     ReentrantLock outputLock() { return outputLock; }
@@ -149,6 +217,14 @@ public final class RuntimeIoEnvironment {
             remaining.flip();
             pending = remaining;
         }
+    }
+
+    private static InterruptedIOException interrupted() {
+        return new InterruptedIOException("standard input was interrupted");
+    }
+
+    private static LyraIoException ioFailure(String summary, Throwable cause) {
+        return new LyraIoException(summary, java.util.List.of(), cause);
     }
 
     @Override

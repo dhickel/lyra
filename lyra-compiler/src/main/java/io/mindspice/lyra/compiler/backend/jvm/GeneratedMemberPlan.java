@@ -225,13 +225,15 @@ record GeneratedMemberPlan(
         return switch (kind) {
             case FUNCTION_INVOKE, CLOSURE_INVOKE, FUNCTION_INVOCATION,
                     VALUE_GETTER, FUNCTION_VALUE_GETTER, SETTER, FACTORY,
-                    FACTORY_WITH_OPTIONS, METADATA, CLOSE, TUPLE_CONSTRUCTOR ->
+                    FACTORY_WITH_OPTIONS, METADATA, CLOSE, TUPLE_CONSTRUCTOR,
+                    FACADE_SESSION_RESULT_GET, FACADE_SESSION_EXECUTE,
+                    SESSION_BINDING_GET, SESSION_BINDING_SET, SESSION_TUPLE_COMPONENT_GET ->
                     GeneratedMemberVisibility.PUBLIC;
             case TUPLE_COMPONENT_GET, CELL_CONSTRUCTOR, CELL_GET, CELL_SET,
                     CELL_PRESENCE_GET, CELL_PAYLOAD_GET, CLOSURE_CONSTRUCTOR,
                     STATE_IMPORT_LINK, STATE_COMPONENT_GET, STATE_COMPONENT_SET,
                     STATE_CONSTRUCTOR, STATE_AUTHORITY_GET, STATE_CHECK_OPEN,
-                    STATE_CLOSE -> GeneratedMemberVisibility.PACKAGE;
+                    STATE_CLOSE, SESSION_RESULT_GET, SESSION_EXECUTE, STATE_SESSION_ACCESSOR, SESSION_SAFE_POINT -> GeneratedMemberVisibility.PACKAGE;
             default -> GeneratedMemberVisibility.PRIVATE;
         };
     }

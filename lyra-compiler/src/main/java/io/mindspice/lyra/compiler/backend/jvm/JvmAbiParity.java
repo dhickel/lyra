@@ -287,10 +287,31 @@ final class JvmAbiParity {
             if (!lifecycleShape) {
                 differences.add("module-state lifecycle composition differs: " + module.moduleId());
             }
+            var resultFields = state.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.SESSION_RESULT_FIELD).toList();
+            var facade = plan.classPlan(plan.moduleFacades().get(module.moduleId())).orElseThrow();
+            var resultGetters = facade.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.FACADE_SESSION_RESULT_GET).toList();
+            var executions = facade.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.FACADE_SESSION_EXECUTE).toList();
+            if (module.submissionResult().isPresent()) {
+                String descriptor = mapper.map(module.submissionResult().orElseThrow().type(),
+                        JvmMappingContext.JAVA_VALUE).descriptor();
+                if (resultFields.size() != 1 || !resultFields.getFirst().descriptor().equals(descriptor)
+                        || resultGetters.size() != 1 || !resultGetters.getFirst().descriptor().equals("()" + descriptor)
+                        || !resultGetters.getFirst().name().equals("$lyra$sessionResult")
+                        || executions.size() != 1 || !executions.getFirst().name().equals("$lyra$sessionRun")
+                        || !executions.getFirst().descriptor().equals("()V")) {
+                    differences.add("submission result boundary differs: " + module.moduleId());
+                }
+            } else if (!resultFields.isEmpty() || !resultGetters.isEmpty() || !executions.isEmpty()) {
+                differences.add("ordinary module contains a submission result boundary: " + module.moduleId());
+            }
             TreeMap<DeclarationId, List<GeneratedMemberPlan>> fields = new TreeMap<>();
             for (GeneratedMemberPlan member : state.members().stream()
                     .filter(GeneratedMemberPlan::isField)
-                    .filter(member -> member.kind() != GeneratedMemberKind.STATE_LIFECYCLE_FIELD)
+                    .filter(member -> member.kind() != GeneratedMemberKind.STATE_LIFECYCLE_FIELD
+                            && member.kind() != GeneratedMemberKind.SESSION_RESULT_FIELD)
                     .toList()) {
                 Optional<DeclarationId> id = stateFieldDeclaration(member.name());
                 if (id.isEmpty()) {
@@ -302,6 +323,7 @@ final class JvmAbiParity {
             Set<DeclarationId> expectedIds = module.state().declarations().stream()
                     .map(declarations::get).filter(Objects::nonNull)
                     .filter(value -> value.scopeId().equals(module.state().rootScope()))
+                    .filter(value -> value.externalBinding().isEmpty())
                     .filter(value -> value.contract().isPresent() || imports.containsKey(value.id()))
                     .map(IrDeclaration::id)
                     .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
@@ -498,7 +520,8 @@ final class JvmAbiParity {
             }
             for (DeclarationId declarationId : module.state().declarations()) {
                 IrDeclaration declaration = declarations.get(declarationId);
-                if (declaration == null || !declaration.scopeId().equals(module.state().rootScope())) {
+                if (declaration == null || !declaration.scopeId().equals(module.state().rootScope())
+                        || declaration.externalBinding().isPresent()) {
                     continue;
                 }
                 IrImportBinding importBinding = imports.get(declarationId);
@@ -518,9 +541,22 @@ final class JvmAbiParity {
                 }
             }
 
+            module.submissionResult().ifPresent(result -> addExpectedTypeDependencies(stateDependencies,
+                    result.type(), GeneratedDependencyKind.MODULE_STATE_FIELD_TYPE, true, plan.typeNames()));
             Set<DependencyIdentity> facadeDependencies = expectedFor(expected,
                     plan.moduleFacades().get(module.moduleId()));
             if (facadeDependencies != null) {
+                module.submissionResult().ifPresent(result -> {
+                    addExpectedTypeDependencies(facadeDependencies, result.type(),
+                            GeneratedDependencyKind.FACADE_EXPORT_TYPE, true, plan.typeNames());
+                    ir.declarations().stream()
+                            .filter(declaration -> declaration.moduleId().equals(module.moduleId())
+                                    && declaration.scopeId().equals(module.rootScope())
+                                    && declaration.kind() == io.mindspice.lyra.compiler.semantic.DeclarationKind.LET)
+                            .forEach(declaration -> addExpectedTypeDependencies(facadeDependencies,
+                                    declaration.contract().orElseThrow().valueType(),
+                                    GeneratedDependencyKind.FACADE_EXPORT_TYPE, true, plan.typeNames()));
+                });
                 addExpectedDependency(facadeDependencies, plan.moduleStates().get(module.moduleId()),
                         GeneratedDependencyKind.FACADE_STATE, true);
                 ir.exports().stream().filter(export -> export.moduleId().equals(module.moduleId()))

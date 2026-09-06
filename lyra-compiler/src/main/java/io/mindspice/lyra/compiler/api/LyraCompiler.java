@@ -79,10 +79,11 @@ public final class LyraCompiler {
      * publishing it and executing the artifact remain session-owner
      * responsibilities.
      *
-     * <p>This bounded compiler slice deliberately does not link live values
-     * from an earlier submission.  References to names in the snapshot are
-     * therefore structured session diagnostics rather than unresolved values
-     * or fabricated initializer code.</p>
+     * <p>References to prior source-local names are linked through the supplied
+     * session snapshot and its compiler-issued flow certificate. Live storage
+     * authentication and generation ownership remain runtime responsibilities;
+     * imported multi-module session linkage is still rejected structurally rather
+     * than replaced with fabricated initializer code.</p>
      */
     public static SessionCompileResult compileSession(SessionCompileRequest request) {
         Objects.requireNonNull(request, "request");
@@ -263,10 +264,7 @@ public final class LyraCompiler {
                 return failure();
             }
 
-            Set<String> externalNames = new LinkedHashSet<>(request.snapshot().bindings().keySet());
-            externalNames.addAll(request.snapshot().imports().keySet());
-            ResolvedSemanticGraph resolved = phase(SemanticResolver.resolve(
-                    graph, request.snapshot().allocator(), Set.copyOf(externalNames)));
+            ResolvedSemanticGraph resolved = phase(SemanticResolver.resolveSession(graph, request.snapshot()));
             if (resolved == null) {
                 return failure();
             }
@@ -276,7 +274,7 @@ public final class LyraCompiler {
                 return failure();
             }
 
-            TypedIr ir = phase(TypedIrBuilder.lower(typed));
+            TypedIr ir = phase(TypedIrBuilder.lowerSubmission(typed));
             if (ir == null) {
                 return failure();
             }
@@ -287,16 +285,26 @@ public final class LyraCompiler {
                 return failure();
             }
 
-            StagedNamespace staged = stageNamespace(graph, resolved);
+            StagedNamespace staged = stageNamespace(graph, resolved, typed);
             if (staged.diagnostic() != null) {
                 return fail(staged.diagnostic());
             }
+            SessionFlowCertificate stagedCertificate = SessionFlowCertificate.issue(
+                    request.snapshot(), typed, staged.snapshot().bindings(), false);
+            SessionSnapshot stagedSnapshot = staged.snapshot()
+                    .withFlowCertificate(stagedCertificate);
+            SessionFlowCertificate attemptedCertificate = SessionFlowCertificate.issue(
+                    request.snapshot(), typed, request.snapshot().bindings(), true);
+            SessionSnapshot attemptedSnapshot = request.snapshot()
+                    .withAllocator(typed.allocator())
+                    .withFlowCertificate(attemptedCertificate);
             ArtifactAssembly assembly = ArtifactAssembly.assemble(
                     bytecode, PackagingMode.CLASSES, request.includeSources());
             return new SessionCompileResult.Success(
                     request.baseRevision(),
-                    staged.snapshot().revision(),
-                    staged.snapshot(),
+                    stagedSnapshot.revision(),
+                    stagedSnapshot,
+                    attemptedSnapshot,
                     new BuiltCompiledArtifact(bytecode, request.includeSources(), assembly),
                     graph,
                     resolved,
@@ -308,7 +316,7 @@ public final class LyraCompiler {
         }
 
         private PhaseResult<ModuleGraph> discover() {
-            SourceId sourceId = sessionSourceId(request.source());
+            SourceId sourceId = request.sourceId();
             PhysicalSourceKey physical = memoryPhysicalKey(sourceId, request.source().text());
             PhaseResult<SourceSnapshot> snapshotResult = SourceSnapshot.capture(
                     sourceId,
@@ -334,17 +342,18 @@ public final class LyraCompiler {
             if (syntax == null) {
                 return PhaseResult.failure(syntaxResult.diagnostics());
             }
-            return ModuleGraphDiscovery.discover(
+            return ModuleGraphDiscovery.discoverSession(
                     syntax, snapshot, request.sourceConfiguration());
         }
 
         private StagedNamespace stageNamespace(
-                ModuleGraph graph, ResolvedSemanticGraph resolved) {
+                ModuleGraph graph, ResolvedSemanticGraph resolved, TypedSemanticGraph typed) {
             var root = graph.rootModule();
             var rootSemantic = resolved.module(root).orElseThrow();
             for (ResolvedDeclaration declaration : resolved.declarations()) {
                 if (!declaration.moduleId().equals(root)
-                        || !declaration.scopeId().equals(rootSemantic.rootScope())) {
+                        || !declaration.scopeId().equals(rootSemantic.rootScope())
+                        || declaration.kind() == DeclarationKind.EXTERNAL) {
                     continue;
                 }
                 ExternalBinding previous = request.snapshot().bindings().get(declaration.name());
@@ -360,32 +369,18 @@ public final class LyraCompiler {
 
             LinkedHashMap<String, ExternalBinding> nextBindings =
                     new LinkedHashMap<>(request.snapshot().bindings());
-            for (ResolvedExport export : resolved.exports()) {
-                if (!export.moduleId().equals(root)) {
-                    continue;
-                }
-                if (nextBindings.containsKey(export.name())
-                        || request.snapshot().imports().containsKey(export.name())) {
-                    return StagedNamespace.failure(Diagnostic.error(
-                            CompilerDiagnosticCodes.SESSION_NAME_CONFLICT,
-                            export.span(),
-                            "session name cannot be redeclared: " + export.name()));
-                }
-                var contract = export.contract();
+            for (ResolvedDeclaration declaration : resolved.declarations()) {
+                if (!declaration.moduleId().equals(root)
+                        || !declaration.scopeId().equals(rootSemantic.rootScope())
+                        || declaration.kind() != DeclarationKind.LET) continue;
+                var contract = typed.contract(declaration.id()).orElseThrow();
                 boolean mutable = contract.isMutable();
-                nextBindings.put(export.name(), new ExternalBinding(
-                        export.name(),
-                        export.declarationId(),
-                        contract,
-                        ExternalBinding.Visibility.PUBLIC,
-                        mutable
-                                ? ExternalBinding.AssignmentAuthority.ALL
-                                : ExternalBinding.AssignmentAuthority.NONE,
-                        mutable
-                                ? java.util.Optional.of(
-                                        StorageIdentity.forDeclaration(export.declarationId()))
-                                : java.util.Optional.empty(),
-                        request.source().origin()));
+                nextBindings.put(declaration.name(), new ExternalBinding(
+                        declaration.name(), declaration.id(), contract,
+                        declaration.isPublic() ? ExternalBinding.Visibility.PUBLIC : ExternalBinding.Visibility.PRIVATE,
+                        mutable ? ExternalBinding.AssignmentAuthority.ALL : ExternalBinding.AssignmentAuthority.NONE,
+                        mutable ? java.util.Optional.of(StorageIdentity.forDeclaration(declaration.id()))
+                                : java.util.Optional.empty(), request.source().origin()));
             }
 
             List<DeclarationId> declarations = resolved.declarations().stream()
@@ -399,7 +394,7 @@ public final class LyraCompiler {
                         nextBindings,
                         request.snapshot().imports(),
                         request.snapshot().pinnedModules(),
-                        resolved.allocator()), declarations);
+                        typed.allocator()), declarations);
             } catch (IllegalArgumentException | IllegalStateException failure) {
                 throw new LyraCompilerBugException(
                         "session namespace staging violated an immutable contract", failure);
@@ -419,7 +414,7 @@ public final class LyraCompiler {
         }
 
         private SourceSpan sourceSpan() {
-            return SourceSpan.at(sessionSourceId(request.source()), 0);
+            return SourceSpan.at(request.sourceId(), 0);
         }
 
         private SessionCompileResult fail(Diagnostic diagnostic) {
@@ -451,7 +446,7 @@ public final class LyraCompiler {
 
         private List<Diagnostic> mapDiagnostics(List<Diagnostic> values) {
             return LyraCompiler.mapSessionDiagnostics(
-                    values, request.source(), sessionSourceId(request.source()));
+                    values, request.source(), request.sourceId());
         }
 
         private record StagedNamespace(
@@ -538,18 +533,6 @@ public final class LyraCompiler {
             throw new ExceptionInInitializerError(failure);
         }
         return PhysicalSourceKey.uri(URI.create("memory:lyra/" + hash));
-    }
-
-    private static SourceId sessionSourceId(EvaluationSource source) {
-        Objects.requireNonNull(source, "source");
-        if (source.origin().uri().isPresent()) {
-            return SourceId.uri(source.origin().uri().orElseThrow());
-        }
-        try {
-            return SourceId.of(source.origin().label());
-        } catch (IllegalArgumentException ignored) {
-            return SourceId.path("repl/submission-anonymous.lyra");
-        }
     }
 
     private static List<Diagnostic> mapSessionDiagnostics(

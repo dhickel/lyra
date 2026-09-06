@@ -28,7 +28,8 @@ final class LyraOwnershipToken {
 
     boolean isValid() {
         owner.check();
-        return valid.get();
+        SessionStorageDomain.Linkage linkage = sessionLinkage();
+        return valid.get() && (linkage == null || linkage.isActive());
     }
 
     Thread ownerThread() {
@@ -65,6 +66,7 @@ final class LyraOwnershipToken {
         if (state == LifecycleState.CLOSED || !valid.get()) {
             throw new LyraClosedException("module-owned I/O authority is closed or invalidated");
         }
+        checkSession();
         if (state != LifecycleState.OPEN && state != LifecycleState.INITIALIZING) {
             throw new LyraLifecycleException("module-owned I/O authority is not open");
         }
@@ -83,6 +85,7 @@ final class LyraOwnershipToken {
         if (state == LifecycleState.CLOSED || !valid.get()) {
             throw new LyraClosedException("module-owned closure is closed or invalidated");
         }
+        checkSession();
         if (state != LifecycleState.OPEN
                 && !(allowInitializing && state == LifecycleState.INITIALIZING)) {
             throw new LyraLifecycleException("module-owned closure is not open");
@@ -98,10 +101,33 @@ final class LyraOwnershipToken {
         if (state == LifecycleState.CLOSED || !valid.get()) {
             throw new LyraClosedException("module-owned closure is closed or invalidated");
         }
+        checkSession();
     }
 
     boolean sameArtifact(LyraOwnershipToken other) {
         return other != null && artifactKey == other.artifactKey;
+    }
+
+    /**
+     * Only runtime-loaded source-local submissions in the same live epoch may
+     * interchange closures. A producer must be fully initialized: this boundary
+     * does not yet authorize values escaping a failed submission initializer.
+     */
+    boolean sameSession(LyraOwnershipToken other) {
+        if (other == null) return false;
+        SessionStorageDomain.Linkage linkage = sessionLinkage();
+        if (linkage == null || !linkage.authenticates(other.sessionLinkage())) return false;
+        other.checkUsable();
+        return true;
+    }
+
+    private SessionStorageDomain.Linkage sessionLinkage() {
+        return artifactKey instanceof LyraArtifactKey key ? key.sessionLinkage() : null;
+    }
+
+    private void checkSession() {
+        SessionStorageDomain.Linkage linkage = sessionLinkage();
+        if (linkage != null) linkage.checkOpen();
     }
 
     boolean sameModule(LyraOwnershipToken other) {

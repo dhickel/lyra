@@ -10,6 +10,8 @@ import java.util.Optional;
 public final class LyraArtifactKey {
     private final Optional<OwnerThread> configuredOwner;
     private final RuntimeIoEnvironment ioEnvironment;
+    private final SessionStorageDomain.Linkage sessionLinkage;
+    private final boolean deferredSubmission;
 
     LyraArtifactKey() {
         this(null, RuntimeIoEnvironment.defaults());
@@ -24,8 +26,30 @@ public final class LyraArtifactKey {
     }
 
     LyraArtifactKey(OwnerThread owner, RuntimeIoEnvironment ioEnvironment) {
+        this(owner, ioEnvironment, null);
+    }
+
+    LyraArtifactKey(OwnerThread owner, RuntimeIoEnvironment ioEnvironment, SessionStorageDomain.Linkage linkage) {
+        this(owner, ioEnvironment, linkage, false);
+    }
+
+    LyraArtifactKey(OwnerThread owner, RuntimeIoEnvironment ioEnvironment,
+                    SessionStorageDomain.Linkage linkage, boolean deferredSubmission) {
+        if (deferredSubmission && linkage == null) {
+            throw new IllegalArgumentException("deferred submission requires authenticated linkage");
+        }
         configuredOwner = Optional.ofNullable(owner);
         this.ioEnvironment = Objects.requireNonNull(ioEnvironment, "ioEnvironment");
+        this.sessionLinkage = linkage;
+        this.deferredSubmission = deferredSubmission;
+    }
+
+    boolean deferredSubmission() {
+        return deferredSubmission;
+    }
+
+    SessionStorageDomain.Linkage sessionLinkage() {
+        return sessionLinkage;
     }
 
     Optional<OwnerThread> configuredOwner() {

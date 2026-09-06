@@ -18,6 +18,11 @@ public final class ModuleLifecycle implements AutoCloseable {
     private final LyraOwnershipToken ownership;
     private final LyraClosureAuthority closureAuthority;
     private final RuntimeIoEnvironment ioEnvironment;
+    private final SessionStorageDomain.Linkage sessionLinkage;
+    private final boolean deferredSubmission;
+    private final java.util.Set<Long> initializedBindings = new java.util.HashSet<>();
+    private boolean submissionStarted;
+    private boolean submissionCompleted;
     private volatile Throwable failureCause;
 
     public ModuleLifecycle() {
@@ -81,6 +86,72 @@ public final class ModuleLifecycle implements AutoCloseable {
         this.closureAuthority = new LyraClosureAuthority(ownership);
         this.ioEnvironment = key instanceof LyraArtifactKey artifact
                 ? artifact.ioEnvironment() : RuntimeIoEnvironment.defaults();
+        this.sessionLinkage = key instanceof LyraArtifactKey artifact ? artifact.sessionLinkage() : null;
+        this.deferredSubmission = key instanceof LyraArtifactKey artifact && artifact.deferredSubmission();
+    }
+
+    /** Runtime-selected shell construction; ordinary artifact initialization is unchanged. */
+    public boolean defersSubmission() {
+        owner.check();
+        if (sessionLinkage != null) sessionLinkage.checkOpen();
+        return deferredSubmission;
+    }
+
+    /** Generated submission entry points execute once, even when execution fails. */
+    public void beginSubmission() {
+        owner.check();
+        if (sessionLinkage != null) sessionLinkage.checkOpen();
+        if (submissionStarted) throw new LyraLifecycleException("submission has already executed");
+        if (deferredSubmission) requireOpenAfterOwnerCheck();
+        else if (state.get() != LifecycleState.INITIALIZING) {
+            throw new LyraLifecycleException("submission is not initializing");
+        }
+        submissionStarted = true;
+    }
+
+    public void completeSubmission() {
+        owner.check();
+        if (!submissionStarted || submissionCompleted) {
+            throw new LyraLifecycleException("submission completion is out of order");
+        }
+        submissionCompleted = true;
+    }
+
+    public void checkSubmissionResult() {
+        requireOpen();
+        if (sessionLinkage != null) sessionLinkage.checkOpen();
+        if (!submissionCompleted) throw new LyraLifecycleException("submission has no completed result");
+    }
+
+    /** Publication of one initialized source binding, not a whole namespace. */
+    public void initializeSessionBinding(long id) {
+        owner.check();
+        if (id < 0 || !submissionStarted || submissionCompleted || !initializedBindings.add(id)) {
+            throw new LyraLifecycleException("submission binding initialization is out of order");
+        }
+    }
+
+    public void checkSessionBinding(long id) {
+        owner.check();
+        if (state.get() != LifecycleState.INITIALIZING) requireOpenAfterOwnerCheck();
+        if (sessionLinkage != null) sessionLinkage.checkOpen();
+        if (!initializedBindings.contains(id)) {
+            throw new LyraInitializationException("submission binding is not initialized: " + id);
+        }
+    }
+
+    /** Only session-generated code calls this cooperative cancellation boundary. */
+    public void sessionSafePoint() {
+        owner.check();
+        if (sessionLinkage != null) sessionLinkage.safePoint();
+    }
+
+    /** Generated exact typed data accesses only; no name-based or universal-value ABI. */
+    public java.lang.invoke.MethodHandle sessionAccessor(long id, long storageIdentity, String type, boolean write) {
+        owner.check();
+        if (state.get() != LifecycleState.INITIALIZING) requireOpenAfterOwnerCheck();
+        if (sessionLinkage == null) throw new LyraLinkException("submission has no authenticated storage domain");
+        return sessionLinkage.accessor(id, storageIdentity, type, write);
     }
 
     public OwnerThread owner() {
@@ -173,6 +244,7 @@ public final class ModuleLifecycle implements AutoCloseable {
         owner.check();
         if (state.compareAndSet(LifecycleState.OPEN, LifecycleState.CLOSED)) {
             ownership.invalidate();
+            initializedBindings.clear();
             return;
         }
         LifecycleState current = state.get();

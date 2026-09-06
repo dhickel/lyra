@@ -19,6 +19,8 @@ import io.mindspice.lyra.compiler.ir.TypedIr;
 import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.types.ArrayType;
 import io.mindspice.lyra.compiler.types.BindingContract;
+import io.mindspice.lyra.compiler.types.PrimitiveType;
+import io.mindspice.lyra.compiler.semantic.DeclarationKind;
 import io.mindspice.lyra.compiler.types.FunctionType;
 import io.mindspice.lyra.compiler.types.LyraSignature;
 import io.mindspice.lyra.compiler.types.LyraType;
@@ -102,7 +104,7 @@ final class GeneratedTypePlanner {
                         IrCapture::id, value -> value));
 
         ArrayList<GeneratedClassPlan> classes = new ArrayList<>();
-        addTupleClasses(classes, inventory, mapper, names);
+        addTupleClasses(classes, inventory, mapper, names, ir.rootModule().submissionResult().isPresent());
         addFunctionInterfaces(classes, inventory, mapper, names);
         addCellClasses(classes, ir.cells(), mapper, names, cellClasses);
         Map<ModuleId, ScopeId> rootScopes =
@@ -119,7 +121,7 @@ final class GeneratedTypePlanner {
                 moduleStates);
         addModuleStateClasses(classes, ir, mapper, names, moduleStates, cellClasses,
                 declarations, cellsByDeclaration);
-        addModuleFacadeClasses(classes, ir, names, moduleStates, moduleFacades,
+        addModuleFacadeClasses(classes, ir, mapper, names, moduleStates, moduleFacades,
                 exportPlans);
 
         List<GeneratedClassPlan> ordered = order(classes);
@@ -286,7 +288,8 @@ final class GeneratedTypePlanner {
             List<GeneratedClassPlan> classes,
             Inventory inventory,
             JvmAbiMapper mapper,
-            NameAssignment names) {
+            NameAssignment names,
+            boolean sharedSession) {
         for (Map.Entry<String, TupleType> entry : inventory.tuples().entrySet()) {
             TupleType tuple = entry.getValue();
             ArrayList<GeneratedMemberPlan> members = new ArrayList<>();
@@ -301,7 +304,8 @@ final class GeneratedTypePlanner {
                 String fieldName = "$lyra$" + index;
                 members.add(GeneratedMemberPlan.field(GeneratedMemberKind.TUPLE_FIELD, fieldName,
                         memberType, memberType.descriptor(), index, Optional.empty(), Optional.empty()));
-                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.TUPLE_COMPONENT_GET,
+                members.add(GeneratedMemberPlan.rawMethod(sharedSession
+                                ? GeneratedMemberKind.SESSION_TUPLE_COMPONENT_GET : GeneratedMemberKind.TUPLE_COMPONENT_GET,
                         "$lyra$get$" + index, "()" + memberType.descriptor(), false));
                 constructorDescriptors.add(memberType.descriptor());
                 addTypeDependencies(dependencies, tuple.memberType(index),
@@ -643,6 +647,7 @@ final class GeneratedTypePlanner {
                 if (!declaration.scopeId().equals(module.state().rootScope())) {
                     continue;
                 }
+                if (declaration.kind() == DeclarationKind.EXTERNAL) continue;
                 String prefix = "$lyra$binding$" + declarationId.value();
                 IrImportBinding importBinding = importsByDeclaration.get(declarationId);
                 if (importBinding != null) {
@@ -715,6 +720,22 @@ final class GeneratedTypePlanner {
                         GeneratedDependencyKind.MODULE_STATE_FIELD_TYPE, true, names,
                         "module state binding type");
             }
+            module.submissionResult().ifPresent(result -> {
+                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.SESSION_SAFE_POINT,
+                        "$lyra$sessionSafePoint", "()V", false));
+                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_SESSION_ACCESSOR,
+                        "$lyra$sessionAccessor", "(JJLjava/lang/String;Z)Ljava/lang/invoke/MethodHandle;", false));
+                String descriptor = mapper.map(result.type(), JvmMappingContext.JAVA_VALUE).descriptor();
+                addTypeDependencies(dependencies, result.type(),
+                        GeneratedDependencyKind.MODULE_STATE_FIELD_TYPE, true, names,
+                        "submission result storage type");
+                members.add(GeneratedMemberPlan.rawField(GeneratedMemberKind.SESSION_RESULT_FIELD,
+                        "$lyra$sessionResult", descriptor));
+                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.SESSION_EXECUTE,
+                        "$lyra$sessionExecute", "()" + descriptor, false));
+                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.SESSION_RESULT_GET,
+                        "$lyra$sessionResult", "()" + descriptor, false));
+            });
             members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CONSTRUCTOR,
                     "<init>", "(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V", false));
             members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_AUTHORITY_GET,
@@ -733,6 +754,7 @@ final class GeneratedTypePlanner {
     private static void addModuleFacadeClasses(
             List<GeneratedClassPlan> classes,
             TypedIr ir,
+            JvmAbiMapper mapper,
             NameAssignment names,
             Map<ModuleId, String> moduleStates,
             Map<ModuleId, String> moduleFacades,
@@ -759,6 +781,30 @@ final class GeneratedTypePlanner {
                     "$lyra$metadata", "()" + METADATA_DESCRIPTOR, true));
             members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.CLOSE,
                     "close", "()V", false));
+            ir.module(moduleId).orElseThrow().submissionResult().ifPresent(result -> {
+                for (IrDeclaration declaration : ir.declarations()) {
+                    if (!declaration.moduleId().equals(moduleId)
+                            || !declaration.scopeId().equals(ir.module(moduleId).orElseThrow().rootScope())
+                            || declaration.kind() != DeclarationKind.LET) continue;
+                    String value = mapper.map(declaration.contract().orElseThrow().valueType(),
+                            JvmMappingContext.JAVA_VALUE).descriptor();
+                    addTypeDependencies(dependencies, declaration.contract().orElseThrow().valueType(),
+                            GeneratedDependencyKind.FACADE_EXPORT_TYPE, true, names,
+                            "session binding boundary type");
+                    members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.SESSION_BINDING_GET,
+                            "$lyra$sessionRead$binding$" + declaration.id().value(), "()" + value, false));
+                    if (declaration.isMutable()) members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.SESSION_BINDING_SET,
+                            "$lyra$sessionWrite$binding$" + declaration.id().value(), "(" + value + ")V", false));
+                }
+                String descriptor = mapper.map(result.type(), JvmMappingContext.JAVA_VALUE).descriptor();
+                addTypeDependencies(dependencies, result.type(),
+                        GeneratedDependencyKind.FACADE_EXPORT_TYPE, true, names,
+                        "submission result boundary type");
+                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.FACADE_SESSION_RESULT_GET,
+                        "$lyra$sessionResult", "()" + descriptor, false));
+                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.FACADE_SESSION_EXECUTE,
+                        "$lyra$sessionRun", "()V", false));
+            });
             dependencies.add(new GeneratedClassDependency(stateName,
                     GeneratedDependencyKind.FACADE_STATE, true,
                     "facade owns exactly one module-state instance"));
@@ -827,7 +873,7 @@ final class GeneratedTypePlanner {
             if (target == null) {
                 throw new IllegalArgumentException("tuple type has no generated class: " + tuple);
             }
-            dependencies.add(new GeneratedClassDependency(target, kind, orderingRequired, reason));
+            addTypeDependency(dependencies, target, kind, orderingRequired, reason);
             for (LyraType member : tuple.memberTypes()) {
                 addTypeDependencies(dependencies, member, kind, orderingRequired, names, reason);
             }
@@ -838,12 +884,42 @@ final class GeneratedTypePlanner {
             if (target == null) {
                 throw new IllegalArgumentException("function type has no generated interface: " + function);
             }
-            dependencies.add(new GeneratedClassDependency(target, kind, orderingRequired, reason));
+            addTypeDependency(dependencies, target, kind, orderingRequired, reason);
             for (LyraType parameter : function.parameterTypes()) {
                 addTypeDependencies(dependencies, parameter, kind, orderingRequired, names, reason);
             }
             addTypeDependencies(dependencies, function.returnType(), kind, orderingRequired, names, reason);
         }
+    }
+
+    /**
+     * Adds one type edge by its structural identity.  The reason is diagnostic
+     * context, not part of the generated dependency contract, so a composite
+     * session result may legitimately revisit a type already used by a named
+     * binding.  The class-plan validator still rejects conflicting duplicate
+     * edges supplied outside this planner.
+     */
+    private static void addTypeDependency(
+            Set<GeneratedClassDependency> dependencies,
+            String target,
+            GeneratedDependencyKind kind,
+            boolean orderingRequired,
+            String reason) {
+        GeneratedClassDependency candidate = new GeneratedClassDependency(
+                target, kind, orderingRequired, reason);
+        for (GeneratedClassDependency existing : dependencies) {
+            if (!existing.targetBinaryName().equals(candidate.targetBinaryName())
+                    || existing.kind() != candidate.kind()) {
+                continue;
+            }
+            if (existing.orderingRequired() != candidate.orderingRequired()) {
+                throw new IllegalArgumentException(
+                        "conflicting generated dependency ordering: "
+                                + candidate.targetBinaryName() + " / " + candidate.kind());
+            }
+            return;
+        }
+        dependencies.add(candidate);
     }
 
     private static void validateIrCoverage(TypedIr ir) {
@@ -951,6 +1027,8 @@ final class GeneratedTypePlanner {
 
             Set<DeclarationId> functionSlots = ir.declarations().stream()
                     .filter(value -> value.moduleId().equals(module.moduleId()) && value.isFunction())
+                    .filter(value -> value.kind()
+                            != io.mindspice.lyra.compiler.semantic.DeclarationKind.EXTERNAL)
                     .filter(value -> value.kind()
                             != io.mindspice.lyra.compiler.semantic.DeclarationKind.PARAMETER)
                     .filter(value -> value.kind()

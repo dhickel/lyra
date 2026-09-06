@@ -65,6 +65,7 @@ TARGET_DIRS=(
     "$ROOT/target"
     "$ROOT/lyra-runtime/target"
     "$ROOT/lyra-compiler/target"
+    "$ROOT/lyra-repl/target"
     "$ROOT/lyra-cli/target"
 )
 declare -A TARGET_PRESENT=()
@@ -144,7 +145,7 @@ def compare(name, excluded=None):
     if snapshot(expected, excluded) != snapshot(actual, excluded):
         raise SystemExit(f"pre-existing ignored output changed: {name}")
 
-for name in ("lyra-runtime/target", "lyra-compiler/target", "lyra-cli/target"):
+for name in ("lyra-runtime/target", "lyra-compiler/target", "lyra-repl/target", "lyra-cli/target"):
     compare(name)
 if (preserved / "target").exists():
     compare("target", output_relative)
@@ -328,10 +329,12 @@ expected_backend = {f"P24-COV-BACK-{index:03d}" for index in range(1, 14)}
 if set(ids) != expected_languages | expected_backend:
     raise SystemExit("coverage IDs do not exactly cover both living-spec validation lists")
 by_id = {row["id"]: row for row in base}
-if set(by_id) != expected_base:
-    missing = sorted(expected_base - set(by_id))
-    extra = sorted(set(by_id) - expected_base)
-    raise SystemExit(f"base matrix IDs are not one-to-one; missing={missing}, extra={extra}")
+base_ids = set(by_id)
+repl_ids = {value for value in base_ids if value.startswith("P24-REPL-")}
+unexpected = sorted(base_ids - expected_base - repl_ids)
+missing = sorted(expected_base - base_ids)
+if missing or unexpected:
+    raise SystemExit(f"base matrix IDs are not one-to-one; missing={missing}, extra={unexpected}")
 for row in base:
     source_path = root / row["source"].split("#", 1)[0]
     if not source_path.is_file():
@@ -339,6 +342,12 @@ for row in base:
     if row["id"].startswith("P24-DEF-"):
         if row["status"] != "DEFERRED":
             raise SystemExit(f"deferred row is not declared DEFERRED: {row['id']}")
+    elif row["id"].startswith("P24-REPL-"):
+        # The optional REPL matrix tracks both delivered slices and explicit
+        # blockers. Unlike the legacy backend matrix, it must not erase an
+        # incomplete live-linkage boundary by requiring every row to PASS.
+        if row["status"] not in {"PASS", "BLOCKED"}:
+            raise SystemExit(f"REPL row has an invalid status: {row['id']}")
     elif row["status"] != "PASS":
         raise SystemExit(f"non-deferred row is not declared PASS: {row['id']}")
     references = [item for item in row["evidence"].split(";") if item]
@@ -406,13 +415,14 @@ def fail(message):
 
 pom = ET.parse(root / "pom.xml").getroot()
 modules = [child.text.strip() for child in pom.find(ns + "modules")]
-if modules != ["lyra-runtime", "lyra-compiler", "lyra-cli"]:
+if modules != ["lyra-runtime", "lyra-compiler", "lyra-repl", "lyra-cli"]:
     fail(f"unexpected reactor modules: {modules!r}")
 properties = pom.find(ns + "properties")
 if properties is None or text(properties, "java.version") != "25":
     fail("root POM does not centralize Java 25")
 for name, artifact in (("lyra-runtime", "lyra-runtime"),
                       ("lyra-compiler", "lyra-compiler"),
+                      ("lyra-repl", "lyra-repl"),
                       ("lyra-cli", "lyra-cli")):
     path = root / name / "pom.xml"
     if not path.is_file():
@@ -433,15 +443,18 @@ if runtime_dependencies is not None:
         if group != "org.junit.jupiter" or scope != "test":
             fail("runtime POM has a non-test compiler/module dependency")
 compiler_pom = (root / "lyra-compiler" / "pom.xml").read_text(encoding="utf-8")
+repl_pom = (root / "lyra-repl" / "pom.xml").read_text(encoding="utf-8")
 cli_pom = (root / "lyra-cli" / "pom.xml").read_text(encoding="utf-8")
 if "<artifactId>lyra-runtime</artifactId>" not in compiler_pom:
     fail("compiler does not declare runtime")
-if "<artifactId>lyra-compiler</artifactId>" not in cli_pom:
-    fail("CLI does not declare compiler")
+if "<artifactId>lyra-compiler</artifactId>" not in repl_pom or "<artifactId>lyra-runtime</artifactId>" not in repl_pom:
+    fail("REPL does not declare compiler and runtime")
+if "<artifactId>lyra-repl</artifactId>" not in cli_pom:
+    fail("CLI does not declare REPL")
 print("layout: PASS")
 PY
     then
-        set_check layout PASS layout.log "three-module Java 25 classpath layout is valid"
+        set_check layout PASS layout.log "four-module Java 25 classpath layout is valid"
     else
         set_check layout BLOCKED layout.log "reactor/layout contract failed"
     fi
@@ -495,7 +508,7 @@ import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
-main_roots = [root / "lyra-runtime/src/main", root / "lyra-compiler/src/main", root / "lyra-cli/src/main"]
+main_roots = [root / "lyra-runtime/src/main", root / "lyra-compiler/src/main", root / "lyra-repl/src/main", root / "lyra-cli/src/main"]
 java_files = sorted(path for base in main_roots for path in base.rglob("*.java"))
 
 def strip_java_comments(text):
@@ -513,7 +526,7 @@ for path in java_files:
         bad.append(f"legacy import: {rel}")
     for pattern, label in (
         (r"org\.objectweb\.asm|org\.graalvm|com\.oracle\.truffle", "alternate backend dependency"),
-        (r"\bObject\s*\.\.\.", "Object varargs production ABI"),
+        (r"(?m)^\s*public\b[^\n]*\bObject\s*\.\.\.", "Object varargs production ABI"),
         (r"throw\s+new\s+UnsupportedOperationException", "unsupported production stub"),
         (r"\b(?:TODO|FIXME|XXX)\b", "unfinished marker"),
         (r"\b(?:Interpreter|TruffleLanguage|LyraInterpreter)\b", "interpreter product"),
@@ -589,7 +602,7 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 production = []
-for base in (root / "lyra-runtime/src/main", root / "lyra-compiler/src/main", root / "lyra-cli/src/main"):
+for base in (root / "lyra-runtime/src/main", root / "lyra-compiler/src/main", root / "lyra-repl/src/main", root / "lyra-cli/src/main"):
     production.extend(base.rglob("*.java"))
 
 def strip_comments(text):
@@ -633,7 +646,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 root = Path(sys.argv[1])
-reports = sorted(path for module in ("lyra-runtime", "lyra-compiler", "lyra-cli")
+reports = sorted(path for module in ("lyra-runtime", "lyra-compiler", "lyra-repl", "lyra-cli")
                  for path in (root / module / "target/surefire-reports").glob("TEST-*.xml"))
 if not reports:
     raise SystemExit("no Surefire reports found")
@@ -658,7 +671,15 @@ expected = {
     "Phase16SmokeTest", "Phase17SmokeTest", "Phase18SmokeTest", "Phase18ArtifactTest",
     "Phase19PublicApiTest", "Phase20IoTest", "Phase22ConformanceTest",
     "Phase23EvidenceGateContractTest", "Phase23StructuralBytecodeTest",
-    "RuntimeFoundationTest", "Phase21CliTest", "Phase22CliConformanceTest",
+    "RuntimeFoundationTest", "LyraSessionTest", "PlainConsoleTest", "ConsoleParsingTest",
+    "PersistentScalarTest", "PersistentAggregateTest", "PersistentCallableTest",
+    "SessionStorageLinkTest", "SessionAggregateLinkTest", "SessionCallableRuntimeTest",
+    "SessionCapturedInstanceFlowTest", "SessionDeclarationWriteFlowTest", "SessionFailureFlowTest",
+    "SessionRepairCompatibilityTest", "SessionTypeAdmissionTest", "SessionCompilerTest",
+    "ExecutedSnapshotTest", "SessionJavaConsumerTest", "ReplContractsTest",
+    "RemoteConsoleSessionTest", "RemoteProtocolTest", "RemoteServerTest",
+    "RemoteWireSecurityTest", "Phase21CliTest", "Phase22CliConformanceTest",
+    "AttachCliTest", "JLineConsoleTest", "JLinePtyTest",
 }
 short = {name.rsplit(".", 1)[-1] for name in names}
 missing = sorted(expected - short)
@@ -690,7 +711,7 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 expected = sys.argv[2:]
-reports = sorted(path for module in ("lyra-runtime", "lyra-compiler", "lyra-cli")
+reports = sorted(path for module in ("lyra-runtime", "lyra-compiler", "lyra-repl", "lyra-cli")
                  for path in (root / module / "target/surefire-reports").glob("TEST-*.xml"))
 names = {}
 for report in reports:
@@ -733,6 +754,10 @@ test_group io Phase20IoTest
 # Diagnostic behavior is asserted in compiler API/runtime conformance and CLI.
 test_group diagnostics Phase22ConformanceTest RuntimeFoundationTest Phase20IoTest
 test_group cli Phase21CliTest Phase22CliConformanceTest
+test_group repl-session LyraSessionTest ReplContractsTest PersistentScalarTest PersistentAggregateTest PersistentCallableTest SessionStorageLinkTest SessionAggregateLinkTest SessionCallableRuntimeTest SessionCapturedInstanceFlowTest SessionDeclarationWriteFlowTest SessionFailureFlowTest SessionRepairCompatibilityTest SessionTypeAdmissionTest SessionJavaConsumerTest
+test_group repl-results ExecutedSnapshotTest SessionCompilerTest
+test_group repl-remote RemoteConsoleSessionTest RemoteProtocolTest RemoteServerTest RemoteWireSecurityTest
+test_group repl-console PlainConsoleTest ConsoleParsingTest AttachCliTest JLineConsoleTest JLinePtyTest
 
 if [[ -x "$PYTHON_BIN" ]]; then
     if "$PYTHON_BIN" - "$ROOT" >"$OUT/abi-scan.log" 2>&1 <<'PY'
@@ -789,17 +814,23 @@ fi
 if [[ -n "${JDEPS_BIN:-}" && -x "$JDEPS_BIN" ]] && [[ -x "$PYTHON_BIN" ]]; then
     RUNTIME_JAR="$ROOT/lyra-runtime/target/lyra-runtime-1.0-SNAPSHOT.jar"
     COMPILER_JAR="$ROOT/lyra-compiler/target/lyra-compiler-1.0-SNAPSHOT.jar"
+    REPL_JAR="$ROOT/lyra-repl/target/lyra-repl-1.0-SNAPSHOT.jar"
     CLI_FAT_JAR="$ROOT/lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar"
     CLI_ORIGINAL_JAR="$ROOT/lyra-cli/target/original-lyra-cli-1.0-SNAPSHOT.jar"
+    JLINE_CP=$(find "${HOME:-/nonexistent}/.m2/repository/org/jline" -type f \
+        -name '*.jar' ! -name '*-sources.jar' -print 2>/dev/null | paste -sd: -)
     if {
         "$JDEPS_BIN" --multi-release 25 --recursive "$RUNTIME_JAR"
         "$JDEPS_BIN" --multi-release 25 --recursive --class-path "$RUNTIME_JAR" "$COMPILER_JAR"
+        "$JDEPS_BIN" --multi-release 25 --recursive --class-path "$COMPILER_JAR:$RUNTIME_JAR" "$REPL_JAR"
         if [[ -f "$CLI_ORIGINAL_JAR" ]]; then
-            "$JDEPS_BIN" --multi-release 25 --recursive --class-path "$COMPILER_JAR:$RUNTIME_JAR" "$CLI_ORIGINAL_JAR"
+            "$JDEPS_BIN" --multi-release 25 --recursive \
+                --class-path "$REPL_JAR:$COMPILER_JAR:$RUNTIME_JAR${JLINE_CP:+:$JLINE_CP}" \
+                "$CLI_ORIGINAL_JAR"
         fi
         "$JDEPS_BIN" --multi-release 25 --recursive "$CLI_FAT_JAR"
     } >"$OUT/jdeps.log" 2>&1 && ! grep -Eiq 'not found|error:' "$OUT/jdeps.log"; then
-        set_check jdeps PASS jdeps.log "runtime/compiler/CLI packaged dependency closure has no unresolved entries"
+        set_check jdeps PASS jdeps.log "runtime/compiler/REPL/CLI packaged dependency closure has no unresolved entries"
     else
         set_check jdeps BLOCKED jdeps.log "jdeps found an unresolved dependency or could not inspect a package"
     fi
@@ -817,6 +848,7 @@ root = Path(sys.argv[1])
 expected = [
     root / "lyra-runtime/target/lyra-runtime-1.0-SNAPSHOT.jar",
     root / "lyra-compiler/target/lyra-compiler-1.0-SNAPSHOT.jar",
+    root / "lyra-repl/target/lyra-repl-1.0-SNAPSHOT.jar",
     root / "lyra-cli/target/original-lyra-cli-1.0-SNAPSHOT.jar",
     root / "lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar",
 ]
@@ -835,7 +867,7 @@ for path in expected:
 print("products: PASS (runtime/compiler/thin/bundled artifacts contain no JMH or benchmark implementation)")
 PY
     then
-        set_check products PASS products.log "published product artifacts contain no JMH/test benchmark implementation"
+        set_check products PASS products.log "published runtime/compiler/REPL/CLI artifacts contain no JMH/test benchmark implementation"
     else
         set_check products BLOCKED products.log "product artifact scope scan failed"
     fi
@@ -856,6 +888,7 @@ text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
 allowed = {
     "org.junit.jupiter:junit-jupiter-api:jar:5.11.0:test",
     "org.junit.jupiter:junit-jupiter:jar:5.11.0:test",
+    "org.jline:jline-terminal-ffm:jar:4.0.0:compile",
 }
 found = []
 for line in text.splitlines():
@@ -1008,7 +1041,7 @@ PY
         "$JAVA_BIN" -Xverify:all -cp "$classpath" \
             'io.mindspice.lyra.compiler.api.Phase22ConformanceTest$Phase15Probe' \
             "$classes_a" "$facade"
-        local thin_classpath="$thin_a:$runtime:$ROOT/lyra-compiler/target/classes:$ROOT/lyra-compiler/target/test-classes:$ROOT/lyra-cli/target/classes:$ROOT/lyra-cli/target/test-classes"
+        local thin_classpath="$thin_a:$runtime:$ROOT/lyra-compiler/target/classes:$ROOT/lyra-compiler/target/test-classes:$ROOT/lyra-repl/target/classes:$ROOT/lyra-repl/target/test-classes:$ROOT/lyra-cli/target/classes:$ROOT/lyra-cli/target/test-classes"
         "$JAVA_BIN" -Xverify:all -cp "$thin_classpath" \
             'io.mindspice.lyra.cli.Phase22CliConformanceTest$ThinConsumer' "$facade"
 

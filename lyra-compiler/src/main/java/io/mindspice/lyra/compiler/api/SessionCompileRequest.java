@@ -3,6 +3,7 @@ package io.mindspice.lyra.compiler.api;
 import io.mindspice.lyra.compiler.session.SessionRevision;
 import io.mindspice.lyra.compiler.session.SessionSnapshot;
 import io.mindspice.lyra.compiler.source.SourceConfiguration;
+import io.mindspice.lyra.compiler.source.SourceId;
 import io.mindspice.lyra.runtime.LyraRuntimeConstants;
 
 import java.nio.file.Path;
@@ -15,6 +16,7 @@ import java.util.Objects;
 /** Immutable input for compiling one source submission against a session snapshot. */
 public final class SessionCompileRequest {
     private final EvaluationSource source;
+    private final SourceId sourceId;
     private final SessionSnapshot snapshot;
     private final SessionRevision baseRevision;
     private final List<Path> sourceRoots;
@@ -28,6 +30,8 @@ public final class SessionCompileRequest {
     private SessionCompileRequest(Builder builder) {
         source = Objects.requireNonNull(builder.source, "source");
         snapshot = Objects.requireNonNull(builder.snapshot, "snapshot");
+        sourceId = builder.sourceId != null
+                ? builder.sourceId : defaultSourceId(source, snapshot);
         baseRevision = Objects.requireNonNull(builder.baseRevision, "baseRevision");
         if (!baseRevision.equals(snapshot.revision())) {
             throw new IllegalArgumentException(
@@ -59,6 +63,11 @@ public final class SessionCompileRequest {
 
     public EvaluationSource source() {
         return source;
+    }
+
+    /** Compiler identity, independent of the passive caller origin. */
+    public SourceId sourceId() {
+        return sourceId;
     }
 
     public SessionSnapshot snapshot() {
@@ -98,13 +107,16 @@ public final class SessionCompileRequest {
     }
 
     public SourceConfiguration sourceConfiguration() {
-        return SourceConfiguration.ofPaths(sourceRoots, new ArrayList<>(resolvers), semanticOptions);
+        Map<String, String> revisionOptions = new LinkedHashMap<>(semanticOptions);
+        revisionOptions.put("lyra.execution-profile", "submission-result-1");
+        return SourceConfiguration.ofPaths(sourceRoots, new ArrayList<>(resolvers), revisionOptions);
     }
 
     @Override
     public boolean equals(Object other) {
         return this == other || other instanceof SessionCompileRequest request
                 && source.equals(request.source)
+                && sourceId.equals(request.sourceId)
                 && snapshot.equals(request.snapshot)
                 && baseRevision.equals(request.baseRevision)
                 && sourceRoots.equals(request.sourceRoots)
@@ -118,12 +130,13 @@ public final class SessionCompileRequest {
 
     @Override
     public int hashCode() {
-        return Objects.hash(source, snapshot, baseRevision, sourceRoots, resolvers,
+        return Objects.hash(source, sourceId, snapshot, baseRevision, sourceRoots, resolvers,
                 javaBasePackage, javaTarget, previewEnabled, includeSources, semanticOptions);
     }
 
     public static final class Builder {
         private EvaluationSource source;
+        private SourceId sourceId;
         private SessionSnapshot snapshot = SessionSnapshot.empty();
         private SessionRevision baseRevision = snapshot.revision();
         private boolean baseRevisionSet;
@@ -142,6 +155,17 @@ public final class SessionCompileRequest {
 
         public Builder source(String label, String text) {
             return source(EvaluationSource.of(label, text));
+        }
+
+        /**
+         * Sets the compiler identity reserved by the session owner. Distinct
+         * submissions should use distinct identities even when origins match.
+         * If omitted, the origin URI or label supplies the legacy identity
+         * (an unrepresentable label uses {@code repl/submission-anonymous.lyra}).
+         */
+        public Builder sourceId(SourceId value) {
+            sourceId = Objects.requireNonNull(value, "sourceId");
+            return this;
         }
 
         public Builder snapshot(SessionSnapshot value) {
@@ -214,6 +238,39 @@ public final class SessionCompileRequest {
         public SessionCompileRequest build() {
             return new SessionCompileRequest(this);
         }
+    }
+
+    private static SourceId defaultSourceId(
+            EvaluationSource source, SessionSnapshot snapshot) {
+        if (snapshot.revision().equals(SessionRevision.initial())) {
+            if (source.origin().uri().isPresent()) {
+                return SourceId.uri(source.origin().uri().orElseThrow());
+            }
+            try {
+                return SourceId.of(source.origin().label());
+            } catch (IllegalArgumentException ignored) {
+                return SourceId.path("repl/submission-anonymous.lyra");
+            }
+        }
+        SourceId candidate;
+        if (source.origin().uri().isPresent()) {
+            candidate = SourceId.uri(source.origin().uri().orElseThrow());
+        } else {
+            try {
+                candidate = SourceId.of(source.origin().label());
+            } catch (IllegalArgumentException ignored) {
+                candidate = SourceId.path("repl/submission-anonymous.lyra");
+            }
+        }
+        // A legacy request has no session-owned source identity. Only avoid a
+        // predecessor collision; ordinary later submissions retain their
+        // caller-facing label/URI for diagnostics.
+        SourceId requested = candidate;
+        if (snapshot.flowCertificate().map(certificate ->
+                certificate.containsSourceId(requested)).orElse(false)) {
+            return SourceId.path("repl/submission-" + snapshot.revision().value() + ".lyra");
+        }
+        return candidate;
     }
 
     private static List<Path> copyPaths(List<Path> values) {

@@ -9,7 +9,8 @@ public final class LyraClosureSupport {
 
     /**
      * Rejects arbitrary Java objects/SAMs and accepts only a closure carrying
-     * the expected artifact ownership and exact Lyra signature.
+     * the expected artifact ownership or explicitly linked source-local
+     * session authority, and the exact Lyra signature.
      */
     public static LyraClosure requireAuthenticated(Object candidate,
                                                     LyraClosureAuthority expectedOwner,
@@ -21,7 +22,7 @@ public final class LyraClosureSupport {
             throw new LyraLinkException("function value is not an authenticated Lyra closure");
         }
         if (!expectedOwner.authenticates(closure)) {
-            throw new LyraLinkException("function value belongs to a different Lyra artifact");
+            throw new LyraLinkException("function value belongs to an unrelated Lyra artifact or session");
         }
         closure.checkInvocation(expectedSignature);
         return closure;
@@ -39,7 +40,7 @@ public final class LyraClosureSupport {
             throw new LyraLinkException("function value is not an authenticated Lyra closure");
         }
         if (!expectedOwner.authenticates(closure)) {
-            throw new LyraLinkException("function value belongs to a different Lyra artifact");
+            throw new LyraLinkException("function value belongs to an unrelated Lyra artifact or session");
         }
         closure.authority().token().checkGeneratedInvocation();
         if (!closure.signature().equals(expectedSignature)) {

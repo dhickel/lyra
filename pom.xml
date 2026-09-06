@@ -15,6 +15,7 @@
     <modules>
         <module>lyra-runtime</module>
         <module>lyra-compiler</module>
+        <module>lyra-repl</module>
         <module>lyra-cli</module>
     </modules>
 
@@ -29,6 +30,7 @@
         <lyra.preview.compiler.arg>--enable-preview</lyra.preview.compiler.arg>
         <lyra.preview.jvm.args>--enable-preview</lyra.preview.jvm.args>
 
+        <jline.version>4.0.0</jline.version>
         <junit.version>5.11.0</junit.version>
         <jmh.version>1.37</jmh.version>
 
@@ -44,6 +46,21 @@
 
     <dependencyManagement>
         <dependencies>
+            <dependency>
+                <groupId>org.jline</groupId>
+                <artifactId>jline-reader</artifactId>
+                <version>${jline.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.jline</groupId>
+                <artifactId>jline-terminal</artifactId>
+                <version>${jline.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.jline</groupId>
+                <artifactId>jline-terminal-ffm</artifactId>
+                <version>${jline.version}</version>
+            </dependency>
             <dependency>
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter</artifactId>

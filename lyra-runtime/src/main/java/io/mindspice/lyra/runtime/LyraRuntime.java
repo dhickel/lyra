@@ -127,20 +127,157 @@ public final class LyraRuntime {
         return load(new MemoryArtifactSource(metadata, entries), options);
     }
 
+    /**
+     * Tooling-only extraction of an already executed submission's exact result.
+     * Boxing occurs only here, after execution; generated storage and the accessor
+     * keep their exact primitive/reference descriptors. No arbitrary member name
+     * or user function can be invoked through this boundary.
+     */
+    public static Object readSubmissionResult(ModuleHandle module, LyraType expectedType) {
+        Objects.requireNonNull(expectedType, "expectedType");
+        if (!(Objects.requireNonNull(module, "module") instanceof ModuleHandleImpl handle)) {
+            throw new LyraLinkException("submission result requires a runtime-owned module");
+        }
+        handle.requireOwner();
+        if (handle.isClosed() || handle.context.isClosed()) {
+            throw new LyraClosedException("submission result module is closed");
+        }
+        try {
+            Method accessor = handle.facade.getMethod("$lyra$sessionResult");
+            LyraSubmissionResult contract = accessor.getAnnotation(LyraSubmissionResult.class);
+            if (contract == null || !expectedType.canonicalSpelling().equals(contract.value())
+                    || Modifier.isStatic(accessor.getModifiers()) || accessor.getReturnType() == void.class) {
+                throw new LyraLinkException("submission result contract mismatch");
+            }
+            MethodHandle reader = MethodHandles.publicLookup().unreflect(accessor)
+                    .bindTo(handle.instance).asType(MethodType.methodType(Object.class));
+            return (Object) reader.invokeExact();
+        } catch (NoSuchMethodException | IllegalAccessException failure) {
+            throw new LyraLinkException("module has no generated submission result", List.of(), failure);
+        } catch (RuntimeException | Error failure) {
+            throw failure;
+        } catch (Throwable failure) {
+            throw new LyraInternalException("submission result extraction failed", List.of(), List.of(), failure);
+        }
+    }
+
+    /** Loads one new submission with a separately authenticated typed link table. */
+    public static LoadedArtifact loadSubmission(ArtifactSource artifact, LoadOptions options,
+                                               SessionStorageDomain.Linkage linkage) {
+        Objects.requireNonNull(linkage, "linkage").validate(artifact.metadata());
+        return load(copyArtifact(artifact), options, Container.IN_MEMORY, linkage);
+    }
+
+    /**
+     * Constructs an authenticated source-local submission shell without executing source.
+     * The owner retains this OPEN generation before its one-shot execution, so values
+     * escaping a later failed evaluation keep their original lifecycle and storage.
+     */
+    public static ModuleHandle prepareSubmission(LoadedArtifact artifact) {
+        if (!(Objects.requireNonNull(artifact, "artifact") instanceof LoadedArtifactImpl loaded)
+                || loaded.artifactKey.sessionLinkage() == null || loaded.metadata.modules().size() != 1) {
+            throw new LyraLinkException("submission preparation requires a source-local session artifact");
+        }
+        loaded.artifactKey.sessionLinkage().validate(loaded.metadata);
+        Class<?> facade = loaded.facades.get(loaded.metadata.rootModuleId());
+        try {
+            Method result = facade.getMethod("$lyra$sessionResult");
+            Method run = facade.getMethod("$lyra$sessionRun");
+            if (result.getAnnotation(LyraSubmissionResult.class) == null
+                    || Modifier.isStatic(run.getModifiers()) || run.getReturnType() != void.class) {
+                throw new LyraLinkException("artifact has no guarded submission entry point");
+            }
+        } catch (ReflectiveOperationException failure) {
+            throw new LyraLinkException("artifact has no guarded submission entry point", List.of(), failure);
+        }
+        return loaded.instantiate(loaded.metadata.rootModuleId(), true);
+    }
+
+    /** Executes only the prepared generation's new forms; failure does not close it. */
+    public static void executeSubmission(ModuleHandle module) {
+        if (!(Objects.requireNonNull(module, "module") instanceof ModuleHandleImpl handle)) {
+            throw new LyraLinkException("submission execution requires a runtime-owned module");
+        }
+        handle.requireOwner();
+        handle.requireOpen();
+        if (!handle.deferredSubmission) throw new LyraLinkException("submission was not prepared for execution");
+        try {
+            MethodHandle run = MethodHandles.publicLookup().findVirtual(handle.facade,
+                    "$lyra$sessionRun", MethodType.methodType(void.class)).bindTo(handle.instance);
+            run.invokeExact();
+        } catch (NoSuchMethodException | IllegalAccessException failure) {
+            throw new LyraLinkException("submission entry point is not callable", List.of(), failure);
+        } catch (RuntimeException | Error failure) {
+            throw failure;
+        } catch (Throwable failure) {
+            throw new LyraInternalException("submission execution failed", List.of(), List.of(), failure);
+        }
+    }
+
+    static void requireSessionDataGeneration(ModuleHandle module, SessionStorageDomain domain) {
+        if (!(module instanceof ModuleHandleImpl handle)) {
+            throw new LyraLinkException("aggregate storage requires a runtime-owned generation");
+        }
+        handle.requireOwner();
+        SessionStorageDomain.Linkage linkage = handle.context.artifactKey.sessionLinkage();
+        // Until imported provenance is retained in session snapshots, only a
+        // source-local generation in this exact domain can certify data storage.
+        if (linkage == null || !linkage.belongsTo(domain)
+                || handle.context.metadata.modules().size() != 1) {
+            throw new LyraLinkException("aggregate storage requires a source-local generation in this session domain");
+        }
+    }
+
+    static MethodHandle submissionStorageAccessor(ModuleHandle module,
+            SessionStorageDomain.Requirement requirement, boolean write) {
+        if (!(Objects.requireNonNull(module, "module") instanceof ModuleHandleImpl handle)) {
+            throw new LyraLinkException("session storage requires a runtime-owned generation");
+        }
+        handle.requireOwner();
+        if (handle.isClosed() || handle.context.isClosed()) throw new LyraClosedException("storage generation is closed");
+        try {
+            Method reader = handle.facade.getMethod("$lyra$sessionRead$binding$" + requirement.id());
+            LyraSessionBinding binding = reader.getAnnotation(LyraSessionBinding.class);
+            if (binding == null || binding.id() != requirement.id()
+                    || binding.storageIdentity() != requirement.storageIdentity() || !binding.name().equals(requirement.name())
+                    || !binding.type().equals(requirement.type()) || binding.mutable() != requirement.writable()
+                    || Modifier.isStatic(reader.getModifiers())
+                    || reader.getReturnType() != SessionStorageDomain.storageClass(LyraType.parse(requirement.type()),
+                            handle.context.loader, handle.context.metadata.javaPackage())) {
+                throw new LyraLinkException("generated storage contract mismatch");
+            }
+            Method accessor = write ? handle.facade.getMethod("$lyra$sessionWrite$binding$" + requirement.id(),
+                    reader.getReturnType()) : reader;
+            if (write && (!binding.mutable() || accessor.getReturnType() != void.class
+                    || Modifier.isStatic(accessor.getModifiers()))) throw new LyraLinkException("invalid storage setter");
+            return MethodHandles.publicLookup().unreflect(accessor).bindTo(handle.instance);
+        } catch (ReflectiveOperationException failure) {
+            throw new LyraLinkException("generated session storage accessor is absent", List.of(), failure);
+        }
+    }
+
+    private static LoadedArtifact load(ArtifactData data, LoadOptions options, Container container) {
+        return load(data, options, container, null);
+    }
+
     private static LoadedArtifact load(ArtifactData data, LoadOptions options,
-                                       Container container) {
+                                       Container container, SessionStorageDomain.Linkage linkage) {
         ArtifactMetadata metadata = preflight(data, options, container);
+        if (linkage != null) linkage.validate(metadata);
         // Bundled artifacts carry a copy of the runtime for java -jar, but
         // generated classes must still resolve against this one shared parent
         // runtime.  classEntries() therefore excludes bundled runtime classes
         // instead of defining a duplicate runtime domain in the child loader.
         Map<String, byte[]> classes = classEntries(data.entries(), metadata);
-        ArtifactClassLoader loader = new ArtifactClassLoader(SHARED_RUNTIME_LOADER, classes);
+        ClassLoader parent = linkage == null ? SHARED_RUNTIME_LOADER : linkage.typeLoader(classes);
+        ArtifactClassLoader loader = new ArtifactClassLoader(parent, classes);
         try {
             Map<String, Class<?>> defined = loader.defineAll();
             validateDebugMap(data.entries(), metadata, defined, loader);
             Map<ModuleId, Class<?>> facades = validateFacades(metadata, defined, loader);
-            return new LoadedArtifactImpl(metadata, options, loader, facades);
+            LoadedArtifact result = new LoadedArtifactImpl(metadata, options, loader, facades, linkage);
+            if (linkage != null) linkage.publishTypes(parent);
+            return result;
         } catch (VerifyError failure) {
             loader.closeLoader();
             throw new LyraVerificationException(
@@ -757,7 +894,7 @@ public final class LyraRuntime {
         }
     }
 
-    private static String sha256(String domain, String... fields) {
+    static String sha256(String domain, String... fields) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             put(digest, domain);
@@ -894,6 +1031,13 @@ public final class LyraRuntime {
         }
 
         private Class<?> defineDirect(String name, byte[] bytes) {
+            if (getParent() instanceof SessionTypeLoader && SessionTypeLoader.isShared(name)) {
+                try {
+                    return getParent().loadClass(name);
+                } catch (ClassNotFoundException failure) {
+                    throw new LyraLinkException("session structural type is absent: " + name, List.of(), failure);
+                }
+            }
             Class<?> existing = findLoadedClass(name);
             return existing == null ? defineClass(name, bytes, 0, bytes.length) : existing;
         }
@@ -917,16 +1061,18 @@ public final class LyraRuntime {
 
         private LoadedArtifactImpl(ArtifactMetadata metadata, LoadOptions options,
                                    ArtifactClassLoader loader,
-                                   Map<ModuleId, Class<?>> facades) {
+                                   Map<ModuleId, Class<?>> facades, SessionStorageDomain.Linkage linkage) {
             this.metadata = metadata;
             this.options = options;
             this.loader = loader;
             this.facades = facades;
             // The key is shared by every instance of this loaded artifact so
-            // closure authentication remains artifact-local.  Its immutable
-            // I/O environment is likewise shared, while each generated state
+            // ordinary closure authentication remains artifact-local. Explicit
+            // source-local session linkage grants separate cross-generation
+            // authority without merging keys. The immutable I/O environment
+            // is likewise shared, while each generated state
             // still captures its own caller/owner thread.
-            this.artifactKey = new LyraArtifactKey(options.ioEnvironment());
+            this.artifactKey = new LyraArtifactKey(null, options.ioEnvironment(), linkage);
         }
 
         @Override
@@ -936,6 +1082,10 @@ public final class LyraRuntime {
 
         @Override
         public ModuleHandle instantiate(ModuleId moduleId) {
+            return instantiate(moduleId, false);
+        }
+
+        private ModuleHandle instantiate(ModuleId moduleId, boolean deferredSubmission) {
             Objects.requireNonNull(moduleId, "rootModule");
             Class<?> facade;
             synchronized (this) {
@@ -957,13 +1107,17 @@ public final class LyraRuntime {
                     activeInstantiations++;
                     instantiationReserved = true;
                 }
-                RuntimeOptions runtimeOptions = options.runtimeOptions(owner, artifactKey);
+                if (artifactKey.sessionLinkage() != null) artifactKey.sessionLinkage().validate(metadata);
+                LyraArtifactKey instanceKey = deferredSubmission
+                        ? new LyraArtifactKey(OwnerThread.of(owner), options.ioEnvironment(),
+                                artifactKey.sessionLinkage(), true) : artifactKey;
+                RuntimeOptions runtimeOptions = options.runtimeOptions(owner, instanceKey);
                 MethodType factoryType = MethodType.methodType(facade, RuntimeOptions.class);
                 MethodHandle factory = MethodHandles.publicLookup().findStatic(
                         facade, "$lyra$create", factoryType)
                         .asType(MethodType.methodType(Object.class, RuntimeOptions.class));
                 Object instance = (Object) factory.invokeExact(runtimeOptions);
-                ModuleHandleImpl handle = new ModuleHandleImpl(this, moduleId, facade, instance, owner);
+                ModuleHandleImpl handle = new ModuleHandleImpl(this, moduleId, facade, instance, owner, deferredSubmission);
                 synchronized (this) {
                     activeInstantiations--;
                     instantiationReserved = false;
@@ -1037,16 +1191,18 @@ public final class LyraRuntime {
         private final Class<?> facade;
         private final Object instance;
         private final Thread owner;
+        private final boolean deferredSubmission;
         private final Map<ExportKey, ExportHandle> exports = new HashMap<>();
         private boolean closed;
 
         private ModuleHandleImpl(LoadedArtifactImpl context, ModuleId moduleId,
-                                 Class<?> facade, Object instance, Thread owner) {
+                                 Class<?> facade, Object instance, Thread owner, boolean deferredSubmission) {
             this.context = context;
             this.moduleId = moduleId;
             this.facade = facade;
             this.instance = instance;
             this.owner = owner;
+            this.deferredSubmission = deferredSubmission;
         }
 
         @Override

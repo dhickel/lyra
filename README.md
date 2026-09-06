@@ -1,6 +1,6 @@
 # Lyra
 
-Lyra is an experimental standalone functional JVM scripting language. The current product builds Lyra source into deterministic Java 25 class files, class directories, thin JARs, or bundled runnable JARs. It also provides a dependency-free runtime, typed generated Java facades, exact runtime export handles, and a small `run`/`compile` CLI.
+Lyra is an experimental standalone functional JVM scripting language. The current product builds Lyra source into deterministic Java 25 class files, class directories, thin JARs, or bundled runnable JARs. It also provides a dependency-free runtime, typed generated Java facades, exact runtime export handles, a small `run`/`compile` CLI, and an optional REPL foundation.
 
 ## Requirements
 
@@ -13,11 +13,12 @@ Lyra is an experimental standalone functional JVM scripting language. The curren
 mvn clean verify
 ```
 
-The reactor contains exactly three classpath modules:
+The reactor contains four classpath modules:
 
 - `lyra-runtime`: runtime values, metadata, lifecycle, I/O, loading, and launcher support;
 - `lyra-compiler`: source resolution, lexer/parser, semantic analysis, validated typed IR, direct Class-File API emission, and artifact assembly;
-- `lyra-cli`: command parsing, compilation/execution commands, and launch scripts.
+- `lyra-repl`: owner-confined session contracts, bounded authenticated transport, and plain-console session behavior;
+- `lyra-cli`: command parsing, compilation/execution commands, REPL/attachment adapters, and launch scripts.
 
 ## CLI
 
@@ -32,7 +33,19 @@ A runnable bundled artifact requires a public `main :Fn<Array<String>;I32>` expo
 
 ## Java API
 
-`io.mindspice.lyra.compiler.api.LyraCompiler` compiles immutable source requests to validated `CompiledArtifact` values. `io.mindspice.lyra.runtime.LyraRuntime` loads artifacts, and exact typed `ExportHandle` method handles are available from an instantiated `ModuleHandle`. Generated facades expose typed methods, getters, permitted setters, function-value getters, metadata, and lifecycle operations.
+`io.mindspice.lyra.compiler.api.LyraCompiler` compiles immutable source requests to validated `CompiledArtifact` values. `io.mindspice.lyra.runtime.LyraRuntime` loads artifacts, and exact typed `ExportHandle` method handles are available from an instantiated `ModuleHandle`. Generated facades expose typed methods, getters, permitted setters, function-value getters, metadata, and lifecycle operations. The optional `io.mindspice.lyra.repl` module currently exposes owner-confined session contracts and authenticated transport boundaries.
+
+## REPL status
+
+The plain/JLine consoles, non-executing `:type`, and authenticated loopback protocol are tested. Sessions now retain exact typed scalar storage across submissions, including private bindings and captured scalar cells, and return bounded snapshots of executed final expressions. Generated session form/function/tail-loop boundaries support cooperative API cancellation. For example, three inputs `let @mut count :I32 = 1`, `count := 2`, and `count` return `I32` value `2` without rerunning earlier source.
+
+Arrays and tuples containing scalars or further data aggregates also persist through exact typed storage and shared structural JVM classes. For example, submit `let @mut items :Array<I32> = Array<I32>[1]`, then `let alias = items`, then `items[0] := 42`; reading `alias[0]` returns `I32 42`. Rebinding selects a new value without changing earlier aliases. Completed data mutations survive a later failure or cancellation without publishing failed declarations.
+
+Compiler-certified named callable persistence now works for source-local session generations. Callable summaries retain call targets, captured cells, writes, allocation provenance and source operation sites across submissions, so higher-order calls, returned closures, recursion, callable-bearing arrays/tuples, lexical replacement, failure recovery and cooperative cancellation use the original generated code and storage. Exact signatures, producer certificates and generation authority are checked before a retained callable is admitted. Imported callable/module linkage remains a structured `LYC-SESSION-001` boundary.
+
+A separate runtime bridge permits exact callable values between successfully initialized source-local generations in one authenticated session domain. It preserves original closures/cells and rejects foreign sessions/SAMs and retired generations. This is tested through generated Java export signatures and complements, rather than replaces, compiler-side named persistence.
+
+This is partial REPL implementation. Imported-module persistence, reload, configured roots, coordinated program input, asynchronous owner execution and application/debug attachment remain incomplete. Aggregate and callable linkage currently requires source-local generations in the same authenticated session domain. Unsupported linkage returns diagnostics rather than replaying source or simulating values. Local execution remains confined to the thread that opens the session.
 
 ## Scope
 
