@@ -181,7 +181,7 @@ public interface ConsoleSession extends AutoCloseable {
             return new DiagnosticInfo(
                     diagnostic.code().value(),
                     diagnostic.severity().name(),
-                    diagnostic.summary(),
+                    boundedText(diagnostic.summary()),
                     Span.from(diagnostic.primarySpan()),
                     diagnostic.relatedSpans().stream()
                             .map(RelatedSpan::from)
@@ -197,13 +197,14 @@ public interface ConsoleSession extends AutoCloseable {
             frame.excerpt().filter(value -> !value.isEmpty()).ifPresent(value ->
                     related.add(new RelatedSpan(span, escapedExcerpt(value))));
             return new DiagnosticInfo(failure.code(), "ERROR",
-                    failure.summary() + " in " + frame.functionName(), span, related);
+                    boundedText(failure.summary() + " in " + frame.functionName()), span, related);
         }
 
         private static String escapedExcerpt(String value) {
             StringBuilder text = new StringBuilder();
             int limit = Math.min(value.length(), 128);
-            if (limit < value.length() && Character.isHighSurrogate(value.charAt(limit - 1))) limit--;
+            if (limit < value.length() && limit > 0
+                    && Character.isHighSurrogate(value.charAt(limit - 1))) limit--;
             for (int index = 0; index < limit; index++) {
                 char c = value.charAt(index);
                 if (Character.isHighSurrogate(c) && index + 1 < limit
@@ -215,6 +216,39 @@ public interface ConsoleSession extends AutoCloseable {
             }
             if (limit < value.length()) text.append('…');
             return text.toString();
+        }
+
+        /**
+         * Diagnostic summaries and relation labels may contain source-derived
+         * text. Keep the public console record bounded and terminal-safe while
+         * preserving exact source spans and source identities.
+         */
+        private static String boundedText(String value) {
+            Objects.requireNonNull(value, "diagnostic text");
+            int limit = SnapshotLimits.DEFAULT_MAX_RENDERED_CHARACTERS;
+            StringBuilder result = new StringBuilder(Math.min(value.length(), limit));
+            boolean truncated = false;
+            for (int index = 0; index < value.length(); index++) {
+                char character = value.charAt(index);
+                String rendered;
+                if (Character.isHighSurrogate(character)
+                        && index + 1 < value.length()
+                        && Character.isLowSurrogate(value.charAt(index + 1))) {
+                    rendered = value.substring(index, index + 2);
+                    index++;
+                } else if (Character.isISOControl(character) || Character.isSurrogate(character)) {
+                    rendered = String.format(java.util.Locale.ROOT, "\\u%04X", (int) character);
+                } else {
+                    rendered = String.valueOf(character);
+                }
+                if (result.length() + rendered.length() > limit - 1) {
+                    truncated = true;
+                    break;
+                }
+                result.append(rendered);
+            }
+            if (truncated) result.append('…');
+            return result.toString();
         }
 
         public String render() {
@@ -239,7 +273,7 @@ public interface ConsoleSession extends AutoCloseable {
         }
 
         private static RelatedSpan from(io.mindspice.lyra.compiler.diagnostic.RelatedSpan value) {
-            return new RelatedSpan(Span.from(value.span()), value.label());
+            return new RelatedSpan(Span.from(value.span()), DiagnosticInfo.boundedText(value.label()));
         }
     }
 
