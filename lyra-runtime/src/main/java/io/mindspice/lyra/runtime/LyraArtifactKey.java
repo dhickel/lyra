@@ -1,5 +1,7 @@
 package io.mindspice.lyra.runtime;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -13,6 +15,8 @@ public final class LyraArtifactKey {
     private final SessionStorageDomain.Linkage sessionLinkage;
     private final SessionStorageDomain.RootLifetime rootLifetime;
     private final boolean deferredSubmission;
+    /** One prepared session graph's actual state shells, never ordinary instances. */
+    private final Map<ModuleId, Object> preparedStates = new HashMap<>();
 
     LyraArtifactKey() {
         this(null, RuntimeIoEnvironment.defaults());
@@ -74,5 +78,35 @@ public final class LyraArtifactKey {
 
     RuntimeIoEnvironment ioEnvironment() {
         return ioEnvironment;
+    }
+
+    /** Called by generated state constructors during prepared-graph allocation. */
+    public void registerModuleState(ModuleId moduleId, Object state) {
+        Objects.requireNonNull(moduleId, "moduleId");
+        Objects.requireNonNull(state, "state");
+        if (!deferredSubmission) return;
+        configuredOwner.ifPresent(OwnerThread::check);
+        Object previous = preparedStates.putIfAbsent(moduleId, state);
+        if (previous != null && previous != state) {
+            throw new LyraLinkException("prepared graph allocated a module state twice");
+        }
+    }
+
+    /** Returns the exact state shell from this prepared graph. */
+    public Object moduleState(ModuleId moduleId) {
+        Objects.requireNonNull(moduleId, "moduleId");
+        if (!deferredSubmission) {
+            throw new LyraLinkException("ordinary artifact key has no prepared module graph");
+        }
+        configuredOwner.ifPresent(OwnerThread::check);
+        Object state = preparedStates.get(moduleId);
+        if (state == null) {
+            throw new LyraLinkException("prepared graph has no module state: " + moduleId);
+        }
+        return state;
+    }
+
+    void clearPreparedStates() {
+        preparedStates.clear();
     }
 }

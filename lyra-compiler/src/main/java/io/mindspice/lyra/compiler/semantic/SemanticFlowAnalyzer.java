@@ -1491,7 +1491,7 @@ public final class SemanticFlowAnalyzer {
                     }
                     rejectImportedOwnershipRequirements(
                             success.ownershipRequirements(), frame.module.moduleId(),
-                            diagnosticOrigins);
+                            diagnosticOrigins, Optional.of(targetModule));
                     value = fromFormulas(
                             success.returnValue(), frame.module.moduleId(), call.span());
                     addCallBoundaryOrigins(
@@ -2614,6 +2614,15 @@ public final class SemanticFlowAnalyzer {
                 List<OwnershipRequirement> requirements,
                 ModuleId module,
                 Map<OwnershipOriginKey, Set<SourceSpan>> diagnosticOrigins) {
+            rejectImportedOwnershipRequirements(
+                    requirements, module, diagnosticOrigins, Optional.empty());
+        }
+
+        private void rejectImportedOwnershipRequirements(
+                List<OwnershipRequirement> requirements,
+                ModuleId module,
+                Map<OwnershipOriginKey, Set<SourceSpan>> diagnosticOrigins,
+                Optional<ModuleId> callableModule) {
             for (OwnershipRequirement requirement : requirements.stream()
                     .sorted(OwnershipRequirement::compareTo).toList()) {
                 ValueAlternatives values = fromOwnershipFormulas(
@@ -2624,8 +2633,12 @@ public final class SemanticFlowAnalyzer {
                         == OwnershipRequirement.Kind.MUTABLE_ARGUMENT
                         ? "an imported aggregate alias cannot grant local mutation permission"
                         : "an imported binding is read-only in the importing module";
-                rejectImportedOwnership(
-                        importedFacts(values), requirement.span(), module, message);
+                List<AggregateIdentityFact> imported = importedFacts(values).stream()
+                        .filter(fact -> requirement.kind() != OwnershipRequirement.Kind.AGGREGATE_MUTATION
+                                || callableModule.isEmpty()
+                                || !fact.identity().ownerModule().equals(callableModule.orElseThrow()))
+                        .toList();
+                rejectImportedOwnership(imported, requirement.span(), module, message);
             }
         }
 

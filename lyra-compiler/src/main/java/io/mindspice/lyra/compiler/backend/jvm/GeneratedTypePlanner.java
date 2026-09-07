@@ -726,17 +726,15 @@ final class GeneratedTypePlanner {
                         GeneratedDependencyKind.MODULE_STATE_FIELD_TYPE, true, names,
                         "module state binding type");
             }
-            if (module.submissionResult().isEmpty() && ir.sessionExecution().stream()
-                    .flatMap(value -> value.externalAccesses().stream())
-                    .anyMatch(value -> value.consumer().equals(module.moduleId()))) {
+            if (ir.sessionExecution().isPresent()) {
                 members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_SESSION_ACCESSOR,
                         "$lyra$sessionAccessor", "(JJLjava/lang/String;Z)Ljava/lang/invoke/MethodHandle;", false));
+                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_MODULE_STATE_LOOKUP,
+                        "$lyra$moduleState", "(Lio/mindspice/lyra/runtime/ModuleId;)Ljava/lang/Object;", false));
             }
             module.submissionResult().ifPresent(result -> {
                 members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.SESSION_SAFE_POINT,
                         "$lyra$sessionSafePoint", "()V", false));
-                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_SESSION_ACCESSOR,
-                        "$lyra$sessionAccessor", "(JJLjava/lang/String;Z)Ljava/lang/invoke/MethodHandle;", false));
                 String descriptor = mapper.map(result.type(), JvmMappingContext.JAVA_VALUE).descriptor();
                 addTypeDependencies(dependencies, result.type(),
                         GeneratedDependencyKind.MODULE_STATE_FIELD_TYPE, true, names,
@@ -754,6 +752,8 @@ final class GeneratedTypePlanner {
                     "$lyra$closureAuthority", "()" + AUTHORITY_DESCRIPTOR, false));
             members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CHECK_OPEN,
                     "$lyra$checkOpen", "()V", false));
+            members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_FACTORY_CHECK_OPEN,
+                    "$lyra$factoryCheckOpen", "()V", false));
             members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CLOSE,
                     "$lyra$close", "()V", false));
             classes.add(new GeneratedClassPlan(moduleStates.get(module.moduleId()),
@@ -793,7 +793,7 @@ final class GeneratedTypePlanner {
                     "$lyra$metadata", "()" + METADATA_DESCRIPTOR, true));
             members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.CLOSE,
                     "close", "()V", false));
-            ir.module(moduleId).orElseThrow().submissionResult().ifPresent(result -> {
+            if (ir.sessionExecution().isPresent()) {
                 for (IrDeclaration declaration : ir.declarations()) {
                     if (!declaration.moduleId().equals(moduleId)
                             || !declaration.scopeId().equals(ir.module(moduleId).orElseThrow().rootScope())
@@ -808,6 +808,14 @@ final class GeneratedTypePlanner {
                     if (declaration.isMutable()) members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.SESSION_BINDING_SET,
                             "$lyra$sessionWrite$binding$" + declaration.id().value(), "(" + value + ")V", false));
                 }
+                if (moduleId.equals(ir.rootModule().moduleId())) {
+                    members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.FACADE_MODULE_STATE,
+                            "$lyra$moduleState", "(Lio/mindspice/lyra/runtime/ModuleId;)Ljava/lang/Object;", false));
+                }
+                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.FACADE_VIEW_FACTORY,
+                        "$lyra$view", "(Ljava/lang/Object;)" + facadeDescriptor, true));
+            }
+            ir.module(moduleId).orElseThrow().submissionResult().ifPresent(result -> {
                 String descriptor = mapper.map(result.type(), JvmMappingContext.JAVA_VALUE).descriptor();
                 addTypeDependencies(dependencies, result.type(),
                         GeneratedDependencyKind.FACADE_EXPORT_TYPE, true, names,

@@ -463,12 +463,13 @@ class LyraSessionTest {
                     redeclaration.diagnostics().getFirst().code());
             assertEquals(before, session.workspaceState());
 
-            EvaluationResult.CompilationFailure imported = assertInstanceOf(
-                    EvaluationResult.CompilationFailure.class,
+            EvaluationResult.Success imported = assertInstanceOf(
+                    EvaluationResult.Success.class,
                     session.submit(EvaluationSource.of("import.lyra", "import std->io")));
-            assertEquals(CompilerDiagnosticCodes.EMIT_UNSUPPORTED_FEATURE,
-                    imported.diagnostics().getFirst().code());
-            assertEquals(before, session.workspaceState());
+            assertTrue(imported.diagnostics().isEmpty());
+            assertEquals(new SessionRevision(3), imported.revision());
+            assertEquals(new SessionRevision(3), session.workspaceState().revision());
+            assertEquals(1, session.workspaceState().bindings().size());
         }
     }
 

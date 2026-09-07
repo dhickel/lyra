@@ -227,13 +227,15 @@ record GeneratedMemberPlan(
                     VALUE_GETTER, FUNCTION_VALUE_GETTER, SETTER, FACTORY,
                     FACTORY_WITH_OPTIONS, METADATA, CLOSE, TUPLE_CONSTRUCTOR,
                     FACADE_SESSION_RESULT_GET, FACADE_SESSION_EXECUTE,
+                    FACADE_MODULE_STATE, FACADE_VIEW_FACTORY,
                     SESSION_BINDING_GET, SESSION_BINDING_SET, SESSION_TUPLE_COMPONENT_GET ->
                     GeneratedMemberVisibility.PUBLIC;
             case TUPLE_COMPONENT_GET, CELL_CONSTRUCTOR, CELL_GET, CELL_SET,
                     CELL_PRESENCE_GET, CELL_PAYLOAD_GET, CLOSURE_CONSTRUCTOR,
                     STATE_IMPORT_LINK, STATE_COMPONENT_GET, STATE_COMPONENT_SET,
                     STATE_CONSTRUCTOR, STATE_AUTHORITY_GET, STATE_CHECK_OPEN,
-                    STATE_CLOSE, SESSION_RESULT_GET, SESSION_EXECUTE, STATE_SESSION_ACCESSOR, SESSION_SAFE_POINT -> GeneratedMemberVisibility.PACKAGE;
+                    STATE_CLOSE, STATE_FACTORY_CHECK_OPEN, SESSION_RESULT_GET, SESSION_EXECUTE,
+                    STATE_SESSION_ACCESSOR, STATE_MODULE_STATE_LOOKUP, SESSION_SAFE_POINT -> GeneratedMemberVisibility.PACKAGE;
             default -> GeneratedMemberVisibility.PRIVATE;
         };
     }
@@ -268,7 +270,8 @@ record GeneratedMemberPlan(
     private static void validateStaticness(GeneratedMemberKind kind, boolean staticMember) {
         boolean expected = kind == GeneratedMemberKind.FACTORY
                 || kind == GeneratedMemberKind.FACTORY_WITH_OPTIONS
-                || kind == GeneratedMemberKind.METADATA;
+                || kind == GeneratedMemberKind.METADATA
+                || kind == GeneratedMemberKind.FACADE_VIEW_FACTORY;
         if (staticMember != expected) {
             throw new IllegalArgumentException("generated member has invalid staticness: " + kind);
         }

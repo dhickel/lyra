@@ -16,6 +16,7 @@ public final class ModuleLifecycle implements AutoCloseable {
     private final AtomicReference<LifecycleState> state =
             new AtomicReference<>(LifecycleState.INITIALIZING);
     private final LyraOwnershipToken ownership;
+    private final Object artifactKey;
     private final LyraClosureAuthority closureAuthority;
     private final RuntimeIoEnvironment ioEnvironment;
     private final SessionStorageDomain.Linkage sessionLinkage;
@@ -83,6 +84,7 @@ public final class ModuleLifecycle implements AutoCloseable {
         this.owner = Objects.requireNonNull(owner, "owner");
         this.moduleId = Objects.requireNonNull(moduleId, "moduleId");
         Object key = Objects.requireNonNull(artifactKey, "artifactKey");
+        this.artifactKey = key;
         this.ownership = new LyraOwnershipToken(this, owner, moduleId, key);
         this.closureAuthority = new LyraClosureAuthority(ownership);
         this.ioEnvironment = key instanceof LyraArtifactKey artifact
@@ -127,7 +129,13 @@ public final class ModuleLifecycle implements AutoCloseable {
     /** Publication of one initialized source binding, not a whole namespace. */
     public void initializeSessionBinding(long id) {
         owner.check();
-        if (id < 0 || !submissionStarted || submissionCompleted || !initializedBindings.add(id)) {
+        // Non-root modules in a prepared graph run their eager forms during
+        // the root submission entry point but do not have a result entry of
+        // their own.  Their state is still INITIALIZING, which is the
+        // authoritative boundary for recording initialized storage.
+        boolean validPhase = state.get() == LifecycleState.INITIALIZING
+                || submissionStarted && state.get() == LifecycleState.OPEN;
+        if (id < 0 || submissionCompleted || !validPhase || !initializedBindings.add(id)) {
             throw new LyraLifecycleException("submission binding initialization is out of order");
         }
     }
@@ -153,6 +161,15 @@ public final class ModuleLifecycle implements AutoCloseable {
         if (state.get() != LifecycleState.INITIALIZING) requireOpenAfterOwnerCheck();
         if (sessionLinkage == null) throw new LyraLinkException("submission has no authenticated storage domain");
         return sessionLinkage.accessor(id, storageIdentity, type, write);
+    }
+
+    /** Generated session composition boundary for one prepared graph. */
+    public Object moduleState(ModuleId target) {
+        owner.check();
+        if (!(artifactKey instanceof LyraArtifactKey key)) {
+            throw new LyraLinkException("module-state lookup has no artifact key");
+        }
+        return key.moduleState(target);
     }
 
     public OwnerThread owner() {
@@ -238,6 +255,30 @@ public final class ModuleLifecycle implements AutoCloseable {
     RuntimeIoEnvironment ioEnvironment() {
         owner.check();
         return ioEnvironment;
+    }
+
+    /**
+     * Generated graph cleanup may encounter a dependency whose initializer
+     * failed before the root entry point returned.  That dependency is not a
+     * public module handle, so cleanup retires its ownership without changing
+     * the ordinary direct {@link #close()} failure contract.
+     */
+    public void closeGeneratedState() {
+        owner.check();
+        // Prepared graphs retain uninitialized dependency shells until the
+        // root entry point runs.  If preparation/linking fails before that
+        // point, cleanup must retire those shells without pretending that an
+        // initializer ran.  This boundary is generated cleanup only; the
+        // public close() contract still rejects an ordinary INITIALIZING
+        // module.
+        if (state.compareAndSet(LifecycleState.INITIALIZING, LifecycleState.CLOSED)
+                || state.compareAndSet(LifecycleState.FAILED, LifecycleState.CLOSED)) {
+            retiredBySessionReset = sessionLinkage != null && sessionLinkage.isRetiredByReset();
+            ownership.invalidate();
+            initializedBindings.clear();
+            return;
+        }
+        close();
     }
 
     @Override

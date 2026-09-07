@@ -79,6 +79,7 @@ final class JvmBytecodeEmitter {
     private static final String RUNTIME = "io.mindspice.lyra.runtime.";
     private static final ClassDesc CD_OBJECT = ConstantDescs.CD_Object;
     private static final ClassDesc CD_MODULE_ID = cd(RUNTIME + "ModuleId");
+    private static final ClassDesc CD_ARTIFACT_KEY = cd(RUNTIME + "LyraArtifactKey");
     private static final ClassDesc CD_OBJECTS = cd("java.util.Objects");
     private static final ClassDesc CD_STRING = ConstantDescs.CD_String;
     private static final ClassDesc CD_LIST = ConstantDescs.CD_List;
@@ -926,6 +927,12 @@ final class JvmBytecodeEmitter {
                     code.invokevirtual(CD_LIFECYCLE, "sessionAccessor", method(member.descriptor()));
                     code.areturn();
                 }
+                case STATE_MODULE_STATE_LOOKUP -> {
+                    loadStateLifecycle();
+                    loadParameter(0);
+                    code.invokevirtual(CD_LIFECYCLE, "moduleState", method(member.descriptor()));
+                    code.areturn();
+                }
                 case SESSION_EXECUTE -> emitSessionExecute();
                 case SESSION_RESULT_GET -> emitSessionResultGetter();
                 case STATE_CONSTRUCTOR -> emitStateConstructor();
@@ -933,6 +940,7 @@ final class JvmBytecodeEmitter {
                 case STATE_COMPONENT_SET -> emitStateSetter();
                 case STATE_AUTHORITY_GET -> emitStateAuthorityGetter();
                 case STATE_CHECK_OPEN -> emitStateCheckOpen();
+                case STATE_FACTORY_CHECK_OPEN -> emitStateFactoryCheckOpen();
                 case STATE_CLOSE -> emitStateClose();
                 case STATE_IMPORT_LINK -> emitStateImportLink();
                 default -> throw invalidPlan(memberSpan(), "unexpected module-state method: " + member.kind());
@@ -971,6 +979,18 @@ final class JvmBytecodeEmitter {
                         if (value.writableFacade()) validateImportedAccessor(value, true);
                     }));
             initializeIntrinsicFunctions();
+            // Deferred session artifacts expose their one allocated graph to
+            // the runtime composition boundary.  The key ignores this call
+            // for ordinary artifacts, whose instances intentionally retain
+            // the existing isolated loading behavior.
+            loadParameter(0);
+            code.new_(CD_MODULE_ID);
+            code.dup();
+            code.ldc(module.moduleId().value());
+            code.invokespecial(CD_MODULE_ID, "<init>", method("(Ljava/lang/String;)V"));
+            aloadReceiver();
+            code.invokevirtual(CD_ARTIFACT_KEY, "registerModuleState", method(
+                    "(L" + RUNTIME + "ModuleId;Ljava/lang/Object;)V"));
             code.return_();
         }
 
@@ -1025,6 +1045,24 @@ final class JvmBytecodeEmitter {
             code.areturn();
         }
 
+        private void emitStateFactoryCheckOpen() {
+            if (module.submissionResult().isPresent()) {
+                aloadReceiver();
+                code.invokevirtual(cd(classPlan.binaryName()), "$lyra$checkOpen", method("()V"));
+                code.return_();
+                return;
+            }
+            loadStateLifecycle();
+            code.invokevirtual(CD_LIFECYCLE, "defersSubmission", method("()Z"));
+            Label ordinary = code.newLabel();
+            code.ifeq(ordinary);
+            code.return_();
+            code.labelBinding(ordinary);
+            aloadReceiver();
+            code.invokevirtual(cd(classPlan.binaryName()), "$lyra$checkOpen", method("()V"));
+            code.return_();
+        }
+
         private void emitStateCheckOpen() {
             loadStateLifecycle();
             code.invokevirtual(CD_LIFECYCLE, "isOpen", method("()Z"));
@@ -1054,7 +1092,10 @@ final class JvmBytecodeEmitter {
             // must contain its closure before any eager initializer can invoke
             // it.  Capture dependencies are initialized on demand first; this
             // preserves the source order required by immutable capture
-            // semantics without exposing a null forward slot.
+            // semantics without exposing a null forward slot.  In a deferred
+            // artifact only the root scratch state is opened by the factory;
+            // dependency states are initialized by the guarded session entry
+            // point after the runtime has retained the attempted producer.
             if (module.submissionResult().isPresent()) {
                 Label prepared = code.newLabel();
                 loadStateLifecycle();
@@ -1064,6 +1105,7 @@ final class JvmBytecodeEmitter {
                 code.invokevirtual(cd(classPlan.binaryName()), "$lyra$sessionExecute",
                         method("()" + sessionResultPlan().descriptor()));
                 discard(sessionResultPlan());
+                code.goto_(initializationEnd);
                 code.labelBinding(prepared);
             } else {
                 emitRootForms(false);
@@ -1112,12 +1154,54 @@ final class JvmBytecodeEmitter {
                     "$lyra$sessionSafePoint", method("()V"));
         }
 
+        /** Loads one state from the single prepared graph without instantiating it. */
+        private void emitLoadSessionGraphState(ModuleId targetModule) {
+            emitLoadModuleState(module.moduleId());
+            code.new_(CD_MODULE_ID);
+            code.dup();
+            code.ldc(targetModule.value());
+            code.invokespecial(CD_MODULE_ID, "<init>", method("(Ljava/lang/String;)V"));
+            String rootState = owner.plan.moduleStates().get(module.moduleId());
+            code.invokevirtual(cd(rootState), "$lyra$moduleState", method(
+                    "(L" + RUNTIME + "ModuleId;)Ljava/lang/Object;"));
+            String targetState = owner.plan.moduleStates().get(targetModule);
+            if (targetState == null) {
+                throw invalidPlan(memberSpan(), "session graph state is absent: " + targetModule);
+            }
+            code.checkcast(cd(targetState));
+        }
+
         private JvmTypePlan sessionResultPlan() {
             return owner.mapper.map(module.submissionResult().orElseThrow().type(),
                     JvmMappingContext.JAVA_VALUE);
         }
 
         private void emitSessionExecute() {
+            // Ordinary session artifacts have already initialized every
+            // dependency in their factory.  Prepared artifacts defer that
+            // work until this guarded entry point, after the runtime has
+            // retained the attempted producer.  Keep the branch in generated
+            // bytecode so one emitted session contract supports both loading
+            // modes without using a second graph instantiation.
+            Label deferred = code.newLabel();
+            Label afterDependencies = code.newLabel();
+            loadStateLifecycle();
+            code.invokevirtual(CD_LIFECYCLE, "defersSubmission", method("()Z"));
+            code.ifne(deferred);
+            code.goto_(afterDependencies);
+            code.labelBinding(deferred);
+            // The factory only allocates and links shells. Initialize every
+            // newly emitted dependency here in canonical order.
+            for (ModuleId moduleId : owner.plan.initializationOrder()) {
+                if (moduleId.equals(module.moduleId())) continue;
+                emitLoadSessionGraphState(moduleId);
+                String stateName = owner.plan.moduleStates().get(moduleId);
+                if (stateName == null) {
+                    throw invalidPlan(memberSpan(), "session initialization state is absent: " + moduleId);
+                }
+                code.invokevirtual(cd(stateName), "$lyra$checkOpen", method("()V"));
+            }
+            code.labelBinding(afterDependencies);
             loadStateLifecycle();
             code.invokevirtual(CD_LIFECYCLE, "beginSubmission", method("()V"));
             emitRootForms(true);
@@ -1225,7 +1309,7 @@ final class JvmBytecodeEmitter {
                         .findFirst().orElseThrow(() -> invalidPlan(metadata.span(),
                                 "root declaration is absent from the module body: " + id));
                 discard(emitNode(form));
-                if (module.submissionResult().isPresent()) {
+                if (owner.ir.sessionExecution().isPresent()) {
                     loadStateLifecycle();
                     code.ldc(id.ordinal());
                     code.invokevirtual(CD_LIFECYCLE, "initializeSessionBinding", method("(J)V"));
@@ -1263,7 +1347,7 @@ final class JvmBytecodeEmitter {
             Label alreadyClosed = code.newLabel();
             code.ifne(alreadyClosed);
             loadStateLifecycle();
-            code.invokevirtual(CD_LIFECYCLE, "close", method("()V"));
+            code.invokevirtual(CD_LIFECYCLE, "closeGeneratedState", method("()V"));
             for (io.mindspice.lyra.compiler.ir.IrImportBinding binding : importsForModule(module.moduleId())) {
                 if (owner.ir.sessionExecution().filter(value -> !value.emits(binding.targetModule())).isPresent()) continue;
                 GeneratedMemberPlan field = stateFields(module.moduleId(), binding.declarationId()).stream()
@@ -1363,6 +1447,14 @@ final class JvmBytecodeEmitter {
                             "$lyra$sessionResult", method(member.descriptor()));
                     returnPhysicalDescriptor(sessionResultPlan().descriptor());
                 }
+                case FACADE_MODULE_STATE -> {
+                    loadFacadeState();
+                    loadParameter(0);
+                    code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
+                            "$lyra$moduleState", method(member.descriptor()));
+                    code.areturn();
+                }
+                case FACADE_VIEW_FACTORY -> emitFacadeViewFactory();
                 case FACADE_CONSTRUCTOR -> emitFacadeConstructor();
                 case FACTORY, FACTORY_WITH_OPTIONS -> emitFacadeFactory();
                 case METADATA -> emitFacadeMetadata();
@@ -1408,7 +1500,7 @@ final class JvmBytecodeEmitter {
         }
 
         private void checkSessionBinding(DeclarationId id) {
-            if (module.submissionResult().isEmpty()) return;
+            if (owner.ir.sessionExecution().isEmpty()) return;
             IrDeclaration declaration = declarations.get(id);
             if (declaration == null || declaration.kind() != DeclarationKind.LET) return;
             loadStateLifecycle();
@@ -1470,6 +1562,20 @@ final class JvmBytecodeEmitter {
             }
             code.labelBinding(done);
             code.aload(slot);
+        }
+
+        private void emitFacadeViewFactory() {
+            String stateName = owner.plan.moduleStates().get(module.moduleId());
+            if (stateName == null) {
+                throw invalidPlan(memberSpan(), "facade view has no module state: " + module.moduleId());
+            }
+            code.new_(cd(classPlan.binaryName()));
+            code.dup();
+            loadParameter(0);
+            code.checkcast(cd(stateName));
+            code.invokespecial(cd(classPlan.binaryName()), "<init>",
+                    method("(L" + stateName.replace('.', '/') + ";)V"));
+            code.areturn();
         }
 
         private void emitFacadeConstructor() {
@@ -1558,11 +1664,22 @@ final class JvmBytecodeEmitter {
                         method(link.descriptor()));
             }
 
+            // Ordinary factories initialize every state.  A prepared session
+            // factory opens only the root scratch state; dependency shells are
+            // initialized by the guarded session entry point in canonical
+            // order, so allocation cannot accidentally execute source.
+            // Preserve the validated eager-initialization order.  The slot map
+            // is keyed for lookup only; iterating it lexically would execute a
+            // dependency after its consumer and regress ordinary AOT graphs.
             for (ModuleId moduleId : owner.plan.initializationOrder()) {
+                Integer slot = stateSlots.get(moduleId);
+                if (slot == null) {
+                    throw invalidPlan(memberSpan(), "module state slot is absent: " + moduleId);
+                }
                 GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
                         .get(moduleId)).orElseThrow();
-                code.aload(stateSlots.get(moduleId));
-                code.invokevirtual(cd(state.binaryName()), "$lyra$checkOpen", method("()V"));
+                code.aload(slot);
+                code.invokevirtual(cd(state.binaryName()), "$lyra$factoryCheckOpen", method("()V"));
             }
 
             ModuleId facadeModule = classPlan.moduleId().orElseThrow();

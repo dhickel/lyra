@@ -427,14 +427,27 @@ public final class SessionStorageDomain implements AutoCloseable {
      * workspace borrows its default producer from that externally owned root.
      */
     public Binding register(ModuleHandle module, Requirement requirement) {
-        return register(module, requirement,
+        return register(module, module.moduleId(), requirement,
+                rootLifetime == null ? RetentionKind.OWNED : RetentionKind.BORROWED);
+    }
+
+    /** Registers a binding owned by one module view in a prepared graph. */
+    public Binding register(ModuleHandle graph, ModuleId moduleId, Requirement requirement) {
+        return register(graph, moduleId, requirement,
                 rootLifetime == null ? RetentionKind.OWNED : RetentionKind.BORROWED);
     }
 
     /** Registers an exact storage link with an explicit producer lifetime class. */
     public Binding register(ModuleHandle module, Requirement requirement, RetentionKind kind) {
+        return register(module, module.moduleId(), requirement, kind);
+    }
+
+    /** Registers an exact storage link through a selected prepared-graph module view. */
+    public Binding register(ModuleHandle module, ModuleId moduleId,
+                            Requirement requirement, RetentionKind kind) {
         checkOpen();
         Objects.requireNonNull(module, "module");
+        Objects.requireNonNull(moduleId, "moduleId");
         Objects.requireNonNull(requirement, "requirement");
         Objects.requireNonNull(kind, "kind");
         if (bindings.containsKey(requirement.id())) {
@@ -446,7 +459,7 @@ public final class SessionStorageDomain implements AutoCloseable {
 
         Retention retention = retainProducer(module, kind);
         try {
-            MethodHandle reader = LyraRuntime.submissionStorageAccessor(module, requirement, false);
+            MethodHandle reader = LyraRuntime.submissionStorageAccessor(module, moduleId, requirement, false);
             MethodType readerType = LyraRuntime.sessionStorageReaderType(module, requirement.logicalType());
             if (!reader.type().equals(readerType)) {
                 throw new LyraLinkException("generated session reader MethodType mismatch");
@@ -456,7 +469,7 @@ public final class SessionStorageDomain implements AutoCloseable {
             verifyInitialized(reader);
             LyraRuntime.requireSubmissionPublication(module);
             MethodHandle writer = requirement.writable()
-                    ? LyraRuntime.submissionStorageAccessor(module, requirement, true) : null;
+                    ? LyraRuntime.submissionStorageAccessor(module, moduleId, requirement, true) : null;
             MethodType writerType = writer == null ? null : writer.type();
             if (writer != null && !writerType.equals(
                     LyraRuntime.sessionStorageWriterType(module, requirement.logicalType()))) {
@@ -672,8 +685,10 @@ public final class SessionStorageDomain implements AutoCloseable {
                     && requirement.storageIdentity() == other.storageIdentity()
                     && requirement.name().equals(other.name())
                     && logicalType.equals(other.logicalType())
-                    && requirement.writable() == other.writable()
-                    && (other.writable() == (writer != null));
+                    // A read-only consumer may use a producer's mutable
+                    // accessor pair; the reverse is never admitted.
+                    && (!other.writable() || requirement.writable())
+                    && (other.writable() == (writer != null) || !other.writable());
         }
 
         private LinkEntry entry() {
@@ -820,7 +835,15 @@ public final class SessionStorageDomain implements AutoCloseable {
                         Map<Long, LinkEntry> entries, Map<Long, Requirement> requirements) {
             this.domain = domain;
             this.artifactMetadata = Objects.requireNonNull(artifactMetadata, "artifactMetadata");
-            this.sourceLocal = artifactMetadata.modules().size() == 1;
+            long userModuleCount = artifactMetadata.modules().stream()
+                    .map(ModuleMetadata::id)
+                    .filter(id -> !id.isUri()
+                            || !id.value().equals("lyra:intrinsic/std/io"))
+                    .count();
+            // A generated root plus a real source dependency is still one
+            // trusted source-local session graph.  The compiler-owned std/io
+            // namespace alone is not a producer graph for callable exchange.
+            this.sourceLocal = artifactMetadata.modules().size() == 1 || userModuleCount > 1;
             this.baseRevision = baseRevision;
             this.epoch = domain.epoch;
             this.entries = Map.copyOf(entries);
@@ -834,11 +857,6 @@ public final class SessionStorageDomain implements AutoCloseable {
                     || rootLifetime == null && domain.revision != baseRevision
                     || rootLifetime == null && epoch != domain.epoch) {
                 throw new LyraLinkException("submission linkage belongs to another artifact or revision");
-            }
-            if (artifact.modules().size() != 1 && requirements.values().stream()
-                    .anyMatch(value -> !(value.logicalType().baseType() instanceof PrimitiveType))) {
-                throw new LyraLinkException(
-                        "imported graphs cannot access session aggregate storage before provenance linkage is supported");
             }
             entries.values().forEach(LinkEntry::requireLive);
         }

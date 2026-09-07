@@ -93,8 +93,8 @@ public final class LyraCompiler {
      * <p>References to prior source-local names are linked through the supplied
      * session snapshot and its compiler-issued flow certificate. Live storage
      * authentication and generation ownership remain runtime responsibilities;
-     * imported multi-module session linkage is still rejected structurally rather
-     * than replaced with fabricated initializer code.</p>
+     * imported module graphs are emitted only when their exact prepared
+     * producer-qualified linkage is available.</p>
      */
     public static SessionCompileResult compileSession(SessionCompileRequest request) {
         Objects.requireNonNull(request, "request");

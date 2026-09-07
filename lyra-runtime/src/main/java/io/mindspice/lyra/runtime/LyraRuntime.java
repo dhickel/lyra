@@ -21,6 +21,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -175,8 +176,8 @@ public final class LyraRuntime {
      */
     public static ModuleHandle prepareSubmission(LoadedArtifact artifact) {
         if (!(Objects.requireNonNull(artifact, "artifact") instanceof LoadedArtifactImpl loaded)
-                || loaded.artifactKey.sessionLinkage() == null || loaded.metadata.modules().size() != 1) {
-            throw new LyraLinkException("submission preparation requires a source-local session artifact");
+                || loaded.artifactKey.sessionLinkage() == null) {
+            throw new LyraLinkException("submission preparation requires an authenticated session artifact");
         }
         loaded.artifactKey.sessionLinkage().validate(loaded.metadata);
         Class<?> facade = loaded.facades.get(loaded.metadata.rootModuleId());
@@ -236,11 +237,10 @@ public final class LyraRuntime {
         }
         handle.requireOwner();
         SessionStorageDomain.Linkage linkage = handle.context.artifactKey.sessionLinkage();
-        // Until imported provenance is retained in session snapshots, only a
-        // source-local generation in this exact domain can certify data storage.
-        if (linkage == null || !linkage.belongsTo(domain)
-                || handle.context.metadata.modules().size() != 1) {
-            throw new LyraLinkException("aggregate storage requires a source-local generation in this session domain");
+        // Aggregate storage is admitted only for a live prepared generation
+        // whose authenticated link belongs to this exact session domain.
+        if (linkage == null || !linkage.belongsTo(domain)) {
+            throw new LyraLinkException("aggregate storage requires a generation in this session domain");
         }
     }
 
@@ -328,19 +328,31 @@ public final class LyraRuntime {
 
     static MethodHandle submissionStorageAccessor(ModuleHandle module,
             SessionStorageDomain.Requirement requirement, boolean write) {
+        return submissionStorageAccessor(module, module.moduleId(), requirement, write);
+    }
+
+    static MethodHandle submissionStorageAccessor(ModuleHandle module, ModuleId moduleId,
+            SessionStorageDomain.Requirement requirement, boolean write) {
         if (!(Objects.requireNonNull(module, "module") instanceof ModuleHandleImpl handle)) {
             throw new LyraLinkException("session storage requires a runtime-owned generation");
         }
+        Objects.requireNonNull(moduleId, "moduleId");
         handle.requireOwner();
         if (handle.isClosed() || handle.context.isClosed()) throw new LyraClosedException("storage generation is closed");
         try {
-            Method reader = handle.facade.getMethod("$lyra$sessionRead$binding$" + requirement.id());
+            Object facadeInstance = handle.context.moduleFacade(handle, moduleId);
+            Class<?> facade = handle.context.facades.get(moduleId);
+            if (facade == null) {
+                throw new LyraLinkException("module view is absent from loaded artifact: " + moduleId);
+            }
+            Method reader = facade.getMethod("$lyra$sessionRead$binding$" + requirement.id());
             LyraSessionBinding binding = reader.getAnnotation(LyraSessionBinding.class);
             Class<?> expectedStorage = SessionStorageDomain.storageClass(LyraType.parse(requirement.type()),
                     handle.context.loader, handle.context.metadata.javaPackage());
+            boolean mutableStorage = requirement.storageIdentity() >= 0;
             if (binding == null || binding.id() != requirement.id()
                     || binding.storageIdentity() != requirement.storageIdentity() || !binding.name().equals(requirement.name())
-                    || !binding.type().equals(requirement.type()) || binding.mutable() != requirement.writable()
+                    || !binding.type().equals(requirement.type()) || binding.mutable() != mutableStorage
                     || Modifier.isStatic(reader.getModifiers()) || reader.getParameterCount() != 0
                     || !MethodType.methodType(reader.getReturnType())
                     .equals(MethodType.methodType(expectedStorage))) {
@@ -350,7 +362,7 @@ public final class LyraRuntime {
             // Object-shaped reference.  Validate its exact invoke descriptor
             // before any generated source can observe the accessor.
             sessionFunctionMethodType(module, LyraType.parse(requirement.type()));
-            Method accessor = write ? handle.facade.getMethod("$lyra$sessionWrite$binding$" + requirement.id(),
+            Method accessor = write ? facade.getMethod("$lyra$sessionWrite$binding$" + requirement.id(),
                     reader.getReturnType()) : reader;
             if (write && (!binding.mutable() || accessor.getReturnType() != void.class
                     || Modifier.isStatic(accessor.getModifiers()) || accessor.getParameterCount() != 1
@@ -358,7 +370,7 @@ public final class LyraRuntime {
                     .equals(MethodType.methodType(accessor.getReturnType(), accessor.getParameterTypes())))) {
                 throw new LyraLinkException("invalid storage setter");
             }
-            MethodHandle bound = MethodHandles.publicLookup().unreflect(accessor).bindTo(handle.instance);
+            MethodHandle bound = MethodHandles.publicLookup().unreflect(accessor).bindTo(facadeInstance);
             MethodType expected = write ? MethodType.methodType(void.class, expectedStorage)
                     : MethodType.methodType(expectedStorage);
             if (!bound.type().equals(expected)) {
@@ -388,7 +400,7 @@ public final class LyraRuntime {
         try {
             Map<String, Class<?>> defined = loader.defineAll();
             validateDebugMap(data.entries(), metadata, defined, loader);
-            Map<ModuleId, Class<?>> facades = validateFacades(metadata, defined, loader);
+            Map<ModuleId, Class<?>> facades = validateFacades(metadata, defined, loader, linkage);
             LoadedArtifact result = new LoadedArtifactImpl(metadata, options, loader, facades, linkage);
             if (linkage != null) linkage.publishTypes(parent);
             return result;
@@ -780,7 +792,8 @@ public final class LyraRuntime {
 
     private static Map<ModuleId, Class<?>> validateFacades(ArtifactMetadata metadata,
                                                              Map<String, Class<?>> defined,
-                                                             ArtifactClassLoader loader) {
+                                                             ArtifactClassLoader loader,
+                                                             SessionStorageDomain.Linkage linkage) {
         Map<ModuleId, Class<?>> facades = new TreeMap<>();
         Set<String> claimed = new HashSet<>();
         for (ModuleMetadata module : metadata.modules()) {
@@ -789,6 +802,15 @@ public final class LyraRuntime {
                     .filter(name -> name.equals(base) || name.startsWith(base + "$"))
                     .sorted()
                     .toList();
+            if (candidates.isEmpty() && linkage != null
+                    && !module.id().equals(metadata.rootModuleId())) {
+                // A session artifact may carry retained graph metadata for a
+                // producer that is authenticated by the linkage but has no
+                // emitted body in this generation.  Its live facade remains
+                // in the producer generation; only NEW/borrowed intrinsic
+                // modules have a generated view in this artifact.
+                continue;
+            }
             if (candidates.size() != 1) {
                 throw compatibility("artifact facade inventory does not match module metadata: "
                         + module.id(), null);
@@ -1170,6 +1192,8 @@ public final class LyraRuntime {
         private final LyraArtifactKey artifactKey;
 
         private final Set<ModuleHandleImpl> instances = new HashSet<>();
+        private final Set<LyraArtifactKey> preparedKeys =
+                Collections.newSetFromMap(new IdentityHashMap<>());
         private int activeInstantiations;
         private boolean closed;
 
@@ -1225,6 +1249,11 @@ public final class LyraRuntime {
                 LyraArtifactKey instanceKey = deferredSubmission
                         ? new LyraArtifactKey(OwnerThread.of(owner), options.ioEnvironment(),
                                 artifactKey.sessionLinkage(), true) : artifactKey;
+                if (deferredSubmission) {
+                    synchronized (this) {
+                        preparedKeys.add(instanceKey);
+                    }
+                }
                 RuntimeOptions runtimeOptions = options.runtimeOptions(owner, instanceKey);
                 MethodType factoryType = MethodType.methodType(facade, RuntimeOptions.class);
                 MethodHandle factory = MethodHandles.publicLookup().findStatic(
@@ -1268,6 +1297,49 @@ public final class LyraRuntime {
             }
         }
 
+        /**
+         * Returns a facade view over a state shell already allocated by the
+         * prepared graph.  This is a composition operation, not a second
+         * graph instantiation.
+         */
+        private Object moduleFacade(ModuleHandleImpl root, ModuleId moduleId) {
+            root.requireOwner();
+            if (root.context != this || !root.deferredSubmission) {
+                if (moduleId.equals(root.moduleId)) return root.instance;
+                throw new LyraLinkException("module views require one prepared session graph");
+            }
+            if (moduleId.equals(root.moduleId)) return root.instance;
+            if (closed || root.closed) throw new LyraClosedException("module graph is closed");
+            try {
+                Method stateReader = root.facade.getMethod("$lyra$moduleState", ModuleId.class);
+                MethodHandle stateHandle = MethodHandles.publicLookup().unreflect(stateReader)
+                        .bindTo(root.instance);
+                Object state = stateHandle.invoke(moduleId);
+                Class<?> targetFacade = facades.get(moduleId);
+                if (targetFacade == null) {
+                    throw new LyraLinkException("module view is absent from loaded artifact: " + moduleId);
+                }
+                Method view = targetFacade.getMethod("$lyra$view", Object.class);
+                if (!Modifier.isStatic(view.getModifiers()) || view.getReturnType() != targetFacade) {
+                    throw new LyraLinkException("generated module view factory has an invalid shape");
+                }
+                return view.invoke(null, state);
+            } catch (NoSuchMethodException | IllegalAccessException failure) {
+                throw new LyraLinkException("prepared artifact has no module-view surface", List.of(), failure);
+            } catch (java.lang.reflect.InvocationTargetException failure) {
+                Throwable cause = failure.getCause();
+                rethrowHostIntegrityFailure(cause);
+                if (cause instanceof RuntimeException runtime) throw runtime;
+                if (cause instanceof Error error) throw error;
+                throw new LyraLinkException("module view construction failed", List.of(), cause);
+            } catch (Throwable failure) {
+                rethrowHostIntegrityFailure(failure);
+                if (failure instanceof RuntimeException runtime) throw runtime;
+                if (failure instanceof Error error) throw error;
+                throw new LyraInternalException("module view construction failed", List.of(), List.of(), failure);
+            }
+        }
+
         private synchronized void releaseInstantiation(boolean reserved) {
             if (reserved) {
                 activeInstantiations--;
@@ -1294,6 +1366,9 @@ public final class LyraRuntime {
                             "loaded artifact cannot close while module instances remain open or initializing");
                 }
                 closed = true;
+                artifactKey.clearPreparedStates();
+                preparedKeys.forEach(LyraArtifactKey::clearPreparedStates);
+                preparedKeys.clear();
                 loader.closeLoader();
             }
         }

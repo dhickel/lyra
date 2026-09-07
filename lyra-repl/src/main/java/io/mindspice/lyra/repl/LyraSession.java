@@ -34,8 +34,9 @@ import java.util.function.BooleanSupplier;
  * initialized storage; structural JVM types share a session-owned loading domain,
  * and certified callable captures retain their producer generations.
  * Expression results are bounded immutable snapshots. Source-local callable-bearing
- * values are admitted through compiler-issued flow certificates; imported and
- * multi-module linkage remains a structured compilation boundary.</p>
+ * values are admitted through compiler-issued flow certificates; imported module
+ * graphs execute through authenticated prepared state shells and exact
+ * producer-qualified links.</p>
  *
  * <p>Submission is synchronous. The opening thread owns the session and is
  * the only thread allowed to submit, reset, or close it. Cancellation is the
@@ -399,16 +400,6 @@ public final class LyraSession implements AutoCloseable {
             }
 
             CompiledArtifact artifact = success.artifact();
-            if (artifact.metadata().modules().size() != 1) {
-                Diagnostic diagnostic = sessionDiagnostic(
-                        operation.request.source(),
-                        operation.compilerSourceId,
-                        CompilerDiagnosticCodes.EMIT_UNSUPPORTED_FEATURE,
-                        "persistent session linkage for imported modules is not available yet; "
-                                + "the submission was not executed");
-                return completeCompilationFailure(operation, List.of(diagnostic), true);
-            }
-
             SessionWorkspace.Pending pending;
             try {
                 pending = workspace.stage(success);
@@ -435,13 +426,35 @@ public final class LyraSession implements AutoCloseable {
                         CompilerDiagnosticCodes.MODULE_INVALID_CONFIGURATION,
                         "snapshot output budget cannot represent the final expression type")), true);
             }
-            var requirements = success.typedIr().declarations().stream()
+            java.util.LinkedHashMap<Long, io.mindspice.lyra.runtime.SessionStorageDomain.Requirement> requirementIndex = new java.util.LinkedHashMap<>();
+            success.typedIr().declarations().stream()
                     .flatMap(declaration -> declaration.externalBinding().stream())
                     .map(binding -> new io.mindspice.lyra.runtime.SessionStorageDomain.Requirement(
                             binding.declarationId().ordinal(), binding.storageIdentity().map(value -> value.ordinal()).orElse(-1L),
                             binding.name(), binding.type().canonicalSpelling(),
-                            binding.allowsRebinding())).toList();
+                            binding.allowsRebinding()))
+                    .forEach(required -> requirementIndex.put(required.id(), required));
+            success.typedIr().sessionExecution().orElseThrow().externalAccesses().stream()
+                    .map(access -> {
+                        var declaration = access.target().declaration();
+                        boolean mutable = declaration.contract().orElseThrow().isMutable();
+                        return new io.mindspice.lyra.runtime.SessionStorageDomain.Requirement(
+                                declaration.id().ordinal(), mutable ? declaration.id().ordinal() : -1L,
+                                declaration.name(), declaration.contract().orElseThrow().valueType().canonicalSpelling(),
+                                access.writableFacade());
+                    })
+                    .forEach(required -> requirementIndex.putIfAbsent(required.id(), required));
+            var requirements = List.copyOf(requirementIndex.values());
             var capabilities = requirements.stream().map(required -> storageBindings.get(required.id())).toList();
+            List<io.mindspice.lyra.compiler.source.SourceSnapshot> graphSources = success.moduleGraph()
+                    .modules().stream().map(io.mindspice.lyra.compiler.source.ModuleGraph.Node::snapshot)
+                    .toList();
+            if (!sourceRegistry.canRetainGraph(graphSources)) {
+                return completeCompilationFailure(operation, List.of(sessionDiagnostic(
+                        operation.request.source(), operation.compilerSourceId,
+                        CompilerDiagnosticCodes.EMIT_UNSUPPORTED_FEATURE,
+                        "the bounded session source registry cannot retain the complete module graph")), true);
+            }
             io.mindspice.lyra.runtime.SessionStorageDomain.Linkage linkage;
             try {
                 linkage = storage.link(artifact, revision.value(), requirements, capabilities);
@@ -465,6 +478,7 @@ public final class LyraSession implements AutoCloseable {
                 // into older storage even when the new namespace never commits.
                 generations.add(new Generation(loaded, module, artifact.classes().keySet()));
                 retained = true;
+                sourceRegistry.retainGraph(graphSources);
                 compilerSnapshot = success.retainAttemptedFlow();
                 LyraRuntime.executeSubmission(module);
                 Optional<ValueSnapshot> value = declarationOnly ? Optional.empty() : Optional.of(SnapshotReader.read(
@@ -473,12 +487,26 @@ public final class LyraSession implements AutoCloseable {
                                 .collect(java.util.stream.Collectors.toUnmodifiableSet())));
                 java.util.Map<Long, io.mindspice.lyra.runtime.SessionStorageDomain.Binding> stagedStorage = new java.util.LinkedHashMap<>();
                 for (var declaration : success.typedIr().declarations()) {
-                    if (!success.stagedDeclarations().contains(declaration.id())) continue;
+                    if (declaration.kind() != io.mindspice.lyra.compiler.semantic.DeclarationKind.LET
+                            || declaration.contract().isEmpty()
+                            || !declaration.scopeId().equals(success.resolvedGraph()
+                            .module(declaration.moduleId()).orElseThrow().rootScope())
+                            || declaration.imported()) {
+                        continue;
+                    }
+                    boolean stagedRoot = success.stagedDeclarations().contains(declaration.id());
+                    boolean newProducer = success.executionPlan().module(declaration.moduleId())
+                            .filter(work -> work.isNew() && !work.scratch())
+                            .isPresent() && declaration.visibility() == io.mindspice.lyra.compiler.semantic.DeclarationVisibility.PUBLIC;
+                    if (!stagedRoot && !newProducer) continue;
                     var required = new io.mindspice.lyra.runtime.SessionStorageDomain.Requirement(
                             declaration.id().ordinal(), declaration.isMutable() ? declaration.id().ordinal() : -1L,
                             declaration.name(), declaration.contract().orElseThrow().valueType().canonicalSpelling(),
                             declaration.isMutable());
-                    stagedStorage.put(required.id(), storage.register(module, required));
+                    if (!stagedStorage.containsKey(required.id())) {
+                        stagedStorage.put(required.id(), storage.register(module,
+                                toRuntimeModuleId(declaration.moduleId()), required));
+                    }
                 }
                 return completeSuccess(operation, pending, success.stagedSnapshot(),
                         value, diagnostics, stagedStorage);
@@ -496,6 +524,13 @@ public final class LyraSession implements AutoCloseable {
         } finally {
             releaseActiveIfPresent(operation);
         }
+    }
+
+    private static io.mindspice.lyra.runtime.ModuleId toRuntimeModuleId(
+            io.mindspice.lyra.compiler.source.ModuleId moduleId) {
+        return moduleId.isUri()
+                ? io.mindspice.lyra.runtime.ModuleId.uri(moduleId.asUri())
+                : io.mindspice.lyra.runtime.ModuleId.path(moduleId.value());
     }
 
     private static io.mindspice.lyra.compiler.api.EvaluationSource compilerSource(

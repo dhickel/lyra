@@ -182,9 +182,9 @@ class SessionAggregateLinkTest {
     }
 
     @Test
-    void importedGraphsCannotPolluteCertifiedSessionDataAndResetRetiresItsCapabilities() {
+    void importedGraphsExecuteWithCertifiedAggregateStorageAndResetRetiresItsCapabilities() {
         var first = compile("data.lyra", "let @mut items :Array<I32> = Array<I32>[1]", SessionSnapshot.empty());
-        var imported = compile("imported.lyra", "import std->io\nio->::println[\"must-not-run\"] items", first.stagedSnapshot());
+        var imported = compile("imported.lyra", "import std->io\nio->::println[\"must-run\"] items", first.stagedSnapshot());
         var required = requirement(first, "items");
         try (var domain = new SessionStorageDomain(); var loaded = load(domain, first, 0, List.of(), List.of());
              var module = loaded.instantiate()) {
@@ -192,9 +192,17 @@ class SessionAggregateLinkTest {
             domain.commit(0, List.of(binding));
             var output = new java.io.ByteArrayOutputStream();
             var io = new RuntimeIoEnvironment(java.io.InputStream.nullInputStream(), output, output, java.nio.charset.StandardCharsets.UTF_8);
-            assertThrows(LyraLinkException.class, () -> LyraRuntime.loadSubmission(imported.artifact(),
-                    LoadOptions.defaults().withIoEnvironment(io), domain.link(imported.artifact(), 1, List.of(required), List.of(binding))));
-            assertEquals(0, output.size());
+            var linkage = domain.link(imported.artifact(), 1, List.of(required), List.of(binding));
+            try (var generation = LyraRuntime.loadSubmission(imported.artifact(),
+                    LoadOptions.defaults().withIoEnvironment(io), linkage);
+                 var result = generation.instantiate()) {
+                assertEquals("must-run" + System.lineSeparator(),
+                        output.toString(java.nio.charset.StandardCharsets.UTF_8));
+                int[] values = (int[]) LyraRuntime.readSubmissionResult(
+                        result, LyraType.parse("Array<I32>"));
+                assertEquals(1, values.length);
+                assertEquals(1, values[0]);
+            }
             domain.reset();
             assertThrows(LyraLinkException.class, () -> domain.link(first.artifact(), 1, List.of(required), List.of(binding)));
         }

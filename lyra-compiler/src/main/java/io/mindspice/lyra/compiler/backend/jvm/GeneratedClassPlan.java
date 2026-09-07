@@ -194,6 +194,7 @@ record GeneratedClassPlan(
                 }
                 requireKinds(memberKinds, Set.of(
                         GeneratedMemberKind.STATE_SESSION_ACCESSOR,
+                        GeneratedMemberKind.STATE_MODULE_STATE_LOOKUP,
                         GeneratedMemberKind.SESSION_SAFE_POINT,
                         GeneratedMemberKind.SESSION_RESULT_FIELD,
                         GeneratedMemberKind.SESSION_EXECUTE,
@@ -210,6 +211,7 @@ record GeneratedClassPlan(
                         GeneratedMemberKind.STATE_CONSTRUCTOR,
                         GeneratedMemberKind.STATE_AUTHORITY_GET,
                         GeneratedMemberKind.STATE_CHECK_OPEN,
+                        GeneratedMemberKind.STATE_FACTORY_CHECK_OPEN,
                         GeneratedMemberKind.STATE_CLOSE), "module-state");
                 GeneratedMemberPlan constructor = requireFacadeMember(
                         members, GeneratedMemberKind.STATE_CONSTRUCTOR,
@@ -228,6 +230,8 @@ record GeneratedClassPlan(
                 requireKinds(memberKinds, Set.of(
                     GeneratedMemberKind.FACADE_SESSION_RESULT_GET,
                     GeneratedMemberKind.FACADE_SESSION_EXECUTE,
+                    GeneratedMemberKind.FACADE_MODULE_STATE,
+                    GeneratedMemberKind.FACADE_VIEW_FACTORY,
                     GeneratedMemberKind.SESSION_BINDING_GET,
                     GeneratedMemberKind.SESSION_BINDING_SET,
                     GeneratedMemberKind.FACADE_STATE_FIELD,
