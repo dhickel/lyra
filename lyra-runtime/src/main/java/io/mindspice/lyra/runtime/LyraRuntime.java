@@ -219,6 +219,19 @@ public final class LyraRuntime {
         }
     }
 
+    /**
+     * Returns the exact generated initializer progress for one prepared
+     * session graph. The call is owner-confined and does not inspect source
+     * names or infer execution from lifecycle state.
+     */
+    public static SessionInitializationProgress sessionInitializationProgress(ModuleHandle module) {
+        if (!(Objects.requireNonNull(module, "module") instanceof ModuleHandleImpl handle)) {
+            throw new LyraLinkException("initializer progress requires a runtime-owned module");
+        }
+        handle.requireOwner();
+        return handle.instanceKey.initializationProgress();
+    }
+
     /** Namespace publication is separate from the lifetime of escaped values. */
     static void requireSubmissionPublication(ModuleHandle module) {
         if (!(Objects.requireNonNull(module, "module") instanceof ModuleHandleImpl handle)) {
@@ -1260,7 +1273,8 @@ public final class LyraRuntime {
                         facade, "$lyra$create", factoryType)
                         .asType(MethodType.methodType(Object.class, RuntimeOptions.class));
                 Object instance = (Object) factory.invokeExact(runtimeOptions);
-                ModuleHandleImpl handle = new ModuleHandleImpl(this, moduleId, facade, instance, owner, deferredSubmission);
+                ModuleHandleImpl handle = new ModuleHandleImpl(this, moduleId, facade, instance, owner,
+                        deferredSubmission, instanceKey);
                 synchronized (this) {
                     activeInstantiations--;
                     instantiationReserved = false;
@@ -1381,19 +1395,22 @@ public final class LyraRuntime {
         private final Object instance;
         private final Thread owner;
         private final boolean deferredSubmission;
+        private final LyraArtifactKey instanceKey;
         /** Owner-confined publication eligibility, not producer lifetime. */
         private boolean submissionCompleted;
         private final Map<ExportKey, ExportHandle> exports = new HashMap<>();
         private boolean closed;
 
         private ModuleHandleImpl(LoadedArtifactImpl context, ModuleId moduleId,
-                                 Class<?> facade, Object instance, Thread owner, boolean deferredSubmission) {
+                                 Class<?> facade, Object instance, Thread owner,
+                                 boolean deferredSubmission, LyraArtifactKey instanceKey) {
             this.context = context;
             this.moduleId = moduleId;
             this.facade = facade;
             this.instance = instance;
             this.owner = owner;
             this.deferredSubmission = deferredSubmission;
+            this.instanceKey = Objects.requireNonNull(instanceKey, "instanceKey");
         }
 
         @Override

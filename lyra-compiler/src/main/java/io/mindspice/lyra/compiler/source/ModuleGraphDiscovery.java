@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -46,6 +47,9 @@ public final class ModuleGraphDiscovery {
     private final Map<LogicalModuleId, PinnedModule> pinnedModules;
     private final Set<LogicalModuleId> retainedImportRoots;
     private final SessionModuleEnvironment environment;
+    private final Optional<LogicalModuleId> reloadModule;
+    private final long reloadGeneration;
+    private final Optional<io.mindspice.lyra.compiler.api.SessionFlowCertificate> flowCertificate;
 
     public ModuleGraphDiscovery(SourceConfiguration configuration) {
         this(configuration, Optional.empty(), Map.of());
@@ -75,12 +79,32 @@ public final class ModuleGraphDiscovery {
     private ModuleGraphDiscovery(SourceConfiguration configuration,
             Optional<SourceId> forbiddenImportedIdentity, Map<LogicalModuleId, PinnedModule> pinnedModules,
             Set<LogicalModuleId> retainedImportRoots, SessionModuleEnvironment environment) {
+        this(configuration, forbiddenImportedIdentity, pinnedModules, retainedImportRoots,
+                environment, Optional.empty());
+    }
+
+    private ModuleGraphDiscovery(SourceConfiguration configuration,
+            Optional<SourceId> forbiddenImportedIdentity, Map<LogicalModuleId, PinnedModule> pinnedModules,
+            Set<LogicalModuleId> retainedImportRoots, SessionModuleEnvironment environment,
+            Optional<LogicalModuleId> reloadModule) {
+        this(configuration, forbiddenImportedIdentity, pinnedModules, retainedImportRoots,
+                environment, reloadModule, 0, Optional.empty());
+    }
+
+    private ModuleGraphDiscovery(SourceConfiguration configuration,
+            Optional<SourceId> forbiddenImportedIdentity, Map<LogicalModuleId, PinnedModule> pinnedModules,
+            Set<LogicalModuleId> retainedImportRoots, SessionModuleEnvironment environment,
+            Optional<LogicalModuleId> reloadModule, long reloadGeneration,
+            Optional<io.mindspice.lyra.compiler.api.SessionFlowCertificate> flowCertificate) {
+        this.flowCertificate = Objects.requireNonNull(flowCertificate, "flowCertificate");
+        this.reloadGeneration = reloadGeneration;
         this.environment = Objects.requireNonNull(environment, "environment");
         this.configuration = Objects.requireNonNull(configuration, "configuration");
         this.forbiddenImportedIdentity = Objects.requireNonNull(
                 forbiddenImportedIdentity, "forbiddenImportedIdentity");
         this.pinnedModules = copyPins(pinnedModules);
         this.retainedImportRoots = copyLogicalIds(retainedImportRoots, "retainedImportRoots");
+        this.reloadModule = Objects.requireNonNull(reloadModule, "reloadModule");
     }
 
     public static PhaseResult<ModuleGraph> discover(
@@ -136,7 +160,26 @@ public final class ModuleGraphDiscovery {
         return new ModuleGraphDiscovery(configuration, Optional.of(source.sourceId()),
                 snapshot.pinnedModules(), snapshot.imports().values().stream()
                         .map(io.mindspice.lyra.compiler.session.SessionImport::logicalModule)
-                        .collect(java.util.stream.Collectors.toSet()), snapshot.moduleEnvironment())
+                        .collect(java.util.stream.Collectors.toSet()), snapshot.moduleEnvironment(),
+                Optional.empty(), snapshot.allocator().allocateGeneration().id().ordinal(), snapshot.flowCertificate())
+                .discover(program, source);
+    }
+
+    /**
+     * Discovers the fresh graph for one explicit reload. Existing pins are
+     * deliberately bypassed while traversing the target's REPL-owned
+     * dependency closure; the synthetic root remains an ordinary session root.
+     */
+    public static PhaseResult<ModuleGraph> discoverSession(SyntaxProgram program, SourceSnapshot source,
+            SourceConfiguration configuration, SessionSnapshot snapshot,
+            LogicalModuleId reloadModule) {
+        Objects.requireNonNull(reloadModule, "reloadModule");
+        return new ModuleGraphDiscovery(configuration, Optional.of(source.sourceId()),
+                snapshot.pinnedModules(), snapshot.imports().values().stream()
+                        .map(io.mindspice.lyra.compiler.session.SessionImport::logicalModule)
+                        .collect(java.util.stream.Collectors.toSet()), snapshot.moduleEnvironment(),
+                Optional.of(reloadModule), snapshot.allocator().allocateGeneration().id().ordinal(),
+                snapshot.flowCertificate())
                 .discover(program, source);
     }
 
@@ -186,7 +229,8 @@ public final class ModuleGraphDiscovery {
         Objects.requireNonNull(rootProgram, "rootProgram");
         Objects.requireNonNull(rootSnapshot, "rootSnapshot");
         Discovery discovery = new Discovery(
-                configuration, forbiddenImportedIdentity, pinnedModules, retainedImportRoots);
+                configuration, forbiddenImportedIdentity, pinnedModules, retainedImportRoots,
+                environment, reloadModule, reloadGeneration, flowCertificate);
         discovery.retain(environment);
 
         PhaseResult<Discovery.CanonicalRoots> roots = discovery.validateRoots(null);
@@ -230,7 +274,8 @@ public final class ModuleGraphDiscovery {
     public PhaseResult<ModuleGraph> discover(Path root) {
         Objects.requireNonNull(root, "root");
         Discovery discovery = new Discovery(
-                configuration, forbiddenImportedIdentity, pinnedModules, retainedImportRoots);
+                configuration, forbiddenImportedIdentity, pinnedModules, retainedImportRoots,
+                environment, reloadModule, reloadGeneration, flowCertificate);
         Path lexicalRoot = root.toAbsolutePath().normalize();
 
         PhaseResult<Discovery.CanonicalRoots> rootsResult =
@@ -304,7 +349,8 @@ public final class ModuleGraphDiscovery {
             return failure(disallowedIntrinsic(configurationSpan()));
         }
         Discovery discovery = new Discovery(
-                configuration, forbiddenImportedIdentity, pinnedModules, retainedImportRoots);
+                configuration, forbiddenImportedIdentity, pinnedModules, retainedImportRoots,
+                environment, reloadModule, reloadGeneration, flowCertificate);
         PhaseResult<Discovery.CanonicalRoots> rootsResult = discovery.validateRoots(null);
         if (rootsResult instanceof PhaseResult.Failure<?> failure) {
             return PhaseResult.failure(failure.diagnostics());
@@ -461,10 +507,17 @@ public final class ModuleGraphDiscovery {
         private final Optional<SourceId> forbiddenImportedIdentity;
         private final Map<LogicalModuleId, PinnedModule> pinnedModules;
         private final Set<LogicalModuleId> retainedImportRoots;
+        private final SessionModuleEnvironment environment;
+        private final Optional<LogicalModuleId> reloadModule;
+        private final long reloadGeneration;
+        private final Optional<io.mindspice.lyra.compiler.api.SessionFlowCertificate> flowCertificate;
+        private final Map<LogicalModuleId, Materialized> freshSources = new HashMap<>();
         private final Map<PhysicalSourceKey, byte[]> bytesByPhysical = new HashMap<>();
         private final Map<PhysicalSourceKey, SourceSnapshot> snapshotsByPhysical = new HashMap<>();
         private final Map<PhysicalSourceKey, SyntaxProgram> programsByPhysical = new HashMap<>();
         private final Map<LogicalModuleId, ResolvedSource> resolvedByLogical = new HashMap<>();
+        private final Set<LogicalModuleId> reloadFreshModules = new HashSet<>();
+        private boolean processingReloadFresh;
         private final Map<ModuleId, Draft> draftsByModule = new LinkedHashMap<>();
         private final Map<PhysicalSourceKey, Draft> draftsByPhysical = new HashMap<>();
         private final Map<LogicalModuleId, ModuleId> modulesByLogical = new HashMap<>();
@@ -477,16 +530,27 @@ public final class ModuleGraphDiscovery {
                 SourceConfiguration configuration,
                 Optional<SourceId> forbiddenImportedIdentity,
                 Map<LogicalModuleId, PinnedModule> pinnedModules,
-                Set<LogicalModuleId> retainedImportRoots) {
+                Set<LogicalModuleId> retainedImportRoots,
+                SessionModuleEnvironment environment,
+                Optional<LogicalModuleId> reloadModule, long reloadGeneration,
+                Optional<io.mindspice.lyra.compiler.api.SessionFlowCertificate> flowCertificate) {
+            this.flowCertificate = flowCertificate;
+            this.reloadGeneration = reloadGeneration;
             this.configuration = Objects.requireNonNull(configuration, "configuration");
             this.forbiddenImportedIdentity = Objects.requireNonNull(
                     forbiddenImportedIdentity, "forbiddenImportedIdentity");
             this.pinnedModules = copyPins(pinnedModules);
             this.retainedImportRoots = copyLogicalIds(retainedImportRoots, "retainedImportRoots");
+            this.environment = Objects.requireNonNull(environment, "environment");
+            this.reloadModule = Objects.requireNonNull(reloadModule, "reloadModule");
         }
 
         private void retain(SessionModuleEnvironment environment) {
             for (var module : environment.modules()) {
+                if (reloadModule.isPresent()
+                        && module.ownership() == SessionModuleEnvironment.Ownership.SESSION) {
+                    continue;
+                }
                 var node = module.producerGraph().resolvedGraph().moduleGraph()
                         .module(module.moduleId()).orElseThrow();
                 snapshotsByPhysical.put(node.snapshot().physicalKey(), node.snapshot());
@@ -494,6 +558,10 @@ public final class ModuleGraphDiscovery {
                 resolvedByLogical.put(module.logicalModule(),
                         ResolvedSource.fromSnapshot(module.logicalModule(), node.snapshot()));
             }
+        }
+
+        private boolean isReloadFresh(LogicalModuleId logicalModule) {
+            return reloadFreshModules.contains(logicalModule);
         }
 
         private PhaseResult<CanonicalRoots> validateRoots(Path implicitRoot) {
@@ -539,7 +607,7 @@ public final class ModuleGraphDiscovery {
                 SourceSnapshot snapshot,
                 Optional<LogicalModuleId> logicalModule) {
             ModuleId moduleId = ModuleId.fromSourceId(snapshot.sourceId());
-            Draft draft = new Draft(moduleId, logicalModule, snapshot, program);
+            Draft draft = new Draft(moduleId, logicalModule, snapshot, program, false);
             draftsByModule.put(moduleId, draft);
             draftsByPhysical.put(snapshot.physicalKey(), draft);
             logicalModule.ifPresent(logical -> modulesByLogical.put(logical, moduleId));
@@ -561,7 +629,11 @@ public final class ModuleGraphDiscovery {
         }
 
         private PhaseResult<SyntaxProgram> parse(SourceSnapshot snapshot) {
-            SyntaxProgram cached = programsByPhysical.get(snapshot.physicalKey());
+            return parse(snapshot, false);
+        }
+
+        private PhaseResult<SyntaxProgram> parse(SourceSnapshot snapshot, boolean forceFresh) {
+            SyntaxProgram cached = forceFresh ? null : programsByPhysical.get(snapshot.physicalKey());
             if (cached != null) {
                 return PhaseResult.success(cached);
             }
@@ -580,8 +652,10 @@ public final class ModuleGraphDiscovery {
                 return PhaseResult.failure(failure.diagnostics());
             }
             SyntaxProgram program = ((PhaseResult.Success<SyntaxProgram>) parsed).value();
-            snapshotsByPhysical.putIfAbsent(snapshot.physicalKey(), snapshot);
-            programsByPhysical.put(snapshot.physicalKey(), program);
+            if (!forceFresh) {
+                snapshotsByPhysical.putIfAbsent(snapshot.physicalKey(), snapshot);
+                programsByPhysical.put(snapshot.physicalKey(), program);
+            }
             return PhaseResult.success(program);
         }
 
@@ -593,11 +667,20 @@ public final class ModuleGraphDiscovery {
             if (logicalModule.isStdIo()) {
                 return Selection.success(IntrinsicModule.stdIo().resolvedSource());
             }
-            // A retained source is authoritative for the session epoch.  Do
-            // this lookup before consulting roots or custom resolvers so an
-            // edited/deleted backing file cannot silently replace a live
-            // module or cause a second source capture.
-            PinnedModule pinned = pinnedModules.get(logicalModule);
+            // A retained source is authoritative for the session epoch except
+            // for the REPL-owned closure explicitly selected for reload.  That
+            // closure is resolved from the configured source providers so the
+            // new graph receives the current source bytes and a new producer.
+            boolean reloadFresh = reloadModule.filter(logicalModule::equals).isPresent()
+                    || (processingReloadFresh
+                            && environment.module(logicalModule)
+                                    .map(record -> record.ownership()
+                                            == SessionModuleEnvironment.Ownership.SESSION)
+                                    .orElse(true));
+            if (reloadFresh) {
+                reloadFreshModules.add(logicalModule);
+            }
+            PinnedModule pinned = reloadFresh ? null : pinnedModules.get(logicalModule);
             if (pinned != null) {
                 ResolvedSource source = pinned.resolvedSource();
                 if (!source.logicalModule().equals(logicalModule)) {
@@ -614,6 +697,10 @@ public final class ModuleGraphDiscovery {
                 resolvedByLogical.put(logicalModule, source);
                 return Selection.success(source);
             }
+            // Retained sources were omitted from this map for reload-fresh
+            // modules above. Once a fresh candidate has been selected, cache
+            // it for the rest of this discovery operation so a diamond does
+            // not reread or re-resolve the same provider input.
             ResolvedSource cached = resolvedByLogical.get(logicalModule);
             if (cached != null) {
                 return Selection.success(cached);
@@ -638,7 +725,9 @@ public final class ModuleGraphDiscovery {
                 }
                 byte[] bytes;
                 try {
-                    bytes = bytesFor(physicalKey, candidatePath);
+                    bytes = isReloadFresh(logicalModule)
+                            ? Files.readAllBytes(candidatePath)
+                            : bytesFor(physicalKey, candidatePath);
                 } catch (IOException exception) {
                     return Selection.failure(Diagnostic.error(
                             CompilerDiagnosticCodes.RESOLVE_SOURCE_IO,
@@ -749,7 +838,14 @@ public final class ModuleGraphDiscovery {
         }
 
         private Materialized materialize(ResolvedSource source) {
-            SourceSnapshot snapshot = snapshotsByPhysical.get(source.physicalKey());
+            boolean forceFresh = isReloadFresh(source.logicalModule())
+                    || !source.logicalModule().isStdIo() && !pinnedModules.containsKey(source.logicalModule())
+                    && flowCertificate.map(certificate -> certificate.containsSourceId(source.sourceId())).orElse(false);
+            if (forceFresh && freshSources.containsKey(source.logicalModule())) {
+                return freshSources.get(source.logicalModule());
+            }
+            SourceSnapshot snapshot = forceFresh ? null
+                    : snapshotsByPhysical.get(source.physicalKey());
             if (snapshot != null
                     && (!snapshot.sourceId().equals(source.sourceId())
                     || !Arrays.equals(snapshot.capturedUtf8Bytes(), source.capturedUtf8Bytes()))) {
@@ -761,7 +857,7 @@ public final class ModuleGraphDiscovery {
             }
             if (snapshot == null) {
                 byte[] bytes = source.capturedUtf8Bytes();
-                byte[] cachedBytes = bytesByPhysical.get(source.physicalKey());
+                byte[] cachedBytes = forceFresh ? null : bytesByPhysical.get(source.physicalKey());
                 if (cachedBytes != null && !Arrays.equals(cachedBytes, bytes)) {
                     return Materialized.failure(Diagnostic.error(
                             CompilerDiagnosticCodes.RESOLVE_DUPLICATE_PHYSICAL_SOURCE,
@@ -776,19 +872,39 @@ public final class ModuleGraphDiscovery {
                     return Materialized.failure(failure.diagnostics().getFirst());
                 }
                 snapshot = ((PhaseResult.Success<SourceSnapshot>) captured).value();
-                snapshotsByPhysical.put(source.physicalKey(), snapshot);
+                if (forceFresh) {
+                    String identity = forbiddenImportedIdentity.orElseThrow().value()
+                            + "\u0000" + reloadGeneration + "\u0000" + source.sourceId().value();
+                    snapshot = snapshot.withSessionIdentity(SourceId.uri(URI.create(
+                            "lyra-session:module/" + java.util.UUID.nameUUIDFromBytes(
+                                    identity.getBytes(java.nio.charset.StandardCharsets.UTF_8)))));
+                }
+                if (!forceFresh) {
+                    snapshotsByPhysical.put(source.physicalKey(), snapshot);
+                }
             }
 
-            SyntaxProgram program = programsByPhysical.get(source.physicalKey());
+            SyntaxProgram program = forceFresh ? null : programsByPhysical.get(source.physicalKey());
             if (program == null) {
-                PhaseResult<SyntaxProgram> parsed = parse(snapshot);
+                PhaseResult<SyntaxProgram> parsed = parse(snapshot, forceFresh);
                 if (parsed instanceof PhaseResult.Failure<?> failure) {
-                    return Materialized.failure(failure.diagnostics().getFirst());
+                    var diagnostic = failure.diagnostics().getFirst();
+                    var origin = snapshot.originSourceId();
+                    return Materialized.failure(new Diagnostic(diagnostic.code(), diagnostic.severity(),
+                            diagnostic.summary(), SourceSpan.of(origin, diagnostic.primarySpan().startOffset(),
+                            diagnostic.primarySpan().endOffset()), diagnostic.relatedSpans().stream()
+                            .map(related -> new io.mindspice.lyra.compiler.diagnostic.RelatedSpan(
+                                    SourceSpan.of(origin, related.span().startOffset(), related.span().endOffset()),
+                                    related.label())).toList()));
                 }
                 program = ((PhaseResult.Success<SyntaxProgram>) parsed).value();
-                programsByPhysical.put(source.physicalKey(), program);
+                if (!forceFresh) {
+                    programsByPhysical.put(source.physicalKey(), program);
+                }
             }
-            return Materialized.success(snapshot, program);
+            Materialized materialized = Materialized.success(snapshot, program);
+            if (forceFresh) freshSources.put(source.logicalModule(), materialized);
+            return materialized;
         }
 
         private PhaseResult<ModuleGraph> finish() {
@@ -816,82 +932,67 @@ public final class ModuleGraphDiscovery {
             // candidates for ordinary import edges.  Seeding them here keeps
             // a later submission able to use a committed import alias without
             // replaying its original source header.
-            for (Map.Entry<LogicalModuleId, PinnedModule> entry : pinnedModules.entrySet()) {
-                if (!retainedImportRoots.contains(entry.getKey())) {
-                    continue;
-                }
-                PinnedModule pinned = entry.getValue();
-                if (pinned.moduleId().sourceId().equals(rootModule.sourceId())) {
-                    continue;
-                }
-                Materialized materialized = materialize(pinned.resolvedSource());
-                if (materialized.diagnostic() != null) {
-                    return failure(materialized.diagnostic());
-                }
-                Registration registration = register(
-                        pinned.moduleId(), entry.getKey(),
-                        materialized.snapshot(), materialized.program());
-                if (registration.diagnostic() != null) {
-                    return failure(registration.diagnostic());
-                }
-                if (registration.created()) {
-                    pending.add(registration.draft());
-                }
-            }
-
-            while (!pending.isEmpty()) {
-                Draft current = pending.remove();
-                List<ImportRequest> imports = new ArrayList<>();
-                for (SyntaxNode.ImportDeclaration declaration : current.program.imports()) {
-                    try {
-                        imports.add(new ImportRequest(
-                                LogicalModuleId.fromImportPath(declaration.path()),
-                                declaration.path().span()));
-                    } catch (IllegalArgumentException exception) {
-                        return failure(Diagnostic.error(
-                                CompilerDiagnosticCodes.MODULE_INVALID_IMPORT_PATH,
-                                declaration.path().span(),
-                                "invalid logical import path: " + exception.getMessage()));
+            if (reloadModule.isEmpty()) {
+                for (Map.Entry<LogicalModuleId, PinnedModule> entry : pinnedModules.entrySet()) {
+                    if (!retainedImportRoots.contains(entry.getKey())
+                            || modulesByLogical.containsKey(entry.getKey())) {
+                        continue;
                     }
-                }
-                imports.sort(Comparator.comparing(ImportRequest::logicalModule, LOGICAL_ORDER)
-                        .thenComparingInt(request -> request.span().startOffset()));
-
-                for (ImportRequest request : imports) {
-                    Selection selection = resolve(request.logicalModule(), request.span());
-                    if (selection.diagnostic() != null) {
-                        return failure(selection.diagnostic());
+                    PinnedModule pinned = entry.getValue();
+                    if (pinned.moduleId().sourceId().equals(rootModule.sourceId())) {
+                        continue;
                     }
-                    Materialized materialized = materialize(selection.source());
+                    Materialized materialized = materialize(pinned.resolvedSource());
                     if (materialized.diagnostic() != null) {
                         return failure(materialized.diagnostic());
                     }
-                    ModuleId targetId = ModuleId.fromSourceId(materialized.snapshot().sourceId());
-                    if (forbiddenImportedIdentity
-                            .filter(identity -> identity.equals(targetId.sourceId()))
-                            .isPresent()) {
-                        return failure(Diagnostic.error(
-                                CompilerDiagnosticCodes.MODULE_DUPLICATE_IDENTITY,
-                                request.span(),
-                                "session root source identity cannot be imported: "
-                                        + targetId));
-                    }
                     Registration registration = register(
-                            targetId,
-                            request.logicalModule(),
-                            materialized.snapshot(),
-                            materialized.program());
+                            pinned.moduleId(), entry.getKey(),
+                            materialized.snapshot(), materialized.program());
                     if (registration.diagnostic() != null) {
                         return failure(registration.diagnostic());
                     }
-                    edges.add(new ModuleGraph.Edge(
-                            current.moduleId,
-                            request.logicalModule(),
-                            targetId,
-                            request.span()));
                     if (registration.created()) {
                         pending.add(registration.draft());
                     }
+                }
+            }
+
+            // In reload mode the synthetic root and its fresh closure must be
+            // drained before unrelated retained import roots are seeded. This
+            // prevents an old pin from occupying a logical slot that the
+            // selected closure is about to replace.
+            Diagnostic pendingFailure = drainPending();
+            if (pendingFailure != null) {
+                return failure(pendingFailure);
+            }
+            if (reloadModule.isPresent()) {
+                for (Map.Entry<LogicalModuleId, PinnedModule> entry : pinnedModules.entrySet()) {
+                    if (!retainedImportRoots.contains(entry.getKey())
+                            || modulesByLogical.containsKey(entry.getKey())) {
+                        continue;
+                    }
+                    PinnedModule pinned = entry.getValue();
+                    if (pinned.moduleId().sourceId().equals(rootModule.sourceId())) {
+                        continue;
+                    }
+                    Materialized materialized = materialize(pinned.resolvedSource());
+                    if (materialized.diagnostic() != null) {
+                        return failure(materialized.diagnostic());
+                    }
+                    Registration registration = register(
+                            pinned.moduleId(), entry.getKey(),
+                            materialized.snapshot(), materialized.program());
+                    if (registration.diagnostic() != null) {
+                        return failure(registration.diagnostic());
+                    }
+                    if (registration.created()) {
+                        pending.add(registration.draft());
+                    }
+                }
+                pendingFailure = drainPending();
+                if (pendingFailure != null) {
+                    return failure(pendingFailure);
                 }
             }
 
@@ -909,6 +1010,86 @@ public final class ModuleGraphDiscovery {
                     .toList();
             return PhaseResult.success(new ModuleGraph(
                     rootModule, nodes, edges, modulesByLogical));
+        }
+
+        private PhaseResult<ModuleGraph> failure(Diagnostic diagnostic) {
+            return PhaseResult.failure(new Diagnostic(diagnostic.code(), diagnostic.severity(), diagnostic.summary(),
+                    originSpan(diagnostic.primarySpan()), diagnostic.relatedSpans().stream()
+                    .map(related -> new io.mindspice.lyra.compiler.diagnostic.RelatedSpan(
+                            originSpan(related.span()), related.label())).toList()));
+        }
+
+        private SourceSpan originSpan(SourceSpan span) {
+            Draft source = draftsByModule.get(ModuleId.fromSourceId(span.sourceId()));
+            return source == null ? span : SourceSpan.of(source.snapshot.originSourceId(),
+                    span.startOffset(), span.endOffset());
+        }
+
+        private Diagnostic drainPending() {
+            while (!pending.isEmpty()) {
+                Draft current = pending.remove();
+                // A retained producer is an execution boundary. Its original
+                // dependency graph remains in the environment, not rebound
+                // through this request's default logical-module index.
+                if (!current.reloadFresh && environment.module(current.moduleId).isPresent()) {
+                    continue;
+                }
+                processingReloadFresh = current.reloadFresh;
+                List<ImportRequest> imports = new ArrayList<>();
+                for (SyntaxNode.ImportDeclaration declaration : current.program.imports()) {
+                    try {
+                        imports.add(new ImportRequest(
+                                LogicalModuleId.fromImportPath(declaration.path()),
+                                declaration.path().span()));
+                    } catch (IllegalArgumentException exception) {
+                        return Diagnostic.error(
+                                CompilerDiagnosticCodes.MODULE_INVALID_IMPORT_PATH,
+                                declaration.path().span(),
+                                "invalid logical import path: " + exception.getMessage());
+                    }
+                }
+                imports.sort(Comparator.comparing(ImportRequest::logicalModule, LOGICAL_ORDER)
+                        .thenComparingInt(request -> request.span().startOffset()));
+
+                for (ImportRequest request : imports) {
+                    Selection selection = resolve(request.logicalModule(), request.span());
+                    if (selection.diagnostic() != null) {
+                        return selection.diagnostic();
+                    }
+                    Materialized materialized = materialize(selection.source());
+                    if (materialized.diagnostic() != null) {
+                        return materialized.diagnostic();
+                    }
+                    ModuleId targetId = ModuleId.fromSourceId(materialized.snapshot().sourceId());
+                    if (forbiddenImportedIdentity
+                            .filter(identity -> identity.equals(targetId.sourceId()))
+                            .isPresent()) {
+                        return Diagnostic.error(
+                                CompilerDiagnosticCodes.MODULE_DUPLICATE_IDENTITY,
+                                request.span(),
+                                "session root source identity cannot be imported: "
+                                        + targetId);
+                    }
+                    Registration registration = register(
+                            targetId,
+                            request.logicalModule(),
+                            materialized.snapshot(),
+                            materialized.program());
+                    if (registration.diagnostic() != null) {
+                        return registration.diagnostic();
+                    }
+                    edges.add(new ModuleGraph.Edge(
+                            current.moduleId,
+                            request.logicalModule(),
+                            targetId,
+                            request.span()));
+                    if (registration.created()) {
+                        pending.add(registration.draft());
+                    }
+                }
+                processingReloadFresh = false;
+            }
+            return null;
         }
 
         private Registration register(
@@ -954,8 +1135,10 @@ public final class ModuleGraphDiscovery {
                 return Registration.existing(moduleExisting);
             }
 
+            boolean reloadFresh = reloadModule.isPresent()
+                    && reloadFreshModules.contains(logicalModule);
             Draft created = new Draft(
-                    moduleId, Optional.of(logicalModule), snapshot, program);
+                    moduleId, Optional.of(logicalModule), snapshot, program, reloadFresh);
             draftsByModule.put(moduleId, created);
             draftsByPhysical.put(snapshot.physicalKey(), created);
             modulesByLogical.put(logicalModule, moduleId);
@@ -963,6 +1146,9 @@ public final class ModuleGraphDiscovery {
         }
 
         private Optional<String> pinnedRevision(Draft draft) {
+            if (draft.reloadFresh) {
+                return Optional.empty();
+            }
             return draft.logicalModule.flatMap(logical -> Optional.ofNullable(
                     pinnedModules.get(logical))).map(PinnedModule::revision);
         }
@@ -1007,16 +1193,20 @@ public final class ModuleGraphDiscovery {
             private Optional<LogicalModuleId> logicalModule;
             private final SourceSnapshot snapshot;
             private final SyntaxProgram program;
+            /** This source was discovered while traversing a reload closure. */
+            private final boolean reloadFresh;
 
             private Draft(
                     ModuleId moduleId,
                     Optional<LogicalModuleId> logicalModule,
                     SourceSnapshot snapshot,
-                    SyntaxProgram program) {
+                    SyntaxProgram program,
+                    boolean reloadFresh) {
                 this.moduleId = moduleId;
                 this.logicalModule = logicalModule;
                 this.snapshot = snapshot;
                 this.program = program;
+                this.reloadFresh = reloadFresh;
             }
         }
 

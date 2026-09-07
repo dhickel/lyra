@@ -21,6 +21,7 @@ public final class ModuleLifecycle implements AutoCloseable {
     private final RuntimeIoEnvironment ioEnvironment;
     private final SessionStorageDomain.Linkage sessionLinkage;
     private final boolean deferredSubmission;
+    private final java.util.Set<Long> attemptedBindings = new java.util.HashSet<>();
     private final java.util.Set<Long> initializedBindings = new java.util.HashSet<>();
     private boolean submissionStarted;
     private boolean submissionCompleted;
@@ -126,6 +127,16 @@ public final class ModuleLifecycle implements AutoCloseable {
         if (!submissionCompleted) throw new LyraLifecycleException("submission has no completed result");
     }
 
+    /** Records entry into one source initializer before its body executes. */
+    public void beginSessionBinding(long id) {
+        owner.check();
+        boolean validPhase = state.get() == LifecycleState.INITIALIZING
+                || submissionStarted && state.get() == LifecycleState.OPEN;
+        if (id < 0 || submissionCompleted || !validPhase || !attemptedBindings.add(id)) {
+            throw new LyraLifecycleException("submission binding attempt is out of order");
+        }
+    }
+
     /** Publication of one initialized source binding, not a whole namespace. */
     public void initializeSessionBinding(long id) {
         owner.check();
@@ -135,9 +146,22 @@ public final class ModuleLifecycle implements AutoCloseable {
         // authoritative boundary for recording initialized storage.
         boolean validPhase = state.get() == LifecycleState.INITIALIZING
                 || submissionStarted && state.get() == LifecycleState.OPEN;
-        if (id < 0 || submissionCompleted || !validPhase || !initializedBindings.add(id)) {
+        if (id < 0 || submissionCompleted || !validPhase
+                || !attemptedBindings.contains(id) || !initializedBindings.add(id)) {
             throw new LyraLifecycleException("submission binding initialization is out of order");
         }
+    }
+
+    /** Returns initializer entries reached by generated source execution. */
+    public java.util.Set<Long> attemptedSessionBindings() {
+        owner.check();
+        return java.util.Set.copyOf(attemptedBindings);
+    }
+
+    /** Returns initializer entries whose bodies completed successfully. */
+    public java.util.Set<Long> initializedSessionBindings() {
+        owner.check();
+        return java.util.Set.copyOf(initializedBindings);
     }
 
     public void checkSessionBinding(long id) {
@@ -275,6 +299,7 @@ public final class ModuleLifecycle implements AutoCloseable {
                 || state.compareAndSet(LifecycleState.FAILED, LifecycleState.CLOSED)) {
             retiredBySessionReset = sessionLinkage != null && sessionLinkage.isRetiredByReset();
             ownership.invalidate();
+            attemptedBindings.clear();
             initializedBindings.clear();
             return;
         }
@@ -287,6 +312,7 @@ public final class ModuleLifecycle implements AutoCloseable {
         if (state.compareAndSet(LifecycleState.OPEN, LifecycleState.CLOSED)) {
             retiredBySessionReset = sessionLinkage != null && sessionLinkage.isRetiredByReset();
             ownership.invalidate();
+            attemptedBindings.clear();
             initializedBindings.clear();
             return;
         }

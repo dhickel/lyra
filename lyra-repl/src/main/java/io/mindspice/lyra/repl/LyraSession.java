@@ -7,6 +7,7 @@ import io.mindspice.lyra.compiler.api.SessionCompileResult;
 import io.mindspice.lyra.compiler.api.LyraCompilerBugException;
 import io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes;
 import io.mindspice.lyra.compiler.diagnostic.Diagnostic;
+import io.mindspice.lyra.compiler.source.LogicalModuleId;
 import io.mindspice.lyra.compiler.source.SourceId;
 import io.mindspice.lyra.compiler.source.SourceSpan;
 
@@ -124,40 +125,83 @@ public final class LyraSession implements AutoCloseable {
      */
     public EvaluationResult submit(
             EvaluationRequest request, BooleanSupplier cancellationRequested) {
+        return submit(request, cancellationRequested, Optional.empty(), Optional.empty());
+    }
+
+    /** Reloads one retained REPL-owned module by logical name or namespace alias. */
+    public EvaluationResult reload(String moduleOrAlias) {
+        Objects.requireNonNull(moduleOrAlias, "moduleOrAlias");
+        owner.check();
+        List<LogicalModuleId> matches = new java.util.ArrayList<>();
+        compilerSnapshot.importAlias(moduleOrAlias)
+                .filter(io.mindspice.lyra.compiler.session.SessionImport::isModuleNamespace)
+                .map(io.mindspice.lyra.compiler.session.SessionImport::logicalModule)
+                .ifPresent(matches::add);
+        try {
+            LogicalModuleId logical = LogicalModuleId.of(moduleOrAlias);
+            if (compilerSnapshot.moduleEnvironment().module(logical).isPresent()
+                    || matches.isEmpty()) {
+                matches.add(logical);
+            }
+        } catch (IllegalArgumentException invalidLogical) {
+            if (matches.isEmpty()) {
+                return reloadTargetFailure(moduleOrAlias,
+                        CompilerDiagnosticCodes.MODULE_INVALID_IMPORT_PATH,
+                        "invalid reload target: " + invalidLogical.getMessage());
+            }
+        }
+        List<LogicalModuleId> distinct = matches.stream().distinct().toList();
+        if (distinct.size() != 1) {
+            return reloadTargetFailure(moduleOrAlias,
+                    CompilerDiagnosticCodes.MODULE_DUPLICATE_IDENTITY,
+                    "reload target is ambiguous: " + moduleOrAlias);
+        }
+        return reload(distinct.getFirst());
+    }
+
+    /** Owner-confined explicit reload; old generations are never retargeted. */
+    public EvaluationResult reload(LogicalModuleId logicalModule) {
+        Objects.requireNonNull(logicalModule, "logicalModule");
+        owner.check();
+        EvaluationId evaluationId = EvaluationId.create();
+        String alias = "__lyra_reload_" + evaluationId.value().toString().replace("-", "");
+        EvaluationSource source = EvaluationSource.of(
+                "reload " + logicalModule.value(),
+                "import " + logicalModule.value() + " as " + alias);
+        return submit(new EvaluationRequest(evaluationId, revision, source),
+                () -> false, Optional.of(logicalModule), Optional.of(alias));
+    }
+
+    private EvaluationResult reloadTargetFailure(
+            String target, io.mindspice.lyra.compiler.diagnostic.DiagnosticCode code,
+            String summary) {
+        EvaluationSource source = EvaluationSource.of("reload " + target, "");
+        EvaluationRequest request = new EvaluationRequest(
+                EvaluationId.create(), revision, source);
+        SourceId sourceId = SourceId.path("repl/reload-target.lyra");
+        synchronized (admission) {
+            EvaluationResult rejected = admissionFailure(request);
+            if (rejected != null) return rejected;
+            return new EvaluationResult.CompilationFailure(
+                    request, revision, List.of(Diagnostic.error(
+                            code, SourceSpan.at(sourceId, 0), summary)));
+        }
+    }
+
+    private EvaluationResult submit(
+            EvaluationRequest request,
+            BooleanSupplier cancellationRequested,
+            Optional<LogicalModuleId> reloadModule,
+            Optional<String> reloadImportAlias) {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(cancellationRequested, "cancellationRequested");
+        Objects.requireNonNull(reloadModule, "reloadModule");
+        Objects.requireNonNull(reloadImportAlias, "reloadImportAlias");
         ActiveOperation operation;
         synchronized (admission) {
-            SessionRevision current = revision;
-            if (request.revision().value() > current.value()) {
-                throw new IllegalArgumentException(
-                        "evaluation request targets a future session revision: "
-                                + request.revision() + " > " + current);
-            }
-            if (lifecycle == SessionLifecycleState.CLOSED) {
-                return new EvaluationResult.Closed(request, current, lifecycle);
-            }
-            if (lifecycle == SessionLifecycleState.FAILED) {
-                throw new LyraLifecycleException("session is failed");
-            }
-            if (!request.revision().equals(current)) {
-                throw new IllegalArgumentException(
-                        "evaluation request targets stale session revision: "
-                                + request.revision() + ", current is " + current);
-            }
-            if (active != null) {
-                if (active.request.evaluationId().equals(request.evaluationId())) {
-                    throw new IllegalArgumentException(
-                            "evaluation identity is already active: " + request.evaluationId());
-                }
-                return new EvaluationResult.Busy(
-                        request, current, Optional.of(active.request.evaluationId()));
-            }
-            if (typeQueryActive) {
-                return new EvaluationResult.Busy(request, current, Optional.empty());
-            }
-            owner.check();
-            operation = new ActiveOperation(request);
+            EvaluationResult rejected = admissionFailure(request);
+            if (rejected != null) return rejected;
+            operation = new ActiveOperation(request, reloadModule, reloadImportAlias);
             active = operation;
             try {
                 if (cancellationRequested.getAsBoolean()) {
@@ -170,6 +214,39 @@ public final class LyraSession implements AutoCloseable {
             }
         }
         return evaluate(operation);
+    }
+
+    /** Called only while holding admission; no source or namespace work occurs here. */
+    private EvaluationResult admissionFailure(EvaluationRequest request) {
+        SessionRevision current = revision;
+        if (request.revision().value() > current.value()) {
+            throw new IllegalArgumentException(
+                    "evaluation request targets a future session revision: "
+                            + request.revision() + " > " + current);
+        }
+        if (lifecycle == SessionLifecycleState.CLOSED) {
+            return new EvaluationResult.Closed(request, current, lifecycle);
+        }
+        if (lifecycle == SessionLifecycleState.FAILED) {
+            throw new LyraLifecycleException("session is failed");
+        }
+        if (!request.revision().equals(current)) {
+            throw new IllegalArgumentException(
+                    "evaluation request targets stale session revision: "
+                            + request.revision() + ", current is " + current);
+        }
+        if (active != null) {
+            if (active.request.evaluationId().equals(request.evaluationId())) {
+                throw new IllegalArgumentException(
+                        "evaluation identity is already active: " + request.evaluationId());
+            }
+            return new EvaluationResult.Busy(request, current, Optional.of(active.request.evaluationId()));
+        }
+        if (typeQueryActive) {
+            return new EvaluationResult.Busy(request, current, Optional.empty());
+        }
+        owner.check();
+        return null;
     }
 
     /**
@@ -287,6 +364,7 @@ public final class LyraSession implements AutoCloseable {
             closeGenerations();
             storage.reset();
             storageBindings.clear();
+            sourceRegistry.clear();
             workspace.reset();
             compilerSnapshot = new io.mindspice.lyra.compiler.session.SessionSnapshot(
                     new io.mindspice.lyra.compiler.session.SessionRevision(revision.value()),
@@ -375,25 +453,27 @@ public final class LyraSession implements AutoCloseable {
                 return completeCancelled(operation);
             }
 
-            SessionCompileResult compiled = LyraCompiler.compileSession(
-                    SessionCompileRequest.builder()
-                            .source(compilerSource(operation.request.source()))
-                            .sourceId(operation.compilerSourceId)
-                            .snapshot(compilerSnapshot)
-                            .sourceRoots(options.sourceRoots())
-                            .resolvers(options.resolvers())
-                            .javaBasePackage(options.javaBasePackage())
-                            .javaTarget(options.javaTarget())
-                            .previewEnabled(options.previewEnabled())
-                            .includeSources(options.includeSources())
-                            .semanticOptions(options.semanticOptions())
-                            .build());
+            SessionCompileRequest.Builder compile = SessionCompileRequest.builder()
+                    .source(compilerSource(operation.request.source()))
+                    .sourceId(operation.compilerSourceId)
+                    .snapshot(compilerSnapshot)
+                    .sourceRoots(options.sourceRoots())
+                    .resolvers(options.resolvers())
+                    .javaBasePackage(options.javaBasePackage())
+                    .javaTarget(options.javaTarget())
+                    .previewEnabled(options.previewEnabled())
+                    .includeSources(options.includeSources())
+                    .semanticOptions(options.semanticOptions());
+            operation.reloadModule.ifPresent(compile::reloadModule);
+            operation.reloadImportAlias.ifPresent(compile::reloadImportAlias);
+            SessionCompileResult compiled = LyraCompiler.compileSession(compile.build());
             if (compiled instanceof SessionCompileResult.Failure failure) {
                 return completeCompilationFailure(
                         operation, sessionDiagnostics(failure.diagnostics()), true);
             }
 
             SessionCompileResult.Success success = (SessionCompileResult.Success) compiled;
+            operation.executionPlan = success.executionPlan();
             List<Diagnostic> diagnostics = success.diagnostics();
             if (operation.isCancellationRequested()) {
                 return completeCancelled(operation);
@@ -474,6 +554,7 @@ public final class LyraSession implements AutoCloseable {
                         LoadOptions.defaults().withPreviewEnabled(options.previewEnabled())
                                 .withIoEnvironment(options.ioEnvironment()), linkage);
                 module = LyraRuntime.prepareSubmission(loaded);
+                operation.module = module;
                 // Retain before executing: completed assignments can publish values
                 // into older storage even when the new namespace never commits.
                 generations.add(new Generation(loaded, module, artifact.classes().keySet()));
@@ -551,7 +632,7 @@ public final class LyraSession implements AutoCloseable {
                 return completeCancelledLocked(operation);
             }
             EvaluationResult result = new EvaluationResult.CompilationFailure(
-                    operation.request, revision, diagnostics);
+                    operation.request, revision, diagnostics, initializerProgress(operation));
             recordLocked(operation, SourceRecordStatus.COMPILATION_FAILURE,
                     Optional.empty(), diagnostics, retain);
             active = null;
@@ -568,7 +649,8 @@ public final class LyraSession implements AutoCloseable {
             }
             EvaluationResult result = new EvaluationResult.RuntimeFailure(
                     operation.request, revision, failure.summary(), diagnostics,
-                    failure.code(), runtimeFrames(operation, failure));
+                    failure.code(), runtimeFrames(operation, failure),
+                    initializerProgress(operation));
             recordLocked(operation, SourceRecordStatus.RUNTIME_FAILURE,
                     Optional.empty(), diagnostics, true);
             active = null;
@@ -584,9 +666,7 @@ public final class LyraSession implements AutoCloseable {
                             ? SourceId.uri(runtimeSource.asUri()) : SourceId.path(runtimeSource.value());
                     EvaluationSource source = sourceId.equals(operation.compilerSourceId)
                             ? operation.request.source()
-                            : sourceRegistry.records().stream()
-                                    .filter(record -> record.compilerSourceId().equals(sourceId))
-                                    .map(SourceRecord::source).findFirst().orElse(null);
+                            : sourceRegistry.source(sourceId).orElse(null);
                     SourceSpan local = SourceSpan.of(sourceId,
                             frame.span().startOffset(), frame.span().endOffset());
                     if (source == null) {
@@ -623,7 +703,8 @@ public final class LyraSession implements AutoCloseable {
                     "stagedCompilerSnapshot");
             revision = pending.state().revision();
             EvaluationResult result = new EvaluationResult.Success(
-                    operation.request, revision, value, diagnostics);
+                    operation.request, revision, value, diagnostics,
+                    initializerProgress(operation));
             recordLocked(operation, SourceRecordStatus.COMMITTED,
                     Optional.of(revision), diagnostics, true);
             active = null;
@@ -642,7 +723,8 @@ public final class LyraSession implements AutoCloseable {
         EvaluationResult result = new EvaluationResult.Cancelled(
                 operation.request,
                 revision,
-                Cancellation.observed(operation.request.evaluationId()));
+                Cancellation.observed(operation.request.evaluationId()),
+                initializerProgress(operation));
         recordLocked(operation, SourceRecordStatus.CANCELLED,
                 Optional.empty(), List.of(), operation.retained);
         active = null;
@@ -664,6 +746,16 @@ public final class LyraSession implements AutoCloseable {
                 status,
                 publishedRevision,
                 diagnostics));
+    }
+
+    private static InitializerProgress initializerProgress(ActiveOperation operation) {
+        if (operation.executionPlan == null) {
+            return InitializerProgress.empty();
+        }
+        if (operation.module == null) {
+            return InitializerProgress.scheduled(operation.executionPlan);
+        }
+        return InitializerProgress.actual(operation.executionPlan, operation.module);
     }
 
     private void ensureActive(ActiveOperation operation) {
@@ -754,13 +846,25 @@ public final class LyraSession implements AutoCloseable {
 
     private static final class ActiveOperation {
         private final EvaluationRequest request;
+        private final Optional<LogicalModuleId> reloadModule;
+        private final Optional<String> reloadImportAlias;
         private volatile boolean cancellationRequested;
         private volatile io.mindspice.lyra.runtime.LyraOwnerController.EvaluationLease lease;
+        private volatile ModuleHandle module;
+        private io.mindspice.lyra.compiler.session.SessionExecutionPlan executionPlan;
         private SourceId compilerSourceId;
         private boolean retained;
 
-        private ActiveOperation(EvaluationRequest request) {
+        private ActiveOperation(
+                EvaluationRequest request,
+                Optional<LogicalModuleId> reloadModule,
+                Optional<String> reloadImportAlias) {
             this.request = Objects.requireNonNull(request, "request");
+            this.reloadModule = Objects.requireNonNull(reloadModule, "reloadModule");
+            this.reloadImportAlias = Objects.requireNonNull(reloadImportAlias, "reloadImportAlias");
+            if (this.reloadImportAlias.isPresent() && this.reloadModule.isEmpty()) {
+                throw new IllegalArgumentException("reload alias requires a reload module");
+            }
         }
 
         private boolean requestCancellation() {

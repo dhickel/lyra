@@ -167,9 +167,14 @@ final class TypedSemanticProvenance {
             }
             DeclarationId targetId = source.targetDeclaration().orElseThrow(() -> invalid(
                     "value reference has no declaration target"));
-            ResolvedDeclaration target = resolved.declaration(targetId).orElseThrow();
-            BindingContract contract = typed.contract(targetId).orElseThrow(() -> invalid(
-                    "value reference target has no typed contract"));
+            ResolvedDeclaration target = resolved.declaration(targetId).orElse(null);
+            BindingContract contract = typed.contract(targetId).orElse(null);
+            if (target == null || contract == null) {
+                var retained = retainedProducer(targetId, reference.moduleId()).orElseThrow(() -> invalid(
+                        "value reference target has no retained producer contract"));
+                target = retained.producerGraph().resolvedGraph().declaration(targetId).orElseThrow();
+                contract = retained.producerGraph().contract(targetId).orElseThrow();
+            }
             LyraType expected = contract.valueType();
             if (target.isMutable() && !target.imported()
                     && target.kind() != DeclarationKind.IMPORT_MODULE
@@ -179,6 +184,15 @@ final class TypedSemanticProvenance {
             require(reference.type().filter(expected::equals).isPresent(),
                     "typed reference type does not match its declaration contract: " + reference.id());
         }
+    }
+
+    private Optional<io.mindspice.lyra.compiler.session.SessionModuleEnvironment.ModuleRecord>
+            retainedProducer(DeclarationId declaration, ModuleId referringModule) {
+        if (!resolved.isRetained(referringModule)) {
+            return Optional.empty();
+        }
+        return resolved.retainedModules().module(referringModule)
+                .filter(record -> record.producerGraph().declaration(declaration).isPresent());
     }
 
     private void validateLambdas() {

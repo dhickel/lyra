@@ -324,9 +324,16 @@ public final class TypedSemanticGraph implements ImmutablePhaseArtifact, TypedSe
             ResolvedReference resolved = resolvedGraph.reference(reference.id())
                     .orElseThrow(() -> new IllegalArgumentException(
                             "typed reference is absent from the resolved graph: " + reference.id()));
-            reference.targetDeclaration().ifPresent(target -> requireDeclaration(target));
+            reference.targetDeclaration().ifPresent(target -> {
+                if (resolvedGraph.declaration(target).isEmpty()
+                        && !retainedProducerContains(target, reference.moduleId())) {
+                    requireDeclaration(target);
+                }
+            });
             reference.targetModule().ifPresent(target -> {
-                if (resolvedGraph.module(target).isEmpty()) {
+                if (resolvedGraph.module(target).isEmpty()
+                        && (!reference.targetModule().equals(resolved.targetModule())
+                        || resolvedGraph.retainedModules().module(target).isEmpty())) {
                     throw new IllegalArgumentException("typed reference targets an absent module");
                 }
             });
@@ -419,9 +426,18 @@ public final class TypedSemanticGraph implements ImmutablePhaseArtifact, TypedSe
                     throw new IllegalArgumentException("typed expression has an unknown reference link");
                 }
             });
-            link.declarationId().ifPresent(this::requireDeclaration);
+            link.declarationId().ifPresent(id -> {
+                Optional<ResolvedReference> reference = link.referenceId()
+                        .flatMap(resolvedGraph::reference);
+                if (resolvedGraph.declaration(id).isEmpty()
+                        && (reference.isEmpty()
+                        || !retainedProducerContains(id, reference.orElseThrow().moduleId()))) {
+                    requireDeclaration(id);
+                }
+            });
             link.moduleId().ifPresent(module -> {
-                if (!modulesById.containsKey(module)) {
+                if (!modulesById.containsKey(module)
+                        && resolvedGraph.retainedModules().module(module).isEmpty()) {
                     throw new IllegalArgumentException("typed expression has an unknown module link");
                 }
             });
@@ -438,7 +454,11 @@ public final class TypedSemanticGraph implements ImmutablePhaseArtifact, TypedSe
                 throw new IllegalArgumentException("typed expression has an unknown lambda link");
             }
         });
-        expression.declarationId().ifPresent(this::requireDeclaration);
+        expression.declarationId().ifPresent(id -> {
+            if (!retainedProducerContains(id, ModuleId.fromSourceId(expression.span().sourceId()))) {
+                requireDeclaration(id);
+            }
+        });
         expression.predicateBinding().ifPresent(this::requireDeclaration);
         for (CaptureId capture : expression.captureIds()) {
             requireCapture(capture);
@@ -549,6 +569,15 @@ public final class TypedSemanticGraph implements ImmutablePhaseArtifact, TypedSe
                 }
             }
         }
+    }
+
+    private boolean retainedProducerContains(DeclarationId declaration, ModuleId referringModule) {
+        if (!resolvedGraph.isRetained(referringModule)) {
+            return false;
+        }
+        return resolvedGraph.retainedModules().module(referringModule)
+                .map(record -> record.producerGraph().declaration(declaration).isPresent())
+                .orElse(false);
     }
 
     private void requireDeclaration(DeclarationId id) {

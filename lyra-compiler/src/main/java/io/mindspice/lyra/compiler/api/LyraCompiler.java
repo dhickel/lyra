@@ -48,10 +48,12 @@ import io.mindspice.lyra.runtime.PackagingMode;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -253,9 +255,12 @@ public final class LyraCompiler {
     private static final class SessionPipeline {
         private final SessionCompileRequest request;
         private final ArrayList<Diagnostic> diagnostics = new ArrayList<>();
+        private final Map<SourceId, SourceId> sourceOrigins = new LinkedHashMap<>();
 
         private SessionPipeline(SessionCompileRequest request) {
             this.request = request;
+            request.snapshot().moduleEnvironment().sourceInventory().forEach(source ->
+                    sourceOrigins.put(source.sourceId(), source.originSourceId()));
         }
 
         private SessionCompileResult run() {
@@ -268,11 +273,12 @@ public final class LyraCompiler {
                 return failure();
             }
 
+            graph.modules().forEach(node -> sourceOrigins.put(node.sourceId(), node.snapshot().originSourceId()));
             IdentityReservations reservations = reserveModuleIdentities(graph);
             SessionSnapshot semanticSnapshot = request.snapshot()
                     .withAllocator(reservations.allocator());
             ResolvedSemanticGraph resolved = phase(SemanticResolver.resolveSession(
-                    graph, semanticSnapshot));
+                    graph, semanticSnapshot, request.reloadModule()));
             if (resolved == null) {
                 return failure();
             }
@@ -354,13 +360,32 @@ public final class LyraCompiler {
             if (syntax == null) {
                 return PhaseResult.failure(syntaxResult.diagnostics());
             }
-            return ModuleGraphDiscovery.discoverSession(
-                    syntax, snapshot, request.sourceConfiguration(), request.snapshot());
+            if (request.reloadModule().isPresent()) {
+                var imports = syntax.imports();
+                boolean valid = syntax.forms().isEmpty() && imports.size() == 1;
+                if (valid) {
+                    var imported = imports.getFirst();
+                    valid = imported.selection().isEmpty() && imported.modifiers().isEmpty()
+                            && io.mindspice.lyra.compiler.source.LogicalModuleId.fromImportPath(imported.path())
+                            .equals(request.reloadModule().orElseThrow())
+                            && request.reloadImportAlias().map(alias -> imported.alias()
+                            .map(value -> value.name().equals(alias)).orElse(false)).orElse(true);
+                }
+                if (!valid) return PhaseResult.failure(Diagnostic.error(
+                        CompilerDiagnosticCodes.MODULE_INVALID_CONFIGURATION, sourceSpan(),
+                        "reload requires exactly one namespace import of its selected target and no source forms"));
+            }
+            return request.reloadModule()
+                    .map(reload -> ModuleGraphDiscovery.discoverSession(
+                            syntax, snapshot, request.sourceConfiguration(), request.snapshot(), reload))
+                    .orElseGet(() -> ModuleGraphDiscovery.discoverSession(
+                            syntax, snapshot, request.sourceConfiguration(), request.snapshot()));
         }
 
         private IdentityReservations reserveModuleIdentities(ModuleGraph graph) {
             IdentityAllocator.Allocation<GenerationId> generation = request.snapshot().allocator().allocateGeneration();
             IdentityAllocator allocator = generation.next();
+            Set<ModuleId> reloadFreshModules = reloadFreshModules(graph);
             LinkedHashMap<ModuleId, IdentityPair> identities = new LinkedHashMap<>();
             for (ModuleGraph.Node node : graph.modules()) {
                 boolean scratch = node.moduleId().equals(graph.rootModule());
@@ -369,7 +394,11 @@ public final class LyraCompiler {
                 SessionModuleEnvironment.ModuleRecord previous = logical
                         .flatMap(value -> request.snapshot().moduleEnvironment().module(value))
                         .orElse(null);
+                boolean reloadReplacement = reloadFreshModules.contains(node.moduleId())
+                        && previous != null
+                        && previous.ownership() == SessionModuleEnvironment.Ownership.SESSION;
                 boolean sameProducer = !scratch
+                        && !reloadReplacement
                         && previous != null
                         && previous.moduleId().equals(node.moduleId())
                         && previous.revision().equals(node.revision())
@@ -387,12 +416,40 @@ public final class LyraCompiler {
             return new IdentityReservations(allocator, Map.copyOf(identities));
         }
 
+        private Set<ModuleId> reloadFreshModules(ModuleGraph graph) {
+            if (request.reloadModule().isEmpty()) {
+                return Set.of();
+            }
+            Set<ModuleId> visited = new HashSet<>();
+            Set<ModuleId> fresh = new HashSet<>();
+            ArrayDeque<ModuleId> pending = new ArrayDeque<>();
+            pending.add(graph.rootModule());
+            while (!pending.isEmpty()) {
+                ModuleId current = pending.removeFirst();
+                if (!visited.add(current)) continue;
+                for (var edge : graph.importsFrom(current)) {
+                    ModuleId target = edge.target();
+                    Optional<io.mindspice.lyra.compiler.source.LogicalModuleId> logical =
+                            graph.module(target).flatMap(ModuleGraph.Node::logicalModule);
+                    boolean sessionOwned = logical.flatMap(value ->
+                                    request.snapshot().moduleEnvironment().module(value))
+                            .map(record -> record.ownership()
+                                    == SessionModuleEnvironment.Ownership.SESSION)
+                            .orElse(true);
+                    if (!sessionOwned || !fresh.add(target)) continue;
+                    pending.addLast(target);
+                }
+            }
+            return Set.copyOf(fresh);
+        }
+
         private SessionEnvironmentData buildEnvironment(
                 ModuleGraph graph,
                 ResolvedSemanticGraph resolved,
                 TypedSemanticGraph typed,
                 IdentityReservations reservations) {
             IdentityAllocator allocator = typed.allocator();
+            Set<ModuleId> reloadFreshModules = reloadFreshModules(graph);
             Map<io.mindspice.lyra.compiler.source.LogicalModuleId,
                     SessionModuleEnvironment.ModuleRecord> retained =
                     new LinkedHashMap<>(request.snapshot().moduleEnvironment().modulesByLogical());
@@ -407,7 +464,11 @@ public final class LyraCompiler {
                 SessionModuleEnvironment.ModuleRecord previous = logical
                         .flatMap(value -> Optional.ofNullable(retained.get(value)))
                         .orElse(null);
+                boolean reloadReplacement = reloadFreshModules.contains(node.moduleId())
+                        && previous != null
+                        && previous.ownership() == SessionModuleEnvironment.Ownership.SESSION;
                 boolean sameProducer = !scratch
+                        && !reloadReplacement
                         && previous != null
                         && previous.moduleId().equals(node.moduleId())
                         && previous.revision().equals(node.revision())
@@ -445,8 +506,7 @@ public final class LyraCompiler {
                         : SessionExecutionPlan.WorkKind.NEW;
                 work.add(new SessionExecutionPlan.ModuleWork(
                         node.moduleId(), logical, generation, producer, kind, scratch,
-                        kind == SessionExecutionPlan.WorkKind.NEW && !scratch
-                                ? initializers : List.of()));
+                        kind == SessionExecutionPlan.WorkKind.NEW ? initializers : List.of()));
 
                 if (!scratch) {
                     if (!sameProducer) {
@@ -497,17 +557,20 @@ public final class LyraCompiler {
             for (ModuleGraph.Node node : graph.modules()) {
                 snapshots.put(node.snapshot().sourceId(), node.snapshot());
             }
-            LinkedHashMap<io.mindspice.lyra.compiler.source.LogicalModuleId,
-                    io.mindspice.lyra.compiler.source.ResolvedSource> inputs = new LinkedHashMap<>();
+            LinkedHashMap<SourceId, io.mindspice.lyra.compiler.source.ResolvedSource> inputs =
+                    new LinkedHashMap<>();
             for (io.mindspice.lyra.compiler.source.ResolvedSource input :
                     request.snapshot().moduleEnvironment().resolvedInputs()) {
-                inputs.put(input.logicalModule(), input);
+                inputs.put(input.sourceId(), input);
             }
             for (ModuleGraph.Node node : graph.modules()) {
-                node.logicalModule().ifPresent(logical -> inputs.put(logical,
+                node.logicalModule().ifPresent(logical -> inputs.put(node.sourceId(),
                         io.mindspice.lyra.compiler.source.ResolvedSource.fromSnapshot(
                                 logical, node.snapshot())));
             }
+            LinkedHashMap<ProducerId, SessionModuleEnvironment.ModuleRecord> producers = new LinkedHashMap<>();
+            request.snapshot().moduleEnvironment().producers().forEach(record -> producers.put(record.producerId(), record));
+            retained.values().forEach(record -> producers.put(record.producerId(), record));
             SessionModuleEnvironment environment = new SessionModuleEnvironment(
                     new ArrayList<>(retained.values()),
                     request.sourceConfiguration().sourceRoots(),
@@ -517,7 +580,7 @@ public final class LyraCompiler {
                     Optional.of(graph),
                     Optional.of(resolved),
                     Optional.of(typed),
-                    Optional.of(typed.semanticFlowFacts()));
+                    Optional.of(typed.semanticFlowFacts()), new ArrayList<>(producers.values()));
 
             ResolvedModule root = resolved.module(graph.rootModule()).orElseThrow();
             ArrayList<SessionImport> imports = new ArrayList<>();
@@ -578,15 +641,24 @@ public final class LyraCompiler {
 
             LinkedHashMap<String, SessionImport> nextImports =
                     new LinkedHashMap<>(request.snapshot().imports());
+            ArrayList<SessionImport> publishedImports = new ArrayList<>();
             for (SessionImport imported : environment.imports()) {
-                SessionImport previous = nextImports.get(imported.name());
-                if (previous != null && !equivalentImport(previous, imported)) {
+                if (request.reloadImportAlias().map(imported.name()::equals).orElse(false)) {
+                    continue;
+                }
+                SessionImport candidate = rebindReloadNamespace(imported, environment.environment());
+                SessionImport previous = nextImports.get(candidate.name());
+                if (previous != null && !equivalentImport(previous, candidate)
+                        && !isAllowedReloadReplacement(previous, candidate)) {
                     return StagedNamespace.failure(Diagnostic.error(
                             CompilerDiagnosticCodes.SESSION_NAME_CONFLICT,
                             sourceSpan(),
-                            "session import cannot be rebound: " + imported.name()));
+                            "session import cannot be rebound: " + candidate.name()));
                 }
-                nextImports.putIfAbsent(imported.name(), imported);
+                if (previous == null || isAllowedReloadReplacement(previous, candidate)) {
+                    nextImports.put(candidate.name(), candidate);
+                }
+                publishedImports.add(candidate);
             }
 
             List<DeclarationId> declarations = resolved.declarations().stream()
@@ -602,7 +674,7 @@ public final class LyraCompiler {
                         environment.pinnedModules(),
                         environment.allocator(),
                         environment.environment()), declarations,
-                        environment.imports());
+                        publishedImports);
             } catch (IllegalArgumentException | IllegalStateException failure) {
                 throw new LyraCompilerBugException(
                         "session namespace staging violated an immutable contract", failure);
@@ -618,7 +690,61 @@ public final class LyraCompiler {
                 return Diagnostic.error(CompilerDiagnosticCodes.MODULE_INVALID_CONFIGURATION,
                         sourceSpan(), "invalid Java base package: " + request.javaBasePackage());
             }
+            if (request.reloadModule().isPresent()) {
+                var logical = request.reloadModule().orElseThrow();
+                var record = request.snapshot().moduleEnvironment().module(logical);
+                if (record.isEmpty()) {
+                    return Diagnostic.error(CompilerDiagnosticCodes.RESOLVE_MISSING_MODULE,
+                            sourceSpan(), "reload target is not a retained session module: " + logical);
+                }
+                if (record.orElseThrow().ownership()
+                        != SessionModuleEnvironment.Ownership.SESSION) {
+                    return Diagnostic.error(CompilerDiagnosticCodes.SESSION_EXTERNAL_BINDING_UNSUPPORTED,
+                            sourceSpan(), "application-owned or intrinsic modules cannot be reloaded: " + logical);
+                }
+            }
             return null;
+        }
+
+        private SessionImport rebindReloadNamespace(
+                SessionImport imported, SessionModuleEnvironment environment) {
+            if (request.reloadModule().isEmpty() || !imported.isModuleNamespace()) {
+                return imported;
+            }
+            var replacement = environment.module(imported.logicalModule()).orElse(null);
+            if (replacement == null) {
+                return imported;
+            }
+            var contract = io.mindspice.lyra.compiler.session.SessionModuleContract.from(
+                    environment, replacement.moduleId());
+            boolean alreadyCurrent = imported.moduleContract()
+                    .map(previous -> previous.producer().generationId()
+                            .equals(contract.producer().generationId())
+                            && previous.producer().producerId().equals(contract.producer().producerId()))
+                    .orElse(false);
+            if (alreadyCurrent) {
+                return imported;
+            }
+            return new SessionImport(
+                    imported.name(), imported.logicalModule(), replacement.moduleId(),
+                    contract.producer().revision(), imported.kind(), imported.importedName(),
+                    imported.aliasName(), imported.targetDeclaration(), imported.targetExport(),
+                    imported.reExport(), Optional.of(contract));
+        }
+
+        private boolean isAllowedReloadReplacement(SessionImport previous, SessionImport candidate) {
+            if (request.reloadModule().isEmpty() || !candidate.isModuleNamespace()
+                    || !previous.isModuleNamespace()
+                    || !previous.logicalModule().equals(candidate.logicalModule())) {
+                return false;
+            }
+            if (previous.moduleContract().isEmpty() || candidate.moduleContract().isEmpty()) {
+                return false;
+            }
+            var oldProducer = previous.moduleContract().orElseThrow().producer();
+            var newProducer = candidate.moduleContract().orElseThrow().producer();
+            return !oldProducer.generationId().equals(newProducer.generationId())
+                    || !oldProducer.producerId().equals(newProducer.producerId());
         }
 
         private static boolean equivalentImport(SessionImport left, SessionImport right) {
@@ -667,8 +793,15 @@ public final class LyraCompiler {
         }
 
         private List<Diagnostic> mapDiagnostics(List<Diagnostic> values) {
-            return LyraCompiler.mapSessionDiagnostics(
-                    values, request.source(), request.sourceId());
+            var mapped = values.stream().map(value -> new Diagnostic(value.code(), value.severity(),
+                    value.summary(), mapModuleSpan(value.primarySpan()), value.relatedSpans().stream()
+                    .map(related -> new RelatedSpan(mapModuleSpan(related.span()), related.label())).toList())).toList();
+            return LyraCompiler.mapSessionDiagnostics(mapped, request.source(), request.sourceId());
+        }
+
+        private SourceSpan mapModuleSpan(SourceSpan span) {
+            return SourceSpan.of(sourceOrigins.getOrDefault(span.sourceId(), span.sourceId()),
+                    span.startOffset(), span.endOffset());
         }
 
         private record IdentityPair(GenerationId generation, ProducerId producer) {

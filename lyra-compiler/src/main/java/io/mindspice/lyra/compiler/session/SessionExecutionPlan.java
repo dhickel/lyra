@@ -158,9 +158,10 @@ public final class SessionExecutionPlan implements ImmutablePhaseArtifact {
                             && value.scopeId().equals(resolved.rootScope()))
                     .map(io.mindspice.lyra.compiler.semantic.ResolvedDeclaration::id).toList();
             if (work.kind() != expected || !work.logicalModule().equals(resolved.logicalModule())
-                    || !work.initializerDeclarations().equals(expected == WorkKind.NEW && !work.scratch()
+                    || !work.initializerDeclarations().equals(expected == WorkKind.NEW
                             ? declarations : List.of())
-                    || retained.filter(value -> !value.generationId().equals(work.generationId())
+                    || graph.resolvedGraph().isRetained(work.moduleId())
+                    && retained.filter(value -> !value.generationId().equals(work.generationId())
                             || !value.producerId().equals(work.producerId())).isPresent()) {
                 throw new IllegalArgumentException("execution work disagrees with its exact producer");
             }

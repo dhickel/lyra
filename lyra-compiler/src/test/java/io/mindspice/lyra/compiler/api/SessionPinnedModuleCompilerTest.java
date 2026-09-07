@@ -1,6 +1,8 @@
 package io.mindspice.lyra.compiler.api;
 
 import io.mindspice.lyra.compiler.backend.jvm.JvmBytecodeArtifact;
+import io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes;
+import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.session.PinnedModule;
 import io.mindspice.lyra.compiler.session.SessionModuleEnvironment;
 import io.mindspice.lyra.compiler.session.SessionExecutionPlan;
@@ -214,6 +216,108 @@ final class SessionPinnedModuleCompilerTest {
         assertSame(original.typedModule(), second.typedGraph().module(original.moduleId()).orElseThrow());
         assertTrue(second.typedIr().module(original.moduleId()).isEmpty());
         assertTrue(second.typedIr().lambdas().isEmpty());
+    }
+
+    @Test
+    void reloadFreshTraversalStopsAtApplicationOwnedDependencies() {
+        var hidden = source("hidden", "let @pub value :I32 = 10");
+        var application = source("application", "import hidden let @pub value :I32 = hidden->:.value");
+        var top = source("top", "import application\n"
+                + "let @pub value :I32 = application->:.value");
+        var first = success(SessionCompileRequest.builder().source("first.lyra", "import top")
+                .resolver(requested -> requested.equals(application.logicalModule())
+                        ? Optional.of(application)
+                        : requested.equals(top.logicalModule()) ? Optional.of(top)
+                        : requested.equals(hidden.logicalModule()) ? Optional.of(hidden) : Optional.empty())
+                .build());
+        var environment = first.snapshot().environment();
+        var originalApplication = environment.module(application.logicalModule()).orElseThrow();
+        var originalTop = environment.module(top.logicalModule()).orElseThrow();
+        var borrowedApplication = new SessionModuleEnvironment.ModuleRecord(
+                originalApplication.logicalModule(), originalApplication.moduleId(),
+                originalApplication.source(), originalApplication.revision(),
+                originalApplication.generationId(), originalApplication.producerId(),
+                SessionModuleEnvironment.Ownership.APPLICATION, originalApplication.resolvedModule(),
+                originalApplication.typedModule(), originalApplication.exports(),
+                originalApplication.imports(), originalApplication.dependencies(),
+                originalApplication.initializerDeclarations(), originalApplication.finalState(),
+                originalApplication.attemptedState(), originalApplication.callableSummaries(),
+                originalApplication.producerGraph(), originalApplication.sourceRoots(),
+                originalApplication.revisionOptions());
+        var borrowedEnvironment = new SessionModuleEnvironment(
+                List.of(borrowedApplication, originalTop, environment.module(hidden.logicalModule()).orElseThrow()),
+                environment.sourceRoots(),
+                environment.revisionOptions(), environment.sourceInventory(),
+                environment.resolvedInputs(), environment.resolutionTopology(),
+                environment.resolvedGraph(), environment.typedGraph(), environment.flowFacts());
+        var changedTop = source("top", "import application\n"
+                + "let @pub value :I32 = (+ application->:.value 1)");
+        var reloaded = success(SessionCompileRequest.builder().source("reload.lyra", "import top")
+                .snapshot(first.snapshot().withModuleEnvironment(borrowedEnvironment))
+                .reloadModule(top.logicalModule())
+                .resolver(logical -> {
+                    assertEquals(top.logicalModule(), logical, "borrowed transitive graph must not be reread");
+                    return Optional.of(changedTop);
+                })
+                .build());
+        assertTrue(reloaded.executionPlan().module(ModuleId.fromSourceId(hidden.sourceId())).isEmpty());
+        var rejected = assertInstanceOf(SessionCompileResult.Failure.class,
+                LyraCompiler.compileSession(SessionCompileRequest.builder()
+                        .source("rejected", "import application")
+                        .snapshot(first.snapshot().withModuleEnvironment(borrowedEnvironment))
+                        .reloadModule(application.logicalModule())
+                        .resolver(logical -> { throw new AssertionError("rejected target performed discovery"); })
+                        .build()));
+        assertEquals(CompilerDiagnosticCodes.SESSION_EXTERNAL_BINDING_UNSUPPORTED,
+                rejected.diagnostics().getFirst().code());
+
+        var applicationWork = reloaded.executionPlan().module(originalApplication.moduleId()).orElseThrow();
+        assertEquals(SessionExecutionPlan.WorkKind.BORROWED, applicationWork.kind());
+        assertSame(originalApplication.typedModule(),
+                reloaded.typedGraph().module(originalApplication.moduleId()).orElseThrow());
+        assertTrue(reloaded.typedIr().module(originalApplication.moduleId()).isEmpty());
+        var replacement = reloaded.snapshot().moduleEnvironment().module(top.logicalModule()).orElseThrow();
+        assertNotEquals(originalTop.moduleId(), replacement.moduleId());
+        assertNotEquals(originalTop.producerId(), replacement.producerId());
+        assertNotEquals(originalTop.generationId(), replacement.generationId());
+        assertEquals(originalTop.source().originSourceId(), replacement.source().originSourceId());
+        assertEquals(SessionExecutionPlan.WorkKind.NEW,
+                reloaded.executionPlan().module(replacement.moduleId()).orElseThrow().kind());
+    }
+
+    @Test
+    void reloadRejectsMissingMultipleAndWrongTargetsBeforeDiscovery() {
+        var library = source("target", "let @pub value :I32 = 1");
+        var first = success(SessionCompileRequest.builder().source("first", "import target")
+                .resolver(SourceResolver.single(library)).build());
+        for (String source : List.of("1", "import target import other", "import other", "import target 1")) {
+            var failure = assertInstanceOf(SessionCompileResult.Failure.class,
+                    LyraCompiler.compileSession(SessionCompileRequest.builder().source("bad-reload", source)
+                            .snapshot(first.snapshot()).reloadModule(library.logicalModule())
+                            .resolver(logical -> { throw new AssertionError("invalid reload performed discovery"); })
+                            .build()));
+            assertEquals(CompilerDiagnosticCodes.MODULE_INVALID_CONFIGURATION, failure.diagnostics().getFirst().code());
+        }
+    }
+
+    @Test
+    void historicalProducersKeepExactSourceAndDependencyCoverageAfterReload() {
+        var library = source("history", "let @pub value :I32 = 1");
+        var first = success(SessionCompileRequest.builder().source("first", "import history")
+                .resolver(SourceResolver.single(library)).build());
+        var replacement = success(SessionCompileRequest.builder().source("reload", "import history")
+                .snapshot(first.snapshot()).reloadModule(library.logicalModule())
+                .resolver(SourceResolver.single(source("history", "let @pub value :I32 = 2"))).build());
+        var environment = replacement.snapshot().environment();
+        var old = first.snapshot().environment().module(library.logicalModule()).orElseThrow();
+        assertSame(old, environment.module(old.moduleId()).orElseThrow());
+        assertEquals(2, environment.producers().size());
+        assertThrows(IllegalArgumentException.class, () -> new SessionModuleEnvironment(
+                environment.modules(), environment.sourceRoots(), environment.revisionOptions(),
+                environment.sourceInventory().stream().filter(snapshot -> !snapshot.sourceId().equals(old.source().sourceId())).toList(),
+                environment.resolvedInputs().stream().filter(input -> !input.sourceId().equals(old.source().sourceId())).toList(),
+                environment.resolutionTopology(), environment.resolvedGraph(), environment.typedGraph(),
+                environment.flowFacts(), environment.producers()));
     }
 
     @Test

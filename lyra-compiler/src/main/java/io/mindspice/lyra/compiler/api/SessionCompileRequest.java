@@ -2,6 +2,7 @@ package io.mindspice.lyra.compiler.api;
 
 import io.mindspice.lyra.compiler.session.SessionRevision;
 import io.mindspice.lyra.compiler.session.SessionSnapshot;
+import io.mindspice.lyra.compiler.source.LogicalModuleId;
 import io.mindspice.lyra.compiler.source.SourceConfiguration;
 import io.mindspice.lyra.compiler.source.SourceId;
 import io.mindspice.lyra.runtime.LyraRuntimeConstants;
@@ -12,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /** Immutable input for compiling one source submission against a session snapshot. */
 public final class SessionCompileRequest {
@@ -26,6 +28,8 @@ public final class SessionCompileRequest {
     private final boolean previewEnabled;
     private final boolean includeSources;
     private final Map<String, String> semanticOptions;
+    private final Optional<LogicalModuleId> reloadModule;
+    private final Optional<String> reloadImportAlias;
 
     private SessionCompileRequest(Builder builder) {
         source = Objects.requireNonNull(builder.source, "source");
@@ -47,6 +51,11 @@ public final class SessionCompileRequest {
         previewEnabled = builder.previewEnabled;
         includeSources = builder.includeSources;
         semanticOptions = copyOptions(builder.semanticOptions);
+        reloadModule = Optional.ofNullable(builder.reloadModule);
+        reloadImportAlias = Optional.ofNullable(builder.reloadImportAlias);
+        if (reloadImportAlias.isPresent() && reloadModule.isEmpty()) {
+            throw new IllegalArgumentException("reload import alias requires a reload module");
+        }
     }
 
     public SessionCompileRequest(EvaluationSource source, SessionSnapshot snapshot) {
@@ -106,6 +115,16 @@ public final class SessionCompileRequest {
         return semanticOptions;
     }
 
+    /** Logical module whose REPL-owned producer graph is being rebuilt. */
+    public Optional<LogicalModuleId> reloadModule() {
+        return reloadModule;
+    }
+
+    /** Synthetic namespace alias used only to make a reload graph reachable. */
+    public Optional<String> reloadImportAlias() {
+        return reloadImportAlias;
+    }
+
     public SourceConfiguration sourceConfiguration() {
         Map<String, String> revisionOptions = new LinkedHashMap<>(semanticOptions);
         revisionOptions.put("lyra.execution-profile", "submission-result-1");
@@ -125,13 +144,16 @@ public final class SessionCompileRequest {
                 && javaTarget == request.javaTarget
                 && previewEnabled == request.previewEnabled
                 && includeSources == request.includeSources
-                && semanticOptions.equals(request.semanticOptions);
+                && semanticOptions.equals(request.semanticOptions)
+                && reloadModule.equals(request.reloadModule)
+                && reloadImportAlias.equals(request.reloadImportAlias);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(source, sourceId, snapshot, baseRevision, sourceRoots, resolvers,
-                javaBasePackage, javaTarget, previewEnabled, includeSources, semanticOptions);
+                javaBasePackage, javaTarget, previewEnabled, includeSources, semanticOptions,
+                reloadModule, reloadImportAlias);
     }
 
     public static final class Builder {
@@ -147,6 +169,8 @@ public final class SessionCompileRequest {
         private boolean previewEnabled;
         private boolean includeSources;
         private Map<String, String> semanticOptions = Map.of();
+        private LogicalModuleId reloadModule;
+        private String reloadImportAlias;
 
         public Builder source(EvaluationSource value) {
             source = Objects.requireNonNull(value, "source");
@@ -233,6 +257,18 @@ public final class SessionCompileRequest {
 
         public Builder revisionOptions(Map<String, String> values) {
             return semanticOptions(values);
+        }
+
+        /** Enables the explicit reload graph mode for one logical module. */
+        public Builder reloadModule(LogicalModuleId value) {
+            reloadModule = Objects.requireNonNull(value, "reloadModule");
+            return this;
+        }
+
+        /** Supplies the private synthetic alias used by the reload root source. */
+        public Builder reloadImportAlias(String value) {
+            reloadImportAlias = text(value, "reloadImportAlias");
+            return this;
         }
 
         public SessionCompileRequest build() {

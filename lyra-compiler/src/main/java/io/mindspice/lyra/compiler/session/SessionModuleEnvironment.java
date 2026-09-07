@@ -185,6 +185,7 @@ public final class SessionModuleEnvironment implements ImmutablePhaseArtifact {
             .thenComparing(ModuleRecord::generationId);
 
     private final List<ModuleRecord> modules;
+    private final List<ModuleRecord> producers;
     private final Map<LogicalModuleId, ModuleRecord> modulesByLogical;
     private final Map<ModuleId, ModuleRecord> modulesById;
     private final List<SourceRoot> sourceRoots;
@@ -211,6 +212,17 @@ public final class SessionModuleEnvironment implements ImmutablePhaseArtifact {
             Optional<ResolvedSemanticGraph> resolvedGraph,
             Optional<TypedSemanticGraph> typedGraph,
             Optional<SemanticFlowFacts> flowFacts) {
+        this(modules, sourceRoots, revisionOptions, sourceInventory, resolvedInputs,
+                resolutionTopology, resolvedGraph, typedGraph, flowFacts, modules);
+    }
+
+    public SessionModuleEnvironment(
+            List<ModuleRecord> modules, List<SourceRoot> sourceRoots,
+            Map<String, String> revisionOptions, List<SourceSnapshot> sourceInventory,
+            List<ResolvedSource> resolvedInputs, Optional<ModuleGraph> resolutionTopology,
+            Optional<ResolvedSemanticGraph> resolvedGraph, Optional<TypedSemanticGraph> typedGraph,
+            Optional<SemanticFlowFacts> flowFacts, List<ModuleRecord> producers) {
+        this.producers = List.copyOf(Objects.requireNonNull(producers, "producers"));
         Objects.requireNonNull(modules, "modules");
         ArrayList<ModuleRecord> ordered = new ArrayList<>();
         for (ModuleRecord module : modules) {
@@ -218,18 +230,21 @@ public final class SessionModuleEnvironment implements ImmutablePhaseArtifact {
         }
         ordered.sort(MODULE_ORDER);
         Map<GenerationId, TypedSemanticGraph> generations = new LinkedHashMap<>();
-        for (var record : ordered) {
+        for (var record : this.producers) {
             var previous = generations.putIfAbsent(record.generationId(), record.producerGraph());
             if (previous != null && previous != record.producerGraph()) {
                 throw new IllegalArgumentException("graph generation identifies different producer graphs");
             }
         }
-        if (ordered.stream().map(ModuleRecord::producerId).distinct().count() != ordered.size()) {
+        if (this.producers.stream().map(ModuleRecord::producerId).distinct().count() != this.producers.size()) {
             throw new IllegalArgumentException("module producers must be unique");
         }
         this.modules = List.copyOf(ordered);
         this.modulesByLogical = indexLogical(this.modules);
-        this.modulesById = indexModule(this.modules);
+        this.modulesById = indexModule(this.producers);
+        if (this.modules.stream().anyMatch(record -> this.modulesById.get(record.moduleId()) != record)) {
+            throw new IllegalArgumentException("default module has no exact retained producer");
+        }
         this.sourceRoots = copyRoots(sourceRoots);
         this.revisionOptions = copyOptions(revisionOptions);
         this.sourceInventory = copySnapshots(sourceInventory);
@@ -279,6 +294,11 @@ public final class SessionModuleEnvironment implements ImmutablePhaseArtifact {
 
     public List<ModuleRecord> modules() {
         return modules;
+    }
+
+    /** Every retained producer, including superseded defaults and their original dependency edges. */
+    public List<ModuleRecord> producers() {
+        return producers;
     }
 
     public List<ModuleRecord> orderedModules() {
@@ -342,12 +362,12 @@ public final class SessionModuleEnvironment implements ImmutablePhaseArtifact {
 
     /** Returns the highest generation identity retained by this environment. */
     public Optional<GenerationId> latestGeneration() {
-        return modules.stream().map(ModuleRecord::generationId).max(Comparator.naturalOrder());
+        return producers.stream().map(ModuleRecord::generationId).max(Comparator.naturalOrder());
     }
 
     /** Returns the highest producer identity retained by this environment. */
     public Optional<ProducerId> latestProducer() {
-        return modules.stream().map(ModuleRecord::producerId).max(Comparator.naturalOrder());
+        return producers.stream().map(ModuleRecord::producerId).max(Comparator.naturalOrder());
     }
 
     @Override
@@ -359,6 +379,7 @@ public final class SessionModuleEnvironment implements ImmutablePhaseArtifact {
             return false;
         }
         return modules.equals(environment.modules)
+                && producers.equals(environment.producers)
                 && sourceRoots.equals(environment.sourceRoots)
                 && revisionOptions.equals(environment.revisionOptions)
                 && sourceInventory.equals(environment.sourceInventory)
@@ -371,7 +392,7 @@ public final class SessionModuleEnvironment implements ImmutablePhaseArtifact {
 
     @Override
     public int hashCode() {
-        return Objects.hash(modules, sourceRoots, revisionOptions, sourceInventory,
+        return Objects.hash(modules, producers, sourceRoots, revisionOptions, sourceInventory,
                 resolvedInputs, resolutionTopology, resolvedGraph, typedGraph, flowFacts);
     }
 
@@ -394,9 +415,9 @@ public final class SessionModuleEnvironment implements ImmutablePhaseArtifact {
                 throw new IllegalArgumentException("duplicate captured source identity");
             }
         }
-        Map<LogicalModuleId, ResolvedSource> inputs = new LinkedHashMap<>();
+        Map<io.mindspice.lyra.compiler.source.SourceId, ResolvedSource> inputs = new LinkedHashMap<>();
         for (var input : resolvedInputs) {
-            if (inputs.put(input.logicalModule(), input) != null
+            if (inputs.put(input.sourceId(), input) != null
                     || !inventory.containsKey(input.sourceId())
                     || !input.equals(ResolvedSource.fromSnapshot(input.logicalModule(), inventory.get(input.sourceId())))) {
                 throw new IllegalArgumentException("resolved input inventory is not exact");
@@ -410,7 +431,7 @@ public final class SessionModuleEnvironment implements ImmutablePhaseArtifact {
                 throw new IllegalArgumentException("topology is missing a producer record");
             }
         }));
-        for (ModuleRecord module : modules) {
+        for (ModuleRecord module : producers) {
             for (var node : module.producerGraph().resolvedGraph().moduleGraph().modules()) {
                 if (!node.snapshot().equals(inventory.get(node.sourceId()))) {
                     throw new IllegalArgumentException("retained semantic source is absent or changed in inventory");
@@ -418,7 +439,7 @@ public final class SessionModuleEnvironment implements ImmutablePhaseArtifact {
             }
             if (!module.source().equals(inventory.get(module.source().sourceId()))
                     || !ResolvedSource.fromSnapshot(module.logicalModule(), module.source())
-                            .equals(inputs.get(module.logicalModule()))) {
+                            .equals(inputs.get(module.source().sourceId()))) {
                 throw new IllegalArgumentException("retained producer is not covered by captured inputs");
             }
             resolvedGraph.flatMap(graph -> graph.module(module.moduleId())).ifPresent(resolved -> {
@@ -427,8 +448,7 @@ public final class SessionModuleEnvironment implements ImmutablePhaseArtifact {
                     throw new IllegalArgumentException("current graph changed a retained producer identity domain");
                 }
             });
-            if (modulesByLogical.get(module.logicalModule()) != module
-                    || modulesById.get(module.moduleId()) != module) {
+            if (modulesById.get(module.moduleId()) != module) {
                 throw new IllegalArgumentException("module environment index is inconsistent");
             }
             if (!module.resolvedModule().exports().equals(module.exports())) {
@@ -438,11 +458,10 @@ public final class SessionModuleEnvironment implements ImmutablePhaseArtifact {
                 throw new IllegalArgumentException("module environment import facts are not sealed");
             }
             for (LogicalModuleId dependency : module.dependencies()) {
-                ModuleRecord target = modulesByLogical.get(dependency);
-                if (target == null || !module.producerGraph().resolvedGraph().moduleGraph()
-                        .moduleFor(dependency).equals(Optional.of(target.moduleId()))
-                        || !module.producerGraph().module(target.moduleId()).orElseThrow()
-                                .equals(target.typedModule())) {
+                ModuleRecord target = module.producerGraph().resolvedGraph().moduleGraph()
+                        .moduleFor(dependency).map(modulesById::get).orElse(null);
+                if (target == null || !module.producerGraph().module(target.moduleId()).orElseThrow()
+                        .equals(target.typedModule())) {
                     throw new IllegalArgumentException("retained dependency producer is absent or changed: " + dependency);
                 }
             }

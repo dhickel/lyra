@@ -50,6 +50,7 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
     private final boolean sessionGraph;
     private final IdentityAllocator allocator;
     private final io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules;
+    private final Set<ModuleId> retainedModuleIds;
 
     public ResolvedSemanticGraph(
             ModuleGraph moduleGraph,
@@ -66,7 +67,8 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
             FunctionSignatureLinkage functionLinkage) {
         this(moduleGraph, scopeTree, modules, declarations, references, lambdas,
                 imports, exports, captures, mutations, syntaxLinks, functionLinkage,
-                Optional.empty(), Optional.empty(), IdentityAllocator.initial(), false);
+                Optional.empty(), Optional.empty(), IdentityAllocator.initial(), false,
+                io.mindspice.lyra.compiler.session.SessionModuleEnvironment.empty(), Set.of());
     }
 
     static ResolvedSemanticGraph publish(
@@ -149,7 +151,7 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
         return publish(moduleGraph, scopeTree, modules, declarations, references, lambdas,
                 imports, exports, captures, mutations, syntaxLinks, functionLinkage, referenceTopology,
                 sessionFlowCertificate, allocator, sessionGraph,
-                io.mindspice.lyra.compiler.session.SessionModuleEnvironment.empty());
+                io.mindspice.lyra.compiler.session.SessionModuleEnvironment.empty(), Set.of());
     }
 
     static ResolvedSemanticGraph publish(ModuleGraph moduleGraph, ScopeTree scopeTree,
@@ -160,12 +162,28 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
             FunctionSignatureLinkage functionLinkage, ResolvedReferenceTopology referenceTopology,
             Optional<SessionFlowCertificate> sessionFlowCertificate, IdentityAllocator allocator,
             boolean sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules) {
+        return publish(moduleGraph, scopeTree, modules, declarations, references, lambdas,
+                imports, exports, captures, mutations, syntaxLinks, functionLinkage, referenceTopology,
+                sessionFlowCertificate, allocator, sessionGraph, retainedModules,
+                retainedModules.modulesById().keySet());
+    }
+
+    static ResolvedSemanticGraph publish(ModuleGraph moduleGraph, ScopeTree scopeTree,
+            List<ResolvedModule> modules, List<ResolvedDeclaration> declarations,
+            List<ResolvedReference> references, List<ResolvedLambda> lambdas,
+            List<ResolvedImportBinding> imports, List<ResolvedExport> exports,
+            List<ResolvedCapture> captures, List<ResolvedMutation> mutations, List<SyntaxLink> syntaxLinks,
+            FunctionSignatureLinkage functionLinkage, ResolvedReferenceTopology referenceTopology,
+            Optional<SessionFlowCertificate> sessionFlowCertificate, IdentityAllocator allocator,
+            boolean sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules,
+            Set<ModuleId> retainedModuleIds) {
         ResolvedReferenceTopology authority = Objects.requireNonNull(
                 referenceTopology, "referenceTopology");
         ResolvedSemanticGraph graph = new ResolvedSemanticGraph(
                 moduleGraph, scopeTree, modules, declarations, references, lambdas,
                 imports, exports, captures, mutations, syntaxLinks, functionLinkage,
-                Optional.of(authority), sessionFlowCertificate, allocator, sessionGraph, retainedModules);
+                Optional.of(authority), sessionFlowCertificate, allocator, sessionGraph, retainedModules,
+                retainedModuleIds);
         authority.bind(graph);
         return graph;
     }
@@ -189,7 +207,8 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
             boolean sessionGraph) {
         this(moduleGraph, scopeTree, modules, declarations, references, lambdas, imports, exports,
                 captures, mutations, syntaxLinks, functionLinkage, referenceTopology, sessionFlowCertificate,
-                allocator, sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment.empty());
+                allocator, sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment.empty(),
+                Set.of());
     }
 
     private ResolvedSemanticGraph(ModuleGraph moduleGraph, ScopeTree scopeTree,
@@ -199,8 +218,15 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
             List<ResolvedCapture> captures, List<ResolvedMutation> mutations, List<SyntaxLink> syntaxLinks,
             FunctionSignatureLinkage functionLinkage, Optional<ResolvedReferenceTopology> referenceTopology,
             Optional<SessionFlowCertificate> sessionFlowCertificate, IdentityAllocator allocator,
-            boolean sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules) {
+            boolean sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules,
+            Set<ModuleId> retainedModuleIds) {
         this.retainedModules = Objects.requireNonNull(retainedModules, "retainedModules");
+        Objects.requireNonNull(retainedModuleIds, "retainedModuleIds");
+        if (!retainedModules.modulesById().keySet().containsAll(retainedModuleIds)
+                || retainedModuleIds.contains(moduleGraph.rootModule())) {
+            throw new IllegalArgumentException("retained module set is not covered by its environment");
+        }
+        this.retainedModuleIds = Set.copyOf(retainedModuleIds);
         this.moduleGraph = Objects.requireNonNull(moduleGraph, "moduleGraph");
         this.scopeTree = Objects.requireNonNull(scopeTree, "scopeTree");
         this.modules = ordered(modules, Comparator.comparing(ResolvedModule::moduleId), "modules");
@@ -356,7 +382,7 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
     }
 
     public boolean isRetained(ModuleId module) {
-        return !module.equals(moduleGraph.rootModule()) && retainedModules.module(module).isPresent();
+        return retainedModuleIds.contains(Objects.requireNonNull(module, "module"));
     }
 
     /** True when this graph was resolved through the session compiler path. */
@@ -445,12 +471,21 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
                 throw new IllegalArgumentException("reference scope ownership is inconsistent");
             }
             reference.targetDeclaration().ifPresent(target -> {
-                if (!declarationsById.containsKey(target)) {
+                if (!declarationsById.containsKey(target)
+                        && !retainedProducerContains(target, reference.moduleId())) {
                     throw new IllegalArgumentException("reference target is absent from declarations");
                 }
             });
             reference.targetModule().ifPresent(target -> {
-                if (!moduleGraph.module(target).isPresent()) {
+                boolean retainedTarget = isRetained(reference.moduleId())
+                        && retainedModules.module(reference.moduleId())
+                        .map(record -> record.producerGraph().resolvedGraph().moduleGraph()
+                                .module(target).isPresent()).orElse(false);
+                boolean importedTarget = imports.stream().anyMatch(binding ->
+                        binding.importSpan().sourceId().equals(reference.moduleId().sourceId())
+                                && binding.targetModule().equals(target)
+                                && binding.producerContract().isPresent());
+                if (moduleGraph.module(target).isEmpty() && !retainedTarget && !importedTarget) {
                     throw new IllegalArgumentException("reference module target is absent from graph");
                 }
             });
@@ -609,7 +644,8 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
                                 value.declarationId());
                         return declaration == null
                                 || !declaration.moduleId().equals(module.moduleId())
-                                || !moduleGraph.module(value.targetModule()).isPresent();
+                                || moduleGraph.module(value.targetModule()).isEmpty()
+                                && !retainedModules.module(value.targetModule()).isPresent();
                     },
                     "module import membership is inconsistent");
             collectOwned(module.exports(), moduleExports,
@@ -627,6 +663,15 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
             throw new IllegalArgumentException("semantic module indexes are incomplete");
         }
         ResolvedTopologyValidator.validate(this);
+    }
+
+    private boolean retainedProducerContains(DeclarationId declaration, ModuleId referringModule) {
+        if (!retainedModuleIds.contains(referringModule)) {
+            return false;
+        }
+        return retainedModules.module(referringModule)
+                .map(record -> record.producerGraph().declaration(declaration).isPresent())
+                .orElse(false);
     }
 
     private static <T> void requireUnique(List<T> values, String message) {

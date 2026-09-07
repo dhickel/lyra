@@ -78,6 +78,10 @@ final class SemanticFlowFactValidator {
             graph.resolvedGraph().captures().forEach(capture -> captures.put(capture.id(), capture));
             graph.resolvedGraph().declarations().forEach(
                     declaration -> declarations.put(declaration.id(), declaration));
+            graph.resolvedGraph().retainedModules().modules().stream()
+                    .filter(record -> graph.resolvedGraph().isRetained(record.moduleId()))
+                    .flatMap(record -> record.producerGraph().resolvedGraph().declarations().stream())
+                    .forEach(declaration -> declarations.putIfAbsent(declaration.id(), declaration));
             graph.modules().stream().map(TypedModule::moduleId).forEach(modules::add);
         }
 
@@ -300,7 +304,9 @@ final class SemanticFlowFactValidator {
             if (!modules.contains(event.moduleId()) && event.kind() == SemanticFlowEvent.Kind.EFFECT) {
                 require(event.effects().size() == 1, "retained effect event needs one exact witness");
                 var witness = event.effects().getFirst();
-                require(sessionCertificate.map(value -> value.certifiesEffect(witness)).orElse(false),
+                require(sessionCertificate.map(value -> value.certifiesEffect(witness)).orElse(false)
+                                || graph.resolvedGraph().retainedModules().producers().stream()
+                                .anyMatch(record -> record.producerGraph().semanticFlowFacts().events().contains(event)),
                         "retained effect event has no producer certificate: " + witness);
                 var expected = new SemanticFlowEvent(SemanticFlowEvent.Kind.EFFECT,
                         ModuleId.fromSourceId(witness.effectSpan().sourceId()), witness.effectSpan(),
@@ -604,25 +610,38 @@ final class SemanticFlowFactValidator {
         }
 
         private void validateWitness(EagerEffectWitness witness) {
-            require(modules.contains(witness.fromModule())
-                            && modules.contains(witness.targetModule()),
+            var retainedProducer = graph.resolvedGraph().retainedModules().producers().stream()
+                    .map(record -> record.producerGraph()).distinct()
+                    .filter(producer -> producer.semanticFlowFacts().eagerEffectFacts().stream()
+                            .anyMatch(effect -> effect.witness().equals(witness))).findFirst();
+            boolean certificateOwned = sessionCertificate
+                    .map(certificate -> certificate.certifiesEffect(witness)).orElse(false);
+            boolean producerCertified = certificateOwned || retainedProducer.isPresent();
+            require((modules.contains(witness.fromModule())
+                            || graph.resolvedGraph().retainedModules()
+                            .module(witness.fromModule()).isPresent())
+                            && (modules.contains(witness.targetModule())
+                            || graph.resolvedGraph().retainedModules()
+                            .module(witness.targetModule()).isPresent()),
                     "eager effect names a foreign module");
-            boolean producerCertified = sessionCertificate
-                    .map(certificate -> certificate.certifiesEffect(witness))
-                    .orElse(false);
             require(core.ownsFlowSite(witness.effectSite().orElseThrow(), witness.effectSpan())
-                            || producerCertified && sessionCertificate.orElseThrow()
+                            || certificateOwned && sessionCertificate.orElseThrow()
                             .certifiesEffectPathEntry(witness.effectSpan(),
-                                    witness.effectSite().orElseThrow()),
+                                    witness.effectSite().orElseThrow())
+                            || retainedProducer.map(producer -> producer.sealingCore().ownsFlowSite(
+                                    witness.effectSite().orElseThrow(), witness.effectSpan())).orElse(false),
                     "eager effect flow-site identity does not match its source span");
             require(witness.sourcePath().size() == witness.sourceSitePath().size(),
                     "eager effect site/span path lengths differ");
             for (int index = 0; index < witness.sourcePath().size(); index++) {
                 boolean owned = core.ownsFlowSite(
                         witness.sourceSitePath().get(index), witness.sourcePath().get(index));
-                boolean certified = producerCertified && sessionCertificate.orElseThrow()
-                        .certifiesEffectPathEntry(
-                                witness.sourcePath().get(index), witness.sourceSitePath().get(index));
+                var span = witness.sourcePath().get(index);
+                var site = witness.sourceSitePath().get(index);
+                boolean certified = certificateOwned && sessionCertificate.orElseThrow()
+                        .certifiesEffectPathEntry(span, site)
+                        || retainedProducer.map(producer -> producer.sealingCore().ownsFlowSite(site, span))
+                        .orElse(false);
                 require(owned || certified,
                         "eager effect path site does not match its source span");
             }
@@ -632,13 +651,17 @@ final class SemanticFlowFactValidator {
                             witness.effectSite().orElseThrow()),
                     "eager effect path has the wrong terminal site");
             witness.targetDeclaration().ifPresent(declaration -> require(
-                    declarations.containsKey(declaration) || producerCertified,
+                    declarations.containsKey(declaration) || producerCertified
+                            || graph.resolvedGraph().retainedModules().module(witness.targetModule())
+                            .flatMap(record -> record.producerGraph().declaration(declaration)).isPresent(),
                     "eager effect declaration is foreign"));
             witness.referenceId().ifPresent(reference -> require(
                     graph.resolvedGraph().reference(reference).isPresent() || producerCertified,
                     "eager effect reference is foreign"));
             witness.targetLambda().ifPresent(lambda -> require(
-                    lambdas.containsKey(lambda) || producerCertified,
+                    lambdas.containsKey(lambda) || producerCertified
+                            || graph.resolvedGraph().retainedModules().module(witness.targetModule())
+                            .flatMap(record -> record.producerGraph().lambda(lambda)).isPresent(),
                     "eager effect lambda is foreign"));
             for (SummaryCallId call : witness.callPath()) {
                 CallableCallReference reference = facts.callableSummaries()

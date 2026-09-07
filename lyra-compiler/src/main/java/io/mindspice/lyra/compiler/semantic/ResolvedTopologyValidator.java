@@ -68,6 +68,14 @@ final class ResolvedTopologyValidator {
             if (!module.logicalModule().equals(node.logicalModule())) {
                 throw invalid("resolved module logical identity changed from its source graph");
             }
+            if (resolved.isRetained(node.moduleId())) {
+                var producer = resolved.retainedModules().module(node.moduleId()).orElseThrow();
+                if (!producer.source().equals(node.snapshot())
+                        || !producer.resolvedModule().imports().equals(module.imports())) {
+                    throw invalid("retained source header differs from its exact producer");
+                }
+                continue;
+            }
             for (SyntaxNode.ImportDeclaration syntax : node.program().imports()) {
                 LogicalModuleId logical = logicalModule(syntax);
                 ModuleId target = moduleGraph.moduleFor(logical).orElseThrow(() -> invalid(
@@ -116,6 +124,7 @@ final class ResolvedTopologyValidator {
 
         List<ImportShape> actualImports = new ArrayList<>();
         for (ResolvedModule module : resolved.modules()) {
+            if (resolved.isRetained(module.moduleId())) continue;
             for (ResolvedImportBinding binding : module.imports()) {
                 if (binding.retained()) {
                     continue;
@@ -232,8 +241,7 @@ final class ResolvedTopologyValidator {
 
                 String importedName = binding.importedName().orElseThrow(() -> invalid(
                         "selective import has no imported name"));
-                ResolvedExport target = exportsByKey.get(
-                        new ExportKey(binding.targetModule(), importedName));
+                ResolvedExport target = importTarget(binding);
                 if (target == null) {
                     throw invalid("selective import does not target an existing public export");
                 }
@@ -245,11 +253,20 @@ final class ResolvedTopologyValidator {
                         || !declaration.functionSignature().equals(target.functionSignature())) {
                     throw invalid("selective import target/export/declaration linkage is inconsistent");
                 }
-                ResolvedDeclaration origin = resolved.declaration(target.originDeclaration())
-                        .orElseThrow(() -> invalid(
-                                "selective import origin declaration is absent"));
-                if (!origin.moduleId().equals(target.originModule())) {
-                    throw invalid("selective import origin declaration belongs to another module");
+                Optional<ResolvedDeclaration> resolvedOrigin = resolved.declaration(
+                        target.originDeclaration());
+                if (resolvedOrigin.isPresent()) {
+                    if (!resolvedOrigin.orElseThrow().moduleId().equals(target.originModule())) {
+                        throw invalid("selective import origin declaration belongs to another module");
+                    }
+                } else if (binding.producerContract().flatMap(contract -> contract.exports().stream()
+                        .filter(value -> value.export().equals(target))
+                        .findFirst()).isEmpty()
+                        && resolved.retainedModules().module(module.moduleId())
+                        .flatMap(record -> record.producerGraph().resolvedGraph()
+                                .declaration(target.originDeclaration()))
+                        .filter(origin -> origin.moduleId().equals(target.originModule())).isEmpty()) {
+                    throw invalid("selective import origin declaration is absent");
                 }
             }
         }
@@ -274,8 +291,7 @@ final class ResolvedTopologyValidator {
                     || binding.kind() != ImportBindingKind.SELECTIVE_VALUE) {
                 throw invalid("re-export has no exact source import binding");
             }
-            ResolvedExport target = exportsByKey.get(new ExportKey(
-                    binding.targetModule(), binding.importedName().orElseThrow()));
+            ResolvedExport target = importTarget(binding);
             if (target == null
                     || !export.contract().equals(target.contract())
                     || !export.functionSignature().equals(target.functionSignature())
@@ -296,6 +312,34 @@ final class ResolvedTopologyValidator {
         }
     }
 
+    private ResolvedExport importTarget(ResolvedImportBinding binding) {
+        String importedName = binding.importedName().orElseThrow(() -> invalid(
+                "selective import has no imported name"));
+        if (binding.retained() && binding.producerContract().isPresent()) {
+            return binding.producerContract().orElseThrow().exports().stream()
+                    .filter(value -> value.export().name().equals(importedName))
+                    .map(io.mindspice.lyra.compiler.session.SessionModuleContract.Export::export)
+                    .findFirst().orElse(null);
+        }
+        ResolvedExport target = exportsByKey.get(new ExportKey(binding.targetModule(), importedName));
+        ResolvedExport retained = retainedProducerExport(binding, importedName);
+        if (retained != null && (target == null
+                || !binding.targetDeclaration().equals(Optional.of(target.originDeclaration()))
+                || !binding.targetExport().equals(target.exportId()))) {
+            return retained;
+        }
+        return target;
+    }
+
+    private ResolvedExport retainedProducerExport(
+            ResolvedImportBinding binding, String name) {
+        return resolved.declaration(binding.declarationId())
+                .flatMap(declaration -> resolved.retainedModules().module(declaration.moduleId()))
+                .flatMap(record -> record.producerGraph().resolvedGraph().module(binding.targetModule()))
+                .flatMap(module -> module.export(name))
+                .orElse(null);
+    }
+
     private ResolvedExport ultimateOrigin(ResolvedExport source) {
         ResolvedExport current = source;
         Set<ExportKey> visited = new HashSet<>();
@@ -308,8 +352,7 @@ final class ResolvedTopologyValidator {
             if (binding == null) {
                 throw invalid("re-export chain has no import binding");
             }
-            current = exportsByKey.get(new ExportKey(
-                    binding.targetModule(), binding.importedName().orElseThrow()));
+            current = importTarget(binding);
             if (current == null) {
                 throw invalid("re-export chain targets an absent export");
             }
@@ -467,6 +510,12 @@ final class ResolvedTopologyValidator {
                         || !reference.targetDeclaration().equals(
                         Optional.of(target.originDeclaration()))
                         || !reference.targetExport().equals(target.exportId())) {
+                    target = retainedNamespaceExport(reference, targetModule);
+                }
+                if (target == null
+                        || !reference.targetDeclaration().equals(
+                        Optional.of(target.originDeclaration()))
+                        || !reference.targetExport().equals(target.exportId())) {
                     throw invalid("namespace member reference disagrees with its target export");
                 }
                 continue;
@@ -490,6 +539,15 @@ final class ResolvedTopologyValidator {
                 throw invalid("local value reference carries foreign module/export linkage");
             }
         }
+    }
+
+    private ResolvedExport retainedNamespaceExport(
+            ResolvedReference reference, ModuleId targetModule) {
+        return resolved.retainedModules().module(reference.moduleId())
+                .flatMap(record -> record.producerGraph().resolvedGraph()
+                        .module(targetModule))
+                .flatMap(module -> module.export(reference.name()))
+                .orElse(null);
     }
 
     private ResolvedScope canonicalSourceScope(ResolvedReference reference) {

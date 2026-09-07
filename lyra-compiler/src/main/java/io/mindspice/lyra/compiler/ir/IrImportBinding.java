@@ -67,8 +67,9 @@ public record IrImportBinding(
 
     public static IrImportBinding from(io.mindspice.lyra.compiler.semantic.ResolvedImportBinding value,
             Optional<IrSessionExecution> execution) {
-        var contract = execution.map(value1 -> io.mindspice.lyra.compiler.session.SessionModuleContract.from(
-                value1.environment(), value.targetModule())).or(() -> value.producerContract());
+        var contract = value.producerContract().or(() -> execution.map(value1 ->
+                io.mindspice.lyra.compiler.session.SessionModuleContract.from(
+                        value1.environment(), value.targetModule())));
         return new IrImportBinding(value.declarationId(), value.localName(), value.localNameSpan(),
                 value.importSpan(), value.logicalModule(), value.targetModule(), value.kind(),
                 value.importedName(), value.aliasName(), value.reExport(), value.targetDeclaration(),

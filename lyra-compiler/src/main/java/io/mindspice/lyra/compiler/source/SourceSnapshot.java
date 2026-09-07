@@ -26,6 +26,7 @@ public final class SourceSnapshot implements io.mindspice.lyra.compiler.diagnost
     private static final byte UTF8_BOM_2 = (byte) 0xBF;
 
     private final SourceId sourceId;
+    private final SourceId originSourceId;
     private final PhysicalSourceKey physicalKey;
     private final byte[] capturedUtf8Bytes;
     private final byte[] utf8Bytes;
@@ -37,12 +38,14 @@ public final class SourceSnapshot implements io.mindspice.lyra.compiler.diagnost
 
     private SourceSnapshot(
             SourceId sourceId,
+            SourceId originSourceId,
             PhysicalSourceKey physicalKey,
             byte[] capturedUtf8Bytes,
             byte[] utf8Bytes,
             String text,
             boolean hadUtf8Bom) {
         this.sourceId = sourceId;
+        this.originSourceId = originSourceId;
         this.physicalKey = physicalKey;
         this.capturedUtf8Bytes = capturedUtf8Bytes;
         this.utf8Bytes = utf8Bytes;
@@ -80,6 +83,7 @@ public final class SourceSnapshot implements io.mindspice.lyra.compiler.diagnost
 
         return PhaseResult.success(new SourceSnapshot(
                 sourceId,
+                sourceId,
                 physicalKey,
                 retainedCapture,
                 sourceBytes,
@@ -97,6 +101,16 @@ public final class SourceSnapshot implements io.mindspice.lyra.compiler.diagnost
 
     public SourceId sourceId() {
         return sourceId;
+    }
+
+    /** Original resolver identity, separate from a session generation's compiler identity. */
+    public SourceId originSourceId() {
+        return originSourceId;
+    }
+
+    SourceSnapshot withSessionIdentity(SourceId identity) {
+        return new SourceSnapshot(Objects.requireNonNull(identity, "identity"), originSourceId,
+                physicalKey, capturedUtf8Bytes, utf8Bytes, text, hadUtf8Bom);
     }
 
     public PhysicalSourceKey physicalKey() {
@@ -177,13 +191,14 @@ public final class SourceSnapshot implements io.mindspice.lyra.compiler.diagnost
             return false;
         }
         return sourceId.equals(snapshot.sourceId)
+                && originSourceId.equals(snapshot.originSourceId)
                 && physicalKey.equals(snapshot.physicalKey)
                 && Arrays.equals(capturedUtf8Bytes, snapshot.capturedUtf8Bytes);
     }
 
     @Override
     public int hashCode() {
-        int result = Objects.hash(sourceId, physicalKey);
+        int result = Objects.hash(sourceId, originSourceId, physicalKey);
         result = 31 * result + Arrays.hashCode(capturedUtf8Bytes);
         return result;
     }

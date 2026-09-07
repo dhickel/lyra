@@ -45,6 +45,11 @@ public sealed interface EvaluationResult
         return Optional.empty();
     }
 
+    /** Exact scheduled/attempted/completed initializer progress, if any. */
+    default InitializerProgress initializerProgress() {
+        return InitializerProgress.empty();
+    }
+
     default boolean isTerminal() {
         return status().isTerminal();
     }
@@ -53,7 +58,8 @@ public sealed interface EvaluationResult
             EvaluationRequest request,
             SessionRevision revision,
             Optional<ValueSnapshot> value,
-            List<Diagnostic> diagnostics) implements EvaluationResult {
+            List<Diagnostic> diagnostics,
+            InitializerProgress initializerProgress) implements EvaluationResult {
         public Success {
             validateHeader(request, revision);
             value = Objects.requireNonNull(value, "value");
@@ -62,6 +68,20 @@ public sealed interface EvaluationResult
                 throw new IllegalArgumentException(
                         "successful evaluation cannot contain an error diagnostic");
             }
+            initializerProgress = Objects.requireNonNull(initializerProgress, "initializerProgress");
+        }
+
+        public Success(
+                EvaluationRequest request,
+                SessionRevision revision,
+                Optional<ValueSnapshot> value,
+                List<Diagnostic> diagnostics) {
+            this(request, revision, value, diagnostics, InitializerProgress.empty());
+        }
+
+        @Override
+        public InitializerProgress initializerProgress() {
+            return initializerProgress;
         }
 
         @Override
@@ -73,7 +93,8 @@ public sealed interface EvaluationResult
     record CompilationFailure(
             EvaluationRequest request,
             SessionRevision revision,
-            List<Diagnostic> diagnostics) implements EvaluationResult {
+            List<Diagnostic> diagnostics,
+            InitializerProgress initializerProgress) implements EvaluationResult {
         public CompilationFailure {
             validateHeader(request, revision);
             diagnostics = copyDiagnostics(diagnostics);
@@ -82,6 +103,12 @@ public sealed interface EvaluationResult
                 throw new IllegalArgumentException(
                         "compilation failure needs an error diagnostic");
             }
+            initializerProgress = Objects.requireNonNull(initializerProgress, "initializerProgress");
+        }
+
+        public CompilationFailure(EvaluationRequest request, SessionRevision revision,
+                                  List<Diagnostic> diagnostics) {
+            this(request, revision, diagnostics, InitializerProgress.empty());
         }
 
         @Override
@@ -96,18 +123,32 @@ public sealed interface EvaluationResult
             String summary,
             List<Diagnostic> diagnostics,
             String code,
-            List<RuntimeFrame> frames) implements EvaluationResult {
+            List<RuntimeFrame> frames,
+            InitializerProgress initializerProgress) implements EvaluationResult {
         public RuntimeFailure {
             validateHeader(request, revision);
             summary = requireSummary(summary);
             diagnostics = copyDiagnostics(diagnostics);
             io.mindspice.lyra.runtime.LyraFailureCategory.fromCode(Objects.requireNonNull(code, "code"));
             frames = List.copyOf(Objects.requireNonNull(frames, "frames"));
+            initializerProgress = Objects.requireNonNull(initializerProgress, "initializerProgress");
+        }
+
+        public RuntimeFailure(EvaluationRequest request, SessionRevision revision,
+                              String summary, List<Diagnostic> diagnostics,
+                              String code, List<RuntimeFrame> frames) {
+            this(request, revision, summary, diagnostics, code, frames, InitializerProgress.empty());
         }
 
         public RuntimeFailure(EvaluationRequest request, SessionRevision revision,
                               String summary, List<Diagnostic> diagnostics) {
-            this(request, revision, summary, diagnostics, "LYR-INTERNAL", List.of());
+            this(request, revision, summary, diagnostics, "LYR-INTERNAL", List.of(),
+                    InitializerProgress.empty());
+        }
+
+        @Override
+        public InitializerProgress initializerProgress() {
+            return initializerProgress;
         }
 
         @Override
@@ -124,7 +165,8 @@ public sealed interface EvaluationResult
     record Cancelled(
             EvaluationRequest request,
             SessionRevision revision,
-            Cancellation notice) implements EvaluationResult {
+            Cancellation notice,
+            InitializerProgress initializerProgress) implements EvaluationResult {
         public Cancelled {
             validateHeader(request, revision);
             notice = Objects.requireNonNull(notice, "notice");
@@ -136,6 +178,19 @@ public sealed interface EvaluationResult
                 throw new IllegalArgumentException(
                         "a terminal cancelled result needs an observed cancellation");
             }
+            initializerProgress = Objects.requireNonNull(initializerProgress, "initializerProgress");
+        }
+
+        public Cancelled(
+                EvaluationRequest request,
+                SessionRevision revision,
+                Cancellation notice) {
+            this(request, revision, notice, InitializerProgress.empty());
+        }
+
+        @Override
+        public InitializerProgress initializerProgress() {
+            return initializerProgress;
         }
 
         @Override

@@ -54,8 +54,8 @@ public record IrSessionExecution(SessionExecutionPlan plan, SessionModuleEnviron
 
     /** Intrinsic helper classes contain no Lyra source initialization. */
     public boolean emits(ModuleId module) {
-        var work = plan.module(module).orElseThrow();
-        return work.isNew() || work.logicalModule().filter(value -> value.isStdIo()).isPresent();
+        return plan.module(module).map(work -> work.isNew()
+                || work.logicalModule().filter(value -> value.isStdIo()).isPresent()).orElse(false);
     }
 
     public Optional<ExternalAccess> access(ModuleId consumer, DeclarationId declaration) {
@@ -69,10 +69,14 @@ public record IrSessionExecution(SessionExecutionPlan plan, SessionModuleEnviron
         for (var binding : graph.resolvedGraph().imports()) {
             var consumer = graph.resolvedGraph().declaration(binding.declarationId()).orElseThrow().moduleId();
             if (!plan.module(consumer).orElseThrow().isNew()) continue;
-            var contract = SessionModuleContract.from(environment, binding.targetModule());
+            var contract = binding.producerContract().orElseGet(() ->
+                    SessionModuleContract.from(environment, binding.targetModule()));
             for (var export : contract.exports()) {
-                var origin = plan.module(export.origin().moduleId()).orElseThrow();
-                if (origin.isNew() || origin.logicalModule().filter(value -> value.isStdIo()).isPresent()) continue;
+                boolean newPlannedProducer = plan.module(export.origin().moduleId())
+                        .filter(origin -> origin.generationId().equals(export.origin().generationId())
+                                && origin.producerId().equals(export.origin().producerId()) && origin.isNew())
+                        .isPresent();
+                if (newPlannedProducer || export.origin().logicalModule().isStdIo()) continue;
                 if (binding.isSelective() && !binding.importedName().orElseThrow().equals(export.export().name())) continue;
                 if (result.stream().noneMatch(value -> value.consumer().equals(consumer)
                         && value.declarationId().equals(export.declaration().id()))) {

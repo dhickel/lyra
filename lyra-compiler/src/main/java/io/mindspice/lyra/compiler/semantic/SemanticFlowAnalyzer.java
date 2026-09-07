@@ -236,6 +236,20 @@ public final class SemanticFlowAnalyzer {
                     .map(certificate -> CallableSummarySet.combine(
                             certificate.callableSummaries(), localSummaries))
                     .orElse(localSummaries);
+            // A reloaded graph may still contain selective imports bound to an
+            // older producer with the same logical/module source identity.
+            // Their exact producer contracts carry the old callable summaries;
+            // retain those proofs in the canonical flow domain rather than
+            // pretending that the fresh graph owns the old lambdas.
+            for (ResolvedImportBinding binding : graph.resolvedGraph().imports()) {
+                if (binding.producerContract().isEmpty()) continue;
+                var contract = binding.producerContract().orElseThrow();
+                CallableSummarySet producerSummaries = contract.exports().stream()
+                        .map(io.mindspice.lyra.compiler.session.SessionModuleContract.Export::callableSummaries)
+                        .reduce(CallableSummarySet.empty(), CallableSummarySet::combine);
+                effectiveSummaries = CallableSummarySet.combine(
+                        effectiveSummaries, producerSummaries);
+            }
             return new SemanticFlowResult.Success(
                     new Engine(graph, localSummaries, effectiveSummaries, limits).run());
         } catch (OwnershipFailure failure) {
@@ -612,7 +626,10 @@ public final class SemanticFlowAnalyzer {
                     created.state.bindings().forEach((id, value) -> created.values.put(id, value.alternatives()));
                     created.nextForm = created.forms.size();
                     var facts = record.producerGraph().semanticFlowFacts();
-                    events.addAll(facts.eventsAt(module));
+                    events.addAll(facts.events().stream().filter(event ->
+                            event.kind() == SemanticFlowEvent.Kind.EFFECT
+                                    ? event.effects().stream().anyMatch(effect -> effect.fromModule().equals(module))
+                                    : event.moduleId().equals(module)).toList());
                     effects.addAll(facts.eagerEffectFacts().stream()
                             .filter(value -> value.initializerModule().equals(module)).toList());
                     facts.declarationValues().forEach((id, value) -> {
@@ -807,13 +824,20 @@ public final class SemanticFlowAnalyzer {
                 DeclarationId requested = link.declarationId().orElseThrow(() -> failure(
                         CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
                         "value expression has no declaration target", expression.span()));
+                ResolvedDeclaration requestedDeclaration = resolvedDeclarations.get(requested);
                 DeclarationId target = originDeclaration(requested);
-                ModuleId targetModule = link.moduleId().orElseGet(() -> declarationModule(target));
-                Frame targetFrame = frame(targetModule);
-                Lookup lookup = (targetModule.equals(frame.module.moduleId()) || graph.resolvedGraph().isRetained(targetModule))
-                        && state.binding(target).isPresent()
-                        ? new Lookup(state.requireBinding(target).alternatives(), List.of(), false)
-                        : ensure(targetFrame, target, expression.span());
+                ModuleId targetModule = link.moduleId().orElseGet(() -> requestedDeclaration != null
+                        ? requestedDeclaration.importedModule().orElseGet(() -> declarationModule(target))
+                        : declarationModule(target));
+                Lookup lookup = retainedImportLookup(requestedDeclaration, expression.span())
+                        .orElseGet(() -> {
+                            Frame targetFrame = frame(targetModule);
+                            return (targetModule.equals(frame.module.moduleId())
+                                    || graph.resolvedGraph().isRetained(targetModule))
+                                    && state.binding(target).isPresent()
+                                    ? new Lookup(state.requireBinding(target).alternatives(), List.of(), false)
+                                    : ensure(targetFrame, target, expression.span());
+                        });
                 List<EagerEffectWitness> effects = new ArrayList<>();
                 for (EagerEffectWitness effect : lookup.effects) {
                     effects.add(attribute(
@@ -827,7 +851,7 @@ public final class SemanticFlowAnalyzer {
                         effects.add(new EagerEffectWitness(
                                 frame.module.moduleId(), targetModule,
                                 EagerEffectWitness.Kind.VALUE_READ,
-                                expression.span(), Optional.of(target),
+                                expression.span(), Optional.of(declarations.containsKey(target) ? target : requested),
                                 link.referenceId(), Optional.empty(),
                                 List.of(expression.span()), List.of(), false,
                                 Optional.of(site), List.of(site)));
@@ -838,6 +862,33 @@ public final class SemanticFlowAnalyzer {
                             values, requested, frame.module.moduleId(), expression.span());
                 }
                 return new Lookup(values, distinctEffects(effects), lookup.executed);
+            }
+
+            private Optional<Lookup> retainedImportLookup(
+                    ResolvedDeclaration declaration, SourceSpan useSpan) {
+                if (declaration == null || declaration.kind() != DeclarationKind.IMPORT_VALUE
+                        || declaration.originDeclaration().isEmpty()) {
+                    return Optional.empty();
+                }
+                var binding = graph.resolvedGraph().imports().stream()
+                        .filter(value -> value.declarationId().equals(declaration.id()))
+                        .findFirst().orElse(null);
+                if (binding == null || binding.producerContract().isEmpty()) {
+                    return Optional.empty();
+                }
+                var contract = binding.producerContract().orElseThrow();
+                String name = binding.importedName().orElseThrow();
+                var export = contract.exports().stream()
+                        .filter(value -> value.export().name().equals(name))
+                        .findFirst().orElseThrow(() -> failure(
+                                CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                                "retained import has no producer export: " + name, useSpan));
+                var value = export.boundaryState().binding(export.declaration().id())
+                        .orElseThrow(() -> failure(
+                                CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                                "retained import has no initialized producer value: " + name,
+                                useSpan));
+                return Optional.of(new Lookup(value.alternatives(), List.of(), false));
             }
 
             private Eval evaluate(
@@ -1433,7 +1484,10 @@ public final class SemanticFlowAnalyzer {
                 ArrayList<SemanticFlowEvent> events = new ArrayList<>();
                 ArrayList<CapturedCellWrite> writes = new ArrayList<>();
                 ModuleId targetModule = callableModule(candidate, call.span());
-                if (!targetModule.equals(frame.module.moduleId())
+                boolean predecessorCallable = candidate.lambdaId().isPresent()
+                        && !lambdas.containsKey(candidate.lambdaId().orElseThrow());
+                if (!predecessorCallable
+                        && !targetModule.equals(frame.module.moduleId())
                         && graph.module(targetModule).isPresent()) {
                     effects.add(callWitness(call, candidate, targetModule));
                 }
@@ -1515,7 +1569,7 @@ public final class SemanticFlowAnalyzer {
                         writes.add(write);
                     }
                     for (EagerEffectWitness effect : success.effects()) {
-                        if (graph.module(effect.targetModule()).isEmpty()) {
+                        if (predecessorCallable || graph.module(effect.targetModule()).isEmpty()) {
                             // A predecessor callable may retain effects owned
                             // by its source-local generation. They are already
                             // certified in that predecessor and must not be

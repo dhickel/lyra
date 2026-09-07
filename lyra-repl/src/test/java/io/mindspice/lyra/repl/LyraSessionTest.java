@@ -501,7 +501,7 @@ class LyraSessionTest {
     }
 
     @Test
-    void resetClearsScratchMetadataWithoutRollingBackRevisionOrSourceRecords() {
+    void resetClearsScratchMetadataWithoutRollingBackRevisionOrHistory() {
         try (LyraSession session = LyraSession.open()) {
             assertInstanceOf(EvaluationResult.Success.class,
                     session.submit(EvaluationSource.of(
@@ -513,7 +513,7 @@ class LyraSessionTest {
             assertEquals(committedRevision, session.workspaceState().revision());
             assertTrue(session.workspaceState().bindings().isEmpty());
             assertTrue(session.workspaceState().moduleRevisions().isEmpty());
-            assertEquals(1, session.sourceRecords().size());
+            assertTrue(session.sourceRecords().isEmpty());
             EvaluationResult.Success afterReset = assertInstanceOf(
                     EvaluationResult.Success.class,
                     session.submit(EvaluationSource.of(

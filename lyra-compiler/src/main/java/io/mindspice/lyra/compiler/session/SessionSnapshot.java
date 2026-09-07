@@ -61,9 +61,17 @@ public record SessionSnapshot(
             if (imported.isSelective() && imported.moduleContract().isEmpty()) {
                 throw new IllegalArgumentException("retained selected import requires its exact producer contract");
             }
-            if (imported.moduleContract().isPresent() && !imported.moduleContract().orElseThrow().equals(
-                    SessionModuleContract.from(moduleEnvironment, imported.moduleId()))) {
-                throw new IllegalArgumentException("retained import contract disagrees with its producer environment");
+            if (imported.moduleContract().isPresent()) {
+                SessionModuleContract contract = imported.moduleContract().orElseThrow();
+                if (!contract.producer().logicalModule().equals(imported.logicalModule())
+                        || !contract.producer().moduleId().equals(imported.moduleId())) {
+                    throw new IllegalArgumentException(
+                            "retained import contract disagrees with its producer identity");
+                }
+                if (moduleEnvironment.module(imported.moduleId()).isEmpty()
+                        || !contract.equals(SessionModuleContract.from(moduleEnvironment, imported.moduleId()))) {
+                    throw new IllegalArgumentException("retained import differs from its exact historical producer");
+                }
             }
         }
         for (String name : imports.keySet()) {
@@ -280,18 +288,18 @@ public record SessionSnapshot(
                 throw new IllegalArgumentException("snapshot allocator regressed retained semantic identities");
             }
         });
-        for (var module : environment.modules()) {
+        for (var module : environment.producers()) {
             if (!allocator.dominates(module.producerGraph().allocator())) {
                 throw new IllegalArgumentException("snapshot allocator regressed a producer graph");
             }
         }
-        long generation = environment.modules().stream()
+        long generation = environment.producers().stream()
                 .mapToLong(value -> value.generationId().ordinal()).max().orElse(-1L);
         if (generation >= allocator.nextGenerationOrdinal()) {
             throw new IllegalArgumentException(
                     "allocator must be advanced beyond every module generation identity");
         }
-        long producer = environment.modules().stream()
+        long producer = environment.producers().stream()
                 .mapToLong(value -> value.producerId().ordinal()).max().orElse(-1L);
         if (producer >= allocator.nextProducerOrdinal()) {
             throw new IllegalArgumentException(

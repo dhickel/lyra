@@ -107,7 +107,10 @@ public record SessionImport(
     }
 
     public static SessionImport from(ResolvedImportBinding binding, SessionModuleEnvironment environment) {
-        var contract = SessionModuleContract.from(environment, binding.targetModule());
+        Objects.requireNonNull(binding, "binding");
+        Objects.requireNonNull(environment, "environment");
+        var contract = binding.producerContract().orElseGet(() ->
+                SessionModuleContract.from(environment, binding.targetModule()));
         return new SessionImport(binding.localName(), binding.logicalModule(), binding.targetModule(),
                 contract.producer().revision(), binding.kind(), binding.importedName(), binding.aliasName(),
                 binding.targetDeclaration(), binding.targetExport(), binding.reExport(), Optional.of(contract));

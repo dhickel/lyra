@@ -124,7 +124,9 @@ final class InitializationAnalyzer {
                 EagerEffectWitness witness = fact.witness();
                 ModuleId from = fact.initializerModule();
                 ModuleId target = witness.targetModule();
-                if (from.equals(target)) {
+                if (from.equals(target) || graph.resolvedGraph().isRetained(from)
+                        || !modules.contains(target)
+                        && graph.resolvedGraph().retainedModules().module(target).isPresent()) {
                     continue;
                 }
                 InitializationDependency dependency = new InitializationDependency(

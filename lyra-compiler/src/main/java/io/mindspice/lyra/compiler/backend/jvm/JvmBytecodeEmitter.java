@@ -966,6 +966,16 @@ final class JvmBytecodeEmitter {
             code.swap();
             GeneratedMemberPlan lifecycle = stateLifecycleField();
             code.putfield(cd(classPlan.binaryName()), lifecycle.name(), type(lifecycle.descriptor()));
+            if (owner.ir.sessionExecution().isPresent()) {
+                loadParameter(0);
+                code.new_(CD_MODULE_ID);
+                code.dup();
+                code.ldc(module.moduleId().value());
+                code.invokespecial(CD_MODULE_ID, "<init>", method("(Ljava/lang/String;)V"));
+                loadStateLifecycle();
+                code.invokevirtual(CD_ARTIFACT_KEY, "registerModuleLifecycle", method(
+                        "(L" + RUNTIME + "ModuleId;L" + RUNTIME + "ModuleLifecycle;)V"));
+            }
             for (IrDeclaration declaration : declarations.values()) {
                 if (!declaration.moduleId().equals(module.moduleId()) || declaration.externalBinding().isEmpty()) continue;
                 validateExternalAccessor(declaration, false);
@@ -1148,7 +1158,7 @@ final class JvmBytecodeEmitter {
         }
 
         private void emitSessionSafePoint() {
-            if (module.submissionResult().isEmpty()) return;
+            if (owner.ir.sessionExecution().isEmpty()) return;
             emitLoadModuleState(module.moduleId());
             code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
                     "$lyra$sessionSafePoint", method("()V"));
@@ -1308,6 +1318,12 @@ final class JvmBytecodeEmitter {
                                 && declaration.declarationId().filter(id::equals).isPresent())
                         .findFirst().orElseThrow(() -> invalidPlan(metadata.span(),
                                 "root declaration is absent from the module body: " + id));
+                if (owner.ir.sessionExecution().isPresent()) {
+                    emitSessionSafePoint();
+                    loadStateLifecycle();
+                    code.ldc(id.ordinal());
+                    code.invokevirtual(CD_LIFECYCLE, "beginSessionBinding", method("(J)V"));
+                }
                 discard(emitNode(form));
                 if (owner.ir.sessionExecution().isPresent()) {
                     loadStateLifecycle();

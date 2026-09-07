@@ -17,6 +17,8 @@ public final class LyraArtifactKey {
     private final boolean deferredSubmission;
     /** One prepared session graph's actual state shells, never ordinary instances. */
     private final Map<ModuleId, Object> preparedStates = new HashMap<>();
+    /** Lifecycles for the same prepared graph, used for exact progress reporting. */
+    private final Map<ModuleId, ModuleLifecycle> preparedLifecycles = new HashMap<>();
 
     LyraArtifactKey() {
         this(null, RuntimeIoEnvironment.defaults());
@@ -81,6 +83,30 @@ public final class LyraArtifactKey {
     }
 
     /** Called by generated state constructors during prepared-graph allocation. */
+    public void registerModuleLifecycle(ModuleId moduleId, ModuleLifecycle lifecycle) {
+        Objects.requireNonNull(moduleId, "moduleId");
+        Objects.requireNonNull(lifecycle, "lifecycle");
+        if (!deferredSubmission) return;
+        configuredOwner.ifPresent(OwnerThread::check);
+        ModuleLifecycle previous = preparedLifecycles.putIfAbsent(moduleId, lifecycle);
+        if (previous != null && previous != lifecycle) {
+            throw new LyraLinkException("prepared graph allocated a module lifecycle twice");
+        }
+    }
+
+    /** Returns initializer progress for this exact prepared graph. */
+    SessionInitializationProgress initializationProgress() {
+        if (!deferredSubmission) return SessionInitializationProgress.empty();
+        configuredOwner.ifPresent(OwnerThread::check);
+        Map<ModuleId, SessionInitializationProgress.ModuleProgress> progress = new HashMap<>();
+        preparedLifecycles.forEach((module, lifecycle) -> progress.put(module,
+                new SessionInitializationProgress.ModuleProgress(
+                        lifecycle.attemptedSessionBindings(),
+                        lifecycle.initializedSessionBindings())));
+        return new SessionInitializationProgress(progress);
+    }
+
+    /** Called by generated state constructors during prepared-graph allocation. */
     public void registerModuleState(ModuleId moduleId, Object state) {
         Objects.requireNonNull(moduleId, "moduleId");
         Objects.requireNonNull(state, "state");
@@ -108,5 +134,6 @@ public final class LyraArtifactKey {
 
     void clearPreparedStates() {
         preparedStates.clear();
+        preparedLifecycles.clear();
     }
 }

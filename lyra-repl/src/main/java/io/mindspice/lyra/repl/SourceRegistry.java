@@ -6,11 +6,9 @@ import io.mindspice.lyra.compiler.source.SourceSnapshot;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.nio.charset.StandardCharsets;
@@ -20,9 +18,11 @@ final class SourceRegistry {
     private final int maxRecords;
     private final int maxCharacters;
     private final ArrayList<SourceRecord> records = new ArrayList<>();
-    private final Set<SourceId> compilerSourceIds = new HashSet<>();
+    /** Account the same caller text at preflight and append, even when decoding strips a BOM. */
+    private final Map<SourceId, EvaluationSource> reservedSubmissions = new HashMap<>();
     /** Every source snapshot needed by a live producer, including imports. */
     private final Map<SourceKey, Integer> retainedSources = new HashMap<>();
+    private final Map<SourceId, SourceSnapshot> graphSources = new HashMap<>();
     private int retainedCharacters;
 
     SourceRegistry(SessionOptions options) {
@@ -41,7 +41,11 @@ final class SourceRegistry {
         Map<SourceKey, Integer> additions = new HashMap<>();
         for (SourceSnapshot source : sources) {
             Objects.requireNonNull(source, "sources must not contain null");
-            additions.putIfAbsent(new SourceKey(source.sourceId(), source.sha256()), source.utf16Length());
+            SourceSnapshot previous = graphSources.get(source.sourceId());
+            if (previous != null && !previous.equals(source)) return false;
+            EvaluationSource submitted = reservedSubmissions.get(source.sourceId());
+            additions.putIfAbsent(new SourceKey(source.sourceId(), submitted == null ? source.sha256() : hash(submitted.text())),
+                    submitted == null ? source.utf16Length() : submitted.utf16Length());
         }
         int addedCount = 0;
         int addedCharacters = 0;
@@ -60,7 +64,10 @@ final class SourceRegistry {
             throw new IllegalStateException("source registry graph capacity was not reserved");
         }
         for (SourceSnapshot source : sources) {
-            retainSource(source.sourceId(), source.utf16Length(), source.sha256());
+            EvaluationSource submitted = reservedSubmissions.get(source.sourceId());
+            retainSource(source.sourceId(), submitted == null ? source.utf16Length() : submitted.utf16Length(),
+                    submitted == null ? source.sha256() : hash(submitted.text()));
+            graphSources.putIfAbsent(source.sourceId(), source);
         }
     }
 
@@ -71,7 +78,7 @@ final class SourceRegistry {
         if (!canRetain(request.source().utf16Length(), sourceId)) {
             throw new IllegalStateException("source registry capacity was not reserved");
         }
-        if (!compilerSourceIds.add(sourceId)) {
+        if (reservedSubmissions.putIfAbsent(sourceId, request.source()) != null) {
             throw new IllegalStateException("duplicate compiler source identity");
         }
         return sourceId;
@@ -81,14 +88,14 @@ final class SourceRegistry {
     SourceId candidate(EvaluationRequest request) {
         Objects.requireNonNull(request, "request");
         SourceId preferred = preferred(request);
-        if (!compilerSourceIds.contains(preferred) && !hasSourceId(preferred)) {
+        if (!reservedSubmissions.containsKey(preferred) && !hasSourceId(preferred)) {
             return preferred;
         }
         String base = "repl/submission-" + request.evaluationId();
         for (int suffix = 0; ; suffix++) {
             String name = suffix == 0 ? base + ".lyra" : base + "-" + suffix + ".lyra";
             SourceId unique = SourceId.path(name);
-            if (!compilerSourceIds.contains(unique) && !hasSourceId(unique)) {
+            if (!reservedSubmissions.containsKey(unique) && !hasSourceId(unique)) {
                 return unique;
             }
         }
@@ -96,7 +103,7 @@ final class SourceRegistry {
 
     void append(SourceRecord record) {
         Objects.requireNonNull(record, "record");
-        if (!compilerSourceIds.contains(record.compilerSourceId())) {
+        if (!reservedSubmissions.containsKey(record.compilerSourceId())) {
             throw new IllegalArgumentException("source record was not reserved");
         }
         String hash = hash(record.source().text());
@@ -111,9 +118,25 @@ final class SourceRegistry {
         return List.copyOf(records);
     }
 
+    java.util.Optional<EvaluationSource> source(SourceId sourceId) {
+        var submitted = records.stream().filter(record -> record.compilerSourceId().equals(sourceId))
+                .map(SourceRecord::source).findFirst();
+        if (submitted.isPresent()) return submitted;
+        return java.util.Optional.ofNullable(graphSources.get(sourceId)).map(snapshot -> {
+            var original = snapshot.originSourceId();
+            var uri = original.isUri() ? java.util.Optional.of(original.asUri())
+                    : snapshot.physicalKey().isPath()
+                    ? java.util.Optional.of(snapshot.physicalKey().asPath().toUri())
+                    : java.util.Optional.<java.net.URI>empty();
+            return new EvaluationSource(new SourceOrigin(original.value(), uri, java.util.Optional.empty(),
+                    0, snapshot.utf16Length()), snapshot.text());
+        });
+    }
+
     void clear() {
         records.clear();
-        compilerSourceIds.clear();
+        graphSources.clear();
+        reservedSubmissions.clear();
         retainedSources.clear();
         retainedCharacters = 0;
     }

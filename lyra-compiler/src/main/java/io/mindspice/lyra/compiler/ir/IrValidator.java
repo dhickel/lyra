@@ -376,7 +376,16 @@ public final class IrValidator {
 
         private boolean retainedEffectSite(FlowSiteId site, SourceSpan span) {
             return semantic.resolvedGraph().sessionFlowCertificate()
-                    .map(value -> value.certifiesEffectPathEntry(span, site)).orElse(false);
+                    .map(value -> value.certifiesEffectPathEntry(span, site)).orElse(false)
+                    || semantic.resolvedGraph().retainedModules().producers().stream()
+                    .flatMap(record -> record.producerGraph().semanticFlowFacts().eagerEffectFacts().stream())
+                    .map(fact -> fact.witness()).anyMatch(witness -> {
+                        for (int index = 0; index < witness.sourceSitePath().size(); index++) {
+                            if (witness.sourceSitePath().get(index).equals(site)
+                                    && witness.sourcePath().get(index).equals(span)) return true;
+                        }
+                        return false;
+                    });
         }
 
         private void validateFlowSiteEvidence(IrFlowMetadata metadata) {

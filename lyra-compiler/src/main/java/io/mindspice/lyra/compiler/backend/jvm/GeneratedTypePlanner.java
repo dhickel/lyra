@@ -501,6 +501,10 @@ final class GeneratedTypePlanner {
                     // ordering edge.
                     continue;
                 }
+                if (ir.sessionExecution().flatMap(execution ->
+                        execution.access(lambda.moduleId(), link.to())).isPresent()) {
+                    continue;
+                }
                 IrLambda target = lambdasByOwner.get(link.to());
                 if (target == null) {
                     throw new IllegalArgumentException(
@@ -732,9 +736,11 @@ final class GeneratedTypePlanner {
                 members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_MODULE_STATE_LOOKUP,
                         "$lyra$moduleState", "(Lio/mindspice/lyra/runtime/ModuleId;)Ljava/lang/Object;", false));
             }
-            module.submissionResult().ifPresent(result -> {
+            if (ir.sessionExecution().isPresent()) {
                 members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.SESSION_SAFE_POINT,
                         "$lyra$sessionSafePoint", "()V", false));
+            }
+            module.submissionResult().ifPresent(result -> {
                 String descriptor = mapper.map(result.type(), JvmMappingContext.JAVA_VALUE).descriptor();
                 addTypeDependencies(dependencies, result.type(),
                         GeneratedDependencyKind.MODULE_STATE_FIELD_TYPE, true, names,

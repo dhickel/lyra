@@ -51,6 +51,7 @@ import java.util.Comparator;
 import java.util.Deque;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -77,6 +78,7 @@ public final class SemanticResolver {
     private final Optional<SessionFlowCertificate> sessionFlowCertificate;
     private final boolean sessionGraph;
     private final io.mindspice.lyra.compiler.session.SessionModuleEnvironment environment;
+    private final Optional<LogicalModuleId> reloadModule;
     private Diagnostic diagnostic;
 
     public SemanticResolver(ModuleGraph graph) {
@@ -107,14 +109,16 @@ public final class SemanticResolver {
             Optional<SessionFlowCertificate> sessionFlowCertificate,
             boolean sessionGraph) {
         this(graph, allocator, unsupported, bindings, retainedImports, sessionFlowCertificate,
-                sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment.empty());
+                sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment.empty(),
+                Optional.empty());
     }
 
     private SemanticResolver(ModuleGraph graph, IdentityAllocator allocator, Set<String> unsupported,
             List<io.mindspice.lyra.compiler.session.ExternalBinding> bindings,
             List<io.mindspice.lyra.compiler.session.SessionImport> retainedImports,
             Optional<SessionFlowCertificate> sessionFlowCertificate, boolean sessionGraph,
-            io.mindspice.lyra.compiler.session.SessionModuleEnvironment environment) {
+            io.mindspice.lyra.compiler.session.SessionModuleEnvironment environment,
+            Optional<LogicalModuleId> reloadModule) {
         this.environment = Objects.requireNonNull(environment, "environment");
         this.graph = Objects.requireNonNull(graph, "graph");
         this.initialAllocator = Objects.requireNonNull(allocator, "allocator");
@@ -124,10 +128,17 @@ public final class SemanticResolver {
         this.sessionFlowCertificate = Objects.requireNonNull(
                 sessionFlowCertificate, "sessionFlowCertificate");
         this.sessionGraph = sessionGraph;
+        this.reloadModule = Objects.requireNonNull(reloadModule, "reloadModule");
     }
 
     public static PhaseResult<ResolvedSemanticGraph> resolveSession(ModuleGraph graph,
             io.mindspice.lyra.compiler.session.SessionSnapshot snapshot) {
+        return resolveSession(graph, snapshot, Optional.empty());
+    }
+
+    public static PhaseResult<ResolvedSemanticGraph> resolveSession(ModuleGraph graph,
+            io.mindspice.lyra.compiler.session.SessionSnapshot snapshot,
+            Optional<LogicalModuleId> reloadModule) {
         Optional<SessionFlowCertificate> certificate = snapshot.flowCertificate();
         var linked = snapshot.orderedBindings().stream()
                 .filter(binding -> binding.supportsSessionStorage()
@@ -137,7 +148,8 @@ public final class SemanticResolver {
         snapshot.bindings().values().stream().filter(binding -> !linked.contains(binding))
                 .map(io.mindspice.lyra.compiler.session.ExternalBinding::name).forEach(unsupported::add);
         return new SemanticResolver(graph, snapshot.allocator(), unsupported, linked,
-                snapshot.orderedImports(), certificate, true, snapshot.moduleEnvironment()).run();
+                snapshot.orderedImports(), certificate, true, snapshot.moduleEnvironment(),
+                Objects.requireNonNull(reloadModule, "reloadModule")).run();
     }
 
     /** Resolves declaration, scope, import, export, capture, and signature data. */
@@ -267,6 +279,7 @@ public final class SemanticResolver {
         private final List<SyntaxLink> syntaxLinks = new ArrayList<>();
         private final Map<CaptureKey, CaptureDraft> capturesByKey = new LinkedHashMap<>();
         private final List<CaptureDraft> captures = new ArrayList<>();
+        private final Set<ModuleId> reloadFreshModules;
         private final List<ResolvedMutation> mutations = new ArrayList<>();
         private final List<FunctionSignatureLink> functionLinks = new ArrayList<>();
         private final Map<ModuleId, LinkedHashMap<String, ResolvedExport>> exportsByModule = new LinkedHashMap<>();
@@ -280,10 +293,43 @@ public final class SemanticResolver {
         private State(ModuleGraph graph, IdentityAllocator allocator) {
             this.graph = graph;
             this.allocator = allocator;
+            this.reloadFreshModules = reloadFreshModules();
+        }
+
+        private Set<ModuleId> reloadFreshModules() {
+            if (reloadModule.isEmpty()) {
+                return Set.of();
+            }
+            Set<ModuleId> visited = new HashSet<>();
+            Set<ModuleId> fresh = new HashSet<>();
+            ArrayDeque<ModuleId> pending = new ArrayDeque<>();
+            pending.add(graph.rootModule());
+            while (!pending.isEmpty()) {
+                ModuleId current = pending.removeFirst();
+                if (!visited.add(current)) continue;
+                for (var edge : graph.importsFrom(current)) {
+                    ModuleId target = edge.target();
+                    boolean sessionOwned = graph.module(target)
+                            .flatMap(ModuleGraph.Node::logicalModule)
+                            .flatMap(value -> environment.module(value))
+                            .map(record -> record.ownership()
+                                    == io.mindspice.lyra.compiler.session.SessionModuleEnvironment.Ownership.SESSION)
+                            .orElse(true);
+                    if (!sessionOwned || !fresh.add(target)) continue;
+                    pending.addLast(target);
+                }
+            }
+            return Set.copyOf(fresh);
         }
 
         private boolean retained(ModuleId module) {
-            return !module.equals(graph.rootModule()) && environment.module(module).isPresent();
+            if (module.equals(graph.rootModule()) || environment.module(module).isEmpty()) {
+                return false;
+            }
+            if (reloadModule.isEmpty()) {
+                return true;
+            }
+            return !reloadFreshModules.contains(module);
         }
 
         private void restore(ModuleGraph.Node node) {
@@ -404,8 +450,11 @@ public final class SemanticResolver {
                 if (coveredBySourceHeader(work, retained)) {
                     continue;
                 }
-                ModuleId target = graph.moduleFor(retained.logicalModule()).orElse(null);
-                if (target == null || !target.equals(retained.moduleId())) {
+                boolean refreshedNamespace = retained.isModuleNamespace() && reloadModule.isPresent();
+                ModuleId target = refreshedNamespace
+                        ? graph.moduleFor(retained.logicalModule()).orElse(null) : retained.moduleId();
+                if (target == null || !refreshedNamespace && retained.moduleContract().isEmpty()
+                        && graph.module(target).isEmpty()) {
                     fail(CompilerDiagnosticCodes.RESOLVE_MISSING_MODULE,
                             syntheticSpan,
                             "retained import target is absent from the reachable module graph: "
@@ -445,7 +494,8 @@ public final class SemanticResolver {
                         retained.kind(),
                         retained.importedName(),
                         retained.aliasName(),
-                        retained.reExport()));
+                        retained.reExport(),
+                        refreshedNamespace ? Optional.empty() : retained.moduleContract()));
             }
         }
 
@@ -574,7 +624,12 @@ public final class SemanticResolver {
                             ImportBindingKind.MODULE_NAMESPACE,
                             Optional.empty(),
                             syntax.alias().map(SyntaxNode.ImportAlias::name),
-                            false);
+                            false,
+                            retained(target)
+                                    ? environment.module(target).map(record ->
+                                            io.mindspice.lyra.compiler.session.SessionModuleContract.from(
+                                                    environment, target))
+                                    : Optional.empty());
                     work.imports.add(importDraft);
                 } else {
                     for (SyntaxNode.ImportItem item : syntax.selection().orElseThrow().items()) {
@@ -620,7 +675,12 @@ public final class SemanticResolver {
                                 ImportBindingKind.SELECTIVE_VALUE,
                                 Optional.of(item.importedName()),
                                 item.alias().map(SyntaxNode.ImportAlias::name),
-                                reExport));
+                                reExport,
+                                retained(target)
+                                        ? environment.module(target).map(record ->
+                                                io.mindspice.lyra.compiler.session.SessionModuleContract.from(
+                                                        environment, target))
+                                        : Optional.empty()));
                     }
                 }
             }
@@ -1391,8 +1451,7 @@ public final class SemanticResolver {
                             continue;
                         }
                         String importedName = importDraft.importedName.orElseThrow();
-                        ResolvedExport origin = exportsByModule.get(importDraft.targetModule)
-                                .get(importedName);
+                        ResolvedExport origin = importedExport(importDraft, importedName);
                         if (origin == null) {
                             continue;
                         }
@@ -1426,8 +1485,7 @@ public final class SemanticResolver {
                         continue;
                     }
                     String importedName = importDraft.importedName.orElseThrow();
-                    ResolvedExport origin = exportsByModule.get(importDraft.targetModule)
-                            .get(importedName);
+                    ResolvedExport origin = importedExport(importDraft, importedName);
                     if (origin == null) {
                         SourceSpan primary = importDraft.declaration.nameSpan;
                         List<RelatedSpan> related = privateDeclarationRelated(
@@ -1444,6 +1502,25 @@ public final class SemanticResolver {
                     importDraft.targetDeclaration = Optional.of(origin.originDeclaration());
                 }
             }
+        }
+
+        private ResolvedExport importedExport(ImportDraft importDraft, String importedName) {
+            if (importDraft.retained && importDraft.producerContract.isPresent()) {
+                return importDraft.producerContract.orElseThrow().exports().stream()
+                        .filter(value -> value.export().name().equals(importedName))
+                        .map(io.mindspice.lyra.compiler.session.SessionModuleContract.Export::export)
+                        .findFirst().orElse(null);
+            }
+            ResolvedExport current = exportsByModule.get(importDraft.targetModule)
+                    .get(importedName);
+            if (current != null) {
+                return current;
+            }
+            return importDraft.producerContract.flatMap(contract -> contract.exports().stream()
+                            .filter(value -> value.export().name().equals(importedName))
+                            .map(io.mindspice.lyra.compiler.session.SessionModuleContract.Export::export)
+                            .findFirst())
+                    .orElse(null);
         }
 
         private void applyImportedContract(DeclDraft declaration, ResolvedExport origin) {
@@ -2190,8 +2267,11 @@ public final class SemanticResolver {
             } else if (ownerScope != null) {
                 scopeId = ownerScope.id;
             } else {
-                throw new IllegalStateException(
-                        "imported aggregate origin has no canonical owner scope");
+                scopeId = environment.module(origin.originModule())
+                        .flatMap(record -> record.producerGraph().resolvedGraph().declaration(origin.originDeclaration()))
+                        .map(ResolvedDeclaration::scopeId)
+                        .orElseThrow(() -> new IllegalStateException(
+                                "imported aggregate origin has no canonical owner scope"));
             }
             OwnershipWitness witness = OwnershipWitness.crossModule(
                     origin.originModule(), origin.originDeclaration(), scopeId,
@@ -3320,7 +3400,11 @@ public final class SemanticResolver {
                     linkage,
                     new ResolvedReferenceTopology(
                             scopeTree, declarations, references, resolvedCaptures),
-                    sessionFlowCertificate, allocator, sessionGraph, environment);
+                    sessionFlowCertificate, allocator, sessionGraph, environment,
+                    graph.modules().stream()
+                            .filter(node -> retained(node.moduleId()))
+                            .map(ModuleGraph.Node::moduleId)
+                            .collect(java.util.stream.Collectors.toUnmodifiableSet()));
         }
 
         private List<FunctionScc> functionSccs(
@@ -3647,6 +3731,7 @@ public final class SemanticResolver {
         private final Optional<String> aliasName;
         private final boolean reExport;
         private final boolean retained;
+        private final Optional<io.mindspice.lyra.compiler.session.SessionModuleContract> producerContract;
         private Optional<DeclarationId> targetDeclaration = Optional.empty();
         private Optional<ExportId> targetExport = Optional.empty();
 
@@ -3658,7 +3743,8 @@ public final class SemanticResolver {
                 ImportBindingKind kind,
                 Optional<String> importedName,
                 Optional<String> aliasName,
-                boolean reExport) {
+                boolean reExport,
+                Optional<io.mindspice.lyra.compiler.session.SessionModuleContract> producerContract) {
             this.syntax = syntax;
             this.importSpan = Objects.requireNonNull(syntax, "syntax").span();
             this.declaration = declaration;
@@ -3669,6 +3755,7 @@ public final class SemanticResolver {
             this.aliasName = aliasName;
             this.reExport = reExport;
             this.retained = false;
+            this.producerContract = Objects.requireNonNull(producerContract, "producerContract");
         }
 
         private ImportDraft(
@@ -3680,7 +3767,8 @@ public final class SemanticResolver {
                 ImportBindingKind kind,
                 Optional<String> importedName,
                 Optional<String> aliasName,
-                boolean reExport) {
+                boolean reExport,
+                Optional<io.mindspice.lyra.compiler.session.SessionModuleContract> producerContract) {
             this.syntax = syntax;
             this.importSpan = Objects.requireNonNull(importSpan, "importSpan");
             this.declaration = declaration;
@@ -3691,6 +3779,7 @@ public final class SemanticResolver {
             this.aliasName = aliasName;
             this.reExport = reExport;
             this.retained = true;
+            this.producerContract = Objects.requireNonNull(producerContract, "producerContract");
         }
 
         private ResolvedImportBinding freeze() {
@@ -3708,8 +3797,7 @@ public final class SemanticResolver {
                     targetDeclaration,
                     targetExport,
                     retained,
-                    environment.module(targetModule).map(record ->
-                            io.mindspice.lyra.compiler.session.SessionModuleContract.from(environment, targetModule)));
+                    producerContract);
         }
     }
 
