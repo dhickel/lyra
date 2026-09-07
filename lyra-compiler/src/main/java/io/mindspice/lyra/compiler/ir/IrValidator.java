@@ -151,7 +151,8 @@ public final class IrValidator {
             semantic.references().forEach(reference -> references.add(reference.id()));
             for (TypedExpression expression : semantic.expressions()) {
                 FlowSiteId site = semantic.flowSiteId(expression);
-                if (expressionsBySite.put(site, expression) != null) {
+                if (emits(ModuleId.fromSourceId(expression.span().sourceId()))
+                        && expressionsBySite.put(site, expression) != null) {
                     add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, expression.span(),
                             "typed expressions share one flow-site identity");
                 }
@@ -163,18 +164,28 @@ public final class IrValidator {
             for (var capture : semantic.resolvedGraph().captures()) {
                 flowSiteSpans.put(semantic.flowSiteId(capture.id()), capture.span());
             }
-            expectedMetadata = IrProgramMetadata.from(semantic, ir.modules(), List.of(), List.of());
+            ir.sessionExecution().ifPresent(execution -> {
+                if (execution.environment().typedGraph().orElseThrow() != semantic) {
+                    throw new IllegalArgumentException("IR execution projection belongs to another semantic graph");
+                }
+                execution.plan().validateAgainst(semantic);
+            });
+            expectedMetadata = IrProgramMetadata.from(semantic, ir.modules(), List.of(), List.of(), ir.sessionExecution());
+        }
+
+        private boolean emits(ModuleId module) {
+            return ir.sessionExecution().map(value -> value.emits(module)).orElse(true);
         }
 
         private List<Diagnostic> run() {
             validateProgramMetadata();
-            if (ir.modules().size() != semantic.modules().size()) {
+            if (ir.modules().size() != semantic.modules().stream().filter(value -> emits(value.moduleId())).count()) {
                 add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, rootSpan(),
                         "IR does not contain exactly one module body for every typed module");
             }
             Set<ModuleId> seen = new HashSet<>();
             for (IrModule module : ir.modules()) {
-                if (!modules.contains(module.moduleId())) {
+                if (!modules.contains(module.moduleId()) || !emits(module.moduleId())) {
                     add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK, module.span(),
                             "IR module identity is absent from the typed semantic graph");
                 }
@@ -253,7 +264,7 @@ public final class IrValidator {
                 validateNode(module.body(), module.span(), true);
             }
             for (ModuleId module : modules) {
-                if (!seen.contains(module)) {
+                if (emits(module) && !seen.contains(module)) {
                     add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, rootSpan(),
                             "typed module has no IR body: " + module);
                 }
@@ -363,6 +374,11 @@ public final class IrValidator {
             }
         }
 
+        private boolean retainedEffectSite(FlowSiteId site, SourceSpan span) {
+            return semantic.resolvedGraph().sessionFlowCertificate()
+                    .map(value -> value.certifiesEffectPathEntry(span, site)).orElse(false);
+        }
+
         private void validateFlowSiteEvidence(IrFlowMetadata metadata) {
             for (var event : metadata.events()) {
                 if (event.siteId().isEmpty()) {
@@ -372,7 +388,9 @@ public final class IrValidator {
                 }
                 FlowSiteId site = event.siteId().orElseThrow();
                 SourceSpan expected = flowSiteSpans.get(site);
-                if (expected == null || !expected.equals(event.span())) {
+                if ((expected == null || !expected.equals(event.span()))
+                        && !(event.kind() == io.mindspice.lyra.compiler.semantic.flow.SemanticFlowEvent.Kind.EFFECT
+                        && retainedEffectSite(site, event.span()))) {
                     add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK, event.span(),
                             "flow event site does not identify its exact source span");
                 }
@@ -402,7 +420,8 @@ public final class IrValidator {
                 } else {
                     for (int index = 0; index < dependency.sourceSitePath().size(); index++) {
                         SourceSpan expected = flowSiteSpans.get(dependency.sourceSitePath().get(index));
-                        if (expected == null || !expected.equals(dependency.sourcePath().get(index))) {
+                        if ((expected == null || !expected.equals(dependency.sourcePath().get(index)))
+                                && !retainedEffectSite(dependency.sourceSitePath().get(index), dependency.sourcePath().get(index))) {
                             add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK,
                                     dependency.sourcePath().get(index),
                                     "initialization dependency path has foreign source provenance");
@@ -420,7 +439,8 @@ public final class IrValidator {
                 } else {
                     for (int index = 0; index < effect.sourceSitePath().size(); index++) {
                         SourceSpan expected = flowSiteSpans.get(effect.sourceSitePath().get(index));
-                        if (expected == null || !expected.equals(effect.sourcePath().get(index))) {
+                        if ((expected == null || !expected.equals(effect.sourcePath().get(index)))
+                                && !retainedEffectSite(effect.sourceSitePath().get(index), effect.sourcePath().get(index))) {
                             add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK,
                                     effect.sourcePath().get(index),
                                     "effect path does not retain exact producer site provenance");
@@ -531,6 +551,7 @@ public final class IrValidator {
         private List<IrEvaluationOrder> expectedEvaluationOrders() {
             ArrayList<IrEvaluationOrder> result = new ArrayList<>();
             for (TypedModule module : semantic.modules()) {
+                if (!emits(module.moduleId())) continue;
                 List<IrEvaluationOrder.Edge> edges = new ArrayList<>();
                 for (int index = 0; index < module.forms().size(); index++) {
                     edges.add(new IrEvaluationOrder.Edge(index,
@@ -542,6 +563,7 @@ public final class IrValidator {
             }
             for (TypedExpression expression : semantic.expressions()) {
                 FlowSiteId site = semantic.flowSiteId(expression);
+                if (!emits(ModuleId.fromSourceId(expression.span().sourceId()))) continue;
                 IrEvaluationOrder.Kind kind = switch (expression.kind()) {
                     case SHORT_CIRCUIT -> IrEvaluationOrder.Kind.SHORT_CIRCUIT;
                     case CONDITIONAL -> IrEvaluationOrder.Kind.BRANCH;

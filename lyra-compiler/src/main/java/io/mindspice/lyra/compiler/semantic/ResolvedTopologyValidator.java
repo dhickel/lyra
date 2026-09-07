@@ -117,6 +117,9 @@ final class ResolvedTopologyValidator {
         List<ImportShape> actualImports = new ArrayList<>();
         for (ResolvedModule module : resolved.modules()) {
             for (ResolvedImportBinding binding : module.imports()) {
+                if (binding.retained()) {
+                    continue;
+                }
                 ResolvedDeclaration declaration = resolved.declaration(binding.declarationId())
                         .orElseThrow(() -> invalid(
                                 "module import has no local declaration"));
@@ -327,6 +330,7 @@ final class ResolvedTopologyValidator {
             }
             ResolvedImportBinding binding = importsByDeclaration.get(declarationId);
             if (binding == null
+                    || binding.retained()
                     || !link.span().equals(binding.localNameSpan())
                     || link.referenceId().isPresent()
                     || link.lambdaId().isPresent()
@@ -336,7 +340,11 @@ final class ResolvedTopologyValidator {
                 throw invalid("import-binding syntax link disagrees with its import record");
             }
         }
-        if (!links.keySet().equals(importsByDeclaration.keySet())) {
+        Set<DeclarationId> sourceImportDeclarations = importsByDeclaration.values().stream()
+                .filter(binding -> !binding.retained())
+                .map(ResolvedImportBinding::declarationId)
+                .collect(java.util.stream.Collectors.toSet());
+        if (!links.keySet().equals(sourceImportDeclarations)) {
             throw invalid("import-binding syntax links are incomplete");
         }
     }

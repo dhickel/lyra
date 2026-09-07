@@ -5,6 +5,7 @@ import io.mindspice.lyra.compiler.identity.DeclarationId;
 import io.mindspice.lyra.compiler.ir.TypedIr;
 import io.mindspice.lyra.compiler.semantic.ResolvedSemanticGraph;
 import io.mindspice.lyra.compiler.semantic.TypedSemanticGraph;
+import io.mindspice.lyra.compiler.session.SessionExecutionPlan;
 import io.mindspice.lyra.compiler.session.SessionImport;
 import io.mindspice.lyra.compiler.session.SessionRevision;
 import io.mindspice.lyra.compiler.session.SessionSnapshot;
@@ -52,6 +53,7 @@ public sealed interface SessionCompileResult
             TypedIr typedIr,
             List<DeclarationId> stagedDeclarations,
             List<SessionImport> stagedImports,
+            SessionExecutionPlan executionPlan,
             List<Diagnostic> diagnostics)
             implements SessionCompileResult {
         public Success {
@@ -67,7 +69,13 @@ public sealed interface SessionCompileResult
             stagedDeclarations = List.copyOf(Objects.requireNonNull(stagedDeclarations,
                     "stagedDeclarations"));
             stagedImports = List.copyOf(Objects.requireNonNull(stagedImports, "stagedImports"));
+            executionPlan = Objects.requireNonNull(executionPlan, "executionPlan");
             diagnostics = List.copyOf(Objects.requireNonNull(diagnostics, "diagnostics"));
+            executionPlan.validateAgainst(typedGraph);
+            if (typedIr.sessionExecution().isEmpty()
+                    || typedIr.sessionExecution().orElseThrow().plan() != executionPlan) {
+                throw new IllegalArgumentException("result plan must be the sealed IR execution plan");
+            }
             if (diagnostics.stream().anyMatch(value -> value.severity().isError())) {
                 throw new IllegalArgumentException(
                         "successful session compilation cannot contain an error diagnostic");
@@ -95,6 +103,31 @@ public sealed interface SessionCompileResult
                 throw new IllegalArgumentException(
                         "attempted snapshot revision is outside the submission boundary");
             }
+        }
+
+        /** Compatibility constructor for callers using the pre-plan result shape. */
+        public Success(
+                SessionRevision baseRevision,
+                SessionRevision revision,
+                SessionSnapshot stagedSnapshot,
+                SessionSnapshot attemptedSnapshot,
+                CompiledArtifact artifact,
+                ModuleGraph moduleGraph,
+                ResolvedSemanticGraph resolvedGraph,
+                TypedSemanticGraph typedGraph,
+                TypedIr typedIr,
+                List<DeclarationId> stagedDeclarations,
+                List<SessionImport> stagedImports,
+                List<Diagnostic> diagnostics) {
+            this(baseRevision, revision, stagedSnapshot, attemptedSnapshot, artifact, moduleGraph,
+                    resolvedGraph, typedGraph, typedIr, stagedDeclarations, stagedImports,
+                    typedIr.sessionExecution().orElseThrow(() -> new IllegalArgumentException(
+                            "session result requires a sealed execution projection")).plan(), diagnostics);
+        }
+
+        /** The immutable plan for new, reused, and borrowed producer work. */
+        public SessionExecutionPlan executionPlan() {
+            return executionPlan;
         }
 
         /** The snapshot to publish after successful execution of the artifact. */

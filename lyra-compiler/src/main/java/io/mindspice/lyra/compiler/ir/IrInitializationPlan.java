@@ -61,6 +61,14 @@ public final class IrInitializationPlan implements ImmutablePhaseArtifact {
                 source.initializationOrder(), cycles);
     }
 
+    IrInitializationPlan project(java.util.function.Predicate<ModuleId> emits) {
+        return new IrInitializationPlan(modules.stream().filter(emits).toList(),
+                dependencies.stream().filter(value -> emits.test(value.fromModule())
+                        && emits.test(value.toModule())).toList(),
+                initializationOrder.stream().filter(emits).toList(),
+                cycles.stream().filter(value -> value.modules().stream().allMatch(emits)).toList());
+    }
+
     public List<ModuleId> modules() {
         return modules;
     }
@@ -148,6 +156,7 @@ public final class IrInitializationPlan implements ImmutablePhaseArtifact {
                 .filter(fact -> fact.witness().sourcePath().equals(dependency.sourcePath()))
                 .map(EagerEffectFact::witness)
                 .map(value -> value.sourceSitePath())
+                .distinct()
                 .toList();
         if (matches.size() != 1 || matches.getFirst().isEmpty()
                 || matches.getFirst().size() != dependency.sourcePath().size()) {

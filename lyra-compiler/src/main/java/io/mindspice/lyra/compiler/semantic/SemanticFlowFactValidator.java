@@ -297,6 +297,21 @@ final class SemanticFlowFactValidator {
         }
 
         private void validateEvent(SemanticFlowEvent event) {
+            if (!modules.contains(event.moduleId()) && event.kind() == SemanticFlowEvent.Kind.EFFECT) {
+                require(event.effects().size() == 1, "retained effect event needs one exact witness");
+                var witness = event.effects().getFirst();
+                require(sessionCertificate.map(value -> value.certifiesEffect(witness)).orElse(false),
+                        "retained effect event has no producer certificate: " + witness);
+                var expected = new SemanticFlowEvent(SemanticFlowEvent.Kind.EFFECT,
+                        ModuleId.fromSourceId(witness.effectSpan().sourceId()), witness.effectSpan(),
+                        event.initializerDeclaration(), Optional.empty(), witness.targetDeclaration(),
+                        witness.targetLambda(), witness.referenceId(), Optional.empty(), Optional.empty(),
+                        ValueAlternatives.empty(), List.of(), List.of(witness), witness.effectSite(), Optional.empty());
+                require(event.equals(expected), "retained effect event changed its producer-qualified shape");
+                event.initializerDeclaration().ifPresent(this::requireDeclaration);
+                validateWitness(witness);
+                return;
+            }
             require(modules.contains(event.moduleId()), "event module is foreign");
             requireSite(event.siteId(), event.span(), "semantic event");
             event.initializerDeclaration().ifPresent(this::requireDeclaration);
@@ -567,9 +582,6 @@ final class SemanticFlowFactValidator {
         private void validateEffects() {
             TreeSet<EagerEffectFact> expectedFromEvents = new TreeSet<>();
             for (SemanticFlowEvent event : facts.events()) {
-                if (event.kind() == SemanticFlowEvent.Kind.EFFECT) {
-                    continue;
-                }
                 for (EagerEffectWitness witness : event.effects()) {
                     expectedFromEvents.add(new EagerEffectFact(
                             witness.fromModule(), event.initializerDeclaration(), witness));

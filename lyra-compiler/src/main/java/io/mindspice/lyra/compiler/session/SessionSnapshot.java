@@ -31,7 +31,8 @@ public record SessionSnapshot(
         Map<String, SessionImport> imports,
         Map<LogicalModuleId, PinnedModule> pinnedModules,
         IdentityAllocator allocator,
-        Optional<SessionFlowCertificate> flowCertificate) {
+        Optional<SessionFlowCertificate> flowCertificate,
+        SessionModuleEnvironment moduleEnvironment) {
     public SessionSnapshot {
         revision = Objects.requireNonNull(revision, "revision");
         bindings = copyBindings(bindings);
@@ -39,12 +40,32 @@ public record SessionSnapshot(
         pinnedModules = copyPinned(pinnedModules);
         allocator = Objects.requireNonNull(allocator, "allocator");
         flowCertificate = Objects.requireNonNull(flowCertificate, "flowCertificate");
+        moduleEnvironment = Objects.requireNonNull(moduleEnvironment, "moduleEnvironment");
         if (flowCertificate.isPresent()
                 && !allocator.dominates(flowCertificate.orElseThrow().allocator())) {
             throw new IllegalArgumentException(
                     "snapshot allocator regressed its flow certificate");
         }
         validateIdentities(bindings, allocator);
+        validateEnvironment(moduleEnvironment, allocator);
+        for (var module : moduleEnvironment.modules()) {
+            if (module.isIntrinsic()) continue;
+            var pin = pinnedModules.get(module.logicalModule());
+            if (pin == null || !pin.moduleId().equals(module.moduleId())
+                    || !pin.snapshot().equals(module.source()) || !pin.revision().equals(module.revision())
+                    || !pin.revisionOptions().values().equals(module.revisionOptions())) {
+                throw new IllegalArgumentException("retained producer and pinned source/options disagree");
+            }
+        }
+        for (var imported : imports.values()) {
+            if (imported.isSelective() && imported.moduleContract().isEmpty()) {
+                throw new IllegalArgumentException("retained selected import requires its exact producer contract");
+            }
+            if (imported.moduleContract().isPresent() && !imported.moduleContract().orElseThrow().equals(
+                    SessionModuleContract.from(moduleEnvironment, imported.moduleId()))) {
+                throw new IllegalArgumentException("retained import contract disagrees with its producer environment");
+            }
+        }
         for (String name : imports.keySet()) {
             if (bindings.containsKey(name)) {
                 throw new IllegalArgumentException("binding and import alias share a name: " + name);
@@ -56,7 +77,8 @@ public record SessionSnapshot(
     public SessionSnapshot(SessionRevision revision, Map<String, ExternalBinding> bindings,
                            Map<LogicalModuleId, PinnedModule> pinnedModules,
                            IdentityAllocator allocator) {
-        this(revision, bindings, Map.of(), pinnedModules, allocator, Optional.empty());
+        this(revision, bindings, Map.of(), pinnedModules, allocator, Optional.empty(),
+                SessionModuleEnvironment.empty());
     }
 
     /** Compatibility constructor for snapshots without a flow proof. */
@@ -64,12 +86,32 @@ public record SessionSnapshot(
                            Map<String, SessionImport> imports,
                            Map<LogicalModuleId, PinnedModule> pinnedModules,
                            IdentityAllocator allocator) {
-        this(revision, bindings, imports, pinnedModules, allocator, Optional.empty());
+        this(revision, bindings, imports, pinnedModules, allocator, Optional.empty(),
+                SessionModuleEnvironment.empty());
+    }
+
+    /** Compatibility constructor for snapshots with explicit module environment data. */
+    public SessionSnapshot(SessionRevision revision, Map<String, ExternalBinding> bindings,
+                           Map<String, SessionImport> imports,
+                           Map<LogicalModuleId, PinnedModule> pinnedModules,
+                           IdentityAllocator allocator,
+                           SessionModuleEnvironment moduleEnvironment) {
+        this(revision, bindings, imports, pinnedModules, allocator, Optional.empty(),
+                moduleEnvironment);
     }
 
     public static SessionSnapshot empty() {
         return new SessionSnapshot(SessionRevision.initial(), Map.of(), Map.of(), Map.of(),
-                IdentityAllocator.initial(), Optional.empty());
+                IdentityAllocator.initial(), Optional.empty(), SessionModuleEnvironment.empty());
+    }
+
+    public SessionModuleEnvironment moduleEnvironment() {
+        return moduleEnvironment;
+    }
+
+    /** Alias for callers that describe the value as retained module metadata. */
+    public SessionModuleEnvironment environment() {
+        return moduleEnvironment;
     }
 
     public Optional<ExternalBinding> binding(String name) {
@@ -86,6 +128,12 @@ public record SessionSnapshot(
                 .toList();
     }
 
+    public List<SessionImport> orderedImports() {
+        return imports.values().stream()
+                .sorted(Comparator.comparing(SessionImport::name))
+                .toList();
+    }
+
     public Map<String, String> moduleRevisions() {
         LinkedHashMap<String, String> result = new LinkedHashMap<>();
         pinnedModules.values().stream()
@@ -99,7 +147,7 @@ public record SessionSnapshot(
         LinkedHashMap<String, ExternalBinding> next = new LinkedHashMap<>(bindings);
         next.put(binding.name(), binding);
         return new SessionSnapshot(revision, next, imports, pinnedModules, allocator,
-                flowCertificate);
+                flowCertificate, moduleEnvironment);
     }
 
     public SessionSnapshot withImport(SessionImport value) {
@@ -107,7 +155,7 @@ public record SessionSnapshot(
         LinkedHashMap<String, SessionImport> next = new LinkedHashMap<>(imports);
         next.put(value.name(), value);
         return new SessionSnapshot(revision, bindings, next, pinnedModules, allocator,
-                flowCertificate);
+                flowCertificate, moduleEnvironment);
     }
 
     public SessionSnapshot withPinnedModule(PinnedModule module) {
@@ -119,12 +167,12 @@ public record SessionSnapshot(
                     "a logical module is already pinned to another source: " + module.logicalModule());
         }
         return new SessionSnapshot(revision, bindings, imports, next, allocator,
-                flowCertificate);
+                flowCertificate, moduleEnvironment);
     }
 
     public SessionSnapshot withAllocator(IdentityAllocator nextAllocator) {
         return new SessionSnapshot(revision, bindings, imports, pinnedModules, nextAllocator,
-                flowCertificate);
+                flowCertificate, moduleEnvironment);
     }
 
     public SessionSnapshot nextRevision(
@@ -139,20 +187,38 @@ public record SessionSnapshot(
             Map<String, SessionImport> nextImports,
             Map<LogicalModuleId, PinnedModule> nextPinnedModules,
             IdentityAllocator nextAllocator) {
+        return nextRevision(nextBindings, nextImports, nextPinnedModules,
+                nextAllocator, moduleEnvironment);
+    }
+
+    /** Advances the namespace while publishing an immutable retained module environment. */
+    public SessionSnapshot nextRevision(
+            Map<String, ExternalBinding> nextBindings,
+            Map<String, SessionImport> nextImports,
+            Map<LogicalModuleId, PinnedModule> nextPinnedModules,
+            IdentityAllocator nextAllocator,
+            SessionModuleEnvironment nextEnvironment) {
         return new SessionSnapshot(revision.next(), nextBindings, nextImports,
-                nextPinnedModules, nextAllocator, flowCertificate);
+                nextPinnedModules, nextAllocator, flowCertificate,
+                Objects.requireNonNull(nextEnvironment, "nextEnvironment"));
+    }
+
+    /** Replaces only the retained compiler module environment. */
+    public SessionSnapshot withModuleEnvironment(SessionModuleEnvironment nextEnvironment) {
+        return new SessionSnapshot(revision, bindings, imports, pinnedModules, allocator,
+                flowCertificate, Objects.requireNonNull(nextEnvironment, "nextEnvironment"));
     }
 
     /** Returns a snapshot carrying the compiler-issued proof for its retained state. */
     public SessionSnapshot withFlowCertificate(SessionFlowCertificate certificate) {
         return new SessionSnapshot(revision, bindings, imports, pinnedModules, allocator,
-                Optional.of(Objects.requireNonNull(certificate, "certificate")));
+                Optional.of(Objects.requireNonNull(certificate, "certificate")), moduleEnvironment);
     }
 
     /** Removes compiler proof while preserving namespace metadata and identities. */
     public SessionSnapshot withoutFlowCertificate() {
         return new SessionSnapshot(revision, bindings, imports, pinnedModules, allocator,
-                Optional.empty());
+                Optional.empty(), moduleEnvironment);
     }
 
     private static Map<String, ExternalBinding> copyBindings(
@@ -204,6 +270,33 @@ public record SessionSnapshot(
             }
         }
         return Map.copyOf(result);
+    }
+
+    private static void validateEnvironment(
+            SessionModuleEnvironment environment, IdentityAllocator allocator) {
+        Objects.requireNonNull(environment, "environment");
+        environment.typedGraph().ifPresent(graph -> {
+            if (!allocator.dominates(graph.allocator())) {
+                throw new IllegalArgumentException("snapshot allocator regressed retained semantic identities");
+            }
+        });
+        for (var module : environment.modules()) {
+            if (!allocator.dominates(module.producerGraph().allocator())) {
+                throw new IllegalArgumentException("snapshot allocator regressed a producer graph");
+            }
+        }
+        long generation = environment.modules().stream()
+                .mapToLong(value -> value.generationId().ordinal()).max().orElse(-1L);
+        if (generation >= allocator.nextGenerationOrdinal()) {
+            throw new IllegalArgumentException(
+                    "allocator must be advanced beyond every module generation identity");
+        }
+        long producer = environment.modules().stream()
+                .mapToLong(value -> value.producerId().ordinal()).max().orElse(-1L);
+        if (producer >= allocator.nextProducerOrdinal()) {
+            throw new IllegalArgumentException(
+                    "allocator must be advanced beyond every module producer identity");
+        }
     }
 
     private static void validateIdentities(

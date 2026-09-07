@@ -48,6 +48,7 @@ import java.util.Optional;
 public final class TypedIrBuilder {
     private final TypedSemanticGraph typedGraph;
     private final Optional<io.mindspice.lyra.compiler.semantic.TypedSubmissionResult> submission;
+    private final Optional<IrSessionExecution> execution;
     private final IdentityHashMap<TypedExpression, IrNode> loweredExpressions = new IdentityHashMap<>();
     private final Map<FlowSiteId, IrExpressionSite> expressionSites = new LinkedHashMap<>();
     private final List<IrEvaluationOrder> evaluationOrders = new ArrayList<>();
@@ -58,10 +59,21 @@ public final class TypedIrBuilder {
     }
 
     private TypedIrBuilder(TypedSemanticGraph typedGraph, boolean submission) {
+        this(typedGraph, submission, Optional.empty());
+    }
+
+    private TypedIrBuilder(TypedSemanticGraph typedGraph, boolean submission, Optional<IrSessionExecution> execution) {
+        this.execution = execution;
         this.typedGraph = Objects.requireNonNull(typedGraph, "typedGraph");
         this.submission = submission
                 ? Optional.of(io.mindspice.lyra.compiler.semantic.TypedSubmissionResult.from(typedGraph))
                 : Optional.empty();
+    }
+
+    public static PhaseResult<TypedIr> lowerSubmission(TypedSemanticGraph graph,
+            io.mindspice.lyra.compiler.session.SessionExecutionPlan plan,
+            io.mindspice.lyra.compiler.session.SessionModuleEnvironment environment) {
+        return new TypedIrBuilder(graph, true, Optional.of(IrSessionExecution.from(graph, plan, environment))).run();
     }
 
     public static PhaseResult<TypedIr> lowerSubmission(TypedSemanticGraph graph) {
@@ -115,6 +127,7 @@ public final class TypedIrBuilder {
 
             List<IrModule> modules = new ArrayList<>();
             for (TypedModule module : typedGraph.modules()) {
+                if (execution.filter(value -> !value.emits(module.moduleId())).isPresent()) continue;
                 List<IrNode> forms = new ArrayList<>();
                 for (TypedExpression form : module.forms()) {
                     forms.add(lowerExpression(form));
@@ -134,7 +147,7 @@ public final class TypedIrBuilder {
 
             IrProgramMetadata metadata = IrProgramMetadata.from(
                     typedGraph, modules, List.copyOf(expressionSites.values()),
-                    List.copyOf(evaluationOrders));
+                    List.copyOf(evaluationOrders), execution);
             TypedIr candidate = TypedIr.candidate(typedGraph, modules, metadata);
             List<Diagnostic> diagnostics = IrValidator.validateCandidate(candidate);
             if (!diagnostics.isEmpty()) {

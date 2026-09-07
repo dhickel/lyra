@@ -135,6 +135,12 @@ public final class TypedIr implements ImmutablePhaseArtifact {
         return rootModule();
     }
 
+    public Optional<IrSessionExecution> sessionExecution() { return metadata.sessionExecution(); }
+
+    public Optional<IrSessionExecution.ExternalAccess> externalAccess(ModuleId consumer, DeclarationId declaration) {
+        return sessionExecution().flatMap(value -> value.access(consumer, declaration));
+    }
+
     public IrProgramMetadata metadata() {
         return metadata;
     }

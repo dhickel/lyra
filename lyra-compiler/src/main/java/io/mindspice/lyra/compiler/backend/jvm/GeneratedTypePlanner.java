@@ -75,13 +75,15 @@ final class GeneratedTypePlanner {
                 basePackage, names.tupleNames(), names.functionNames());
         JvmAbiMapper mapper = new JvmAbiMapper(typeNames);
 
-        List<JvmExportId> exportIds = ir.exports().stream()
+        List<IrExport> emittedExports = ir.exports().stream()
+                .filter(export -> ir.module(export.moduleId()).isPresent()).toList();
+        List<JvmExportId> exportIds = emittedExports.stream()
                 .map(export -> exportId(export))
                 .sorted()
                 .toList();
         JvmJavaNamePlan javaNames = JvmJavaNamePlan.plan(exportIds);
         Map<IrExport, GeneratedExportPlan> exportPlans = exportPlans(
-                ir.exports(), javaNames, mapper);
+                emittedExports, javaNames, mapper);
 
         Map<ModuleId, String> moduleStates = names.moduleStates();
         Map<ModuleId, String> moduleFacades = names.moduleFacades();
@@ -128,7 +130,7 @@ final class GeneratedTypePlanner {
         GeneratedTypePlan result = new GeneratedTypePlan(basePackage, typeNames, ordered,
                 names.tupleNames(), names.functionNames(), closureClasses, cellClasses,
                 moduleStates, moduleFacades, new ArrayList<>(exportPlans.values()),
-                ir.initializationOrder(), intrinsicFunctionClasses);
+                ir.initializationOrder(), intrinsicFunctionClasses, ir.sessionExecution());
         // Descriptor/signature parity is a publication gate for the plan; no
         // later class-body phase may start from a partially audited shape.
         JvmAbiParity.require(ir, result);
@@ -619,6 +621,8 @@ final class GeneratedTypePlanner {
                     continue;
                 }
                 String targetState = moduleStates.get(importBinding.targetModule());
+                if (targetState == null && ir.sessionExecution()
+                        .filter(value -> !value.emits(importBinding.targetModule())).isPresent()) continue;
                 if (targetState == null) {
                     throw new IllegalArgumentException("import binding targets absent state class");
                 }
@@ -652,6 +656,8 @@ final class GeneratedTypePlanner {
                 IrImportBinding importBinding = importsByDeclaration.get(declarationId);
                 if (importBinding != null) {
                     String targetState = moduleStates.get(importBinding.targetModule());
+                    if (targetState == null && ir.sessionExecution()
+                            .filter(value -> !value.emits(importBinding.targetModule())).isPresent()) continue;
                     if (targetState == null) {
                         throw new IllegalArgumentException("import binding targets absent state class");
                     }
@@ -719,6 +725,12 @@ final class GeneratedTypePlanner {
                 addTypeDependencies(dependencies, contract.orElseThrow().valueType(),
                         GeneratedDependencyKind.MODULE_STATE_FIELD_TYPE, true, names,
                         "module state binding type");
+            }
+            if (module.submissionResult().isEmpty() && ir.sessionExecution().stream()
+                    .flatMap(value -> value.externalAccesses().stream())
+                    .anyMatch(value -> value.consumer().equals(module.moduleId()))) {
+                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_SESSION_ACCESSOR,
+                        "$lyra$sessionAccessor", "(JJLjava/lang/String;Z)Ljava/lang/invoke/MethodHandle;", false));
             }
             module.submissionResult().ifPresent(result -> {
                 members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.SESSION_SAFE_POINT,
@@ -1114,12 +1126,14 @@ final class GeneratedTypePlanner {
             IrDeclaration from = declarationsById.get(link.from());
             IrDeclaration to = declarationsById.get(link.to());
             var reference = referencesById.get(link.referenceId());
+            if (from != null && ir.sessionExecution().filter(value -> !value.emits(from.moduleId())).isPresent()) continue;
+            boolean externalTarget = from != null && to != null && ir.externalAccess(from.moduleId(), to.id()).isPresent();
             boolean intrinsicTarget = to != null
                     && to.kind() == io.mindspice.lyra.compiler.semantic.DeclarationKind.INTRINSIC_EXPORT;
             if (from == null || to == null || reference == null
                     || !from.isFunction() || !to.isFunction()
                     || !lambdaOwners.containsKey(from.id())
-                    || (!intrinsicTarget && !lambdaOwners.containsKey(to.id()))
+                    || (!intrinsicTarget && !externalTarget && !lambdaOwners.containsKey(to.id()))
                     || !reference.moduleId().equals(from.moduleId())) {
                 throw new IllegalArgumentException("function linkage has absent metadata: " + link);
             }

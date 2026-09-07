@@ -303,7 +303,8 @@ public final class ArtifactAssembly implements ArtifactSource {
 
     private static Map<ModuleId, SourceSnapshot> sourceSnapshots(JvmBytecodeArtifact artifact) {
         TreeMap<ModuleId, SourceSnapshot> result = new TreeMap<>();
-        for (var module : artifact.typedIr().modules()) {
+        // Retained producers have no emitted body, but their original source remains part of the link/debug inventory.
+        for (var module : artifact.typedIr().typedSemanticGraph().modules()) {
             SourceSnapshot snapshot = artifact.typedIr().sourceSnapshot(module.moduleId())
                     .orElseThrow(() -> new ArtifactAssemblyException(
                             "validated typed IR is missing source snapshot: " + module.moduleId()));
@@ -314,7 +315,7 @@ public final class ArtifactAssembly implements ArtifactSource {
                 throw new ArtifactAssemblyException("duplicate source snapshot: " + module.moduleId());
             }
         }
-        if (result.size() != artifact.typedIr().modules().size()) {
+        if (result.size() != artifact.typedIr().typedSemanticGraph().modules().size()) {
             throw new ArtifactAssemblyException("source snapshot inventory is incomplete");
         }
         return Collections.unmodifiableMap(result);

@@ -407,7 +407,8 @@ public final class SemanticFlowAnalyzer {
                     .toList();
             for (int index = 0; index < arrays.size(); index++) {
                 TypedExpression expression = arrays.get(index);
-                DeclarationId allocation = new DeclarationId(Long.MAX_VALUE - index);
+                DeclarationId allocation = new DeclarationId(Long.MAX_VALUE -
+                        (graph.resolvedGraph().isSessionGraph() ? graph.flowSiteId(expression).ordinal() : index));
                 arrayAllocationIds.put(expression, allocation);
                 arrayAllocationExpressions.put(allocation, expression);
                 allocationScopes.put(allocation, graph.flowScopeId(expression));
@@ -449,6 +450,10 @@ public final class SemanticFlowAnalyzer {
                             "summary allocation site does not match its typed lambda body");
                 }
                 TypedExpression expression = allocations.get(site.ordinal());
+                if (graph.resolvedGraph().isSessionGraph()) {
+                    allocation = new DeclarationId(Long.MAX_VALUE / 2L - graph.flowSiteId(expression).ordinal());
+                    summaryAllocationIds.put(site, allocation);
+                }
                 allocationScopes.put(allocation, graph.flowScopeId(expression));
                 allocationSpans.put(allocation, site.span());
                 allocationFlowSites.put(allocation, graph.flowSiteId(expression));
@@ -593,6 +598,27 @@ public final class SemanticFlowAnalyzer {
                                     .orElseThrow());
                 }
                 Frame created = new Frame(typedModule);
+                if (graph.resolvedGraph().isRetained(module)) {
+                    var record = graph.resolvedGraph().retainedModules().module(module).orElseThrow();
+                    var original = graph.resolvedGraph().retainedModules().flowFacts()
+                            .flatMap(facts -> facts.finalState(module)).orElseGet(() -> record.finalState().orElseThrow());
+                    var boundary = graph.resolvedGraph().sessionFlowCertificate()
+                            .map(SessionFlowCertificate::boundaryState).orElse(original);
+                    var bindings = new TreeMap<>(original.bindings());
+                    bindings.replaceAll((id, value) -> boundary.bindings().getOrDefault(id, value));
+                    var cells = new TreeMap<>(original.sharedCells());
+                    cells.replaceAll((id, value) -> boundary.sharedCells().getOrDefault(id, value));
+                    created.state = io.mindspice.lyra.compiler.semantic.flow.BindingFlowState.of(bindings, cells);
+                    created.state.bindings().forEach((id, value) -> created.values.put(id, value.alternatives()));
+                    created.nextForm = created.forms.size();
+                    var facts = record.producerGraph().semanticFlowFacts();
+                    events.addAll(facts.eventsAt(module));
+                    effects.addAll(facts.eagerEffectFacts().stream()
+                            .filter(value -> value.initializerModule().equals(module)).toList());
+                    facts.declarationValues().forEach((id, value) -> {
+                        if (record.resolvedModule().declarations().contains(id)) declarationValues.put(id, value);
+                    });
+                }
                 // External declarations carry initialized type/ownership
                 // contracts, not old initializer or fresh allocation facts.
                 for (ResolvedDeclaration declaration : resolvedDeclarations.values()) {
@@ -721,6 +747,10 @@ public final class SemanticFlowAnalyzer {
                     // intrinsic summary index instead.
                     return new Lookup(intrinsic, List.of(), true);
                 }
+                if (graph.resolvedGraph().isRetained(ownerFrame.module.moduleId())) {
+                    throw failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                            "retained producer has no initialized boundary value: " + declarationId, useSpan);
+                }
                 if (isLazyFunctionSlot(declarationId)) {
                     Eval lambda = lambdaValueForDeclaration(declaration, ownerFrame, ownerFrame.state, useSpan);
                     ownerFrame.state = bind(ownerFrame.state, declarationId, lambda.value, useSpan);
@@ -780,7 +810,7 @@ public final class SemanticFlowAnalyzer {
                 DeclarationId target = originDeclaration(requested);
                 ModuleId targetModule = link.moduleId().orElseGet(() -> declarationModule(target));
                 Frame targetFrame = frame(targetModule);
-                Lookup lookup = targetModule.equals(frame.module.moduleId())
+                Lookup lookup = (targetModule.equals(frame.module.moduleId()) || graph.resolvedGraph().isRetained(targetModule))
                         && state.binding(target).isPresent()
                         ? new Lookup(state.requireBinding(target).alternatives(), List.of(), false)
                         : ensure(targetFrame, target, expression.span());
@@ -1540,10 +1570,11 @@ public final class SemanticFlowAnalyzer {
                 DeclarationId declaration = originDeclaration(requested);
                 Optional<ModuleId> formulaOwner = formula.moduleId();
                 boolean foreignOwner = formulaOwner.isPresent()
-                        && !modules.containsKey(formulaOwner.orElseThrow());
+                        && (!modules.containsKey(formulaOwner.orElseThrow())
+                        || graph.resolvedGraph().isRetained(formulaOwner.orElseThrow()));
                 if (resolvedDeclarations.get(declaration) == null || foreignOwner) {
-                    Optional<ValueAlternatives> retainedCell = Optional.ofNullable(
-                            currentCallable.sharedCellSnapshots().get(declaration));
+                    Optional<ValueAlternatives> retainedCell = state.sharedCell(declaration).or(() -> Optional.ofNullable(
+                            currentCallable.sharedCellSnapshots().get(declaration)));
                     if (retainedCell.isPresent()) {
                         FormulaAlternatives resolved = toFormulas(
                                 retainedCell.orElseThrow(), callerFrame.module.moduleId(), call.span());
@@ -1564,8 +1595,8 @@ public final class SemanticFlowAnalyzer {
                     }
                     Optional<SessionFlowCertificate> certificate = graph.resolvedGraph()
                             .sessionFlowCertificate();
-                    Optional<ValueAlternatives> retained = certificate
-                            .flatMap(value -> value.value(declaration));
+                    Optional<ValueAlternatives> retained = state.binding(declaration)
+                            .map(value -> value.alternatives()).or(() -> certificate.flatMap(value -> value.value(declaration)));
                     if (retained.isPresent()) {
                         FormulaAlternatives resolved = toFormulas(
                                 retained.orElseThrow(), callerFrame.module.moduleId(), call.span());
@@ -1671,6 +1702,9 @@ public final class SemanticFlowAnalyzer {
                     return result;
                 }
                 ModuleId targetModule = effect.targetModule();
+                // An effect in retained code describes an operation on initialized producer state,
+                // not permission to evaluate that declaration's original initializer again.
+                if (graph.resolvedGraph().isRetained(targetModule)) return result;
                 Frame targetFrame = frame(targetModule);
                 Lookup lookup = targetFrame.module.moduleId().equals(currentFrame.module.moduleId())
                         && currentState.binding(effect.targetDeclaration().orElseThrow()).isPresent()

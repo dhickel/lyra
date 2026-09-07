@@ -427,13 +427,17 @@ final class TypedSemanticCore implements TypedSemanticInput {
             }
         }
         for (ResolvedReference reference : resolvedGraph.references()) {
-            FlowSiteId id = allocateFlowSite(next);
+            FlowSiteId id = resolvedGraph.isRetained(reference.moduleId())
+                    ? resolvedGraph.retainedModules().module(reference.moduleId()).orElseThrow()
+                            .producerGraph().flowSiteId(reference.id()) : allocateFlowSite(next);
             byReference.put(reference.id(), id);
             spansById.put(id, reference.span());
             scopesById.put(id, reference.scopeId());
         }
         for (ResolvedCapture capture : resolvedGraph.captures()) {
-            FlowSiteId id = allocateFlowSite(next);
+            FlowSiteId id = resolvedGraph.isRetained(capture.moduleId())
+                    ? resolvedGraph.retainedModules().module(capture.moduleId()).orElseThrow()
+                            .producerGraph().flowSiteId(capture.id()) : allocateFlowSite(next);
             byCapture.put(capture.id(), id);
             spansById.put(id, capture.span());
             ScopeId scope = resolvedGraph.lambda(capture.lambdaId()).orElseThrow().scopeId();
@@ -470,7 +474,9 @@ final class TypedSemanticCore implements TypedSemanticInput {
             throw new IllegalArgumentException(
                     "typed expression flow site belongs to another owner scope");
         }
-        FlowSiteId id = allocateFlowSite(next);
+        FlowSiteId id = resolvedGraph.isRetained(owner.moduleId())
+                ? resolvedGraph.retainedModules().module(owner.moduleId()).orElseThrow()
+                        .producerGraph().flowSiteId(expression) : allocateFlowSite(next);
         byExpression.put(expression, id);
         spansById.put(id, expression.span());
         scopesById.put(id, ownerScope);

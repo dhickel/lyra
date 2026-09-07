@@ -44,6 +44,7 @@ final class JvmAbiParity {
         ArrayList<String> differences = new ArrayList<>();
 
         for (IrExport export : ir.exports()) {
+            if (ir.module(export.moduleId()).isEmpty()) continue;
             JvmExportId expectedId = JvmExportId.from(export);
             Optional<GeneratedExportPlan> generated = plan.exports().stream()
                     .filter(value -> value.exportId().equals(expectedId))
@@ -307,6 +308,14 @@ final class JvmAbiParity {
             } else if (!resultFields.isEmpty() || !resultGetters.isEmpty() || !executions.isEmpty()) {
                 differences.add("ordinary module contains a submission result boundary: " + module.moduleId());
             }
+            boolean externalImports = ir.sessionExecution().stream()
+                    .flatMap(value -> value.externalAccesses().stream())
+                    .anyMatch(value -> value.consumer().equals(module.moduleId()));
+            if (externalImports && state.members().stream().noneMatch(member ->
+                    member.kind() == GeneratedMemberKind.STATE_SESSION_ACCESSOR
+                            && member.descriptor().equals("(JJLjava/lang/String;Z)Ljava/lang/invoke/MethodHandle;"))) {
+                differences.add("external import accessor is absent: " + module.moduleId());
+            }
             TreeMap<DeclarationId, List<GeneratedMemberPlan>> fields = new TreeMap<>();
             for (GeneratedMemberPlan member : state.members().stream()
                     .filter(GeneratedMemberPlan::isField)
@@ -324,6 +333,8 @@ final class JvmAbiParity {
                     .map(declarations::get).filter(Objects::nonNull)
                     .filter(value -> value.scopeId().equals(module.state().rootScope()))
                     .filter(value -> value.externalBinding().isEmpty())
+                    .filter(value -> !imports.containsKey(value.id()) || ir.sessionExecution()
+                            .filter(execution -> !execution.emits(imports.get(value.id()).targetModule())).isEmpty())
                     .filter(value -> value.contract().isPresent() || imports.containsKey(value.id()))
                     .map(IrDeclaration::id)
                     .collect(java.util.stream.Collectors.toCollection(TreeSet::new));

@@ -55,6 +55,7 @@ public final class IrProgramMetadata implements ImmutablePhaseArtifact {
     private final List<IrEvaluationOrder> evaluationOrders;
     private final IrInitializationPlan initializationPlan;
     private final IrFlowMetadata flowMetadata;
+    private final Optional<IrSessionExecution> sessionExecution;
 
     public IrProgramMetadata(
             List<IrDeclaration> declarations,
@@ -71,6 +72,19 @@ public final class IrProgramMetadata implements ImmutablePhaseArtifact {
             List<IrEvaluationOrder> evaluationOrders,
             IrInitializationPlan initializationPlan,
             IrFlowMetadata flowMetadata) {
+        this(declarations, references, lambdas, captures, cells, exports, imports, functionLinkage,
+                closureInitializations, failureSites, expressionSites, evaluationOrders, initializationPlan,
+                flowMetadata, Optional.empty());
+    }
+
+    private IrProgramMetadata(List<IrDeclaration> declarations, List<IrReference> references,
+            List<IrLambda> lambdas, List<IrCapture> captures, List<IrCell> cells, List<IrExport> exports,
+            List<IrImportBinding> imports, IrFunctionLinkage functionLinkage,
+            List<IrClosureInitialization> closureInitializations, List<IrFailureSite> failureSites,
+            List<IrExpressionSite> expressionSites, List<IrEvaluationOrder> evaluationOrders,
+            IrInitializationPlan initializationPlan, IrFlowMetadata flowMetadata,
+            Optional<IrSessionExecution> sessionExecution) {
+        this.sessionExecution = Objects.requireNonNull(sessionExecution, "sessionExecution");
         this.declarations = ordered(declarations, Comparator.comparing(IrDeclaration::id),
                 "declarations");
         this.references = ordered(references, Comparator.comparing(IrReference::id),
@@ -127,7 +141,14 @@ public final class IrProgramMetadata implements ImmutablePhaseArtifact {
             List<IrModule> modules,
             List<IrExpressionSite> expressionSites,
             List<IrEvaluationOrder> evaluationOrders) {
+        return from(graph, modules, expressionSites, evaluationOrders, Optional.empty());
+    }
+
+    static IrProgramMetadata from(TypedSemanticGraph graph, List<IrModule> modules,
+            List<IrExpressionSite> expressionSites, List<IrEvaluationOrder> evaluationOrders,
+            Optional<IrSessionExecution> execution) {
         Objects.requireNonNull(graph, "graph");
+        java.util.function.Predicate<ModuleId> emits = module -> execution.map(value -> value.emits(module)).orElse(true);
         Map<DeclarationId, TypedDeclaration> typedDeclarations = graph.declarations().stream()
                 .collect(java.util.stream.Collectors.toUnmodifiableMap(
                         TypedDeclaration::id, value -> value));
@@ -159,7 +180,7 @@ public final class IrProgramMetadata implements ImmutablePhaseArtifact {
         }
 
         List<IrImportBinding> imports = graph.resolvedGraph().imports().stream()
-                .map(IrImportBinding::from).toList();
+                .map(value -> IrImportBinding.from(value, execution)).toList();
         IrFunctionLinkage functionLinkage = IrFunctionLinkage.from(
                 graph.resolvedGraph().functionLinkage());
 
@@ -169,6 +190,7 @@ public final class IrProgramMetadata implements ImmutablePhaseArtifact {
         Map<LambdaId, IrNode> loweredLambdaBodies = loweredLambdaBodies(modules);
         List<IrLambda> lambdas = new ArrayList<>();
         for (ResolvedLambda resolved : graph.resolvedGraph().lambdas()) {
+            if (!emits.test(resolved.moduleId())) continue;
             TypedLambda typed = typedLambdas.get(resolved.id());
             if (typed == null) {
                 throw new IllegalArgumentException("typed lambda is absent: " + resolved.id());
@@ -196,6 +218,7 @@ public final class IrProgramMetadata implements ImmutablePhaseArtifact {
 
         List<IrCapture> captures = new ArrayList<>();
         for (ResolvedCapture resolved : graph.resolvedGraph().captures()) {
+            if (!emits.test(resolved.moduleId())) continue;
             captures.add(new IrCapture(
                     resolved.id(), resolved.lambdaId(), resolved.declarationId(), resolved.moduleId(),
                     resolved.span(), resolved.declarationSpan(), resolved.mode(), resolved.sharedCellId(),
@@ -207,16 +230,20 @@ public final class IrProgramMetadata implements ImmutablePhaseArtifact {
         List<IrExport> exports = graph.resolvedGraph().exports().stream()
                 .map(IrProgramMetadata::copyExport).toList();
         List<IrClosureInitialization> closureInitializations = closureInitializations(
-                graph, functionLinkage);
-        List<IrFailureSite> failureSites = failureSites(graph);
+                graph, functionLinkage).stream().filter(value -> emits.test(
+                        graph.lambda(value.lambdaId()).orElseThrow().moduleId())).toList();
+        List<IrFailureSite> failureSites = failureSites(graph).stream()
+                .filter(value -> emits.test(value.moduleId())).toList();
 
         return new IrProgramMetadata(
                 declarations, references, lambdas, captures, cells, exports, imports,
                 functionLinkage, closureInitializations, failureSites,
                 expressionSites, evaluationOrders,
-                IrInitializationPlan.from(graph.initializationPlan(), graph),
-                IrFlowMetadata.from(graph.semanticFlowFacts(), graph));
+                IrInitializationPlan.from(graph.initializationPlan(), graph).project(emits),
+                IrFlowMetadata.from(graph.semanticFlowFacts(), graph), execution);
     }
+
+    public Optional<IrSessionExecution> sessionExecution() { return sessionExecution; }
 
     public List<IrDeclaration> declarations() {
         return declarations;
@@ -333,7 +360,8 @@ public final class IrProgramMetadata implements ImmutablePhaseArtifact {
                 && expressionSites.equals(metadata.expressionSites)
                 && evaluationOrders.equals(metadata.evaluationOrders)
                 && initializationPlan.equals(metadata.initializationPlan)
-                && flowMetadata.equals(metadata.flowMetadata);
+                && flowMetadata.equals(metadata.flowMetadata)
+                && sessionExecution.equals(metadata.sessionExecution);
     }
 
     @Override
@@ -341,7 +369,7 @@ public final class IrProgramMetadata implements ImmutablePhaseArtifact {
         return Objects.hash(declarations, references, lambdas, captures, cells, exports,
                 imports, functionLinkage, closureInitializations, failureSites,
                 expressionSites, evaluationOrders, initializationPlan,
-                flowMetadata);
+                flowMetadata, sessionExecution);
     }
 
     @Override

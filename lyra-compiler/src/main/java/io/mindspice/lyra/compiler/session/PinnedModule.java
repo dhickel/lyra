@@ -1,7 +1,7 @@
 package io.mindspice.lyra.compiler.session;
 
 import io.mindspice.lyra.compiler.source.LogicalModuleId;
-import io.mindspice.lyra.compiler.source.ModuleGraph;
+import io.mindspice.lyra.compiler.source.RevisionOptions;
 import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.source.ModuleRevision;
 import io.mindspice.lyra.compiler.source.ResolvedSource;
@@ -13,21 +13,27 @@ import java.util.Objects;
 public record PinnedModule(
         LogicalModuleId logicalModule,
         SourceSnapshot snapshot,
-        String revision) {
+        String revision,
+        RevisionOptions revisionOptions) {
     public PinnedModule {
         logicalModule = Objects.requireNonNull(logicalModule, "logicalModule");
         snapshot = Objects.requireNonNull(snapshot, "snapshot");
         revision = Objects.requireNonNull(revision, "revision");
-        if (!ModuleRevision.isRevision(revision)) {
-            throw new IllegalArgumentException("module revision must be a SHA-256 hexadecimal value");
+        revisionOptions = Objects.requireNonNull(revisionOptions, "revisionOptions");
+        if (!revision.equals(ModuleRevision.compute(snapshot, revisionOptions))) {
+            throw new IllegalArgumentException("pinned revision does not match captured source and options");
         }
         if (logicalModule.isStdIo()) {
             throw new IllegalArgumentException("the intrinsic std/io module cannot be pinned");
         }
     }
 
+    public PinnedModule(LogicalModuleId logicalModule, SourceSnapshot snapshot, String revision) {
+        this(logicalModule, snapshot, revision, RevisionOptions.empty());
+    }
+
     public PinnedModule(LogicalModuleId logicalModule, SourceSnapshot snapshot) {
-        this(logicalModule, snapshot, ModuleRevision.compute(snapshot));
+        this(logicalModule, snapshot, ModuleRevision.compute(snapshot), RevisionOptions.empty());
     }
 
     public ModuleId moduleId() {

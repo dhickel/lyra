@@ -965,6 +965,11 @@ final class JvmBytecodeEmitter {
                     validateExternalAccessor(declaration, true);
                 }
             }
+            owner.ir.sessionExecution().ifPresent(execution -> execution.externalAccesses().stream()
+                    .filter(value -> value.consumer().equals(module.moduleId())).forEach(value -> {
+                        validateImportedAccessor(value, false);
+                        if (value.writableFacade()) validateImportedAccessor(value, true);
+                    }));
             initializeIntrinsicFunctions();
             code.return_();
         }
@@ -1260,6 +1265,7 @@ final class JvmBytecodeEmitter {
             loadStateLifecycle();
             code.invokevirtual(CD_LIFECYCLE, "close", method("()V"));
             for (io.mindspice.lyra.compiler.ir.IrImportBinding binding : importsForModule(module.moduleId())) {
+                if (owner.ir.sessionExecution().filter(value -> !value.emits(binding.targetModule())).isPresent()) continue;
                 GeneratedMemberPlan field = stateFields(module.moduleId(), binding.declarationId()).stream()
                         .filter(value -> value.kind() == GeneratedMemberKind.STATE_IMPORT_FIELD)
                         .findFirst().orElseThrow(() -> invalidPlan(memberSpan(),
@@ -1532,6 +1538,9 @@ final class JvmBytecodeEmitter {
                 Integer consumer = stateSlots.get(ModuleId.fromSourceId(
                         binding.importSpan().sourceId()));
                 Integer target = stateSlots.get(binding.targetModule());
+                if (owner.ir.sessionExecution().filter(execution ->
+                        !execution.emits(ModuleId.fromSourceId(binding.importSpan().sourceId()))
+                                || !execution.emits(binding.targetModule())).isPresent()) continue;
                 if (consumer == null || target == null) {
                     throw invalidPlan(memberSpan(), "import state shell is absent");
                 }
@@ -1914,6 +1923,22 @@ final class JvmBytecodeEmitter {
         /** Consumes a state object and follows selective-import state links. */
         private void emitStoreStateValueThroughImports(
                 ModuleId stateModule, DeclarationId id, JvmTypePlan storage, List<Integer> values) {
+            var declaration = declarations.get(id);
+            var access = owner.ir.externalAccess(module.moduleId(),
+                    declaration == null ? id : declaration.originDeclaration().orElse(id));
+            if (access.isPresent()) {
+                if (!access.orElseThrow().writableFacade()) throw invalidPlan(memberSpan(), "import has no facade write contract");
+                code.pop();
+                emitImportedAccessor(access.orElseThrow(), true);
+                var external = owner.mapper.map(access.orElseThrow().target().declaration().contract().orElseThrow().valueType(),
+                        JvmMappingContext.JAVA_VALUE);
+                for (int index = 0; index < values.size(); index++) {
+                    loadPhysical(storage.physicalComponents().get(index), values.get(index));
+                }
+                adapt(storage, external);
+                code.invokevirtual(cd("java.lang.invoke.MethodHandle"), "invokeExact", method("(" + external.descriptor() + ")V"));
+                return;
+            }
             GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
                     .get(stateModule)).orElseThrow(() -> invalidPlan(memberSpan(),
                     "module state is absent: " + stateModule));
@@ -2107,6 +2132,13 @@ final class JvmBytecodeEmitter {
         }
 
         private void emitStateValueFromState(ModuleId stateModule, DeclarationId id) {
+            var metadata = declarations.get(id);
+            var origin = metadata == null ? id : metadata.originDeclaration().orElse(id);
+            if (owner.ir.externalAccess(module.moduleId(), origin).isPresent()) {
+                code.pop();
+                emitImportedRead(origin, storagePlan(id));
+                return;
+            }
             GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
                     .get(stateModule)).orElseThrow(() -> invalidPlan(memberSpan(),
                     "module state is absent: " + stateModule));
@@ -5253,7 +5285,48 @@ final class JvmBytecodeEmitter {
                     "$lyra$sessionAccessor", method("(JJLjava/lang/String;Z)Ljava/lang/invoke/MethodHandle;"));
         }
 
+        private void validateImportedAccessor(io.mindspice.lyra.compiler.ir.IrSessionExecution.ExternalAccess access, boolean write) {
+            emitImportedAccessor(access, write);
+            String descriptor = owner.mapper.map(access.target().declaration().contract().orElseThrow().valueType(),
+                    JvmMappingContext.JAVA_VALUE).descriptor();
+            code.invokevirtual(cd("java.lang.invoke.MethodHandle"), "type", method("()Ljava/lang/invoke/MethodType;"));
+            code.ldc(method(write ? "(" + descriptor + ")V" : "()" + descriptor));
+            code.invokevirtual(cd("java.lang.invoke.MethodType"), "equals", method("(Ljava/lang/Object;)Z"));
+            Label valid = code.newLabel();
+            code.ifne(valid);
+            throwFailureRecorded(memberSpan(), "LYR-LINK", "import storage JVM type mismatch");
+            code.labelBinding(valid);
+        }
+
+        private void emitImportedAccessor(io.mindspice.lyra.compiler.ir.IrSessionExecution.ExternalAccess access, boolean write) {
+            var declaration = access.target().declaration();
+            emitLoadModuleState(module.moduleId());
+            code.ldc(declaration.id().ordinal());
+            code.ldc(declaration.contract().orElseThrow().isMutable()
+                    ? io.mindspice.lyra.compiler.session.StorageIdentity.forDeclaration(declaration.id()).ordinal() : -1L);
+            code.ldc(declaration.contract().orElseThrow().valueType().canonicalSpelling());
+            code.loadConstant(write ? 1 : 0);
+            code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
+                    "$lyra$sessionAccessor", method("(JJLjava/lang/String;Z)Ljava/lang/invoke/MethodHandle;"));
+        }
+
+        private boolean emitImportedRead(DeclarationId id, JvmTypePlan desired) {
+            var declaration = declarations.get(id);
+            var access = owner.ir.externalAccess(module.moduleId(),
+                    declaration == null ? id : declaration.originDeclaration().orElse(id));
+            if (access.isEmpty()) return false;
+            var value = access.orElseThrow();
+            var type = owner.mapper.map(value.target().declaration().contract().orElseThrow().valueType(),
+                    JvmMappingContext.JAVA_VALUE);
+            emitImportedAccessor(value, false);
+            code.invokevirtual(cd("java.lang.invoke.MethodHandle"), "invokeExact", method("()" + type.descriptor()));
+            adapt(type, desired);
+            return true;
+        }
+
         private void emitLoadDeclaration(DeclarationId id, JvmTypePlan desired) {
+            IrDeclaration resolved = declarations.get(id);
+            if (emitImportedRead(resolved == null ? id : resolved.originDeclaration().orElse(id), desired)) return;
             IrDeclaration external = declarations.get(id);
             if (external != null && external.externalBinding().isPresent()) {
                 JvmTypePlan value = owner.mapper.map(external.contract().orElseThrow().valueType(), JvmMappingContext.JAVA_VALUE);
@@ -5341,6 +5414,7 @@ final class JvmBytecodeEmitter {
 
         private void emitLoadDeclarationFromModule(ModuleId targetModule, DeclarationId id,
                                                     JvmTypePlan desired) {
+            if (emitImportedRead(id, desired)) return;
             if (!owner.modules.containsKey(targetModule)) {
                 throw invalidPlan(module.span(), "declaration module is absent: " + targetModule);
             }

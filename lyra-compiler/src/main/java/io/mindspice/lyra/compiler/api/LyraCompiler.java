@@ -11,6 +11,9 @@ import io.mindspice.lyra.compiler.diagnostic.RelatedSpan;
 import io.mindspice.lyra.compiler.grammar.GrammarMatcher;
 import io.mindspice.lyra.compiler.grammar.GrammarProgram;
 import io.mindspice.lyra.compiler.identity.DeclarationId;
+import io.mindspice.lyra.compiler.identity.GenerationId;
+import io.mindspice.lyra.compiler.identity.IdentityAllocator;
+import io.mindspice.lyra.compiler.identity.ProducerId;
 import io.mindspice.lyra.compiler.ir.TypedIr;
 import io.mindspice.lyra.compiler.ir.TypedIrBuilder;
 import io.mindspice.lyra.compiler.lex.LexedSource;
@@ -19,18 +22,25 @@ import io.mindspice.lyra.compiler.parse.Parser;
 import io.mindspice.lyra.compiler.semantic.DeclarationKind;
 import io.mindspice.lyra.compiler.semantic.ResolvedDeclaration;
 import io.mindspice.lyra.compiler.semantic.ResolvedExport;
+import io.mindspice.lyra.compiler.semantic.ResolvedModule;
 import io.mindspice.lyra.compiler.semantic.ResolvedSemanticGraph;
 import io.mindspice.lyra.compiler.semantic.SemanticResolver;
 import io.mindspice.lyra.compiler.semantic.TypeChecker;
+import io.mindspice.lyra.compiler.semantic.TypedModule;
 import io.mindspice.lyra.compiler.semantic.TypedSemanticGraph;
 import io.mindspice.lyra.compiler.source.ModuleGraph;
 import io.mindspice.lyra.compiler.source.ModuleGraphDiscovery;
+import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.source.PhysicalSourceKey;
 import io.mindspice.lyra.compiler.source.SourceConfiguration;
 import io.mindspice.lyra.compiler.source.SourceId;
 import io.mindspice.lyra.compiler.source.SourceSnapshot;
 import io.mindspice.lyra.compiler.source.SourceSpan;
 import io.mindspice.lyra.compiler.session.ExternalBinding;
+import io.mindspice.lyra.compiler.session.PinnedModule;
+import io.mindspice.lyra.compiler.session.SessionExecutionPlan;
+import io.mindspice.lyra.compiler.session.SessionImport;
+import io.mindspice.lyra.compiler.session.SessionModuleEnvironment;
 import io.mindspice.lyra.compiler.session.SessionSnapshot;
 import io.mindspice.lyra.compiler.session.StorageIdentity;
 import io.mindspice.lyra.runtime.ArtifactMetadata;
@@ -47,6 +57,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 /** Public source-to-artifact compiler entry point. */
@@ -252,19 +263,16 @@ public final class LyraCompiler {
             if (configuration != null) {
                 return fail(configuration);
             }
-            if (!request.snapshot().pinnedModules().isEmpty()) {
-                return fail(Diagnostic.error(
-                        CompilerDiagnosticCodes.SESSION_EXTERNAL_BINDING_UNSUPPORTED,
-                        sourceSpan(),
-                        "pinned session modules cannot be linked into this submission yet"));
-            }
-
             ModuleGraph graph = phase(discover());
             if (graph == null) {
                 return failure();
             }
 
-            ResolvedSemanticGraph resolved = phase(SemanticResolver.resolveSession(graph, request.snapshot()));
+            IdentityReservations reservations = reserveModuleIdentities(graph);
+            SessionSnapshot semanticSnapshot = request.snapshot()
+                    .withAllocator(reservations.allocator());
+            ResolvedSemanticGraph resolved = phase(SemanticResolver.resolveSession(
+                    graph, semanticSnapshot));
             if (resolved == null) {
                 return failure();
             }
@@ -274,7 +282,8 @@ public final class LyraCompiler {
                 return failure();
             }
 
-            TypedIr ir = phase(TypedIrBuilder.lowerSubmission(typed));
+            SessionEnvironmentData environment = buildEnvironment(graph, resolved, typed, reservations);
+            TypedIr ir = phase(TypedIrBuilder.lowerSubmission(typed, environment.plan(), environment.environment()));
             if (ir == null) {
                 return failure();
             }
@@ -285,7 +294,7 @@ public final class LyraCompiler {
                 return failure();
             }
 
-            StagedNamespace staged = stageNamespace(graph, resolved, typed);
+            StagedNamespace staged = stageNamespace(graph, resolved, typed, environment);
             if (staged.diagnostic() != null) {
                 return fail(staged.diagnostic());
             }
@@ -295,9 +304,11 @@ public final class LyraCompiler {
                     .withFlowCertificate(stagedCertificate);
             SessionFlowCertificate attemptedCertificate = SessionFlowCertificate.issue(
                     request.snapshot(), typed, request.snapshot().bindings(), true);
-            SessionSnapshot attemptedSnapshot = request.snapshot()
-                    .withAllocator(typed.allocator())
-                    .withFlowCertificate(attemptedCertificate);
+            SessionSnapshot attemptedSnapshot = new SessionSnapshot(
+                    request.snapshot().revision(), request.snapshot().bindings(),
+                    request.snapshot().imports(), request.snapshot().pinnedModules(),
+                    environment.allocator(), Optional.of(attemptedCertificate),
+                    request.snapshot().moduleEnvironment());
             ArtifactAssembly assembly = ArtifactAssembly.assemble(
                     bytecode, PackagingMode.CLASSES, request.includeSources());
             return new SessionCompileResult.Success(
@@ -311,7 +322,8 @@ public final class LyraCompiler {
                     typed,
                     ir,
                     staged.declarations(),
-                    List.of(),
+                    staged.imports(),
+                    environment.plan(),
                     mapDiagnostics(diagnostics));
         }
 
@@ -343,17 +355,198 @@ public final class LyraCompiler {
                 return PhaseResult.failure(syntaxResult.diagnostics());
             }
             return ModuleGraphDiscovery.discoverSession(
-                    syntax, snapshot, request.sourceConfiguration());
+                    syntax, snapshot, request.sourceConfiguration(), request.snapshot());
+        }
+
+        private IdentityReservations reserveModuleIdentities(ModuleGraph graph) {
+            IdentityAllocator.Allocation<GenerationId> generation = request.snapshot().allocator().allocateGeneration();
+            IdentityAllocator allocator = generation.next();
+            LinkedHashMap<ModuleId, IdentityPair> identities = new LinkedHashMap<>();
+            for (ModuleGraph.Node node : graph.modules()) {
+                boolean scratch = node.moduleId().equals(graph.rootModule());
+                Optional<io.mindspice.lyra.compiler.source.LogicalModuleId> logical =
+                        node.logicalModule();
+                SessionModuleEnvironment.ModuleRecord previous = logical
+                        .flatMap(value -> request.snapshot().moduleEnvironment().module(value))
+                        .orElse(null);
+                boolean sameProducer = !scratch
+                        && previous != null
+                        && previous.moduleId().equals(node.moduleId())
+                        && previous.revision().equals(node.revision())
+                        && previous.source().sha256().equals(node.snapshot().sha256());
+                if (sameProducer) {
+                    identities.put(node.moduleId(), new IdentityPair(
+                            previous.generationId(), previous.producerId()));
+                    continue;
+                }
+                IdentityAllocator.Allocation<ProducerId> producer = allocator.allocateProducer();
+                allocator = producer.next();
+                identities.put(node.moduleId(), new IdentityPair(
+                        generation.id(), producer.id()));
+            }
+            return new IdentityReservations(allocator, Map.copyOf(identities));
+        }
+
+        private SessionEnvironmentData buildEnvironment(
+                ModuleGraph graph,
+                ResolvedSemanticGraph resolved,
+                TypedSemanticGraph typed,
+                IdentityReservations reservations) {
+            IdentityAllocator allocator = typed.allocator();
+            Map<io.mindspice.lyra.compiler.source.LogicalModuleId,
+                    SessionModuleEnvironment.ModuleRecord> retained =
+                    new LinkedHashMap<>(request.snapshot().moduleEnvironment().modulesByLogical());
+            LinkedHashMap<io.mindspice.lyra.compiler.source.LogicalModuleId, PinnedModule> nextPins =
+                    new LinkedHashMap<>(request.snapshot().pinnedModules());
+            ArrayList<SessionExecutionPlan.ModuleWork> work = new ArrayList<>();
+
+            for (ModuleGraph.Node node : graph.modules()) {
+                boolean scratch = node.moduleId().equals(graph.rootModule());
+                Optional<io.mindspice.lyra.compiler.source.LogicalModuleId> logical =
+                        node.logicalModule();
+                SessionModuleEnvironment.ModuleRecord previous = logical
+                        .flatMap(value -> Optional.ofNullable(retained.get(value)))
+                        .orElse(null);
+                boolean sameProducer = !scratch
+                        && previous != null
+                        && previous.moduleId().equals(node.moduleId())
+                        && previous.revision().equals(node.revision())
+                        && previous.source().sha256().equals(node.snapshot().sha256());
+
+                IdentityPair identity = reservations.identities().get(node.moduleId());
+                if (identity == null) {
+                    throw new LyraCompilerBugException(
+                            "module identity reservation does not cover discovered module");
+                }
+                GenerationId generation = identity.generation();
+                ProducerId producer = identity.producer();
+                SessionModuleEnvironment.Ownership ownership = sameProducer
+                        ? previous.ownership()
+                        : logical.filter(io.mindspice.lyra.compiler.source.LogicalModuleId::isStdIo)
+                        .isPresent()
+                        ? SessionModuleEnvironment.Ownership.INTRINSIC
+                        : SessionModuleEnvironment.Ownership.SESSION;
+
+                ResolvedModule semanticModule = resolved.module(node.moduleId()).orElseThrow();
+                List<DeclarationId> initializers = semanticModule.declarations().stream()
+                        .map(resolved::declaration)
+                        .flatMap(Optional::stream)
+                        .filter(value -> value.kind() == DeclarationKind.LET)
+                        .filter(value -> value.scopeId().equals(semanticModule.rootScope()))
+                        .map(ResolvedDeclaration::id)
+                        .toList();
+                SessionExecutionPlan.WorkKind kind = scratch
+                        ? SessionExecutionPlan.WorkKind.NEW
+                        : ownership == SessionModuleEnvironment.Ownership.INTRINSIC
+                        || (sameProducer && ownership == SessionModuleEnvironment.Ownership.APPLICATION)
+                        ? SessionExecutionPlan.WorkKind.BORROWED
+                        : sameProducer
+                        ? SessionExecutionPlan.WorkKind.REUSED
+                        : SessionExecutionPlan.WorkKind.NEW;
+                work.add(new SessionExecutionPlan.ModuleWork(
+                        node.moduleId(), logical, generation, producer, kind, scratch,
+                        kind == SessionExecutionPlan.WorkKind.NEW && !scratch
+                                ? initializers : List.of()));
+
+                if (!scratch) {
+                    if (!sameProducer) {
+                        ResolvedModule semantic = resolved.module(node.moduleId()).orElseThrow();
+                        TypedModule typedModule = typed.module(node.moduleId()).orElseThrow();
+                        List<io.mindspice.lyra.compiler.source.LogicalModuleId> dependencies =
+                                graph.importsFrom(node.moduleId()).stream()
+                                        .map(ModuleGraph.Edge::logicalTarget)
+                                        .distinct()
+                                        .sorted()
+                                        .toList();
+                        SessionModuleEnvironment.ModuleRecord record =
+                                new SessionModuleEnvironment.ModuleRecord(
+                                        logical.orElseThrow(),
+                                        node.moduleId(),
+                                        node.snapshot(),
+                                        node.revision(),
+                                        generation,
+                                        producer,
+                                        ownership,
+                                        semantic,
+                                        typedModule,
+                                        semantic.exports(),
+                                        semantic.imports(),
+                                        dependencies,
+                                        initializers,
+                                        typed.semanticFlowFacts().finalState(node.moduleId()),
+                                        Optional.ofNullable(typed.semanticFlowFacts().attemptedStates()
+                                                .get(node.moduleId())),
+                                        typed.semanticFlowFacts().callableSummaries(), typed,
+                                        request.sourceConfiguration().sourceRoots(),
+                                        request.sourceConfiguration().revisionOptions().values());
+                        retained.put(logical.orElseThrow(), record);
+                    }
+                    if (logical.isPresent()
+                            && !logical.orElseThrow().isStdIo()) {
+                        if (!sameProducer) nextPins.put(logical.orElseThrow(), new PinnedModule(
+                                logical.orElseThrow(), node.snapshot(), node.revision(),
+                                request.sourceConfiguration().revisionOptions()));
+                    }
+                }
+            }
+
+            LinkedHashMap<SourceId, SourceSnapshot> snapshots = new LinkedHashMap<>();
+            for (SourceSnapshot source : request.snapshot().moduleEnvironment().sourceInventory()) {
+                snapshots.put(source.sourceId(), source);
+            }
+            for (ModuleGraph.Node node : graph.modules()) {
+                snapshots.put(node.snapshot().sourceId(), node.snapshot());
+            }
+            LinkedHashMap<io.mindspice.lyra.compiler.source.LogicalModuleId,
+                    io.mindspice.lyra.compiler.source.ResolvedSource> inputs = new LinkedHashMap<>();
+            for (io.mindspice.lyra.compiler.source.ResolvedSource input :
+                    request.snapshot().moduleEnvironment().resolvedInputs()) {
+                inputs.put(input.logicalModule(), input);
+            }
+            for (ModuleGraph.Node node : graph.modules()) {
+                node.logicalModule().ifPresent(logical -> inputs.put(logical,
+                        io.mindspice.lyra.compiler.source.ResolvedSource.fromSnapshot(
+                                logical, node.snapshot())));
+            }
+            SessionModuleEnvironment environment = new SessionModuleEnvironment(
+                    new ArrayList<>(retained.values()),
+                    request.sourceConfiguration().sourceRoots(),
+                    request.sourceConfiguration().revisionOptions().values(),
+                    new ArrayList<>(snapshots.values()),
+                    new ArrayList<>(inputs.values()),
+                    Optional.of(graph),
+                    Optional.of(resolved),
+                    Optional.of(typed),
+                    Optional.of(typed.semanticFlowFacts()));
+
+            ResolvedModule root = resolved.module(graph.rootModule()).orElseThrow();
+            ArrayList<SessionImport> imports = new ArrayList<>();
+            for (var binding : root.imports()) {
+                imports.add(SessionImport.from(binding, environment));
+            }
+            List<ModuleId> initializationOrder = typed.initializationOrder().stream()
+                    .filter(module -> work.stream().anyMatch(value -> value.moduleId().equals(module)
+                            && value.isNew() && !value.scratch()))
+                    .toList();
+            SessionExecutionPlan plan = new SessionExecutionPlan(
+                    work, initializationOrder, typed);
+            return new SessionEnvironmentData(
+                    allocator, environment, Map.copyOf(nextPins), imports, plan);
         }
 
         private StagedNamespace stageNamespace(
-                ModuleGraph graph, ResolvedSemanticGraph resolved, TypedSemanticGraph typed) {
+                ModuleGraph graph,
+                ResolvedSemanticGraph resolved,
+                TypedSemanticGraph typed,
+                SessionEnvironmentData environment) {
             var root = graph.rootModule();
             var rootSemantic = resolved.module(root).orElseThrow();
             for (ResolvedDeclaration declaration : resolved.declarations()) {
                 if (!declaration.moduleId().equals(root)
                         || !declaration.scopeId().equals(rootSemantic.rootScope())
-                        || declaration.kind() == DeclarationKind.EXTERNAL) {
+                        || declaration.kind() == DeclarationKind.EXTERNAL
+                        || declaration.kind() == DeclarationKind.IMPORT_MODULE
+                        || declaration.kind() == DeclarationKind.IMPORT_VALUE) {
                     continue;
                 }
                 ExternalBinding previous = request.snapshot().bindings().get(declaration.name());
@@ -383,6 +576,19 @@ public final class LyraCompiler {
                                 : java.util.Optional.empty(), request.source().origin()));
             }
 
+            LinkedHashMap<String, SessionImport> nextImports =
+                    new LinkedHashMap<>(request.snapshot().imports());
+            for (SessionImport imported : environment.imports()) {
+                SessionImport previous = nextImports.get(imported.name());
+                if (previous != null && !equivalentImport(previous, imported)) {
+                    return StagedNamespace.failure(Diagnostic.error(
+                            CompilerDiagnosticCodes.SESSION_NAME_CONFLICT,
+                            sourceSpan(),
+                            "session import cannot be rebound: " + imported.name()));
+                }
+                nextImports.putIfAbsent(imported.name(), imported);
+            }
+
             List<DeclarationId> declarations = resolved.declarations().stream()
                     .filter(value -> value.moduleId().equals(root))
                     .filter(value -> value.scopeId().equals(rootSemantic.rootScope()))
@@ -392,9 +598,11 @@ public final class LyraCompiler {
             try {
                 return StagedNamespace.success(request.snapshot().nextRevision(
                         nextBindings,
-                        request.snapshot().imports(),
-                        request.snapshot().pinnedModules(),
-                        typed.allocator()), declarations);
+                        nextImports,
+                        environment.pinnedModules(),
+                        environment.allocator(),
+                        environment.environment()), declarations,
+                        environment.imports());
             } catch (IllegalArgumentException | IllegalStateException failure) {
                 throw new LyraCompilerBugException(
                         "session namespace staging violated an immutable contract", failure);
@@ -411,6 +619,20 @@ public final class LyraCompiler {
                         sourceSpan(), "invalid Java base package: " + request.javaBasePackage());
             }
             return null;
+        }
+
+        private static boolean equivalentImport(SessionImport left, SessionImport right) {
+            return left.name().equals(right.name())
+                    && left.logicalModule().equals(right.logicalModule())
+                    && left.moduleId().equals(right.moduleId())
+                    && left.revision().equals(right.revision())
+                    && left.kind() == right.kind()
+                    && left.importedName().equals(right.importedName())
+                    && left.aliasName().equals(right.aliasName())
+                    && left.targetDeclaration().equals(right.targetDeclaration())
+                    && left.targetExport().equals(right.targetExport())
+                    && left.moduleContract().equals(right.moduleContract())
+                    && left.reExport() == right.reExport();
         }
 
         private SourceSpan sourceSpan() {
@@ -449,15 +671,48 @@ public final class LyraCompiler {
                     values, request.source(), request.sourceId());
         }
 
+        private record IdentityPair(GenerationId generation, ProducerId producer) {
+            private IdentityPair {
+                Objects.requireNonNull(generation, "generation");
+                Objects.requireNonNull(producer, "producer");
+            }
+        }
+
+        private record IdentityReservations(
+                IdentityAllocator allocator,
+                Map<ModuleId, IdentityPair> identities) {
+            private IdentityReservations {
+                allocator = Objects.requireNonNull(allocator, "allocator");
+                identities = Map.copyOf(Objects.requireNonNull(identities, "identities"));
+            }
+        }
+
+        private record SessionEnvironmentData(
+                IdentityAllocator allocator,
+                SessionModuleEnvironment environment,
+                Map<io.mindspice.lyra.compiler.source.LogicalModuleId, PinnedModule> pinnedModules,
+                List<SessionImport> imports,
+                SessionExecutionPlan plan) {
+            private SessionEnvironmentData {
+                allocator = Objects.requireNonNull(allocator, "allocator");
+                environment = Objects.requireNonNull(environment, "environment");
+                pinnedModules = Map.copyOf(Objects.requireNonNull(pinnedModules, "pinnedModules"));
+                imports = List.copyOf(Objects.requireNonNull(imports, "imports"));
+                plan = Objects.requireNonNull(plan, "plan");
+            }
+        }
+
         private record StagedNamespace(
                 SessionSnapshot snapshot,
                 List<DeclarationId> declarations,
+                List<SessionImport> imports,
                 Diagnostic diagnostic) {
             private StagedNamespace {
                 if (snapshot == null && diagnostic == null) {
                     throw new IllegalArgumentException(
                             "staged namespace needs a snapshot or diagnostic");
                 }
+                imports = List.copyOf(Objects.requireNonNull(imports, "imports"));
                 if (snapshot != null && diagnostic != null) {
                     throw new IllegalArgumentException(
                             "staged namespace cannot contain both a snapshot and diagnostic");
@@ -466,13 +721,15 @@ public final class LyraCompiler {
             }
 
             private static StagedNamespace success(
-                    SessionSnapshot snapshot, List<DeclarationId> declarations) {
+                    SessionSnapshot snapshot,
+                    List<DeclarationId> declarations,
+                    List<SessionImport> imports) {
                 return new StagedNamespace(
-                        Objects.requireNonNull(snapshot, "snapshot"), declarations, null);
+                        Objects.requireNonNull(snapshot, "snapshot"), declarations, imports, null);
             }
 
             private static StagedNamespace failure(Diagnostic diagnostic) {
-                return new StagedNamespace(null, List.of(),
+                return new StagedNamespace(null, List.of(), List.of(),
                         Objects.requireNonNull(diagnostic, "diagnostic"));
             }
         }

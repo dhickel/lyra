@@ -310,7 +310,7 @@ public final class SessionFlowCertificate {
         return false;
     }
 
-    private static boolean sameEffectIdentity(
+    private boolean sameEffectIdentity(
             EagerEffectWitness certified,
             EagerEffectWitness candidate) {
         return certified.targetModule().equals(candidate.targetModule())
@@ -319,7 +319,13 @@ public final class SessionFlowCertificate {
                 && certified.effectSite().equals(candidate.effectSite())
                 && certified.targetDeclaration().equals(candidate.targetDeclaration())
                 && certified.referenceId().equals(candidate.referenceId())
-                && certified.targetLambda().equals(candidate.targetLambda());
+                && (certified.targetLambda().equals(candidate.targetLambda())
+                || candidate.kind() != EagerEffectWitness.Kind.VALUE_READ
+                && candidate.targetDeclaration().flatMap(boundaryState::binding)
+                        .filter(value -> value.contract().isMutable())
+                        .stream().flatMap(value -> value.callableFlows().stream())
+                        .anyMatch(value -> value.lambdaId().isPresent()
+                                && value.lambdaId().equals(candidate.targetLambda())));
     }
 
     private static boolean hasCertifiedSuffix(
@@ -462,8 +468,7 @@ public final class SessionFlowCertificate {
 
         BindingFlowState boundary = overlay(
                 predecessor == null ? BindingFlowState.empty() : predecessor.boundaryState(),
-                retainPrefixes ? graph.semanticFlowFacts().attemptedStates()
-                        : graph.semanticFlowFacts().finalStates());
+                graph, retainPrefixes);
         if (retainPrefixes && predecessor != null) {
             boundary = predecessor.boundaryState().join(boundary);
         }
@@ -533,12 +538,23 @@ public final class SessionFlowCertificate {
     }
 
     private static BindingFlowState overlay(
-            BindingFlowState predecessor,
-            Map<?, BindingFlowState> states) {
+            BindingFlowState predecessor, TypedSemanticGraph graph, boolean retainPrefixes) {
+        Map<ModuleId, BindingFlowState> states = retainPrefixes
+                ? graph.semanticFlowFacts().attemptedStates() : graph.semanticFlowFacts().finalStates();
+        if (retainPrefixes) {
+            BindingFlowState attempted = predecessor;
+            for (var state : states.values()) attempted = attempted.join(state);
+            return attempted;
+        }
         TreeMap<DeclarationId, BindingFlowValue> bindings = new TreeMap<>(predecessor.bindings());
         TreeMap<DeclarationId, ValueAlternatives> cells = new TreeMap<>(predecessor.sharedCells());
-        for (Object raw : states.values()) {
-            BindingFlowState state = (BindingFlowState) raw;
+        // Dependencies precede the submission. Map iteration must never choose which producer write wins.
+        var root = graph.resolvedGraph().moduleGraph().rootModule();
+        List<ModuleId> order = new ArrayList<>(graph.initializationOrder().stream().filter(id -> !id.equals(root)).toList());
+        order.add(root);
+        for (var module : order) {
+            BindingFlowState state = states.get(module);
+            if (state == null) continue;
             bindings.putAll(state.bindings());
             cells.putAll(state.sharedCells());
         }

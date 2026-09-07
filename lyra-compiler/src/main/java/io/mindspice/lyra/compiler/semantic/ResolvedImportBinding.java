@@ -22,7 +22,9 @@ public record ResolvedImportBinding(
         Optional<String> aliasName,
         boolean reExport,
         Optional<DeclarationId> targetDeclaration,
-        Optional<ExportId> targetExport) {
+        Optional<ExportId> targetExport,
+        boolean retained,
+        Optional<io.mindspice.lyra.compiler.session.SessionModuleContract> producerContract) {
     public ResolvedImportBinding {
         Objects.requireNonNull(declarationId, "declarationId");
         requireText(localName, "localName");
@@ -35,6 +37,10 @@ public record ResolvedImportBinding(
         Objects.requireNonNull(aliasName, "aliasName");
         Objects.requireNonNull(targetDeclaration, "targetDeclaration");
         Objects.requireNonNull(targetExport, "targetExport");
+        Objects.requireNonNull(producerContract, "producerContract");
+        producerContract.ifPresent(contract -> new io.mindspice.lyra.compiler.session.SessionImport(
+                localName, logicalModule, targetModule, contract.producer().revision(), kind, importedName,
+                aliasName, targetDeclaration, targetExport, reExport, Optional.of(contract)));
         if (!localNameSpan.sourceId().equals(importSpan.sourceId())) {
             throw new IllegalArgumentException("import binding name and import spans disagree");
         }
@@ -47,6 +53,37 @@ public record ResolvedImportBinding(
         if (!reExport && targetExport.isPresent() && targetDeclaration.isEmpty()) {
             throw new IllegalArgumentException("an export link needs its target declaration");
         }
+    }
+
+    public ResolvedImportBinding(DeclarationId declarationId, String localName, SourceSpan localNameSpan,
+            SourceSpan importSpan, LogicalModuleId logicalModule, ModuleId targetModule, ImportBindingKind kind,
+            Optional<String> importedName, Optional<String> aliasName, boolean reExport,
+            Optional<DeclarationId> targetDeclaration, Optional<ExportId> targetExport, boolean retained) {
+        this(declarationId, localName, localNameSpan, importSpan, logicalModule, targetModule, kind,
+                importedName, aliasName, reExport, targetDeclaration, targetExport, retained, Optional.empty());
+    }
+
+    /** True when this binding was restored from session metadata, not source text. */
+    public boolean isRetained() {
+        return retained;
+    }
+
+    /** Compatibility constructor for source-header import records. */
+    public ResolvedImportBinding(
+            DeclarationId declarationId,
+            String localName,
+            SourceSpan localNameSpan,
+            SourceSpan importSpan,
+            LogicalModuleId logicalModule,
+            ModuleId targetModule,
+            ImportBindingKind kind,
+            Optional<String> importedName,
+            Optional<String> aliasName,
+            boolean reExport,
+            Optional<DeclarationId> targetDeclaration,
+            Optional<ExportId> targetExport) {
+        this(declarationId, localName, localNameSpan, importSpan, logicalModule, targetModule,
+                kind, importedName, aliasName, reExport, targetDeclaration, targetExport, false);
     }
 
     public DeclarationId id() {

@@ -170,8 +170,28 @@ public final class TypeChecker {
         }
 
         private void checkModules() {
+            for (ResolvedModule module : graph.modules()) {
+                if (!graph.isRetained(module.moduleId())) continue;
+                var producer = graph.retainedModules().module(module.moduleId()).orElseThrow().producerGraph();
+                typedModules.put(module.moduleId(), producer.module(module.moduleId()).orElseThrow());
+                for (var declaration : producer.declarations()) {
+                    if (!declaration.moduleId().equals(module.moduleId())) continue;
+                    typedDeclarations.put(declaration.id(), declaration);
+                    declaration.initializer().ifPresent(value -> initializers.put(declaration.id(), value));
+                    declaration.contract().ifPresent(contract -> {
+                        typedContracts.put(declaration.id(), contract);
+                        declarationTypes.put(declaration.id(), expressionType(
+                                declarations.get(declaration.id()), contract.valueType()));
+                    });
+                }
+                producer.references().stream().filter(value -> value.moduleId().equals(module.moduleId()))
+                        .forEach(value -> typedReferences.put(value.id(), value));
+                producer.lambdas().stream().filter(value -> value.moduleId().equals(module.moduleId()))
+                        .forEach(value -> typedLambdas.put(value.id(), value));
+            }
             for (ResolvedModule resolvedModule : graph.modules()) {
                 ModuleId moduleId = resolvedModule.moduleId();
+                if (graph.isRetained(moduleId)) continue;
                 io.mindspice.lyra.compiler.ast.SyntaxProgram program = graph.moduleGraph()
                         .module(moduleId).orElseThrow().program();
                 List<TypedExpression> forms = new ArrayList<>();

@@ -73,6 +73,15 @@ public final class CallableSummarySolver {
             Set<DeclarationId> externalCallableDeclarations,
             Map<DeclarationId, List<LambdaId>> potentialCallableLambdas,
             SummaryLimits limits) {
+        return solve(rawSummaries, lambdaByDeclaration, intrinsicDeclarations, computedCallableDeclarations,
+                externalCallableDeclarations, potentialCallableLambdas, limits, Set.of());
+    }
+
+    static CallableSummaryResult solve(Collection<CallableSummary> rawSummaries,
+            Map<DeclarationId, LambdaId> lambdaByDeclaration, Map<DeclarationId, ModuleId> intrinsicDeclarations,
+            Set<DeclarationId> computedCallableDeclarations, Set<DeclarationId> externalCallableDeclarations,
+            Map<DeclarationId, List<LambdaId>> potentialCallableLambdas, SummaryLimits limits,
+            Set<LambdaId> retained) {
         Objects.requireNonNull(rawSummaries, "rawSummaries");
         Objects.requireNonNull(lambdaByDeclaration, "lambdaByDeclaration");
         Objects.requireNonNull(intrinsicDeclarations, "intrinsicDeclarations");
@@ -164,6 +173,12 @@ public final class CallableSummarySolver {
             TreeMap<LambdaId, CallableSummary> solved = new TreeMap<>();
             solved.putAll(raw);
             Set<Integer> completed = new HashSet<>();
+            for (var component : components) {
+                if (retained.containsAll(component.members())) completed.add(component.ordinal());
+                else if (component.members().stream().anyMatch(retained::contains)) {
+                    throw new IllegalArgumentException("new callable SCC cannot redefine retained producers");
+                }
+            }
             for (CallableSummarySet.CallableScc component : components) {
                 solveComponent(component, dependencies, componentByOrdinal,
                         raw, declarations, intrinsics, computedDeclarations,

@@ -15,7 +15,9 @@ public record IdentityAllocator(
         long nextReferenceOrdinal,
         long nextLambdaOrdinal,
         long nextCaptureOrdinal,
-        long nextFlowSiteOrdinal) {
+        long nextFlowSiteOrdinal,
+        long nextGenerationOrdinal,
+        long nextProducerOrdinal) {
     public IdentityAllocator {
         requireNonNegative(nextScopeOrdinal, "nextScopeOrdinal");
         requireNonNegative(nextDeclarationOrdinal, "nextDeclarationOrdinal");
@@ -23,6 +25,8 @@ public record IdentityAllocator(
         requireNonNegative(nextLambdaOrdinal, "nextLambdaOrdinal");
         requireNonNegative(nextCaptureOrdinal, "nextCaptureOrdinal");
         requireNonNegative(nextFlowSiteOrdinal, "nextFlowSiteOrdinal");
+        requireNonNegative(nextGenerationOrdinal, "nextGenerationOrdinal");
+        requireNonNegative(nextProducerOrdinal, "nextProducerOrdinal");
     }
 
     /** Compatibility constructor for callers created before flow sites joined the allocator. */
@@ -33,11 +37,23 @@ public record IdentityAllocator(
             long nextLambdaOrdinal,
             long nextCaptureOrdinal) {
         this(nextScopeOrdinal, nextDeclarationOrdinal, nextReferenceOrdinal,
-                nextLambdaOrdinal, nextCaptureOrdinal, 0);
+                nextLambdaOrdinal, nextCaptureOrdinal, 0, 0, 0);
+    }
+
+    /** Compatibility constructor for callers created before session identities joined the allocator. */
+    public IdentityAllocator(
+            long nextScopeOrdinal,
+            long nextDeclarationOrdinal,
+            long nextReferenceOrdinal,
+            long nextLambdaOrdinal,
+            long nextCaptureOrdinal,
+            long nextFlowSiteOrdinal) {
+        this(nextScopeOrdinal, nextDeclarationOrdinal, nextReferenceOrdinal,
+                nextLambdaOrdinal, nextCaptureOrdinal, nextFlowSiteOrdinal, 0, 0);
     }
 
     public static IdentityAllocator initial() {
-        return new IdentityAllocator(0, 0, 0, 0, 0, 0);
+        return new IdentityAllocator(0, 0, 0, 0, 0, 0, 0, 0);
     }
 
     public static IdentityAllocator empty() {
@@ -52,7 +68,9 @@ public record IdentityAllocator(
                         nextReferenceOrdinal,
                         nextLambdaOrdinal,
                         nextCaptureOrdinal,
-                        nextFlowSiteOrdinal));
+                        nextFlowSiteOrdinal,
+                        nextGenerationOrdinal,
+                        nextProducerOrdinal));
     }
 
     public Allocation<DeclarationId> allocateDeclaration() {
@@ -63,7 +81,9 @@ public record IdentityAllocator(
                         nextReferenceOrdinal,
                         nextLambdaOrdinal,
                         nextCaptureOrdinal,
-                        nextFlowSiteOrdinal));
+                        nextFlowSiteOrdinal,
+                        nextGenerationOrdinal,
+                        nextProducerOrdinal));
     }
 
     public Allocation<ReferenceId> allocateReference() {
@@ -74,7 +94,9 @@ public record IdentityAllocator(
                         increment(nextReferenceOrdinal),
                         nextLambdaOrdinal,
                         nextCaptureOrdinal,
-                        nextFlowSiteOrdinal));
+                        nextFlowSiteOrdinal,
+                        nextGenerationOrdinal,
+                        nextProducerOrdinal));
     }
 
     public Allocation<LambdaId> allocateLambda() {
@@ -85,7 +107,9 @@ public record IdentityAllocator(
                         nextReferenceOrdinal,
                         increment(nextLambdaOrdinal),
                         nextCaptureOrdinal,
-                        nextFlowSiteOrdinal));
+                        nextFlowSiteOrdinal,
+                        nextGenerationOrdinal,
+                        nextProducerOrdinal));
     }
 
     public Allocation<CaptureId> allocateCapture() {
@@ -96,7 +120,9 @@ public record IdentityAllocator(
                         nextReferenceOrdinal,
                         nextLambdaOrdinal,
                         increment(nextCaptureOrdinal),
-                        nextFlowSiteOrdinal));
+                        nextFlowSiteOrdinal,
+                        nextGenerationOrdinal,
+                        nextProducerOrdinal));
     }
 
     public Allocation<FlowSiteId> allocateFlowSite() {
@@ -107,7 +133,37 @@ public record IdentityAllocator(
                         nextReferenceOrdinal,
                         nextLambdaOrdinal,
                         nextCaptureOrdinal,
-                        increment(nextFlowSiteOrdinal)));
+                        increment(nextFlowSiteOrdinal),
+                        nextGenerationOrdinal,
+                        nextProducerOrdinal));
+    }
+
+    /** Allocates a persistent module-generation identity without disturbing source IDs. */
+    public Allocation<GenerationId> allocateGeneration() {
+        return allocate(new GenerationId(nextGenerationOrdinal),
+                new IdentityAllocator(
+                        nextScopeOrdinal,
+                        nextDeclarationOrdinal,
+                        nextReferenceOrdinal,
+                        nextLambdaOrdinal,
+                        nextCaptureOrdinal,
+                        nextFlowSiteOrdinal,
+                        increment(nextGenerationOrdinal),
+                        nextProducerOrdinal));
+    }
+
+    /** Allocates a persistent producer identity without disturbing source IDs. */
+    public Allocation<ProducerId> allocateProducer() {
+        return allocate(new ProducerId(nextProducerOrdinal),
+                new IdentityAllocator(
+                        nextScopeOrdinal,
+                        nextDeclarationOrdinal,
+                        nextReferenceOrdinal,
+                        nextLambdaOrdinal,
+                        nextCaptureOrdinal,
+                        nextFlowSiteOrdinal,
+                        nextGenerationOrdinal,
+                        increment(nextProducerOrdinal)));
     }
 
     /** Returns whether this allocator has not regressed any identity stream. */
@@ -118,7 +174,9 @@ public record IdentityAllocator(
                 && nextReferenceOrdinal >= other.nextReferenceOrdinal
                 && nextLambdaOrdinal >= other.nextLambdaOrdinal
                 && nextCaptureOrdinal >= other.nextCaptureOrdinal
-                && nextFlowSiteOrdinal >= other.nextFlowSiteOrdinal;
+                && nextFlowSiteOrdinal >= other.nextFlowSiteOrdinal
+                && nextGenerationOrdinal >= other.nextGenerationOrdinal
+                && nextProducerOrdinal >= other.nextProducerOrdinal;
     }
 
     private static <T> Allocation<T> allocate(T id, IdentityAllocator next) {

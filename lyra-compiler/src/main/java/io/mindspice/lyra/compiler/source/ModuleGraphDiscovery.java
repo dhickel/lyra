@@ -11,6 +11,9 @@ import io.mindspice.lyra.compiler.grammar.GrammarProgram;
 import io.mindspice.lyra.compiler.lex.LexedSource;
 import io.mindspice.lyra.compiler.lex.Lexer;
 import io.mindspice.lyra.compiler.parse.Parser;
+import io.mindspice.lyra.compiler.session.PinnedModule;
+import io.mindspice.lyra.compiler.session.SessionModuleEnvironment;
+import io.mindspice.lyra.compiler.session.SessionSnapshot;
 
 import java.io.IOException;
 import java.net.URI;
@@ -26,6 +29,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.PriorityQueue;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 
 /**
  * Resolves and parses the complete source graph reachable from one root.
@@ -37,16 +43,44 @@ public final class ModuleGraphDiscovery {
 
     private final SourceConfiguration configuration;
     private final Optional<SourceId> forbiddenImportedIdentity;
+    private final Map<LogicalModuleId, PinnedModule> pinnedModules;
+    private final Set<LogicalModuleId> retainedImportRoots;
+    private final SessionModuleEnvironment environment;
 
     public ModuleGraphDiscovery(SourceConfiguration configuration) {
-        this(configuration, Optional.empty());
+        this(configuration, Optional.empty(), Map.of());
     }
 
     private ModuleGraphDiscovery(
             SourceConfiguration configuration, Optional<SourceId> forbiddenImportedIdentity) {
+        this(configuration, forbiddenImportedIdentity, Map.of(), Set.of());
+    }
+
+    private ModuleGraphDiscovery(
+            SourceConfiguration configuration,
+            Optional<SourceId> forbiddenImportedIdentity,
+            Map<LogicalModuleId, PinnedModule> pinnedModules) {
+        this(configuration, forbiddenImportedIdentity, pinnedModules, pinnedModules.keySet());
+    }
+
+    private ModuleGraphDiscovery(
+            SourceConfiguration configuration,
+            Optional<SourceId> forbiddenImportedIdentity,
+            Map<LogicalModuleId, PinnedModule> pinnedModules,
+            Set<LogicalModuleId> retainedImportRoots) {
+        this(configuration, forbiddenImportedIdentity, pinnedModules, retainedImportRoots,
+                SessionModuleEnvironment.empty());
+    }
+
+    private ModuleGraphDiscovery(SourceConfiguration configuration,
+            Optional<SourceId> forbiddenImportedIdentity, Map<LogicalModuleId, PinnedModule> pinnedModules,
+            Set<LogicalModuleId> retainedImportRoots, SessionModuleEnvironment environment) {
+        this.environment = Objects.requireNonNull(environment, "environment");
         this.configuration = Objects.requireNonNull(configuration, "configuration");
         this.forbiddenImportedIdentity = Objects.requireNonNull(
                 forbiddenImportedIdentity, "forbiddenImportedIdentity");
+        this.pinnedModules = copyPins(pinnedModules);
+        this.retainedImportRoots = copyLogicalIds(retainedImportRoots, "retainedImportRoots");
     }
 
     public static PhaseResult<ModuleGraph> discover(
@@ -61,9 +95,49 @@ public final class ModuleGraphDiscovery {
             SyntaxProgram rootProgram,
             SourceSnapshot rootSnapshot,
             SourceConfiguration configuration) {
+        return discoverSession(rootProgram, rootSnapshot, configuration, Map.of(), Set.of());
+    }
+
+    /**
+     * Discovers a session graph with retained source revisions taking priority
+     * over filesystem and resolver candidates. Pinned sources are already
+     * captured, so this operation never rereads their physical backing files.
+     */
+    public static PhaseResult<ModuleGraph> discoverSession(
+            SyntaxProgram rootProgram,
+            SourceSnapshot rootSnapshot,
+            SourceConfiguration configuration,
+            Map<LogicalModuleId, PinnedModule> pinnedModules) {
+        return discoverSession(rootProgram, rootSnapshot, configuration,
+                pinnedModules, pinnedModules.keySet());
+    }
+
+    /**
+     * Like {@link #discoverSession(SyntaxProgram, SourceSnapshot,
+     * SourceConfiguration, Map)}, but only retained aliases in
+     * {@code retainedImportRoots} become roots of the current graph. Other
+     * pins remain available to resolve transitive imports without being pulled
+     * into an unrelated submission.
+     */
+    public static PhaseResult<ModuleGraph> discoverSession(
+            SyntaxProgram rootProgram,
+            SourceSnapshot rootSnapshot,
+            SourceConfiguration configuration,
+            Map<LogicalModuleId, PinnedModule> pinnedModules,
+            Set<LogicalModuleId> retainedImportRoots) {
         Objects.requireNonNull(rootSnapshot, "rootSnapshot");
-        return new ModuleGraphDiscovery(configuration, Optional.of(rootSnapshot.sourceId()))
-                .discover(rootProgram, rootSnapshot);
+        return new ModuleGraphDiscovery(
+                configuration, Optional.of(rootSnapshot.sourceId()), pinnedModules,
+                retainedImportRoots).discover(rootProgram, rootSnapshot);
+    }
+
+    public static PhaseResult<ModuleGraph> discoverSession(SyntaxProgram program, SourceSnapshot source,
+            SourceConfiguration configuration, SessionSnapshot snapshot) {
+        return new ModuleGraphDiscovery(configuration, Optional.of(source.sourceId()),
+                snapshot.pinnedModules(), snapshot.imports().values().stream()
+                        .map(io.mindspice.lyra.compiler.session.SessionImport::logicalModule)
+                        .collect(java.util.stream.Collectors.toSet()), snapshot.moduleEnvironment())
+                .discover(program, source);
     }
 
     public static PhaseResult<ModuleGraph> discover(
@@ -111,7 +185,9 @@ public final class ModuleGraphDiscovery {
             SourceSnapshot rootSnapshot) {
         Objects.requireNonNull(rootProgram, "rootProgram");
         Objects.requireNonNull(rootSnapshot, "rootSnapshot");
-        Discovery discovery = new Discovery(configuration, forbiddenImportedIdentity);
+        Discovery discovery = new Discovery(
+                configuration, forbiddenImportedIdentity, pinnedModules, retainedImportRoots);
+        discovery.retain(environment);
 
         PhaseResult<Discovery.CanonicalRoots> roots = discovery.validateRoots(null);
         if (roots instanceof PhaseResult.Failure<?> failure) {
@@ -153,7 +229,8 @@ public final class ModuleGraphDiscovery {
 
     public PhaseResult<ModuleGraph> discover(Path root) {
         Objects.requireNonNull(root, "root");
-        Discovery discovery = new Discovery(configuration, forbiddenImportedIdentity);
+        Discovery discovery = new Discovery(
+                configuration, forbiddenImportedIdentity, pinnedModules, retainedImportRoots);
         Path lexicalRoot = root.toAbsolutePath().normalize();
 
         PhaseResult<Discovery.CanonicalRoots> rootsResult =
@@ -226,7 +303,8 @@ public final class ModuleGraphDiscovery {
         if (root.isStdIo()) {
             return failure(disallowedIntrinsic(configurationSpan()));
         }
-        Discovery discovery = new Discovery(configuration, forbiddenImportedIdentity);
+        Discovery discovery = new Discovery(
+                configuration, forbiddenImportedIdentity, pinnedModules, retainedImportRoots);
         PhaseResult<Discovery.CanonicalRoots> rootsResult = discovery.validateRoots(null);
         if (rootsResult instanceof PhaseResult.Failure<?> failure) {
             return PhaseResult.failure(failure.diagnostics());
@@ -325,6 +403,38 @@ public final class ModuleGraphDiscovery {
         return PhaseResult.failure(diagnostic);
     }
 
+    private static Set<LogicalModuleId> copyLogicalIds(
+            Set<LogicalModuleId> values, String name) {
+        Objects.requireNonNull(values, name);
+        TreeSet<LogicalModuleId> result = new TreeSet<>();
+        for (LogicalModuleId value : values) {
+            result.add(Objects.requireNonNull(value, name + " must not contain null"));
+        }
+        return Set.copyOf(result);
+    }
+
+    private static Map<LogicalModuleId, PinnedModule> copyPins(
+            Map<LogicalModuleId, PinnedModule> values) {
+        Objects.requireNonNull(values, "pinnedModules");
+        TreeMap<LogicalModuleId, PinnedModule> result = new TreeMap<>();
+        for (Map.Entry<LogicalModuleId, PinnedModule> entry : values.entrySet()) {
+            LogicalModuleId logical = Objects.requireNonNull(
+                    entry.getKey(), "pinned module logical id");
+            PinnedModule pinned = Objects.requireNonNull(
+                    entry.getValue(), "pinned module");
+            if (!logical.equals(pinned.logicalModule())) {
+                throw new IllegalArgumentException(
+                        "pinned module map key does not match logical module: " + logical);
+            }
+            if (logical.isStdIo()) {
+                throw new IllegalArgumentException(
+                        "the intrinsic module cannot be supplied as a pinned source");
+            }
+            result.put(logical, pinned);
+        }
+        return Map.copyOf(result);
+    }
+
     private record RootIdentity(SourceId sourceId, Diagnostic diagnostic) {
         private static RootIdentity success(SourceId sourceId) {
             return new RootIdentity(sourceId, null);
@@ -349,6 +459,8 @@ public final class ModuleGraphDiscovery {
 
         private final SourceConfiguration configuration;
         private final Optional<SourceId> forbiddenImportedIdentity;
+        private final Map<LogicalModuleId, PinnedModule> pinnedModules;
+        private final Set<LogicalModuleId> retainedImportRoots;
         private final Map<PhysicalSourceKey, byte[]> bytesByPhysical = new HashMap<>();
         private final Map<PhysicalSourceKey, SourceSnapshot> snapshotsByPhysical = new HashMap<>();
         private final Map<PhysicalSourceKey, SyntaxProgram> programsByPhysical = new HashMap<>();
@@ -361,10 +473,27 @@ public final class ModuleGraphDiscovery {
         private List<CanonicalRoot> roots = List.of();
         private ModuleId rootModule;
 
-        private Discovery(SourceConfiguration configuration, Optional<SourceId> forbiddenImportedIdentity) {
+        private Discovery(
+                SourceConfiguration configuration,
+                Optional<SourceId> forbiddenImportedIdentity,
+                Map<LogicalModuleId, PinnedModule> pinnedModules,
+                Set<LogicalModuleId> retainedImportRoots) {
             this.configuration = Objects.requireNonNull(configuration, "configuration");
             this.forbiddenImportedIdentity = Objects.requireNonNull(
                     forbiddenImportedIdentity, "forbiddenImportedIdentity");
+            this.pinnedModules = copyPins(pinnedModules);
+            this.retainedImportRoots = copyLogicalIds(retainedImportRoots, "retainedImportRoots");
+        }
+
+        private void retain(SessionModuleEnvironment environment) {
+            for (var module : environment.modules()) {
+                var node = module.producerGraph().resolvedGraph().moduleGraph()
+                        .module(module.moduleId()).orElseThrow();
+                snapshotsByPhysical.put(node.snapshot().physicalKey(), node.snapshot());
+                programsByPhysical.put(node.snapshot().physicalKey(), node.program());
+                resolvedByLogical.put(module.logicalModule(),
+                        ResolvedSource.fromSnapshot(module.logicalModule(), node.snapshot()));
+            }
         }
 
         private PhaseResult<CanonicalRoots> validateRoots(Path implicitRoot) {
@@ -463,6 +592,27 @@ public final class ModuleGraphDiscovery {
             Objects.requireNonNull(importSpan, "importSpan");
             if (logicalModule.isStdIo()) {
                 return Selection.success(IntrinsicModule.stdIo().resolvedSource());
+            }
+            // A retained source is authoritative for the session epoch.  Do
+            // this lookup before consulting roots or custom resolvers so an
+            // edited/deleted backing file cannot silently replace a live
+            // module or cause a second source capture.
+            PinnedModule pinned = pinnedModules.get(logicalModule);
+            if (pinned != null) {
+                ResolvedSource source = pinned.resolvedSource();
+                if (!source.logicalModule().equals(logicalModule)) {
+                    return Selection.failure(Diagnostic.error(
+                            CompilerDiagnosticCodes.MODULE_INVALID_CONFIGURATION,
+                            importSpan,
+                            "pinned module logical identity does not match its map key: "
+                                    + logicalModule));
+                }
+                if (IntrinsicModule.claimsReservedIdentity(
+                        source.sourceId(), source.physicalKey())) {
+                    return Selection.failure(disallowedIntrinsic(importSpan));
+                }
+                resolvedByLogical.put(logicalModule, source);
+                return Selection.success(source);
             }
             ResolvedSource cached = resolvedByLogical.get(logicalModule);
             if (cached != null) {
@@ -636,11 +786,59 @@ public final class ModuleGraphDiscovery {
                     return Materialized.failure(failure.diagnostics().getFirst());
                 }
                 program = ((PhaseResult.Success<SyntaxProgram>) parsed).value();
+                programsByPhysical.put(source.physicalKey(), program);
             }
             return Materialized.success(snapshot, program);
         }
 
         private PhaseResult<ModuleGraph> finish() {
+            // Intrinsic modules cannot be represented by PinnedModule, but a
+            // previously committed std->io alias still needs its semantic
+            // export domain in the current graph.
+            if (retainedImportRoots.contains(LogicalModuleId.STD_IO)) {
+                Materialized materialized = materialize(IntrinsicModule.stdIo().resolvedSource());
+                if (materialized.diagnostic() != null) {
+                    return failure(materialized.diagnostic());
+                }
+                ModuleId intrinsicId = ModuleId.fromSourceId(materialized.snapshot().sourceId());
+                Registration registration = register(
+                        intrinsicId, LogicalModuleId.STD_IO,
+                        materialized.snapshot(), materialized.program());
+                if (registration.diagnostic() != null) {
+                    return failure(registration.diagnostic());
+                }
+                if (registration.created()) {
+                    pending.add(registration.draft());
+                }
+            }
+
+            // Retained modules are graph roots for this session as well as
+            // candidates for ordinary import edges.  Seeding them here keeps
+            // a later submission able to use a committed import alias without
+            // replaying its original source header.
+            for (Map.Entry<LogicalModuleId, PinnedModule> entry : pinnedModules.entrySet()) {
+                if (!retainedImportRoots.contains(entry.getKey())) {
+                    continue;
+                }
+                PinnedModule pinned = entry.getValue();
+                if (pinned.moduleId().sourceId().equals(rootModule.sourceId())) {
+                    continue;
+                }
+                Materialized materialized = materialize(pinned.resolvedSource());
+                if (materialized.diagnostic() != null) {
+                    return failure(materialized.diagnostic());
+                }
+                Registration registration = register(
+                        pinned.moduleId(), entry.getKey(),
+                        materialized.snapshot(), materialized.program());
+                if (registration.diagnostic() != null) {
+                    return failure(registration.diagnostic());
+                }
+                if (registration.created()) {
+                    pending.add(registration.draft());
+                }
+            }
+
             while (!pending.isEmpty()) {
                 Draft current = pending.remove();
                 List<ImportRequest> imports = new ArrayList<>();
@@ -706,8 +904,8 @@ public final class ModuleGraphDiscovery {
                             draft.program,
                             draft.logicalModule.filter(LogicalModuleId::isStdIo).isPresent()
                                     ? IntrinsicModule.revision()
-                                    : ModuleRevision.compute(
-                                            draft.snapshot, configuration.revisionOptions())))
+                                    : pinnedRevision(draft).orElseGet(() -> ModuleRevision.compute(
+                                            draft.snapshot, configuration.revisionOptions()))))
                     .toList();
             return PhaseResult.success(new ModuleGraph(
                     rootModule, nodes, edges, modulesByLogical));
@@ -762,6 +960,11 @@ public final class ModuleGraphDiscovery {
             draftsByPhysical.put(snapshot.physicalKey(), created);
             modulesByLogical.put(logicalModule, moduleId);
             return Registration.created(created);
+        }
+
+        private Optional<String> pinnedRevision(Draft draft) {
+            return draft.logicalModule.flatMap(logical -> Optional.ofNullable(
+                    pinnedModules.get(logical))).map(PinnedModule::revision);
         }
 
         private static Comparator<ResolvedSource> candidateComparator() {

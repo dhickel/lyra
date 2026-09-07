@@ -49,6 +49,7 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
     private final Optional<SessionFlowCertificate> sessionFlowCertificate;
     private final boolean sessionGraph;
     private final IdentityAllocator allocator;
+    private final io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules;
 
     public ResolvedSemanticGraph(
             ModuleGraph moduleGraph,
@@ -145,12 +146,26 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
             Optional<SessionFlowCertificate> sessionFlowCertificate,
             IdentityAllocator allocator,
             boolean sessionGraph) {
+        return publish(moduleGraph, scopeTree, modules, declarations, references, lambdas,
+                imports, exports, captures, mutations, syntaxLinks, functionLinkage, referenceTopology,
+                sessionFlowCertificate, allocator, sessionGraph,
+                io.mindspice.lyra.compiler.session.SessionModuleEnvironment.empty());
+    }
+
+    static ResolvedSemanticGraph publish(ModuleGraph moduleGraph, ScopeTree scopeTree,
+            List<ResolvedModule> modules, List<ResolvedDeclaration> declarations,
+            List<ResolvedReference> references, List<ResolvedLambda> lambdas,
+            List<ResolvedImportBinding> imports, List<ResolvedExport> exports,
+            List<ResolvedCapture> captures, List<ResolvedMutation> mutations, List<SyntaxLink> syntaxLinks,
+            FunctionSignatureLinkage functionLinkage, ResolvedReferenceTopology referenceTopology,
+            Optional<SessionFlowCertificate> sessionFlowCertificate, IdentityAllocator allocator,
+            boolean sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules) {
         ResolvedReferenceTopology authority = Objects.requireNonNull(
                 referenceTopology, "referenceTopology");
         ResolvedSemanticGraph graph = new ResolvedSemanticGraph(
                 moduleGraph, scopeTree, modules, declarations, references, lambdas,
                 imports, exports, captures, mutations, syntaxLinks, functionLinkage,
-                Optional.of(authority), sessionFlowCertificate, allocator, sessionGraph);
+                Optional.of(authority), sessionFlowCertificate, allocator, sessionGraph, retainedModules);
         authority.bind(graph);
         return graph;
     }
@@ -172,6 +187,20 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
             Optional<SessionFlowCertificate> sessionFlowCertificate,
             IdentityAllocator allocator,
             boolean sessionGraph) {
+        this(moduleGraph, scopeTree, modules, declarations, references, lambdas, imports, exports,
+                captures, mutations, syntaxLinks, functionLinkage, referenceTopology, sessionFlowCertificate,
+                allocator, sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment.empty());
+    }
+
+    private ResolvedSemanticGraph(ModuleGraph moduleGraph, ScopeTree scopeTree,
+            List<ResolvedModule> modules, List<ResolvedDeclaration> declarations,
+            List<ResolvedReference> references, List<ResolvedLambda> lambdas,
+            List<ResolvedImportBinding> imports, List<ResolvedExport> exports,
+            List<ResolvedCapture> captures, List<ResolvedMutation> mutations, List<SyntaxLink> syntaxLinks,
+            FunctionSignatureLinkage functionLinkage, Optional<ResolvedReferenceTopology> referenceTopology,
+            Optional<SessionFlowCertificate> sessionFlowCertificate, IdentityAllocator allocator,
+            boolean sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules) {
+        this.retainedModules = Objects.requireNonNull(retainedModules, "retainedModules");
         this.moduleGraph = Objects.requireNonNull(moduleGraph, "moduleGraph");
         this.scopeTree = Objects.requireNonNull(scopeTree, "scopeTree");
         this.modules = ordered(modules, Comparator.comparing(ResolvedModule::moduleId), "modules");
@@ -319,6 +348,15 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
     /** Compiler-issued predecessor proof used for certified session linkage. */
     public Optional<SessionFlowCertificate> sessionFlowCertificate() {
         return sessionFlowCertificate;
+    }
+
+    /** Original sealed producers used by this operation; never reconstructed declarations. */
+    public io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules() {
+        return retainedModules;
+    }
+
+    public boolean isRetained(ModuleId module) {
+        return !module.equals(moduleGraph.rootModule()) && retainedModules.module(module).isPresent();
     }
 
     /** True when this graph was resolved through the session compiler path. */

@@ -36,6 +36,7 @@ final class GeneratedTypePlan {
     private final Map<String, GeneratedExportPlan> exportsById;
     private final JvmJavaNamePlan javaNames;
     private final List<ModuleId> initializationOrder;
+    private final Optional<io.mindspice.lyra.compiler.ir.IrSessionExecution> sessionExecution;
 
     public GeneratedTypePlan(
             String basePackage,
@@ -81,6 +82,19 @@ final class GeneratedTypePlan {
             List<GeneratedExportPlan> exports,
             List<ModuleId> initializationOrder,
             Map<DeclarationId, String> intrinsicFunctionClasses) {
+        this(basePackage, typeNames, classes, tupleClasses, functionInterfaces, closureClasses,
+                cellClasses, moduleStates, moduleFacades, exports, initializationOrder,
+                intrinsicFunctionClasses, Optional.empty());
+    }
+
+    GeneratedTypePlan(String basePackage, JvmTypeNameTable typeNames, List<GeneratedClassPlan> classes,
+            Map<String, String> tupleClasses, Map<String, String> functionInterfaces,
+            Map<LambdaId, String> closureClasses, Map<DeclarationId, String> cellClasses,
+            Map<ModuleId, String> moduleStates, Map<ModuleId, String> moduleFacades,
+            List<GeneratedExportPlan> exports, List<ModuleId> initializationOrder,
+            Map<DeclarationId, String> intrinsicFunctionClasses,
+            Optional<io.mindspice.lyra.compiler.ir.IrSessionExecution> sessionExecution) {
+        this.sessionExecution = Objects.requireNonNull(sessionExecution, "sessionExecution");
         this.basePackage = Objects.requireNonNull(basePackage, "basePackage");
         this.typeNames = Objects.requireNonNull(typeNames, "typeNames");
         if (!this.basePackage.equals(typeNames.basePackage())) {
@@ -681,6 +695,19 @@ final class GeneratedTypePlan {
                 .collect(java.util.stream.Collectors.toSet());
         for (GeneratedExportPlan export : exports) {
             if (!export.reExport()) {
+                continue;
+            }
+            var retained = sessionExecution.flatMap(execution -> execution.access(export.moduleId(), export.originDeclaration()));
+            if (retained.isPresent()) {
+                var target = retained.orElseThrow().target();
+                var contract = target.declaration().contract().orElseThrow();
+                var originId = JvmExportId.from(target.origin().moduleId(), target.declaration().name(),
+                        contract.valueType().canonicalSpelling(), target.export().originExport());
+                if (!originId.equals(export.originExportId())
+                        || !contract.valueType().canonicalSpelling().equals(export.valueType().canonicalLyraType())
+                        || !contract.mutability().equals(export.bindingMutability())) {
+                    throw new IllegalArgumentException("re-export differs from its retained producer contract");
+                }
                 continue;
             }
             if (!moduleStates.containsKey(export.originModule())

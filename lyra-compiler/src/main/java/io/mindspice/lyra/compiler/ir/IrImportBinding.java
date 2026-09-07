@@ -24,7 +24,9 @@ public record IrImportBinding(
         Optional<String> aliasName,
         boolean reExport,
         Optional<DeclarationId> targetDeclaration,
-        Optional<ExportId> targetExport)
+        Optional<ExportId> targetExport,
+        boolean retained,
+        Optional<io.mindspice.lyra.compiler.session.SessionModuleContract> producerContract)
         implements ImmutablePhaseArtifact, Comparable<IrImportBinding> {
     public IrImportBinding {
         Objects.requireNonNull(declarationId, "declarationId");
@@ -40,6 +42,7 @@ public record IrImportBinding(
         Objects.requireNonNull(aliasName, "aliasName");
         Objects.requireNonNull(targetDeclaration, "targetDeclaration");
         Objects.requireNonNull(targetExport, "targetExport");
+        Objects.requireNonNull(producerContract, "producerContract");
         if (!localNameSpan.sourceId().equals(importSpan.sourceId())) {
             throw new IllegalArgumentException("import binding name and import spans disagree");
         }
@@ -54,12 +57,27 @@ public record IrImportBinding(
         }
     }
 
-    public static IrImportBinding from(io.mindspice.lyra.compiler.semantic.ResolvedImportBinding value) {
-        Objects.requireNonNull(value, "value");
+    public IrImportBinding(DeclarationId declarationId, String localName, SourceSpan localNameSpan,
+            SourceSpan importSpan, LogicalModuleId logicalModule, ModuleId targetModule, ImportBindingKind kind,
+            Optional<String> importedName, Optional<String> aliasName, boolean reExport,
+            Optional<DeclarationId> targetDeclaration, Optional<ExportId> targetExport) {
+        this(declarationId, localName, localNameSpan, importSpan, logicalModule, targetModule, kind,
+                importedName, aliasName, reExport, targetDeclaration, targetExport, false, Optional.empty());
+    }
+
+    public static IrImportBinding from(io.mindspice.lyra.compiler.semantic.ResolvedImportBinding value,
+            Optional<IrSessionExecution> execution) {
+        var contract = execution.map(value1 -> io.mindspice.lyra.compiler.session.SessionModuleContract.from(
+                value1.environment(), value.targetModule())).or(() -> value.producerContract());
         return new IrImportBinding(value.declarationId(), value.localName(), value.localNameSpan(),
                 value.importSpan(), value.logicalModule(), value.targetModule(), value.kind(),
-                value.importedName(), value.aliasName(), value.reExport(),
-                value.targetDeclaration(), value.targetExport());
+                value.importedName(), value.aliasName(), value.reExport(), value.targetDeclaration(),
+                value.targetExport(), value.retained(), contract);
+    }
+
+    public static IrImportBinding from(io.mindspice.lyra.compiler.semantic.ResolvedImportBinding value) {
+        Objects.requireNonNull(value, "value");
+        return from(value, Optional.empty());
     }
 
     public DeclarationId id() {

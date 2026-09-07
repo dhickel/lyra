@@ -73,8 +73,10 @@ public final class SemanticResolver {
     private final IdentityAllocator initialAllocator;
     private final Set<String> unsupportedExternalNames;
     private final List<io.mindspice.lyra.compiler.session.ExternalBinding> externalBindings;
+    private final List<io.mindspice.lyra.compiler.session.SessionImport> retainedImports;
     private final Optional<SessionFlowCertificate> sessionFlowCertificate;
     private final boolean sessionGraph;
+    private final io.mindspice.lyra.compiler.session.SessionModuleEnvironment environment;
     private Diagnostic diagnostic;
 
     public SemanticResolver(ModuleGraph graph) {
@@ -96,17 +98,29 @@ public final class SemanticResolver {
             ModuleGraph graph,
             IdentityAllocator allocator,
             Set<String> externalNames) {
-        this(graph, allocator, externalNames, List.of(), Optional.empty(), false);
+        this(graph, allocator, externalNames, List.of(), List.of(), Optional.empty(), false);
     }
 
     private SemanticResolver(ModuleGraph graph, IdentityAllocator allocator, Set<String> unsupported,
             List<io.mindspice.lyra.compiler.session.ExternalBinding> bindings,
+            List<io.mindspice.lyra.compiler.session.SessionImport> retainedImports,
             Optional<SessionFlowCertificate> sessionFlowCertificate,
             boolean sessionGraph) {
+        this(graph, allocator, unsupported, bindings, retainedImports, sessionFlowCertificate,
+                sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment.empty());
+    }
+
+    private SemanticResolver(ModuleGraph graph, IdentityAllocator allocator, Set<String> unsupported,
+            List<io.mindspice.lyra.compiler.session.ExternalBinding> bindings,
+            List<io.mindspice.lyra.compiler.session.SessionImport> retainedImports,
+            Optional<SessionFlowCertificate> sessionFlowCertificate, boolean sessionGraph,
+            io.mindspice.lyra.compiler.session.SessionModuleEnvironment environment) {
+        this.environment = Objects.requireNonNull(environment, "environment");
         this.graph = Objects.requireNonNull(graph, "graph");
         this.initialAllocator = Objects.requireNonNull(allocator, "allocator");
         this.unsupportedExternalNames = copyExternalNames(unsupported);
         this.externalBindings = List.copyOf(bindings);
+        this.retainedImports = List.copyOf(retainedImports);
         this.sessionFlowCertificate = Objects.requireNonNull(
                 sessionFlowCertificate, "sessionFlowCertificate");
         this.sessionGraph = sessionGraph;
@@ -119,11 +133,11 @@ public final class SemanticResolver {
                 .filter(binding -> binding.supportsSessionStorage()
                         || certificate.map(value -> value.certifiesBinding(binding)).orElse(false))
                 .toList();
-        Set<String> unsupported = new LinkedHashSet<>(snapshot.imports().keySet());
+        Set<String> unsupported = new LinkedHashSet<>();
         snapshot.bindings().values().stream().filter(binding -> !linked.contains(binding))
                 .map(io.mindspice.lyra.compiler.session.ExternalBinding::name).forEach(unsupported::add);
         return new SemanticResolver(graph, snapshot.allocator(), unsupported, linked,
-                certificate, true).run();
+                snapshot.orderedImports(), certificate, true, snapshot.moduleEnvironment()).run();
     }
 
     /** Resolves declaration, scope, import, export, capture, and signature data. */
@@ -268,8 +282,64 @@ public final class SemanticResolver {
             this.allocator = allocator;
         }
 
+        private boolean retained(ModuleId module) {
+            return !module.equals(graph.rootModule()) && environment.module(module).isPresent();
+        }
+
+        private void restore(ModuleGraph.Node node) {
+            var record = environment.module(node.moduleId()).orElseThrow();
+            var producer = record.producerGraph().resolvedGraph();
+            for (var source : producer.scopeTree().scopes()) {
+                if (!source.moduleId().equals(node.moduleId())) continue;
+                var scope = new ScopeDraft(source.id(), source.parent(), source.kind(),
+                        source.moduleId(), source.ownerLambda(), source.span());
+                scopes.add(scope);
+                scopesById.put(scope.id, scope);
+            }
+            for (var scope : scopes.stream().filter(value -> value.moduleId.equals(node.moduleId())).toList()) {
+                scope.parent.ifPresent(parent -> scopesById.get(parent).children.add(scope));
+            }
+            for (DeclarationId id : record.resolvedModule().declarations()) {
+                var source = producer.declaration(id).orElseThrow();
+                var draft = new DeclDraft(id, source.name(), source.nameSpan(), source.span(),
+                        source.moduleId(), source.scopeId(), source.kind(), source.visibility(), source.bindingMutability());
+                draft.retainedDeclaration = Optional.of(source);
+                draft.declaredContract = source.declaredContract();
+                draft.effectiveContract = source.effectiveContract();
+                draft.functionSignature = source.functionSignature();
+                draft.initializerLambda = source.initializerLambda();
+                draft.signaturePredeclared = source.signaturePredeclared();
+                draft.imported = source.imported();
+                draft.importedModule = source.importedModule();
+                draft.importedName = source.importedName();
+                draft.originDeclaration = source.originDeclaration();
+                draft.originExport = source.originExport();
+                draft.functionLinkTarget = source.originDeclaration();
+                declarationsById.put(id, draft);
+                scopesById.get(source.scopeId()).add(draft);
+            }
+            ModuleWork work = new ModuleWork(node, scopesById.get(record.resolvedModule().rootScope()));
+            modules.put(node.moduleId(), work);
+            var refs = producer.references().stream().filter(value -> value.moduleId().equals(node.moduleId())).toList();
+            references.addAll(refs);
+            referencesByModule.put(node.moduleId(), new ArrayList<>(refs));
+            var exports = new LinkedHashMap<String, ResolvedExport>();
+            record.exports().forEach(value -> exports.put(value.name(), value));
+            exportsByModule.put(node.moduleId(), exports);
+            syntaxLinks.addAll(producer.syntaxLinks().stream()
+                    .filter(value -> value.span().sourceId().equals(node.sourceId())).toList());
+            mutations.addAll(producer.mutations().stream()
+                    .filter(value -> value.moduleId().equals(node.moduleId())).toList());
+            functionLinks.addAll(producer.functionLinkage().links().stream()
+                    .filter(value -> record.resolvedModule().declarations().contains(value.from())).toList());
+        }
+
         private void allocateModuleScopes() {
             for (ModuleGraph.Node node : graph.modules()) {
+                if (retained(node.moduleId())) {
+                    restore(node);
+                    continue;
+                }
                 ScopeId id = allocateScopeId();
                 ScopeDraft root = new ScopeDraft(
                         id,
@@ -289,6 +359,7 @@ public final class SemanticResolver {
 
         private void collectDeclarations() {
             for (ModuleWork work : modules.values()) {
+                if (retained(work.node.moduleId())) continue;
                 if (work.node.moduleId().equals(graph.rootModule())) {
                     for (var binding : externalBindings) {
                         SourceSpan at = SourceSpan.at(work.node.moduleId().sourceId(), 0);
@@ -304,6 +375,10 @@ public final class SemanticResolver {
                         work.root.add(declaration);
                     }
                 }
+                collectRetainedImports(work);
+                if (failed()) {
+                    return;
+                }
                 collectImports(work);
                 if (failed()) {
                     return;
@@ -318,6 +393,98 @@ public final class SemanticResolver {
                     }
                 }
             }
+        }
+
+        private void collectRetainedImports(ModuleWork work) {
+            if (!work.node.moduleId().equals(graph.rootModule())) {
+                return;
+            }
+            SourceSpan syntheticSpan = SourceSpan.at(work.node.moduleId().sourceId(), 0);
+            for (io.mindspice.lyra.compiler.session.SessionImport retained : retainedImports) {
+                if (coveredBySourceHeader(work, retained)) {
+                    continue;
+                }
+                ModuleId target = graph.moduleFor(retained.logicalModule()).orElse(null);
+                if (target == null || !target.equals(retained.moduleId())) {
+                    fail(CompilerDiagnosticCodes.RESOLVE_MISSING_MODULE,
+                            syntheticSpan,
+                            "retained import target is absent from the reachable module graph: "
+                                    + retained.logicalModule());
+                    return;
+                }
+                String localName = retained.name();
+                if (work.importNames.containsKey(localName) || work.root.latest(localName) != null) {
+                    fail(CompilerDiagnosticCodes.RESOLVE_IMPORT_NAME_CONFLICT,
+                            syntheticSpan,
+                            "retained import conflicts with an existing binding: " + localName);
+                    return;
+                }
+                DeclarationKind kind = retained.isModuleNamespace()
+                        ? DeclarationKind.IMPORT_MODULE : DeclarationKind.IMPORT_VALUE;
+                DeclDraft declaration = newDeclaration(
+                        localName,
+                        syntheticSpan,
+                        syntheticSpan,
+                        work.root,
+                        kind,
+                        retained.reExport()
+                                ? DeclarationVisibility.PUBLIC : DeclarationVisibility.PRIVATE,
+                        BindingMutability.IMMUTABLE);
+                declaration.imported = true;
+                declaration.reExported = retained.reExport();
+                declaration.importedModule = Optional.of(target);
+                declaration.importedName = retained.importedName();
+                work.root.add(declaration);
+                work.importNames.put(localName, declaration);
+                work.imports.add(new ImportDraft(
+                        null,
+                        syntheticSpan,
+                        declaration,
+                        retained.logicalModule(),
+                        target,
+                        retained.kind(),
+                        retained.importedName(),
+                        retained.aliasName(),
+                        retained.reExport()));
+            }
+        }
+
+        private boolean coveredBySourceHeader(
+                ModuleWork work,
+                io.mindspice.lyra.compiler.session.SessionImport retained) {
+            for (SyntaxNode.ImportDeclaration syntax : work.node.program().imports()) {
+                LogicalModuleId logical;
+                try {
+                    logical = LogicalModuleId.fromImportPath(syntax.path());
+                } catch (IllegalArgumentException ignored) {
+                    continue;
+                }
+                boolean reExport = syntax.modifiers().stream()
+                        .anyMatch(modifier -> modifier.kind() == ModifierKind.PUBLIC);
+                if (!logical.equals(retained.logicalModule()) || reExport != retained.reExport()) {
+                    continue;
+                }
+                if (syntax.selection().isEmpty()) {
+                    String localName = syntax.alias().map(SyntaxNode.ImportAlias::name)
+                            .orElse(syntax.path().finalSegment());
+                    if (retained.isModuleNamespace() && localName.equals(retained.name())) {
+                        return true;
+                    }
+                    continue;
+                }
+                if (!retained.isSelective()) {
+                    continue;
+                }
+                for (SyntaxNode.ImportItem item : syntax.selection().orElseThrow().items()) {
+                    String localName = item.alias().map(SyntaxNode.ImportAlias::name)
+                            .orElse(item.importedName());
+                    if (localName.equals(retained.name())
+                            && retained.importedName().filter(item.importedName()::equals).isPresent()) {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
         private void collectImports(ModuleWork work) {
@@ -1187,6 +1354,7 @@ public final class SemanticResolver {
 
         private void prepareExports() {
             for (ModuleWork work : modules.values()) {
+                if (retained(work.node.moduleId())) continue;
                 LinkedHashMap<String, ResolvedExport> local = exportsByModule.get(work.node.moduleId());
                 for (DeclDraft declaration : work.root.declarations) {
                     if (declaration.visibility != DeclarationVisibility.PUBLIC) {
@@ -1347,6 +1515,7 @@ public final class SemanticResolver {
 
         private void resolveReferences() {
             for (ModuleWork work : modules.values()) {
+                if (retained(work.node.moduleId())) continue;
                 addLink(new SyntaxLink(work.node.program().span(), SyntaxLinkKind.PROGRAM));
                 for (SyntaxNode.ImportDeclaration importSyntax : work.node.program().imports()) {
                     addLink(new SyntaxLink(importSyntax.span(), SyntaxLinkKind.IMPORT));
@@ -3078,18 +3247,28 @@ public final class SemanticResolver {
                     .sorted(Comparator.comparing(declaration -> declaration.id))
                     .map(DeclDraft::freeze)
                     .toList();
-            List<ResolvedLambda> lambdas = lambdasById.values().stream()
-                    .sorted(Comparator.comparing(lambda -> lambda.id))
-                    .map(LambdaDraft::freeze)
-                    .toList();
-            List<ResolvedCapture> resolvedCaptures = captures.stream()
-                    .sorted(Comparator.comparing(capture -> capture.id))
-                    .map(CaptureDraft::freeze)
-                    .toList();
+            List<ResolvedLambda> lambdas = new ArrayList<>(lambdasById.values().stream()
+                    .sorted(Comparator.comparing(lambda -> lambda.id)).map(LambdaDraft::freeze).toList());
+            List<ResolvedCapture> resolvedCaptures = new ArrayList<>(captures.stream()
+                    .sorted(Comparator.comparing(capture -> capture.id)).map(CaptureDraft::freeze).toList());
+            for (var node : graph.modules()) {
+                if (!retained(node.moduleId())) continue;
+                var producer = environment.module(node.moduleId()).orElseThrow().producerGraph().resolvedGraph();
+                lambdas.addAll(producer.lambdas().stream().filter(value -> value.moduleId().equals(node.moduleId())).toList());
+                resolvedCaptures.addAll(producer.captures().stream()
+                        .filter(value -> value.moduleId().equals(node.moduleId())).toList());
+            }
             List<ResolvedImportBinding> imports = new ArrayList<>();
             List<ResolvedExport> exports = new ArrayList<>();
             List<ResolvedModule> resolvedModules = new ArrayList<>();
             for (ModuleWork work : modules.values()) {
+                if (retained(work.node.moduleId())) {
+                    var original = environment.module(work.node.moduleId()).orElseThrow().resolvedModule();
+                    resolvedModules.add(original);
+                    imports.addAll(original.imports());
+                    exports.addAll(original.exports());
+                    continue;
+                }
                 List<ResolvedImportBinding> moduleImports = work.imports.stream()
                         .map(ImportDraft::freeze)
                         .toList();
@@ -3141,7 +3320,7 @@ public final class SemanticResolver {
                     linkage,
                     new ResolvedReferenceTopology(
                             scopeTree, declarations, references, resolvedCaptures),
-                    sessionFlowCertificate, allocator, sessionGraph);
+                    sessionFlowCertificate, allocator, sessionGraph, environment);
         }
 
         private List<FunctionScc> functionSccs(
@@ -3352,7 +3531,10 @@ public final class SemanticResolver {
             this.bindingMutability = bindingMutability;
         }
 
+        private Optional<ResolvedDeclaration> retainedDeclaration = Optional.empty();
+
         private ResolvedDeclaration freeze() {
+            if (retainedDeclaration.isPresent()) return retainedDeclaration.orElseThrow();
             return new ResolvedDeclaration(
                     id,
                     name,
@@ -3456,6 +3638,7 @@ public final class SemanticResolver {
 
     private final class ImportDraft {
         private final SyntaxNode.ImportDeclaration syntax;
+        private final SourceSpan importSpan;
         private final DeclDraft declaration;
         private final LogicalModuleId logicalModule;
         private final ModuleId targetModule;
@@ -3463,6 +3646,7 @@ public final class SemanticResolver {
         private final Optional<String> importedName;
         private final Optional<String> aliasName;
         private final boolean reExport;
+        private final boolean retained;
         private Optional<DeclarationId> targetDeclaration = Optional.empty();
         private Optional<ExportId> targetExport = Optional.empty();
 
@@ -3476,6 +3660,7 @@ public final class SemanticResolver {
                 Optional<String> aliasName,
                 boolean reExport) {
             this.syntax = syntax;
+            this.importSpan = Objects.requireNonNull(syntax, "syntax").span();
             this.declaration = declaration;
             this.logicalModule = logicalModule;
             this.targetModule = targetModule;
@@ -3483,6 +3668,29 @@ public final class SemanticResolver {
             this.importedName = importedName;
             this.aliasName = aliasName;
             this.reExport = reExport;
+            this.retained = false;
+        }
+
+        private ImportDraft(
+                SyntaxNode.ImportDeclaration syntax,
+                SourceSpan importSpan,
+                DeclDraft declaration,
+                LogicalModuleId logicalModule,
+                ModuleId targetModule,
+                ImportBindingKind kind,
+                Optional<String> importedName,
+                Optional<String> aliasName,
+                boolean reExport) {
+            this.syntax = syntax;
+            this.importSpan = Objects.requireNonNull(importSpan, "importSpan");
+            this.declaration = declaration;
+            this.logicalModule = logicalModule;
+            this.targetModule = targetModule;
+            this.kind = kind;
+            this.importedName = importedName;
+            this.aliasName = aliasName;
+            this.reExport = reExport;
+            this.retained = true;
         }
 
         private ResolvedImportBinding freeze() {
@@ -3490,7 +3698,7 @@ public final class SemanticResolver {
                     declaration.id,
                     declaration.name,
                     declaration.nameSpan,
-                    syntax.span(),
+                    importSpan,
                     logicalModule,
                     targetModule,
                     kind,
@@ -3498,7 +3706,10 @@ public final class SemanticResolver {
                     aliasName,
                     reExport,
                     targetDeclaration,
-                    targetExport);
+                    targetExport,
+                    retained,
+                    environment.module(targetModule).map(record ->
+                            io.mindspice.lyra.compiler.session.SessionModuleContract.from(environment, targetModule)));
         }
     }
 

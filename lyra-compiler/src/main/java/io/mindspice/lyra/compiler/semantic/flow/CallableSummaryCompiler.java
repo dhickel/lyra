@@ -76,15 +76,22 @@ public final class CallableSummaryCompiler {
         try {
             Context context = new Context(graph, limits);
             ArrayList<CallableSummary> raw = new ArrayList<>();
+            Set<LambdaId> retained = new TreeSet<>();
             for (TypedLambda lambda : graph.lambdas().stream()
                     .sorted(java.util.Comparator.comparing(TypedLambda::id)).toList()) {
-                raw.add(new LambdaBuilder(context, lambda).build());
+                if (graph.resolvedGraph().isRetained(lambda.moduleId())) {
+                    raw.add(graph.resolvedGraph().retainedModules().module(lambda.moduleId()).orElseThrow()
+                            .callableSummaries().summary(lambda.id()).orElseThrow());
+                    retained.add(lambda.id());
+                } else {
+                    raw.add(new LambdaBuilder(context, lambda).build());
+                }
             }
             return CallableSummarySolver.solve(
                     raw, context.lambdaByDeclaration, context.intrinsicDeclarations,
                     context.computedCallableDeclarations,
                     context.externalCallableDeclarations,
-                    context.potentialCallableLambdas(), limits);
+                    context.potentialCallableLambdas(), limits, retained);
         } catch (SummaryFailureException failure) {
             return CallableSummaryResult.failure(
                     CallableSummaryResult.InternalFailure.Kind.INVALID_TYPED_EXPRESSION,
