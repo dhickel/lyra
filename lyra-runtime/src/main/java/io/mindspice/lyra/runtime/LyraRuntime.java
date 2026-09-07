@@ -205,12 +205,28 @@ public final class LyraRuntime {
             MethodHandle run = MethodHandles.publicLookup().findVirtual(handle.facade,
                     "$lyra$sessionRun", MethodType.methodType(void.class)).bindTo(handle.instance);
             run.invokeExact();
+            // Publication requires the entire one-shot entry point to return
+            // normally. An OPEN producer and initialized early bindings alone
+            // remain useful to escaped values, but authorize no new names.
+            handle.submissionCompleted = true;
         } catch (NoSuchMethodException | IllegalAccessException failure) {
             throw new LyraLinkException("submission entry point is not callable", List.of(), failure);
         } catch (RuntimeException | Error failure) {
             throw failure;
         } catch (Throwable failure) {
             throw new LyraInternalException("submission execution failed", List.of(), List.of(), failure);
+        }
+    }
+
+    /** Namespace publication is separate from the lifetime of escaped values. */
+    static void requireSubmissionPublication(ModuleHandle module) {
+        if (!(Objects.requireNonNull(module, "module") instanceof ModuleHandleImpl handle)) {
+            throw new LyraLinkException("session storage requires a runtime-owned generation");
+        }
+        handle.requireOwner();
+        handle.requireOpen();
+        if (handle.deferredSubmission && !handle.submissionCompleted) {
+            throw new LyraInitializationException("submission has not completed successfully; storage cannot be published");
         }
     }
 
@@ -228,6 +244,88 @@ public final class LyraRuntime {
         }
     }
 
+    static MethodType sessionStorageReaderType(ModuleHandle module, LyraType type) {
+        return MethodType.methodType(sessionStorageClass(module, type));
+    }
+
+    static MethodType sessionStorageWriterType(ModuleHandle module, LyraType type) {
+        Class<?> storage = sessionStorageClass(module, type);
+        return MethodType.methodType(void.class, storage);
+    }
+
+    static java.util.Optional<MethodType> sessionFunctionMethodType(ModuleHandle module, LyraType type) {
+        if (!(module instanceof ModuleHandleImpl handle)) {
+            throw new LyraLinkException("session function storage requires a runtime-owned generation");
+        }
+        handle.requireOwner();
+        ClassLoader loader = handle.context.loader;
+        String javaPackage = handle.context.metadata.javaPackage();
+        if (!(type.baseType() instanceof FunctionType)) {
+            validateNestedFunctionTypes(type, loader, javaPackage);
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(validateFunctionType(type, loader, javaPackage));
+    }
+
+    private static void validateNestedFunctionTypes(LyraType type, ClassLoader loader,
+                                                    String javaPackage) {
+        switch (type.baseType()) {
+            case ArrayType array -> validateNestedFunctionTypes(array.elementType(), loader, javaPackage);
+            case TupleType tuple -> tuple.memberTypes().forEach(
+                    value -> validateNestedFunctionTypes(value, loader, javaPackage));
+            case FunctionType ignored -> validateFunctionType(type, loader, javaPackage);
+            default -> { }
+        }
+    }
+
+    private static MethodType validateFunctionType(LyraType type, ClassLoader loader,
+                                                   String javaPackage) {
+        FunctionType function = (FunctionType) type.baseType();
+        Class<?>[] parameters = function.parameterTypes().stream()
+                .map(value -> {
+                    validateNestedFunctionTypes(value, loader, javaPackage);
+                    return SessionStorageDomain.storageClass(value, loader, javaPackage);
+                })
+                .toArray(Class<?>[]::new);
+        validateNestedFunctionTypes(function.returnType(), loader, javaPackage);
+        Class<?> returnType = sessionFunctionReturnClass(function.returnType(), loader, javaPackage);
+        MethodType expected = MethodType.methodType(returnType, parameters);
+        Class<?> functionClass = SessionStorageDomain.storageClass(type, loader, javaPackage);
+        try {
+            Method invoke = functionClass.getMethod("invoke", parameters);
+            MethodType actual = MethodType.methodType(invoke.getReturnType(), invoke.getParameterTypes());
+            if (!actual.equals(expected) || !Modifier.isPublic(invoke.getModifiers())
+                    || Modifier.isStatic(invoke.getModifiers())) {
+                throw new LyraLinkException("session function interface MethodType mismatch");
+            }
+            return actual;
+        } catch (NoSuchMethodException failure) {
+            throw new LyraLinkException("session function interface has no exact invoke method",
+                    List.of(), failure);
+        }
+    }
+
+    private static Class<?> sessionFunctionReturnClass(LyraType type, ClassLoader loader,
+                                                       String javaPackage) {
+        if (type.baseType() instanceof PrimitiveType primitive
+                && primitive == PrimitiveType.UNIT && !type.isNilable()) {
+            return void.class;
+        }
+        return SessionStorageDomain.storageClass(type, loader, javaPackage);
+    }
+
+    private static Class<?> sessionStorageClass(ModuleHandle module, LyraType type) {
+        if (!(Objects.requireNonNull(module, "module") instanceof ModuleHandleImpl handle)) {
+            throw new LyraLinkException("session storage requires a runtime-owned generation");
+        }
+        handle.requireOwner();
+        if (handle.isClosed() || handle.context.isClosed()) {
+            throw new LyraClosedException("storage generation is closed");
+        }
+        return SessionStorageDomain.storageClass(Objects.requireNonNull(type, "type"),
+                handle.context.loader, handle.context.metadata.javaPackage());
+    }
+
     static MethodHandle submissionStorageAccessor(ModuleHandle module,
             SessionStorageDomain.Requirement requirement, boolean write) {
         if (!(Objects.requireNonNull(module, "module") instanceof ModuleHandleImpl handle)) {
@@ -238,19 +336,35 @@ public final class LyraRuntime {
         try {
             Method reader = handle.facade.getMethod("$lyra$sessionRead$binding$" + requirement.id());
             LyraSessionBinding binding = reader.getAnnotation(LyraSessionBinding.class);
+            Class<?> expectedStorage = SessionStorageDomain.storageClass(LyraType.parse(requirement.type()),
+                    handle.context.loader, handle.context.metadata.javaPackage());
             if (binding == null || binding.id() != requirement.id()
                     || binding.storageIdentity() != requirement.storageIdentity() || !binding.name().equals(requirement.name())
                     || !binding.type().equals(requirement.type()) || binding.mutable() != requirement.writable()
-                    || Modifier.isStatic(reader.getModifiers())
-                    || reader.getReturnType() != SessionStorageDomain.storageClass(LyraType.parse(requirement.type()),
-                            handle.context.loader, handle.context.metadata.javaPackage())) {
+                    || Modifier.isStatic(reader.getModifiers()) || reader.getParameterCount() != 0
+                    || !MethodType.methodType(reader.getReturnType())
+                    .equals(MethodType.methodType(expectedStorage))) {
                 throw new LyraLinkException("generated storage contract mismatch");
             }
+            // A function field is a structural interface, not merely an
+            // Object-shaped reference.  Validate its exact invoke descriptor
+            // before any generated source can observe the accessor.
+            sessionFunctionMethodType(module, LyraType.parse(requirement.type()));
             Method accessor = write ? handle.facade.getMethod("$lyra$sessionWrite$binding$" + requirement.id(),
                     reader.getReturnType()) : reader;
             if (write && (!binding.mutable() || accessor.getReturnType() != void.class
-                    || Modifier.isStatic(accessor.getModifiers()))) throw new LyraLinkException("invalid storage setter");
-            return MethodHandles.publicLookup().unreflect(accessor).bindTo(handle.instance);
+                    || Modifier.isStatic(accessor.getModifiers()) || accessor.getParameterCount() != 1
+                    || !MethodType.methodType(void.class, expectedStorage)
+                    .equals(MethodType.methodType(accessor.getReturnType(), accessor.getParameterTypes())))) {
+                throw new LyraLinkException("invalid storage setter");
+            }
+            MethodHandle bound = MethodHandles.publicLookup().unreflect(accessor).bindTo(handle.instance);
+            MethodType expected = write ? MethodType.methodType(void.class, expectedStorage)
+                    : MethodType.methodType(expectedStorage);
+            if (!bound.type().equals(expected)) {
+                throw new LyraLinkException("generated session accessor MethodType mismatch");
+            }
+            return bound;
         } catch (ReflectiveOperationException failure) {
             throw new LyraLinkException("generated session storage accessor is absent", List.of(), failure);
         }
@@ -1192,6 +1306,8 @@ public final class LyraRuntime {
         private final Object instance;
         private final Thread owner;
         private final boolean deferredSubmission;
+        /** Owner-confined publication eligibility, not producer lifetime. */
+        private boolean submissionCompleted;
         private final Map<ExportKey, ExportHandle> exports = new HashMap<>();
         private boolean closed;
 

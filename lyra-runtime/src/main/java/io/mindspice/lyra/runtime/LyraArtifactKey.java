@@ -11,6 +11,7 @@ public final class LyraArtifactKey {
     private final Optional<OwnerThread> configuredOwner;
     private final RuntimeIoEnvironment ioEnvironment;
     private final SessionStorageDomain.Linkage sessionLinkage;
+    private final SessionStorageDomain.RootLifetime rootLifetime;
     private final boolean deferredSubmission;
 
     LyraArtifactKey() {
@@ -35,12 +36,23 @@ public final class LyraArtifactKey {
 
     LyraArtifactKey(OwnerThread owner, RuntimeIoEnvironment ioEnvironment,
                     SessionStorageDomain.Linkage linkage, boolean deferredSubmission) {
+        this(owner, ioEnvironment, linkage, deferredSubmission,
+                linkage == null ? null : linkage.rootLifetime());
+    }
+
+    LyraArtifactKey(OwnerThread owner, RuntimeIoEnvironment ioEnvironment,
+                    SessionStorageDomain.Linkage linkage, boolean deferredSubmission,
+                    SessionStorageDomain.RootLifetime rootLifetime) {
         if (deferredSubmission && linkage == null) {
             throw new IllegalArgumentException("deferred submission requires authenticated linkage");
+        }
+        if (linkage != null && linkage.rootLifetime() != rootLifetime) {
+            throw new IllegalArgumentException("artifact key root lifetime disagrees with session linkage");
         }
         configuredOwner = Optional.ofNullable(owner);
         this.ioEnvironment = Objects.requireNonNull(ioEnvironment, "ioEnvironment");
         this.sessionLinkage = linkage;
+        this.rootLifetime = rootLifetime;
         this.deferredSubmission = deferredSubmission;
     }
 
@@ -50,6 +62,10 @@ public final class LyraArtifactKey {
 
     SessionStorageDomain.Linkage sessionLinkage() {
         return sessionLinkage;
+    }
+
+    SessionStorageDomain.RootLifetime rootLifetime() {
+        return rootLifetime;
     }
 
     Optional<OwnerThread> configuredOwner() {

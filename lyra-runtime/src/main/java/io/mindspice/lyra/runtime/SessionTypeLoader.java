@@ -5,10 +5,12 @@ import java.lang.classfile.attribute.SourceFileAttribute;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
 /** Session-owned structural ABI classes. State, closures and cells stay generation-local. */
 final class SessionTypeLoader extends ClassLoader {
     private final Map<String, byte[]> definitions = new HashMap<>();
+    private boolean retired;
 
     SessionTypeLoader() {
         super(LyraRuntime.sharedRuntimeLoader());
@@ -25,17 +27,21 @@ final class SessionTypeLoader extends ClassLoader {
 
     /** Stages definitions without changing the live domain before complete load validation. */
     SessionTypeLoader stage(Map<String, byte[]> classes) {
+        if (retired) throw new LyraLinkException("session structural type domain is retired");
+        Objects.requireNonNull(classes, "classes");
         SessionTypeLoader staged = new SessionTypeLoader(this);
         classes.forEach((name, bytes) -> {
-            if (!isShared(name)) return;
-            byte[] existing = definition(name);
+            String binaryName = Objects.requireNonNull(name, "class name");
+            byte[] definition = Objects.requireNonNull(bytes, "class bytes");
+            if (!isShared(binaryName)) return;
+            byte[] existing = definition(binaryName);
             if (existing != null) {
-                if (!Arrays.equals(existing, bytes)) {
-                    throw new LyraLinkException("session structural type definition changed: " + name);
+                if (!Arrays.equals(existing, definition)) {
+                    throw new LyraLinkException("session structural type definition changed: " + binaryName);
                 }
             } else {
-                validateStructure(name, bytes);
-                staged.definitions.put(name, bytes.clone());
+                validateStructure(binaryName, definition);
+                staged.definitions.put(binaryName, definition.clone());
             }
         });
         return staged.definitions.isEmpty() ? this : staged;
@@ -97,13 +103,17 @@ final class SessionTypeLoader extends ClassLoader {
             if (!ClassFile.of().verify(bytes).isEmpty()) {
                 throw new LyraLinkException("invalid session structural bytecode: " + name);
             }
-        } catch (IllegalArgumentException failure) {
-            throw new LyraLinkException("malformed session structural type: " + name, java.util.List.of(), failure);
+        } catch (LyraLinkException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new LyraLinkException("malformed session structural type: " + name,
+                    java.util.List.of(), failure);
         }
     }
 
     @Override
     protected Class<?> findClass(String name) throws ClassNotFoundException {
+        if (retired) throw new ClassNotFoundException("retired session structural type domain: " + name);
         byte[] bytes = definitions.get(name);
         if (bytes == null) throw new ClassNotFoundException(name);
         return defineClass(name, bytes, 0, bytes.length);
@@ -112,6 +122,7 @@ final class SessionTypeLoader extends ClassLoader {
     void retire() {
         for (ClassLoader loader = this; loader instanceof SessionTypeLoader current; loader = loader.getParent()) {
             current.definitions.clear();
+            current.retired = true;
         }
     }
 }

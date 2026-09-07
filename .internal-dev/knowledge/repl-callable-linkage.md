@@ -11,6 +11,8 @@ The distinction between physical cross-generation callable interchange and certi
 - `lyra-runtime/src/main/java/io/mindspice/lyra/runtime/LyraOwnershipToken.java`
 - `lyra-compiler/src/test/java/io/mindspice/lyra/compiler/api/SessionCallableRuntimeTest.java`
 - `lyra-compiler/src/test/java/io/mindspice/lyra/runtime/SessionClosureAuthorityTest.java`
+- `lyra-compiler/src/test/java/io/mindspice/lyra/runtime/SessionRetentionTest.java`
+- `.internal-dev/changelogs/2026-09-06-deferred-submission-publication-repair.md`
 - `.internal-dev/bugs/20260906-recursive-captured-cell-summary-limit/report.md`
 
 ## Key Takeaways
@@ -24,6 +26,10 @@ The distinction between physical cross-generation callable interchange and certi
 - Summary fixed points for a recursive function writing a captured scalar currently can exhaust the 256-write domain. This is pre-existing compiler behavior, reproduced before reaching the runtime bridge and mirrored as GitHub issue #2. Separating a nonrecursive completed write from a write-free recursive loop validates runtime cancellation without claiming that semantic defect is repaired.
 - Lyra `/` produces F64, including integer operands; use checked I32 addition overflow for an I32 runtime-failure fixture. The initial failure fixture incorrectly assumed integer division semantics.
 - This senior session was already a first-generation gpt-6-astra:xhigh child. A control-enabled nested senior launch was rejected by the harness. Such a child must implement directly and return a precise next-level escalation request to its parent, not retry another nested senior or downgrade the model.
+- A deferred generation is OPEN before its source runs. OPEN plus an initialized early binding proves producer usability, not successful namespace publication. `LyraRuntime.executeSubmission` now records publication eligibility only after the complete generated entry point returns normally; `SessionStorageDomain.register` and `commit` require that eligibility. Runtime exceptions, cancellation and Errors leave it false without closing the producer or invalidating escaped values. A rejected duplicate execution must not revoke eligibility from an already successful submission.
+- The earlier `PreparedSubmissionTest` explicitly registered an initialized binding after later execution failure. That assertion contradicted the staged-publication specification and was corrected; retain its separate checks that escaped callables can still use initialized storage and uninitialized locations stay inaccessible.
+- Deterministic Error tests can use a test-only Java-25-generated closure implementing the exact shared function interface and carrying an existing runtime authority. Throw injected `AssertionError`, `OutOfMemoryError` and `LinkageError` instances through real compiled source; do not exhaust host memory, stop threads, mutate artifact metadata or use private-field reflection. `prepareSubmission` rejects imported graphs, including the two-module `std->io` graph, so host streams are not a deferred source-local Error-injection seam.
+- A lambda assigned into existing session storage may require an inline return annotation (`selected := (=> :I32 || ...)`); a declaration's original Fn signature is not automatically an expected lambda signature at that assignment site. Direct runtime fixtures must also link every external binding retained by their compilation snapshot, including otherwise unused bindings, because generated shell construction validates those accessors.
 
 ## Project Relevance
 

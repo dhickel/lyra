@@ -15,6 +15,7 @@ final class LyraOwnershipToken {
     private final OwnerThread owner;
     private final Optional<ModuleId> moduleId;
     private final Object artifactKey;
+    private final SessionStorageDomain.RootLifetime rootLifetime;
     private final AtomicBoolean valid = new AtomicBoolean(true);
     private final AtomicLong closureOrdinals = new AtomicLong();
 
@@ -24,12 +25,15 @@ final class LyraOwnershipToken {
         this.owner = Objects.requireNonNull(owner, "owner");
         this.moduleId = Objects.requireNonNull(moduleId, "moduleId");
         this.artifactKey = Objects.requireNonNull(artifactKey, "artifactKey");
+        this.rootLifetime = artifactKey instanceof LyraArtifactKey key
+                ? key.rootLifetime() : null;
     }
 
     boolean isValid() {
         owner.check();
         SessionStorageDomain.Linkage linkage = sessionLinkage();
-        return valid.get() && (linkage == null || linkage.isActive());
+        return valid.get() && (linkage == null || linkage.isActive())
+                && (rootLifetime == null || !rootLifetime.isClosed());
     }
 
     Thread ownerThread() {
@@ -109,9 +113,10 @@ final class LyraOwnershipToken {
     }
 
     /**
-     * Only runtime-loaded source-local submissions in the same live epoch may
-     * interchange closures. A producer must be fully initialized: this boundary
-     * does not yet authorize values escaping a failed submission initializer.
+     * Only runtime-loaded source-local submissions in the same active trusted
+     * domain may interchange closures.  A producer must still pass its exact
+     * lifecycle checks; ordinary artifact keys and foreign SAM values never
+     * enter this optional bridge.
      */
     boolean sameSession(LyraOwnershipToken other) {
         if (other == null) return false;
@@ -127,7 +132,11 @@ final class LyraOwnershipToken {
 
     private void checkSession() {
         SessionStorageDomain.Linkage linkage = sessionLinkage();
-        if (linkage != null) linkage.checkOpen();
+        if (linkage != null) {
+            linkage.checkOpen();
+        } else if (rootLifetime != null && rootLifetime.isClosed()) {
+            throw new LyraClosedException("root lifetime is closed");
+        }
     }
 
     boolean sameModule(LyraOwnershipToken other) {

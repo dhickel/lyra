@@ -31,8 +31,10 @@ class PreparedSubmissionTest {
                     () -> domain.register(module, requirement(compiled, "later")),
                     "a later unexecuted scalar must never expose its JVM default");
             assertThrows(LyraLifecycleException.class, () -> LyraRuntime.executeSubmission(module));
-            var ready = domain.register(module, requirement(compiled, "ready"));
-            domain.commit(0, List.of(ready));
+            assertThrows(LyraInitializationException.class,
+                    () -> domain.register(module, requirement(compiled, "ready")),
+                    "completed bindings retain escaped values, not failed namespace publication");
+            assertFalse(module.isClosed());
         }
         try (var ordinary = LyraRuntime.load(compiled.artifact())) {
             assertThrows(LyraInitializationException.class, ordinary::instantiate,

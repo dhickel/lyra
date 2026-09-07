@@ -24,6 +24,7 @@ public final class ModuleLifecycle implements AutoCloseable {
     private boolean submissionStarted;
     private boolean submissionCompleted;
     private volatile Throwable failureCause;
+    private boolean retiredBySessionReset;
 
     public ModuleLifecycle() {
         this(OwnerThread.capture(), Optional.empty());
@@ -243,6 +244,7 @@ public final class ModuleLifecycle implements AutoCloseable {
     public void close() {
         owner.check();
         if (state.compareAndSet(LifecycleState.OPEN, LifecycleState.CLOSED)) {
+            retiredBySessionReset = sessionLinkage != null && sessionLinkage.isRetiredByReset();
             ownership.invalidate();
             initializedBindings.clear();
             return;
@@ -271,6 +273,9 @@ public final class ModuleLifecycle implements AutoCloseable {
             return;
         }
         if (current == LifecycleState.CLOSED) {
+            if (retiredBySessionReset) {
+                throw new LyraLinkException("session module was retired by reset");
+            }
             throw new LyraClosedException("module is closed");
         }
         if (current == LifecycleState.FAILED) {
