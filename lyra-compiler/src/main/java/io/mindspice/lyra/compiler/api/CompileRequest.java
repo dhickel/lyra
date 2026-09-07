@@ -5,6 +5,7 @@ import io.mindspice.lyra.compiler.source.RevisionOptions;
 import io.mindspice.lyra.compiler.source.SourceConfiguration;
 import io.mindspice.lyra.compiler.source.SourceId;
 import io.mindspice.lyra.runtime.LyraRuntimeConstants;
+import io.mindspice.lyra.compiler.backend.jvm.EmissionMode;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -26,6 +27,7 @@ public final class CompileRequest {
     private final boolean previewEnabled;
     private final boolean includeSources;
     private final Map<String, String> semanticOptions;
+    private final CompileProfile compileProfile;
 
     private CompileRequest(Builder builder) {
         int roots = (builder.rootPath == null ? 0 : 1)
@@ -47,6 +49,7 @@ public final class CompileRequest {
         previewEnabled = builder.previewEnabled;
         includeSources = builder.includeSources;
         semanticOptions = copyOptions(builder.semanticOptions);
+        compileProfile = Objects.requireNonNull(builder.compileProfile, "compileProfile");
     }
 
     public CompileRequest(Path root) {
@@ -169,6 +172,20 @@ public final class CompileRequest {
         return semanticOptions;
     }
 
+    /** Exact generated-code profile; NORMAL is the ordinary AOT default. */
+    public CompileProfile compileProfile() {
+        return compileProfile;
+    }
+
+    /** Alias for callers that use the shorter profile spelling. */
+    public CompileProfile profile() {
+        return compileProfile;
+    }
+
+    public boolean attachable() {
+        return compileProfile.isAttachable();
+    }
+
     /** Converts the public source settings to the graph-discovery contract. */
     public SourceConfiguration sourceConfiguration() {
         List<io.mindspice.lyra.compiler.source.SourceResolver> internalResolvers =
@@ -189,13 +206,15 @@ public final class CompileRequest {
                 && javaTarget == request.javaTarget
                 && previewEnabled == request.previewEnabled
                 && includeSources == request.includeSources
-                && semanticOptions.equals(request.semanticOptions);
+                && semanticOptions.equals(request.semanticOptions)
+                && compileProfile == request.compileProfile;
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(rootPath, rootModule, rootSource, sourceRoots, resolvers,
-                javaBasePackage, javaTarget, previewEnabled, includeSources, semanticOptions);
+                javaBasePackage, javaTarget, previewEnabled, includeSources, semanticOptions,
+                compileProfile);
     }
 
     @Override
@@ -287,6 +306,7 @@ public final class CompileRequest {
         private boolean previewEnabled;
         private boolean includeSources;
         private Map<String, String> semanticOptions = Map.of();
+        private CompileProfile compileProfile = CompileProfile.NORMAL;
 
         public Builder root(Path value) {
             clearRoot();
@@ -430,6 +450,38 @@ public final class CompileRequest {
 
         public Builder embedSources(boolean value) {
             return includeSources(value);
+        }
+
+        public Builder profile(CompileProfile value) {
+            compileProfile = Objects.requireNonNull(value, "compileProfile");
+            return this;
+        }
+
+        public Builder compileProfile(CompileProfile value) {
+            return profile(value);
+        }
+
+        public Builder emissionMode(EmissionMode value) {
+            return profile(Objects.requireNonNull(value, "emissionMode") == EmissionMode.NORMAL
+                    ? CompileProfile.NORMAL
+                    : value == EmissionMode.SESSION
+                    ? CompileProfile.SESSION : CompileProfile.ATTACHABLE);
+        }
+
+        public Builder attachable(boolean value) {
+            return profile(value ? CompileProfile.ATTACHABLE : CompileProfile.NORMAL);
+        }
+
+        public Builder attachable() {
+            return attachable(true);
+        }
+
+        public Builder replCapable(boolean value) {
+            return attachable(value);
+        }
+
+        public Builder replEnabled(boolean value) {
+            return attachable(value);
         }
 
         public Builder semanticOptions(Map<String, String> values) {

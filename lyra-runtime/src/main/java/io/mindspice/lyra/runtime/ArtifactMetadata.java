@@ -42,6 +42,12 @@ public final class ArtifactMetadata {
     private final String debugMapHash;
     private final PackagingMode packagingMode;
     private final Optional<RuntimeRequirement> runtimeRequirement;
+    private final ArtifactProfile executionProfile;
+    private final List<ArtifactHook> hookRequirements;
+    private final List<ArtifactDependency> dependencyRequirements;
+    private final Optional<AttachmentContext> attachmentContext;
+    private final List<ArtifactImport> imports;
+    private final Map<String, String> reproducibleOptions;
 
     public ArtifactMetadata(
             int schemaVersion,
@@ -119,6 +125,43 @@ public final class ArtifactMetadata {
             String debugMapHash,
             PackagingMode packagingMode,
             Optional<RuntimeRequirement> runtimeRequirement) {
+        this(schemaVersion, languageContractVersion, compilerVersion, compilerBuild,
+                runtimeAbi, profile, javaClassFileTarget, previewRequired, artifactId,
+                artifactRevision, rootModuleId, rootModuleRevision, modules, sources,
+                javaPackage, exports, javaNameMap, debugMapVersion, debugMapHash,
+                packagingMode, runtimeRequirement, ArtifactProfile.NORMAL, List.of(),
+                List.of(), Optional.empty(), List.of(), Map.of());
+    }
+
+    /** Full metadata form used by session and attachable publications. */
+    public ArtifactMetadata(
+            int schemaVersion,
+            int languageContractVersion,
+            String compilerVersion,
+            String compilerBuild,
+            RuntimeAbi runtimeAbi,
+            RuntimeProfile profile,
+            int javaClassFileTarget,
+            boolean previewRequired,
+            String artifactId,
+            ArtifactRevision artifactRevision,
+            ModuleId rootModuleId,
+            ModuleRevision rootModuleRevision,
+            List<? extends ModuleMetadata> modules,
+            List<? extends SourceMetadata> sources,
+            String javaPackage,
+            List<? extends ExportMetadata> exports,
+            Map<String, String> javaNameMap,
+            int debugMapVersion,
+            String debugMapHash,
+            PackagingMode packagingMode,
+            Optional<RuntimeRequirement> runtimeRequirement,
+            ArtifactProfile executionProfile,
+            List<? extends ArtifactHook> hookRequirements,
+            List<? extends ArtifactDependency> dependencyRequirements,
+            Optional<AttachmentContext> attachmentContext,
+            List<? extends ArtifactImport> imports,
+            Map<String, String> reproducibleOptions) {
         if (schemaVersion != LyraRuntimeConstants.ARTIFACT_SCHEMA_VERSION
                 || languageContractVersion != LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION
                 || debugMapVersion != LyraRuntimeConstants.DEBUG_MAP_SCHEMA_VERSION) {
@@ -154,6 +197,45 @@ public final class ArtifactMetadata {
         this.debugMapHash = requireRevision(debugMapHash, "debugMapHash");
         this.packagingMode = Objects.requireNonNull(packagingMode, "packagingMode");
         this.runtimeRequirement = Objects.requireNonNull(runtimeRequirement, "runtimeRequirement");
+        this.executionProfile = Objects.requireNonNull(executionProfile, "executionProfile");
+        this.hookRequirements = sortedHooks(hookRequirements);
+        this.dependencyRequirements = sortedDependencies(dependencyRequirements);
+        this.attachmentContext = Objects.requireNonNull(attachmentContext, "attachmentContext");
+        this.imports = sortedImports(imports);
+        this.reproducibleOptions = sortedOptions(reproducibleOptions);
+        if (executionProfile == ArtifactProfile.NORMAL
+                && (!this.hookRequirements.isEmpty() || !this.dependencyRequirements.isEmpty()
+                || this.attachmentContext.isPresent() || !this.imports.isEmpty()
+                || !this.reproducibleOptions.isEmpty())) {
+            throw new IllegalArgumentException("normal artifacts cannot carry optional profile context");
+        }
+        if (executionProfile == ArtifactProfile.SESSION
+                && (!this.hookRequirements.isEmpty() || !this.dependencyRequirements.isEmpty()
+                || this.attachmentContext.isPresent())) {
+            throw new IllegalArgumentException("session artifacts cannot carry attachment hooks or root context");
+        }
+        if (executionProfile == ArtifactProfile.ATTACHABLE) {
+            List<ArtifactHook> expectedHooks = List.of(
+                    new ArtifactHook("$lyra$attachmentLifecycle",
+                            "()Lio/mindspice/lyra/runtime/ModuleLifecycle;"),
+                    new ArtifactHook("$lyra$attachmentSafePoint", "()V"));
+            List<ArtifactDependency> expectedDependencies = List.of(
+                    new ArtifactDependency("io.mindspice", "lyra-runtime",
+                            LyraRuntimeConstants.RUNTIME_VERSION,
+                            ArtifactProfile.ATTACHABLE));
+            if (!this.hookRequirements.equals(expectedHooks)
+                    || !this.dependencyRequirements.equals(expectedDependencies)
+                    || this.attachmentContext.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "attachable artifacts require the declared hooks, runtime dependency, and context");
+            }
+            AttachmentContext context = this.attachmentContext.orElseThrow();
+            if (!context.rootModule().equals(rootModuleId)
+                    || !context.rootRevision().equals(rootModuleRevision)
+                    || !context.javaPackage().equals(this.javaPackage)) {
+                throw new IllegalArgumentException("attachable context does not describe the artifact root");
+            }
+        }
         if (packagingMode == PackagingMode.THIN_JAR && runtimeRequirement.isEmpty()) {
             throw new IllegalArgumentException("thin artifacts require an external runtime requirement");
         }
@@ -173,10 +255,18 @@ public final class ArtifactMetadata {
         validateModuleIdentity();
         validateSources();
         validateExports();
+        if (executionProfile == ArtifactProfile.ATTACHABLE
+                && exports.stream().anyMatch(export -> export.declarationIdentity() < 0
+                || export.originDeclarationIdentity() < 0)) {
+            throw new IllegalArgumentException(
+                    "attachable exports require complete declaration provenance");
+        }
         ArtifactRevision expectedRevision = ArtifactRevision.compute(
                 this.compilerBuild, this.modules, this.javaNameMap, this.profile,
                 this.packagingMode, this.previewRequired, this.javaPackage, this.sources,
-                this.runtimeRequirement);
+                this.runtimeRequirement, this.executionProfile, this.hookRequirements,
+                this.dependencyRequirements, this.attachmentContext, this.imports,
+                this.reproducibleOptions);
         if (!expectedRevision.equals(this.artifactRevision)) {
             throw new IllegalArgumentException("artifact revision disagrees with metadata inputs");
         }
@@ -238,6 +328,13 @@ public final class ArtifactMetadata {
     public String debugMapHash() { return debugMapHash; }
     public PackagingMode packagingMode() { return packagingMode; }
     public Optional<RuntimeRequirement> runtimeRequirement() { return runtimeRequirement; }
+    public ArtifactProfile executionProfile() { return executionProfile; }
+    public ArtifactProfile artifactProfile() { return executionProfile; }
+    public List<ArtifactHook> hookRequirements() { return hookRequirements; }
+    public List<ArtifactDependency> dependencyRequirements() { return dependencyRequirements; }
+    public Optional<AttachmentContext> attachmentContext() { return attachmentContext; }
+    public List<ArtifactImport> imports() { return imports; }
+    public Map<String, String> reproducibleOptions() { return reproducibleOptions; }
 
     /** Canonical no-whitespace JSON used for artifact metadata. */
     public String canonicalJson() {
@@ -269,6 +366,15 @@ public final class ArtifactMetadata {
         fieldString(result, first, "packagingMode", packagingMode.canonicalSpelling());
         runtimeRequirement.ifPresent(requirement -> fieldObject(
                 result, first, "runtimeRequirement", requirementJson(requirement)));
+        if (executionProfile != ArtifactProfile.NORMAL) {
+            fieldString(result, first, "executionProfile", executionProfile.canonicalSpelling());
+            fieldObject(result, first, "hookRequirements", hooksJson());
+            fieldObject(result, first, "dependencyRequirements", dependenciesJson());
+            attachmentContext.ifPresent(context -> fieldObject(
+                    result, first, "attachmentContext", attachmentContextJson(context)));
+            fieldObject(result, first, "imports", importsJson());
+            fieldObject(result, first, "reproducibleOptions", optionsJson());
+        }
         return result.append('}').toString();
     }
 
@@ -313,7 +419,13 @@ public final class ArtifactMetadata {
                 && debugMapVersion == metadata.debugMapVersion
                 && debugMapHash.equals(metadata.debugMapHash)
                 && packagingMode == metadata.packagingMode
-                && runtimeRequirement.equals(metadata.runtimeRequirement);
+                && runtimeRequirement.equals(metadata.runtimeRequirement)
+                && executionProfile == metadata.executionProfile
+                && hookRequirements.equals(metadata.hookRequirements)
+                && dependencyRequirements.equals(metadata.dependencyRequirements)
+                && attachmentContext.equals(metadata.attachmentContext)
+                && imports.equals(metadata.imports)
+                && reproducibleOptions.equals(metadata.reproducibleOptions);
     }
 
     @Override
@@ -321,7 +433,8 @@ public final class ArtifactMetadata {
         return Objects.hash(schemaVersion, languageContractVersion, compilerVersion, compilerBuild,
                 javaPackage, runtimeAbi, profile, javaClassFileTarget, previewRequired, artifactId,
                 artifactRevision, rootModuleId, rootModuleRevision, modules, sources, exports, javaNameMap,
-                debugMapVersion, debugMapHash, packagingMode, runtimeRequirement);
+                debugMapVersion, debugMapHash, packagingMode, runtimeRequirement, executionProfile,
+                hookRequirements, dependencyRequirements, attachmentContext, imports, reproducibleOptions);
     }
 
     @Override
@@ -469,6 +582,11 @@ public final class ArtifactMetadata {
             fieldString(result, fields, "javaName", export.javaName());
             fieldString(result, fields, "getterName", export.getterName());
             fieldString(result, fields, "functionValueName", export.functionValueName());
+            if (export.declarationIdentity() >= 0) {
+                field(result, fields, "declarationIdentity", Long.toString(export.declarationIdentity()));
+                field(result, fields, "originDeclarationIdentity",
+                        Long.toString(export.originDeclarationIdentity()));
+            }
             CanonicalJson.comma(result, fields);
             CanonicalJson.fieldName(result, "setterName");
             result.append(export.setterName().map(CanonicalJson::quote).orElse("null"));
@@ -489,6 +607,75 @@ public final class ArtifactMetadata {
 
     private static String runtimeAbiJson(RuntimeAbi abi) {
         return "{\"major\":" + abi.major() + ",\"minor\":" + abi.minor() + "}";
+    }
+
+    private String hooksJson() {
+        StringBuilder result = new StringBuilder("[");
+        boolean[] first = {true};
+        for (ArtifactHook hook : hookRequirements) {
+            CanonicalJson.comma(result, first);
+            result.append('{');
+            boolean[] fields = {true};
+            fieldString(result, fields, "name", hook.name());
+            fieldString(result, fields, "descriptor", hook.descriptor());
+            result.append('}');
+        }
+        return result.append(']').toString();
+    }
+
+    private String dependenciesJson() {
+        StringBuilder result = new StringBuilder("[");
+        boolean[] first = {true};
+        for (ArtifactDependency dependency : dependencyRequirements) {
+            CanonicalJson.comma(result, first);
+            result.append('{');
+            boolean[] fields = {true};
+            fieldString(result, fields, "groupId", dependency.groupId());
+            fieldString(result, fields, "artifactId", dependency.artifactId());
+            fieldString(result, fields, "version", dependency.version());
+            fieldString(result, fields, "profile", dependency.profile().canonicalSpelling());
+            result.append('}');
+        }
+        return result.append(']').toString();
+    }
+
+    private static String attachmentContextJson(AttachmentContext context) {
+        StringBuilder result = new StringBuilder("{");
+        boolean[] fields = {true};
+        fieldString(result, fields, "rootModule", context.rootModule().canonicalSpelling());
+        fieldString(result, fields, "rootRevision", context.rootRevision().value());
+        fieldString(result, fields, "graphRevision", context.graphRevision());
+        fieldString(result, fields, "sourceInventoryRevision", context.sourceInventoryRevision());
+        fieldString(result, fields, "optionsRevision", context.optionsRevision());
+        fieldString(result, fields, "javaPackage", context.javaPackage());
+        return result.append('}').toString();
+    }
+
+    private String importsJson() {
+        StringBuilder result = new StringBuilder("[");
+        boolean[] first = {true};
+        for (ArtifactImport imported : imports) {
+            CanonicalJson.comma(result, first);
+            result.append('{');
+            boolean[] fields = {true};
+            fieldString(result, fields, "from", imported.fromModule().canonicalSpelling());
+            fieldString(result, fields, "logicalTarget", imported.logicalTarget());
+            fieldString(result, fields, "target", imported.targetModule().canonicalSpelling());
+            field(result, fields, "start", Integer.toString(imported.startOffset()));
+            field(result, fields, "end", Integer.toString(imported.endOffset()));
+            result.append('}');
+        }
+        return result.append(']').toString();
+    }
+
+    private String optionsJson() {
+        StringBuilder result = new StringBuilder("{");
+        boolean[] first = {true};
+        for (Map.Entry<String, String> entry : reproducibleOptions.entrySet()) {
+            CanonicalJson.comma(result, first);
+            CanonicalJson.stringField(result, entry.getKey(), entry.getValue());
+        }
+        return result.append('}').toString();
     }
 
     private static String requirementJson(RuntimeRequirement requirement) {
@@ -521,6 +708,63 @@ public final class ArtifactMetadata {
         CanonicalJson.comma(result, first);
         CanonicalJson.fieldName(result, name);
         result.append(value);
+    }
+
+    private static List<ArtifactHook> sortedHooks(List<? extends ArtifactHook> values) {
+        Objects.requireNonNull(values, "hookRequirements");
+        ArrayList<ArtifactHook> copy = new ArrayList<>(values.size());
+        for (ArtifactHook value : values) copy.add(Objects.requireNonNull(value, "hookRequirements"));
+        copy.sort(ArtifactHook::compareTo);
+        for (int index = 1; index < copy.size(); index++) {
+            if (copy.get(index - 1).equals(copy.get(index))) {
+                throw new IllegalArgumentException("duplicate artifact hook: " + copy.get(index));
+            }
+        }
+        return List.copyOf(copy);
+    }
+
+    private static List<ArtifactDependency> sortedDependencies(
+            List<? extends ArtifactDependency> values) {
+        Objects.requireNonNull(values, "dependencyRequirements");
+        ArrayList<ArtifactDependency> copy = new ArrayList<>(values.size());
+        for (ArtifactDependency value : values) {
+            copy.add(Objects.requireNonNull(value, "dependencyRequirements"));
+        }
+        copy.sort(ArtifactDependency::compareTo);
+        for (int index = 1; index < copy.size(); index++) {
+            if (copy.get(index - 1).equals(copy.get(index))) {
+                throw new IllegalArgumentException("duplicate artifact dependency: " + copy.get(index));
+            }
+        }
+        return List.copyOf(copy);
+    }
+
+    private static List<ArtifactImport> sortedImports(List<? extends ArtifactImport> values) {
+        Objects.requireNonNull(values, "imports");
+        ArrayList<ArtifactImport> copy = new ArrayList<>(values.size());
+        for (ArtifactImport value : values) copy.add(Objects.requireNonNull(value, "imports"));
+        copy.sort(ArtifactImport::compareTo);
+        for (int index = 1; index < copy.size(); index++) {
+            if (copy.get(index - 1).equals(copy.get(index))) {
+                throw new IllegalArgumentException("duplicate artifact import: " + copy.get(index));
+            }
+        }
+        return List.copyOf(copy);
+    }
+
+    private static Map<String, String> sortedOptions(Map<String, String> values) {
+        Objects.requireNonNull(values, "reproducibleOptions");
+        ArrayList<Map.Entry<String, String>> entries = new ArrayList<>(values.entrySet());
+        entries.sort(Map.Entry.comparingByKey());
+        LinkedHashMap<String, String> result = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : entries) {
+            String key = text(entry.getKey(), "reproducible option key");
+            String value = text(entry.getValue(), "reproducible option value");
+            if (result.put(key, value) != null) {
+                throw new IllegalArgumentException("duplicate reproducible option: " + key);
+            }
+        }
+        return Collections.unmodifiableMap(result);
     }
 
     private static List<ModuleMetadata> sortedModules(List<? extends ModuleMetadata> values) {
@@ -664,6 +908,12 @@ public final class ArtifactMetadata {
         private String debugMapHash;
         private PackagingMode packagingMode = PackagingMode.CLASSES;
         private Optional<RuntimeRequirement> runtimeRequirement = Optional.empty();
+        private ArtifactProfile executionProfile = ArtifactProfile.NORMAL;
+        private List<ArtifactHook> hookRequirements = List.of();
+        private List<ArtifactDependency> dependencyRequirements = List.of();
+        private Optional<AttachmentContext> attachmentContext = Optional.empty();
+        private List<ArtifactImport> imports = List.of();
+        private Map<String, String> reproducibleOptions = Map.of();
 
         public Builder schemaVersion(int value) { schemaVersion = value; return this; }
         public Builder languageContractVersion(int value) { languageContractVersion = value; return this; }
@@ -692,12 +942,22 @@ public final class ArtifactMetadata {
         public Builder packagingMode(PackagingMode value) { packagingMode = value; return this; }
         public Builder runtimeRequirement(RuntimeRequirement value) { runtimeRequirement = Optional.ofNullable(value); return this; }
         public Builder runtimeRequirement(Optional<RuntimeRequirement> value) { runtimeRequirement = Objects.requireNonNull(value, "runtimeRequirement"); return this; }
+        public Builder executionProfile(ArtifactProfile value) { executionProfile = Objects.requireNonNull(value, "executionProfile"); return this; }
+        public Builder artifactProfile(ArtifactProfile value) { return executionProfile(value); }
+        public Builder hookRequirements(List<? extends ArtifactHook> value) { hookRequirements = List.copyOf(value); return this; }
+        public Builder dependencyRequirements(List<? extends ArtifactDependency> value) { dependencyRequirements = List.copyOf(value); return this; }
+        public Builder attachmentContext(AttachmentContext value) { attachmentContext = Optional.ofNullable(value); return this; }
+        public Builder attachmentContext(Optional<AttachmentContext> value) { attachmentContext = Objects.requireNonNull(value, "attachmentContext"); return this; }
+        public Builder imports(List<? extends ArtifactImport> value) { imports = List.copyOf(value); return this; }
+        public Builder reproducibleOptions(Map<String, String> value) { reproducibleOptions = Map.copyOf(value); return this; }
 
         public ArtifactMetadata build() {
             return new ArtifactMetadata(schemaVersion, languageContractVersion, compilerVersion, compilerBuild,
                     runtimeAbi, profile, javaClassFileTarget, previewRequired, artifactId, artifactRevision,
                     rootModuleId, rootModuleRevision, modules, sources, javaPackage, exports, javaNameMap,
-                    debugMapVersion, debugMapHash, packagingMode, runtimeRequirement);
+                    debugMapVersion, debugMapHash, packagingMode, runtimeRequirement, executionProfile,
+                    hookRequirements, dependencyRequirements, attachmentContext, imports,
+                    reproducibleOptions);
         }
     }
 }

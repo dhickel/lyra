@@ -45,6 +45,11 @@ public abstract class LyraClosure {
         authority.token().checkGeneratedInvocation();
     }
 
+    /** Optional attachable safe point propagated through the exact closure owner. */
+    public final void applicationSafePoint() {
+        authority.token().applicationSafePoint();
+    }
+
     /** Checks ownership/lifecycle and exact canonical signature parity. */
     public final void checkInvocation(LyraSignature expectedSignature) {
         Objects.requireNonNull(expectedSignature, "expectedSignature");

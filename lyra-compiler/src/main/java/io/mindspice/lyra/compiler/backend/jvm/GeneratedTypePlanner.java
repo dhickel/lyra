@@ -65,8 +65,23 @@ final class GeneratedTypePlanner {
     }
 
     public static GeneratedTypePlan plan(TypedIr ir, String basePackage) {
+        return plan(ir, basePackage, ir != null && ir.sessionExecution().isPresent()
+                ? EmissionMode.SESSION : EmissionMode.NORMAL);
+    }
+
+    public static GeneratedTypePlan plan(TypedIr ir, String basePackage, EmissionMode emissionMode) {
         Objects.requireNonNull(ir, "ir").requireValidated();
         Objects.requireNonNull(basePackage, "basePackage");
+        Objects.requireNonNull(emissionMode, "emissionMode");
+        if (emissionMode == EmissionMode.SESSION && ir.sessionExecution().isEmpty()) {
+            throw new IllegalArgumentException("session emission requires session IR metadata");
+        }
+        if (emissionMode == EmissionMode.NORMAL && ir.sessionExecution().isPresent()) {
+            throw new IllegalArgumentException("session IR cannot use normal emission mode");
+        }
+        if (emissionMode == EmissionMode.ATTACHABLE && ir.sessionExecution().isPresent()) {
+            throw new IllegalArgumentException("session IR cannot use attachable emission mode");
+        }
         validateIrCoverage(ir);
 
         Inventory inventory = inventory(ir);
@@ -106,7 +121,8 @@ final class GeneratedTypePlanner {
                         IrCapture::id, value -> value));
 
         ArrayList<GeneratedClassPlan> classes = new ArrayList<>();
-        addTupleClasses(classes, inventory, mapper, names, ir.rootModule().submissionResult().isPresent());
+        addTupleClasses(classes, inventory, mapper, names,
+                emissionMode != EmissionMode.NORMAL);
         addFunctionInterfaces(classes, inventory, mapper, names);
         addCellClasses(classes, ir.cells(), mapper, names, cellClasses);
         Map<ModuleId, ScopeId> rootScopes =
@@ -122,15 +138,15 @@ final class GeneratedTypePlanner {
         addIntrinsicClosureClasses(classes, ir, mapper, names, intrinsicFunctionClasses,
                 moduleStates);
         addModuleStateClasses(classes, ir, mapper, names, moduleStates, cellClasses,
-                declarations, cellsByDeclaration);
+                declarations, cellsByDeclaration, emissionMode);
         addModuleFacadeClasses(classes, ir, mapper, names, moduleStates, moduleFacades,
-                exportPlans);
+                exportPlans, emissionMode);
 
         List<GeneratedClassPlan> ordered = order(classes);
         GeneratedTypePlan result = new GeneratedTypePlan(basePackage, typeNames, ordered,
                 names.tupleNames(), names.functionNames(), closureClasses, cellClasses,
                 moduleStates, moduleFacades, new ArrayList<>(exportPlans.values()),
-                ir.initializationOrder(), intrinsicFunctionClasses, ir.sessionExecution());
+                ir.initializationOrder(), intrinsicFunctionClasses, ir.sessionExecution(), emissionMode);
         // Descriptor/signature parity is a publication gate for the plan; no
         // later class-body phase may start from a partially audited shape.
         JvmAbiParity.require(ir, result);
@@ -609,7 +625,8 @@ final class GeneratedTypePlanner {
             Map<ModuleId, String> moduleStates,
             Map<DeclarationId, String> cellClasses,
             Map<DeclarationId, IrDeclaration> declarations,
-            Map<DeclarationId, IrCell> cellsByDeclaration) {
+            Map<DeclarationId, IrCell> cellsByDeclaration,
+            EmissionMode emissionMode) {
         Map<DeclarationId, IrImportBinding> importsByDeclaration = ir.imports().stream()
                 .collect(java.util.stream.Collectors.toUnmodifiableMap(
                         IrImportBinding::declarationId, value -> value));
@@ -740,6 +757,14 @@ final class GeneratedTypePlanner {
                 members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.SESSION_SAFE_POINT,
                         "$lyra$sessionSafePoint", "()V", false));
             }
+            if (emissionMode == EmissionMode.ATTACHABLE
+                    && module.moduleId().equals(ir.rootModule().moduleId())) {
+                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.ATTACHMENT_SAFE_POINT,
+                        "$lyra$attachmentSafePoint", "()V", false));
+                members.add(GeneratedMemberPlan.rawMethod(
+                        GeneratedMemberKind.STATE_ATTACHMENT_LIFECYCLE,
+                        "$lyra$attachmentLifecycle", "()Lio/mindspice/lyra/runtime/ModuleLifecycle;", false));
+            }
             module.submissionResult().ifPresent(result -> {
                 String descriptor = mapper.map(result.type(), JvmMappingContext.JAVA_VALUE).descriptor();
                 addTypeDependencies(dependencies, result.type(),
@@ -776,7 +801,8 @@ final class GeneratedTypePlanner {
             NameAssignment names,
             Map<ModuleId, String> moduleStates,
             Map<ModuleId, String> moduleFacades,
-            Map<IrExport, GeneratedExportPlan> exportPlans) {
+            Map<IrExport, GeneratedExportPlan> exportPlans,
+            EmissionMode emissionMode) {
         for (ModuleId moduleId : ir.modules().stream().map(IrModule::moduleId).sorted().toList()) {
             String stateName = moduleStates.get(moduleId);
             String facadeName = moduleFacades.get(moduleId);
@@ -799,6 +825,11 @@ final class GeneratedTypePlanner {
                     "$lyra$metadata", "()" + METADATA_DESCRIPTOR, true));
             members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.CLOSE,
                     "close", "()V", false));
+            if (emissionMode == EmissionMode.ATTACHABLE
+                    && moduleId.equals(ir.rootModule().moduleId())) {
+                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.ATTACHMENT_LIFECYCLE,
+                        "$lyra$attachmentLifecycle", "()" + LIFECYCLE_DESCRIPTOR, false));
+            }
             if (ir.sessionExecution().isPresent()) {
                 for (IrDeclaration declaration : ir.declarations()) {
                     if (!declaration.moduleId().equals(moduleId)

@@ -15,6 +15,8 @@ public final class ExportMetadata implements Comparable<ExportMetadata> {
     private final String getterName;
     private final String functionValueName;
     private final Optional<String> setterName;
+    private final long declarationIdentity;
+    private final long originDeclarationIdentity;
 
     public ExportMetadata(ModuleId moduleId, String name, LyraSignature signature,
                           String jvmDescriptor, BindingMutability bindingMutability,
@@ -57,6 +59,16 @@ public final class ExportMetadata implements Comparable<ExportMetadata> {
                           BindingMutability bindingMutability, String javaName,
                           String getterName, String functionValueName,
                           Optional<String> setterName) {
+        this(id, jvmDescriptor, bindingMutability, javaName, getterName,
+                functionValueName, setterName, -1L, -1L);
+    }
+
+    /** Creates metadata with compiler-local declaration provenance when available. */
+    public ExportMetadata(ExportId id, String jvmDescriptor,
+                          BindingMutability bindingMutability, String javaName,
+                          String getterName, String functionValueName,
+                          Optional<String> setterName, long declarationIdentity,
+                          long originDeclarationIdentity) {
         this.id = Objects.requireNonNull(id, "id");
         this.moduleId = id.moduleId();
         this.name = id.exportName();
@@ -67,6 +79,11 @@ public final class ExportMetadata implements Comparable<ExportMetadata> {
         this.getterName = text(getterName, "getterName");
         this.functionValueName = text(functionValueName, "functionValueName");
         this.setterName = Objects.requireNonNull(setterName, "setterName").map(value -> text(value, "setterName"));
+        if (declarationIdentity < -1 || originDeclarationIdentity < -1) {
+            throw new IllegalArgumentException("export declaration identities must not be negative");
+        }
+        this.declarationIdentity = declarationIdentity;
+        this.originDeclarationIdentity = originDeclarationIdentity;
         if (bindingMutability == BindingMutability.IMMUTABLE && this.setterName.isPresent()) {
             throw new IllegalArgumentException("immutable exports cannot have a setter");
         }
@@ -145,6 +162,14 @@ public final class ExportMetadata implements Comparable<ExportMetadata> {
         return setterName;
     }
 
+    public long declarationIdentity() {
+        return declarationIdentity;
+    }
+
+    public long originDeclarationIdentity() {
+        return originDeclarationIdentity;
+    }
+
     @Override
     public int compareTo(ExportMetadata other) {
         return id.compareTo(Objects.requireNonNull(other, "other").id);
@@ -158,13 +183,15 @@ public final class ExportMetadata implements Comparable<ExportMetadata> {
                 && bindingMutability == metadata.bindingMutability
                 && javaName.equals(metadata.javaName) && getterName.equals(metadata.getterName)
                 && functionValueName.equals(metadata.functionValueName)
-                && setterName.equals(metadata.setterName);
+                && setterName.equals(metadata.setterName)
+                && declarationIdentity == metadata.declarationIdentity
+                && originDeclarationIdentity == metadata.originDeclarationIdentity;
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(id, contract, jvmDescriptor, bindingMutability, javaName, getterName,
-                functionValueName, setterName);
+                functionValueName, setterName, declarationIdentity, originDeclarationIdentity);
     }
 
     @Override

@@ -252,3 +252,11 @@
 - **Justification:** imported closures, arrays and mutable cells must retain their real generated identity and storage while reload/reset changes what new name lookup sees. Reinstantiating a whole graph or copying values would change semantics.
 - **Caveat:** current mutable root state is not assumed to equal initializer state. Attachable compilation must model safe-point mutation as an explicit effect boundary and derive conservative facts for subsequent evaluations.
 - **Affected specifications:** `repl.md`, `backend-runtime.md`, session compiler/runtime flow, module reload and application attachment tests.
+
+### Attachable safe-point effect boundary, 2026-09-07
+
+- **Decision:** attachable compilation models every potential dispatch safe point as an explicit effect boundary on the root module's public `@mut` value bindings. Reads of those bindings carry conservative `AttachableBoundary` aggregate identities (not initializer-allocation facts), and both direct and callable-summary mutation checks treat the current contents as potentially foreign-owned. Element mutation through such a binding is an ordinary `LYC-RESOLVE-022` diagnostic in attachable mode; scalar writes, whole-binding replacement, private-state mutation, callable replacement and higher-order transfers remain allowed. Normal compilation is unchanged.
+- **Justification:** a trusted evaluation may replace a public `@mut` root binding with an externally owned aggregate between safe points. Arrays have no runtime ownership guard, so a precompiled consumer certified against initializer-only ownership would silently mutate foreign state.
+- **Alternatives rejected:** runtime array-ownership guards on the raw-array ABI; blanket rejection of all mutable behavior; treating reads of such bindings as definitely local until Phase 07 dispatch exists.
+- **Caveat:** initialization is never dispatchable, so initializer-time reads keep exact local facts. The conservative boundary is represented as a distinct identity kind so same-module callable ownership checks cannot conflate it with genuinely root-owned aggregates.
+- **Affected specifications:** `repl.md`, `backend-runtime.md`; attachable profile emission, root registration and ReplProfileEmissionTest/RootTypeRegistrationTest.

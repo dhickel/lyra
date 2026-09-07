@@ -89,6 +89,28 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
                                            String javaPackage,
                                            List<? extends SourceMetadata> sources,
                                            Optional<RuntimeRequirement> runtimeRequirement) {
+        return compute(compilerBuild, modules, javaNameMap, profile, packagingMode,
+                previewRequired, javaPackage, sources, runtimeRequirement,
+                ArtifactProfile.NORMAL, List.of(), List.of(), Optional.empty(),
+                List.of(), Map.of());
+    }
+
+    /** Computes a revision including the optional session/attachment context. */
+    public static ArtifactRevision compute(String compilerBuild,
+                                           List<ModuleMetadata> modules,
+                                           Map<String, String> javaNameMap,
+                                           RuntimeProfile profile,
+                                           PackagingMode packagingMode,
+                                           boolean previewRequired,
+                                           String javaPackage,
+                                           List<? extends SourceMetadata> sources,
+                                           Optional<RuntimeRequirement> runtimeRequirement,
+                                           ArtifactProfile executionProfile,
+                                           List<? extends ArtifactHook> hooks,
+                                           List<? extends ArtifactDependency> dependencies,
+                                           Optional<AttachmentContext> attachmentContext,
+                                           List<? extends ArtifactImport> imports,
+                                           Map<String, String> reproducibleOptions) {
         CanonicalJson.requireUtf8(compilerBuild, "compilerBuild");
         if (compilerBuild.isBlank()) {
             throw new IllegalArgumentException("compilerBuild must not be blank");
@@ -104,6 +126,12 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
         Objects.requireNonNull(packagingMode, "packagingMode");
         Objects.requireNonNull(sources, "sources");
         Objects.requireNonNull(runtimeRequirement, "runtimeRequirement");
+        Objects.requireNonNull(executionProfile, "executionProfile");
+        Objects.requireNonNull(hooks, "hooks");
+        Objects.requireNonNull(dependencies, "dependencies");
+        Objects.requireNonNull(attachmentContext, "attachmentContext");
+        Objects.requireNonNull(imports, "imports");
+        Objects.requireNonNull(reproducibleOptions, "reproducibleOptions");
         requireJavaPackage(javaPackage);
         List<ModuleMetadata> sortedModules = new ArrayList<>(modules.size());
         for (ModuleMetadata module : modules) {
@@ -128,7 +156,8 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
             }
         }
         return computeWithMapCount(compilerBuild, sortedModules, javaNameMap, profile, packagingMode,
-                previewRequired, javaPackage, sortedSources, runtimeRequirement);
+                previewRequired, javaPackage, sortedSources, runtimeRequirement, executionProfile,
+                hooks, dependencies, attachmentContext, imports, reproducibleOptions);
     }
 
     private static ArtifactRevision computeWithMapCount(String compilerBuild,
@@ -139,7 +168,13 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
                                                         boolean previewRequired,
                                                         String javaPackage,
                                                         List<? extends SourceMetadata> sources,
-                                                        Optional<RuntimeRequirement> runtimeRequirement) {
+                                                        Optional<RuntimeRequirement> runtimeRequirement,
+                                                        ArtifactProfile executionProfile,
+                                                        List<? extends ArtifactHook> hooks,
+                                                        List<? extends ArtifactDependency> dependencies,
+                                                        Optional<AttachmentContext> attachmentContext,
+                                                        List<? extends ArtifactImport> imports,
+                                                        Map<String, String> reproducibleOptions) {
         MessageDigest digest = sha256();
         putString(digest, DOMAIN_TAG);
         putInt(digest, LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION);
@@ -152,6 +187,10 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
         putInt(digest, profile.runtimeAbi().minor());
         putString(digest, packagingMode.canonicalSpelling());
         putInt(digest, previewRequired ? 1 : 0);
+        boolean extended = executionProfile != ArtifactProfile.NORMAL
+                || !hooks.isEmpty() || !dependencies.isEmpty() || attachmentContext.isPresent()
+                || !imports.isEmpty() || !reproducibleOptions.isEmpty();
+        if (extended) putString(digest, executionProfile.canonicalSpelling());
         putInt(digest, modules.size());
         for (ModuleMetadata module : modules) {
             putString(digest, module.id().canonicalSpelling());
@@ -189,6 +228,44 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
             putInt(digest, requirement.minimumRuntimeAbi().major());
             putInt(digest, requirement.minimumRuntimeAbi().minor());
         });
+        if (extended) {
+            putInt(digest, hooks.size());
+            hooks.stream().map(Objects::requireNonNull).sorted().forEach(hook -> {
+                putString(digest, hook.name());
+                putString(digest, hook.descriptor());
+            });
+            putInt(digest, dependencies.size());
+            dependencies.stream().map(Objects::requireNonNull).sorted().forEach(dependency -> {
+                putString(digest, dependency.groupId());
+                putString(digest, dependency.artifactId());
+                putString(digest, dependency.version());
+                putString(digest, dependency.profile().canonicalSpelling());
+            });
+            putInt(digest, attachmentContext.isPresent() ? 1 : 0);
+            attachmentContext.ifPresent(context -> {
+                putString(digest, context.rootModule().canonicalSpelling());
+                putString(digest, context.rootRevision().value());
+                putString(digest, context.graphRevision());
+                putString(digest, context.sourceInventoryRevision());
+                putString(digest, context.optionsRevision());
+                putString(digest, context.javaPackage());
+            });
+            putInt(digest, imports.size());
+            imports.stream().map(Objects::requireNonNull).sorted().forEach(imported -> {
+                putString(digest, imported.fromModule().canonicalSpelling());
+                putString(digest, imported.logicalTarget());
+                putString(digest, imported.targetModule().canonicalSpelling());
+                putInt(digest, imported.startOffset());
+                putInt(digest, imported.endOffset());
+            });
+            List<Map.Entry<String, String>> options = new ArrayList<>(reproducibleOptions.entrySet());
+            options.sort(Map.Entry.comparingByKey());
+            putInt(digest, options.size());
+            options.forEach(option -> {
+                putString(digest, option.getKey());
+                putString(digest, option.getValue());
+            });
+        }
         return new ArtifactRevision(HexFormat.of().formatHex(digest.digest()));
     }
 

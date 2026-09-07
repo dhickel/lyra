@@ -26,6 +26,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.zip.ZipEntry;
@@ -162,6 +163,176 @@ public final class LyraRuntime {
         }
     }
 
+    /**
+     * Registers the exact public surface of one already-open attachable root.
+     * The call is owner-thread confined and never instantiates another module
+     * or copies a root value.
+     */
+    public static RootTypeRegistration registerRoot(ModuleHandle module) {
+        if (!(Objects.requireNonNull(module, "module") instanceof ModuleHandleImpl handle)) {
+            throw new LyraLinkException("root registration requires a runtime-owned module");
+        }
+        handle.requireOwner();
+        handle.requireOpen();
+        if (handle.metadata().artifactProfile() != ArtifactProfile.ATTACHABLE) {
+            throw new LyraLinkException("root artifact was not compiled with the attachable profile");
+        }
+        if (!handle.moduleId().equals(handle.metadata().rootModuleId())) {
+            throw new LyraLinkException("only the artifact root may be registered");
+        }
+        if (handle.instanceKey.rootLifetime() == null) {
+            throw new LyraLinkException("attachable root has no retained structural domain");
+        }
+        if (handle.rootRegistration != null && !handle.rootRegistration.isClosed()) {
+            throw new LyraLifecycleException("root already has an active registration");
+        }
+        ModuleLifecycle lifecycle = attachmentLifecycle(handle);
+        if (lifecycle.moduleId().isEmpty() || !lifecycle.moduleId().orElseThrow().equals(handle.moduleId())) {
+            throw new LyraLinkException("attachment hook belongs to another module");
+        }
+        if (lifecycle.owner() != handle.instanceKeyOwner()) {
+            throw new LyraThreadException("attachment lifecycle belongs to another owner");
+        }
+        lifecycle.checkOpen();
+        Map<String, RootTypeRegistration.Binding> bindings = new TreeMap<>();
+        Set<Class<?>> structuralTypes = java.util.Collections.newSetFromMap(
+                new IdentityHashMap<>());
+        for (ExportMetadata export : handle.metadata().exports()) {
+            if (!export.moduleId().equals(handle.moduleId())) continue;
+            RootTypeRegistration.Binding binding = rootBinding(handle, export, structuralTypes);
+            if (bindings.put(export.name(), binding) != null) {
+                throw new LyraLinkException("duplicate public root export: " + export.name());
+            }
+        }
+        LyraOwnerController controller = LyraOwnerController.forModule(lifecycle);
+        lifecycle.registerApplicationController(controller);
+        RootTypeRegistration registration = new RootTypeRegistration(handle, lifecycle,
+                handle.instanceKey.rootLifetime(), bindings, structuralTypes, controller);
+        handle.rootRegistration = registration;
+        return registration;
+    }
+
+    /**
+     * Pair-checked registration form for hosts that retain the loaded context
+     * and root handle separately.  The pair must come from one load operation.
+     */
+    public static RootTypeRegistration registerRoot(LoadedArtifact artifact, ModuleHandle module) {
+        if (!(Objects.requireNonNull(artifact, "artifact") instanceof LoadedArtifactImpl loaded)
+                || !(Objects.requireNonNull(module, "module") instanceof ModuleHandleImpl handle)
+                || handle.context != loaded) {
+            throw new LyraLinkException("root registration requires a matching loaded artifact and module");
+        }
+        return registerRoot(module);
+    }
+
+    /** Explicitly named alias for hosts that register an application root. */
+    public static RootTypeRegistration registerApplicationRoot(ModuleHandle module) {
+        return registerRoot(module);
+    }
+
+    private static ModuleLifecycle attachmentLifecycle(ModuleHandleImpl handle) {
+        try {
+            Method method = handle.facade.getMethod("$lyra$attachmentLifecycle");
+            if (Modifier.isStatic(method.getModifiers()) || method.getParameterCount() != 0
+                    || method.getReturnType() != ModuleLifecycle.class) {
+                throw new LyraLinkException("attachment lifecycle hook has an invalid shape");
+            }
+            MethodHandle hook = MethodHandles.publicLookup().unreflect(method).bindTo(handle.instance);
+            MethodType expected = MethodType.methodType(ModuleLifecycle.class);
+            if (!hook.type().equals(expected)) {
+                throw new LyraLinkException("attachment lifecycle hook descriptor mismatch");
+            }
+            return (ModuleLifecycle) hook.invokeExact();
+        } catch (NoSuchMethodException | IllegalAccessException failure) {
+            throw new LyraLinkException("attachable root has no public lifecycle hook", List.of(), failure);
+        } catch (LyraRuntimeException failure) {
+            throw failure;
+        } catch (Throwable failure) {
+            rethrowHostIntegrityFailure(failure);
+            throw new LyraLinkException("attachment lifecycle hook failed", List.of(), failure);
+        }
+    }
+
+    private static RootTypeRegistration.Binding rootBinding(ModuleHandleImpl handle,
+                                                             ExportMetadata export,
+                                                             Set<Class<?>> structuralTypes) {
+        Class<?> facade = handle.facade;
+        try {
+            MethodType invocationType = methodType(export.jvmDescriptor(), handle.context.loader);
+            String invocationName = export.isFunction() ? export.javaName() : export.getterName();
+            MethodHandle invocation = findPublicVirtual(facade, invocationName, invocationType)
+                    .bindTo(handle.instance);
+            Method getterMethod = facade.getMethod(export.isFunction()
+                    ? export.functionValueName() : export.getterName());
+            Class<?> expectedGetterType = export.isFunction()
+                    ? SessionStorageDomain.storageClass(export.contract(), handle.context.loader,
+                    handle.context.metadata.javaPackage()) : invocationType.returnType();
+            if (Modifier.isStatic(getterMethod.getModifiers()) || getterMethod.getParameterCount() != 0
+                    || getterMethod.getReturnType() == void.class
+                    || getterMethod.getReturnType() != expectedGetterType) {
+                throw new LyraLinkException("root export getter has an invalid shape: " + export.name());
+            }
+            MethodHandle getter = MethodHandles.publicLookup().unreflect(getterMethod)
+                    .bindTo(handle.instance);
+            Optional<MethodHandle> functionValue = export.isFunction()
+                    ? Optional.of(getter) : Optional.empty();
+            Optional<MethodHandle> setter = Optional.empty();
+            if (export.setterName().isPresent()) {
+                Method setterMethod = facade.getMethod(export.setterName().orElseThrow(),
+                        getterMethod.getReturnType());
+                if (Modifier.isStatic(setterMethod.getModifiers())
+                        || setterMethod.getReturnType() != void.class) {
+                    throw new LyraLinkException("root export setter has an invalid shape: " + export.name());
+                }
+                setter = Optional.of(MethodHandles.publicLookup().unreflect(setterMethod)
+                        .bindTo(handle.instance));
+            }
+            addStructuralType(structuralTypes, getterMethod.getReturnType());
+            for (Class<?> parameter : invocationType.parameterArray()) {
+                addStructuralType(structuralTypes, parameter);
+            }
+            addStructuralType(structuralTypes, invocationType.returnType());
+            return new RootTypeRegistration.Binding(export, invocation, getter, setter, functionValue);
+        } catch (NoSuchMethodException | IllegalAccessException failure) {
+            throw new LyraLinkException("root export accessor is absent or inaccessible: "
+                    + export.name(), List.of(), failure);
+        }
+    }
+
+    private static void addStructuralType(Set<Class<?>> types, Class<?> type) {
+        if (type.isArray()) {
+            addStructuralType(types, type.componentType());
+            return;
+        }
+        if (type.isPrimitive() || type == Object.class || type == String.class) return;
+        String simple = type.getSimpleName();
+        if (!simple.startsWith("$lyra$tuple$") && !simple.startsWith("$lyra$fn$")) return;
+        if (!types.add(type)) return;
+        if (simple.startsWith("$lyra$tuple$")) {
+            for (Method method : type.getMethods()) {
+                if (method.getName().startsWith("$lyra$get$")
+                        && method.getParameterCount() == 0) {
+                    addStructuralType(types, method.getReturnType());
+                }
+            }
+            return;
+        }
+        Method invoke = null;
+        for (Method candidate : type.getMethods()) {
+            if (candidate.getName().equals("invoke")) {
+                if (invoke != null) {
+                    throw new LyraLinkException("generated function interface has ambiguous invoke methods");
+                }
+                invoke = candidate;
+            }
+        }
+        if (invoke == null) {
+            throw new LyraLinkException("generated function interface has no exact invoke method");
+        }
+        for (Class<?> parameter : invoke.getParameterTypes()) addStructuralType(types, parameter);
+        addStructuralType(types, invoke.getReturnType());
+    }
+
     /** Loads one new submission with a separately authenticated typed link table. */
     public static LoadedArtifact loadSubmission(ArtifactSource artifact, LoadOptions options,
                                                SessionStorageDomain.Linkage linkage) {
@@ -176,10 +347,10 @@ public final class LyraRuntime {
      */
     public static ModuleHandle prepareSubmission(LoadedArtifact artifact) {
         if (!(Objects.requireNonNull(artifact, "artifact") instanceof LoadedArtifactImpl loaded)
-                || loaded.artifactKey.sessionLinkage() == null) {
+                || loaded.linkage == null) {
             throw new LyraLinkException("submission preparation requires an authenticated session artifact");
         }
-        loaded.artifactKey.sessionLinkage().validate(loaded.metadata);
+        loaded.linkage.validate(loaded.metadata);
         Class<?> facade = loaded.facades.get(loaded.metadata.rootModuleId());
         try {
             Method result = facade.getMethod("$lyra$sessionResult");
@@ -408,13 +579,26 @@ public final class LyraRuntime {
         // runtime.  classEntries() therefore excludes bundled runtime classes
         // instead of defining a duplicate runtime domain in the child loader.
         Map<String, byte[]> classes = classEntries(data.entries(), metadata);
-        ClassLoader parent = linkage == null ? SHARED_RUNTIME_LOADER : linkage.typeLoader(classes);
+        SessionTypeLoader sharedStructuralDomain = null;
+        ClassLoader parent;
+        if (metadata.artifactProfile() == ArtifactProfile.ATTACHABLE) {
+            // The loaded class set is the structural base for every root
+            // instance created from this artifact.  Each instance receives a
+            // separate RootLifetime extension over this base, so closing one
+            // root cannot retire another root's type/producer domain.
+            sharedStructuralDomain = new SessionTypeLoader();
+            parent = sharedStructuralDomain.stage(classes);
+            sharedStructuralDomain = (SessionTypeLoader) parent;
+        } else {
+            parent = linkage == null ? SHARED_RUNTIME_LOADER : linkage.typeLoader(classes);
+        }
         ArtifactClassLoader loader = new ArtifactClassLoader(parent, classes);
         try {
             Map<String, Class<?>> defined = loader.defineAll();
             validateDebugMap(data.entries(), metadata, defined, loader);
             Map<ModuleId, Class<?>> facades = validateFacades(metadata, defined, loader, linkage);
-            LoadedArtifact result = new LoadedArtifactImpl(metadata, options, loader, facades, linkage);
+            LoadedArtifact result = new LoadedArtifactImpl(metadata, options, loader, facades,
+                    linkage, sharedStructuralDomain);
             if (linkage != null) linkage.publishTypes(parent);
             return result;
         } catch (VerifyError failure) {
@@ -834,6 +1018,19 @@ public final class LyraRuntime {
             }
             Class<?> facade = defined.get(name);
             validateFactoryMethods(facade, loader, metadata);
+            if (metadata.artifactProfile() == ArtifactProfile.ATTACHABLE
+                    && module.id().equals(metadata.rootModuleId())) {
+                try {
+                    Method lifecycle = facade.getMethod("$lyra$attachmentLifecycle");
+                    if (Modifier.isStatic(lifecycle.getModifiers())
+                            || lifecycle.getParameterCount() != 0
+                            || lifecycle.getReturnType() != ModuleLifecycle.class) {
+                        throw compatibility("attachable root lifecycle hook has an invalid shape", null);
+                    }
+                } catch (NoSuchMethodException failure) {
+                    throw compatibility("attachable root lifecycle hook is absent", failure);
+                }
+            }
             facades.put(module.id(), facade);
         }
         long actualFacadeCount = defined.keySet().stream()
@@ -841,6 +1038,20 @@ public final class LyraRuntime {
                 .count();
         if (actualFacadeCount != facades.size()) {
             throw compatibility("artifact contains an unexpected generated facade", null);
+        }
+        if (metadata.artifactProfile() == ArtifactProfile.ATTACHABLE) {
+            long safePointHooks = defined.values().stream().filter(type -> {
+                try {
+                    Method method = type.getDeclaredMethod("$lyra$attachmentSafePoint");
+                    return method.getReturnType() == void.class && method.getParameterCount() == 0
+                            && !Modifier.isStatic(method.getModifiers());
+                } catch (NoSuchMethodException ignored) {
+                    return false;
+                }
+            }).count();
+            if (safePointHooks != 1) {
+                throw compatibility("attachable artifact safe-point hook inventory is invalid", null);
+            }
         }
         for (ExportMetadata export : metadata.exports()) {
             Class<?> facade = facades.get(export.moduleId());
@@ -1202,7 +1413,9 @@ public final class LyraRuntime {
         private final LoadOptions options;
         private final ArtifactClassLoader loader;
         private final Map<ModuleId, Class<?>> facades;
+        private final SessionStorageDomain.Linkage linkage;
         private final LyraArtifactKey artifactKey;
+        private final SessionTypeLoader sharedStructuralDomain;
 
         private final Set<ModuleHandleImpl> instances = new HashSet<>();
         private final Set<LyraArtifactKey> preparedKeys =
@@ -1212,18 +1425,26 @@ public final class LyraRuntime {
 
         private LoadedArtifactImpl(ArtifactMetadata metadata, LoadOptions options,
                                    ArtifactClassLoader loader,
-                                   Map<ModuleId, Class<?>> facades, SessionStorageDomain.Linkage linkage) {
+                                   Map<ModuleId, Class<?>> facades, SessionStorageDomain.Linkage linkage,
+                                   SessionTypeLoader sharedStructuralDomain) {
             this.metadata = metadata;
             this.options = options;
             this.loader = loader;
             this.facades = facades;
+            this.linkage = linkage;
+            this.sharedStructuralDomain = sharedStructuralDomain;
+            if (metadata.artifactProfile() == ArtifactProfile.ATTACHABLE
+                    && sharedStructuralDomain == null) {
+                throw new LyraLinkException("attachable artifact has no structural type domain");
+            }
             // The key is shared by every instance of this loaded artifact so
             // ordinary closure authentication remains artifact-local. Explicit
             // source-local session linkage grants separate cross-generation
             // authority without merging keys. The immutable I/O environment
             // is likewise shared, while each generated state
             // still captures its own caller/owner thread.
-            this.artifactKey = new LyraArtifactKey(null, options.ioEnvironment(), linkage);
+            this.artifactKey = sharedStructuralDomain == null
+                    ? new LyraArtifactKey(null, options.ioEnvironment(), linkage) : null;
         }
 
         @Override
@@ -1249,6 +1470,10 @@ public final class LyraRuntime {
                 }
             }
             Thread owner = Thread.currentThread();
+            boolean attachable = metadata.artifactProfile() == ArtifactProfile.ATTACHABLE;
+            SessionStorageDomain.RootLifetime rootLifetime = attachable
+                    ? new SessionStorageDomain.RootLifetime(OwnerThread.of(owner), sharedStructuralDomain)
+                    : null;
             boolean instantiationReserved = false;
             try {
                 synchronized (this) {
@@ -1258,10 +1483,14 @@ public final class LyraRuntime {
                     activeInstantiations++;
                     instantiationReserved = true;
                 }
-                if (artifactKey.sessionLinkage() != null) artifactKey.sessionLinkage().validate(metadata);
+                if (linkage != null) linkage.validate(metadata);
                 LyraArtifactKey instanceKey = deferredSubmission
                         ? new LyraArtifactKey(OwnerThread.of(owner), options.ioEnvironment(),
-                                artifactKey.sessionLinkage(), true) : artifactKey;
+                                linkage, true)
+                        : rootLifetime != null
+                        ? new LyraArtifactKey(rootLifetime.owner(), options.ioEnvironment(),
+                                linkage, false, rootLifetime)
+                        : artifactKey;
                 if (deferredSubmission) {
                     synchronized (this) {
                         preparedKeys.add(instanceKey);
@@ -1286,23 +1515,23 @@ public final class LyraRuntime {
                 }
                 return handle;
             } catch (LyraRuntimeException failure) {
-                releaseInstantiation(instantiationReserved);
+                cleanupFailedInstantiation(rootLifetime, instantiationReserved);
                 throw failure;
             } catch (VerifyError failure) {
-                releaseInstantiation(instantiationReserved);
+                cleanupFailedInstantiation(rootLifetime, instantiationReserved);
                 rethrowHostIntegrityFailure(failure);
                 throw new LyraVerificationException("JVM verification failed during module instantiation",
                         List.of(), List.of(), failure);
             } catch (LinkageError failure) {
-                releaseInstantiation(instantiationReserved);
+                cleanupFailedInstantiation(rootLifetime, instantiationReserved);
                 rethrowHostIntegrityFailure(failure);
                 throw new LyraLinkException("JVM linkage failed during module instantiation",
                         List.of(), List.of(), failure);
             } catch (NoSuchMethodException | IllegalAccessException failure) {
-                releaseInstantiation(instantiationReserved);
+                cleanupFailedInstantiation(rootLifetime, instantiationReserved);
                 throw new LyraLinkException("generated module factory is not callable", List.of(), failure);
             } catch (Throwable failure) {
-                releaseInstantiation(instantiationReserved);
+                cleanupFailedInstantiation(rootLifetime, instantiationReserved);
                 rethrowHostIntegrityFailure(failure);
                 if (failure instanceof RuntimeException runtime) {
                     throw runtime;
@@ -1354,6 +1583,12 @@ public final class LyraRuntime {
             }
         }
 
+        private void cleanupFailedInstantiation(SessionStorageDomain.RootLifetime rootLifetime,
+                                                boolean reserved) {
+            if (rootLifetime != null) rootLifetime.close();
+            releaseInstantiation(reserved);
+        }
+
         private synchronized void releaseInstantiation(boolean reserved) {
             if (reserved) {
                 activeInstantiations--;
@@ -1380,9 +1615,10 @@ public final class LyraRuntime {
                             "loaded artifact cannot close while module instances remain open or initializing");
                 }
                 closed = true;
-                artifactKey.clearPreparedStates();
+                if (artifactKey != null) artifactKey.clearPreparedStates();
                 preparedKeys.forEach(LyraArtifactKey::clearPreparedStates);
                 preparedKeys.clear();
+                if (sharedStructuralDomain != null) sharedStructuralDomain.retire();
                 loader.closeLoader();
             }
         }
@@ -1396,6 +1632,7 @@ public final class LyraRuntime {
         private final Thread owner;
         private final boolean deferredSubmission;
         private final LyraArtifactKey instanceKey;
+        private RootTypeRegistration rootRegistration;
         /** Owner-confined publication eligibility, not producer lifetime. */
         private boolean submissionCompleted;
         private final Map<ExportKey, ExportHandle> exports = new HashMap<>();
@@ -1481,9 +1718,14 @@ public final class LyraRuntime {
                     return;
                 }
                 try {
+                    if (rootRegistration != null && !rootRegistration.isClosed()) {
+                        throw new LyraLifecycleException(
+                                "close the active root registration before closing the root");
+                    }
                     MethodHandle close = MethodHandles.publicLookup().findVirtual(
                             facade, "close", MethodType.methodType(void.class));
                     close.bindTo(instance).invokeExact();
+                    if (instanceKey.rootLifetime() != null) instanceKey.rootLifetime().close();
                     closed = true;
                     exports.clear();
                     context.remove(this);
@@ -1519,6 +1761,11 @@ public final class LyraRuntime {
             if (Thread.currentThread() != owner) {
                 throw new LyraThreadException("module handle accessed from a non-owner thread");
             }
+        }
+
+        private OwnerThread instanceKeyOwner() {
+            return instanceKey.rootLifetime() != null
+                    ? instanceKey.rootLifetime().owner() : OwnerThread.of(owner);
         }
 
         private void requireOpen() {

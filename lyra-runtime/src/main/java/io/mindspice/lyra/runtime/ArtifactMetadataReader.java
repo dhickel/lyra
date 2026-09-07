@@ -30,7 +30,8 @@ public final class ArtifactMetadataReader {
             "runtimeAbi", "profile", "javaPackage", "previewSupported", "javaClassFileTarget", "previewRequired", "artifactId",
             "artifactRevision", "rootModuleId", "rootModuleRevision", "modules", "sources", "exports",
             "javaNameMap", "debugMapVersion", "debugMapHash", "packagingMode",
-            "runtimeRequirement");
+            "runtimeRequirement", "executionProfile", "hookRequirements",
+            "dependencyRequirements", "attachmentContext", "imports", "reproducibleOptions");
     private static final Set<String> REQUIRED_FIELDS = Set.of(
             "schemaVersion", "languageContractVersion", "compilerVersion", "compilerBuild",
             "runtimeAbi", "profile", "javaPackage", "javaClassFileTarget", "previewRequired", "artifactId",
@@ -136,10 +137,30 @@ public final class ArtifactMetadataReader {
         Optional<RuntimeRequirement> requirement = object.containsKey("runtimeRequirement")
                 ? Optional.of(decodeRuntimeRequirement(objectValue(object.get("runtimeRequirement"), "runtimeRequirement")))
                 : Optional.empty();
+        String executionProfileSpelling = object.containsKey("executionProfile")
+                ? string(object, "executionProfile") : ArtifactProfile.NORMAL.canonicalSpelling();
+        ArtifactProfile executionProfile = ArtifactProfile.parse(executionProfileSpelling);
+        if (!executionProfile.canonicalSpelling().equals(executionProfileSpelling)) {
+            throw new IllegalArgumentException("execution profile is not canonical");
+        }
+        List<ArtifactHook> hooks = object.containsKey("hookRequirements")
+                ? decodeHooks(array(object, "hookRequirements")) : List.of();
+        List<ArtifactDependency> dependencies = object.containsKey("dependencyRequirements")
+                ? decodeDependencies(array(object, "dependencyRequirements")) : List.of();
+        Optional<AttachmentContext> attachmentContext = object.containsKey("attachmentContext")
+                ? Optional.of(decodeAttachmentContext(objectValue(object.get("attachmentContext"), "attachmentContext")))
+                : Optional.empty();
+        List<ArtifactImport> imports = object.containsKey("imports")
+                ? decodeImports(array(object, "imports")) : List.of();
+        Map<String, String> options = object.containsKey("reproducibleOptions")
+                ? decodeOptions(objectValue(object.get("reproducibleOptions"), "reproducibleOptions"))
+                : Map.of();
+        validateProfileEncoding(object, executionProfile);
         return new ArtifactMetadata(schemaVersion, languageVersion, compilerVersion, compilerBuild,
                 runtimeAbi, profile, target, previewRequired, artifactId, artifactRevision,
                 rootModuleId, rootModuleRevision, modules, sources, javaPackage, exports, names, debugMapVersion,
-                debugMapHash, packagingMode, requirement);
+                debugMapHash, packagingMode, requirement, executionProfile, hooks, dependencies,
+                attachmentContext, imports, options);
     }
 
     private static List<ModuleMetadata> decodeModules(List<Object> values) {
@@ -203,7 +224,7 @@ public final class ArtifactMetadataReader {
             validateObjectKeys(object,
                     List.of("id", "moduleId", "name", "signature", "jvmDescriptor",
                             "bindingMutability", "javaName", "getterName", "functionValueName",
-                            "setterName"),
+                            "declarationIdentity", "originDeclarationIdentity", "setterName"),
                     Set.of("id", "moduleId", "name", "signature", "jvmDescriptor",
                             "bindingMutability", "javaName", "getterName", "functionValueName",
                             "setterName"), "export metadata");
@@ -228,10 +249,18 @@ public final class ArtifactMetadataReader {
             }
             previous = id;
             String setter = nullableString(object, "setterName");
+            long declarationIdentity = object.containsKey("declarationIdentity")
+                    ? longValue(object, "declarationIdentity") : -1L;
+            long originDeclarationIdentity = object.containsKey("originDeclarationIdentity")
+                    ? longValue(object, "originDeclarationIdentity") : -1L;
+            if ((declarationIdentity >= 0) != (originDeclarationIdentity >= 0)) {
+                throw new IllegalArgumentException("export declaration provenance must be complete");
+            }
             result.add(new ExportMetadata(id, string(object, "jvmDescriptor"),
                     BindingMutability.parse(string(object, "bindingMutability")),
                     string(object, "javaName"), string(object, "getterName"),
-                    string(object, "functionValueName"), Optional.ofNullable(setter)));
+                    string(object, "functionValueName"), Optional.ofNullable(setter),
+                    declarationIdentity, originDeclarationIdentity));
         }
         return List.copyOf(result);
     }
@@ -247,6 +276,129 @@ public final class ArtifactMetadataReader {
         for (Map.Entry<String, Object> entry : object.entrySet()) {
             if (!(entry.getValue() instanceof String value)) {
                 throw new IllegalArgumentException("java name map values must be strings");
+            }
+            result.put(entry.getKey(), value);
+        }
+        return result;
+    }
+
+    private static void validateProfileEncoding(Map<String, Object> object,
+                                                 ArtifactProfile profile) {
+        List<String> extensionFields = List.of("executionProfile", "hookRequirements",
+                "dependencyRequirements", "attachmentContext", "imports",
+                "reproducibleOptions");
+        if (profile == ArtifactProfile.NORMAL) {
+            if (extensionFields.stream().anyMatch(object::containsKey)) {
+                throw new IllegalArgumentException(
+                        "normal schema-1 metadata must omit profile extension fields");
+            }
+            return;
+        }
+        List<String> required = profile == ArtifactProfile.ATTACHABLE
+                ? extensionFields
+                : extensionFields.stream().filter(field -> !field.equals("attachmentContext")).toList();
+        for (String field : required) {
+            if (!object.containsKey(field)) {
+                throw new IllegalArgumentException(profile.canonicalSpelling()
+                        + " metadata is missing required profile field: " + field);
+            }
+        }
+    }
+
+    private static List<ArtifactHook> decodeHooks(List<Object> values) {
+        ArrayList<ArtifactHook> result = new ArrayList<>();
+        ArtifactHook previous = null;
+        for (Object value : values) {
+            Map<String, Object> object = objectValue(value, "artifact hook");
+            validateObjectKeys(object, List.of("name", "descriptor"),
+                    Set.of("name", "descriptor"), "artifact hook");
+            ArtifactHook hook = new ArtifactHook(string(object, "name"), string(object, "descriptor"));
+            if (previous != null && previous.compareTo(hook) >= 0) {
+                throw new IllegalArgumentException("artifact hooks are not sorted or contain a duplicate");
+            }
+            previous = hook;
+            result.add(hook);
+        }
+        return List.copyOf(result);
+    }
+
+    private static List<ArtifactDependency> decodeDependencies(List<Object> values) {
+        ArrayList<ArtifactDependency> result = new ArrayList<>();
+        ArtifactDependency previous = null;
+        for (Object value : values) {
+            Map<String, Object> object = objectValue(value, "artifact dependency");
+            validateObjectKeys(object, List.of("groupId", "artifactId", "version", "profile"),
+                    Set.of("groupId", "artifactId", "version", "profile"), "artifact dependency");
+            String profileSpelling = string(object, "profile");
+            ArtifactProfile profile = ArtifactProfile.parse(profileSpelling);
+            if (!profile.canonicalSpelling().equals(profileSpelling)) {
+                throw new IllegalArgumentException("artifact dependency profile is not canonical");
+            }
+            ArtifactDependency dependency = new ArtifactDependency(string(object, "groupId"),
+                    string(object, "artifactId"), string(object, "version"), profile);
+            if (previous != null && previous.compareTo(dependency) >= 0) {
+                throw new IllegalArgumentException("artifact dependencies are not sorted or contain a duplicate");
+            }
+            previous = dependency;
+            result.add(dependency);
+        }
+        return List.copyOf(result);
+    }
+
+    private static AttachmentContext decodeAttachmentContext(Map<String, Object> object) {
+        validateObjectKeys(object,
+                List.of("rootModule", "rootRevision", "graphRevision", "sourceInventoryRevision",
+                        "optionsRevision", "javaPackage"),
+                Set.of("rootModule", "rootRevision", "graphRevision", "sourceInventoryRevision",
+                        "optionsRevision", "javaPackage"), "attachment context");
+        String rootModuleSpelling = string(object, "rootModule");
+        ModuleId rootModule = moduleId(rootModuleSpelling);
+        if (!rootModule.canonicalSpelling().equals(rootModuleSpelling)) {
+            throw new IllegalArgumentException("attachment root module ID is not canonical");
+        }
+        return new AttachmentContext(rootModule,
+                ModuleRevision.of(string(object, "rootRevision")),
+                string(object, "graphRevision"), string(object, "sourceInventoryRevision"),
+                string(object, "optionsRevision"), string(object, "javaPackage"));
+    }
+
+    private static List<ArtifactImport> decodeImports(List<Object> values) {
+        ArrayList<ArtifactImport> result = new ArrayList<>();
+        ArtifactImport previous = null;
+        for (Object value : values) {
+            Map<String, Object> object = objectValue(value, "artifact import");
+            validateObjectKeys(object,
+                    List.of("from", "logicalTarget", "target", "start", "end"),
+                    Set.of("from", "logicalTarget", "target", "start", "end"), "artifact import");
+            String fromSpelling = string(object, "from");
+            String targetSpelling = string(object, "target");
+            ModuleId from = moduleId(fromSpelling);
+            ModuleId target = moduleId(targetSpelling);
+            if (!from.canonicalSpelling().equals(fromSpelling)
+                    || !target.canonicalSpelling().equals(targetSpelling)) {
+                throw new IllegalArgumentException("artifact import module ID is not canonical");
+            }
+            ArtifactImport imported = new ArtifactImport(from,
+                    string(object, "logicalTarget"), target,
+                    integer(object, "start"), integer(object, "end"));
+            if (previous != null && previous.compareTo(imported) >= 0) {
+                throw new IllegalArgumentException("artifact imports are not sorted or contain a duplicate");
+            }
+            previous = imported;
+            result.add(imported);
+        }
+        return List.copyOf(result);
+    }
+
+    private static Map<String, String> decodeOptions(Map<String, Object> object) {
+        ArrayList<String> keys = new ArrayList<>(object.keySet());
+        ArrayList<String> sorted = new ArrayList<>(keys);
+        sorted.sort(String::compareTo);
+        if (!keys.equals(sorted)) throw new IllegalArgumentException("reproducible options are not sorted");
+        LinkedHashMap<String, String> result = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : object.entrySet()) {
+            if (!(entry.getValue() instanceof String value)) {
+                throw new IllegalArgumentException("reproducible option values must be strings");
             }
             result.put(entry.getKey(), value);
         }
@@ -299,7 +451,9 @@ public final class ArtifactMetadataReader {
         }
         ArtifactRevision expected = ArtifactRevision.compute(metadata.compilerBuild(), metadata.modules(),
                 metadata.javaNameMap(), metadata.profile(), metadata.packagingMode(), metadata.previewRequired(),
-                metadata.javaPackage(), metadata.sources(), metadata.runtimeRequirement());
+                metadata.javaPackage(), metadata.sources(), metadata.runtimeRequirement(),
+                metadata.executionProfile(), metadata.hookRequirements(), metadata.dependencyRequirements(),
+                metadata.attachmentContext(), metadata.imports(), metadata.reproducibleOptions());
         if (!expected.equals(metadata.artifactRevision())) {
             throw compatibility("artifact revision does not match canonical metadata inputs", null);
         }
@@ -417,6 +571,16 @@ public final class ArtifactMetadataReader {
             throw new IllegalArgumentException(field + " must be a 32-bit integer");
         }
         return result.intValue();
+    }
+
+    private static long longValue(Map<String, Object> object, String field) {
+        Object value = object.get(field);
+        if (!(value instanceof BigInteger result)
+                || result.signum() < 0
+                || result.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0) {
+            throw new IllegalArgumentException(field + " must be a non-negative 64-bit integer");
+        }
+        return result.longValue();
     }
 
     private static boolean bool(Map<String, Object> object, String field) {

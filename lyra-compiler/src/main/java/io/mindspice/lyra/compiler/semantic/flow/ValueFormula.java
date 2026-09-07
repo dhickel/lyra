@@ -186,7 +186,8 @@ public sealed interface ValueFormula extends Comparable<ValueFormula>
             Optional<ModuleId> moduleId,
             ProjectionPath declarationRoute,
             ProjectionPath resultRoute,
-            LyraType type) implements ValueFormula {
+            LyraType type,
+            boolean attachableBoundary) implements ValueFormula {
         public Declaration {
             Objects.requireNonNull(declarationId, "declarationId");
             Objects.requireNonNull(moduleId, "moduleId");
@@ -197,9 +198,18 @@ public sealed interface ValueFormula extends Comparable<ValueFormula>
 
         public Declaration(
                 DeclarationId declarationId,
+                Optional<ModuleId> moduleId,
+                ProjectionPath declarationRoute,
+                ProjectionPath resultRoute,
+                LyraType type) {
+            this(declarationId, moduleId, declarationRoute, resultRoute, type, false);
+        }
+
+        public Declaration(
+                DeclarationId declarationId,
                 LyraType type) {
             this(declarationId, Optional.empty(), ProjectionPath.root(),
-                    ProjectionPath.root(), type);
+                    ProjectionPath.root(), type, false);
         }
 
         public ProjectionPath sourceRoute() {
@@ -208,13 +218,19 @@ public sealed interface ValueFormula extends Comparable<ValueFormula>
 
         public Declaration withDeclarationRoute(ProjectionPath route) {
             return new Declaration(declarationId, moduleId,
-                    Objects.requireNonNull(route, "route"), resultRoute, type);
+                    Objects.requireNonNull(route, "route"), resultRoute, type,
+                    attachableBoundary);
+        }
+
+        public Declaration withAttachableBoundary() {
+            return new Declaration(declarationId, moduleId, declarationRoute,
+                    resultRoute, type, true);
         }
 
         @Override
         public Declaration withResultRoute(ProjectionPath route) {
             return new Declaration(declarationId, moduleId, declarationRoute,
-                    Objects.requireNonNull(route, "route"), type);
+                    Objects.requireNonNull(route, "route"), type, attachableBoundary);
         }
 
         @Override
@@ -222,6 +238,7 @@ public sealed interface ValueFormula extends Comparable<ValueFormula>
             return "declaration/" + declarationId + "/module="
                     + moduleId.map(ModuleId::toString).orElse("unknown")
                     + "/source=" + declarationRoute + "/result=" + resultRoute
+                    + "/attachable=" + attachableBoundary
                     + "/type=" + type.canonicalSpelling();
         }
 

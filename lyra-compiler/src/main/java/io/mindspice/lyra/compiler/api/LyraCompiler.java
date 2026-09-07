@@ -2,6 +2,7 @@ package io.mindspice.lyra.compiler.api;
 
 import io.mindspice.lyra.compiler.ast.SyntaxProgram;
 import io.mindspice.lyra.compiler.artifact.ArtifactAssembly;
+import io.mindspice.lyra.compiler.backend.jvm.EmissionMode;
 import io.mindspice.lyra.compiler.backend.jvm.JvmBytecodeArtifact;
 import io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes;
 import io.mindspice.lyra.compiler.diagnostic.Diagnostic;
@@ -138,7 +139,8 @@ public final class LyraCompiler {
                 return failure();
             }
 
-            PhaseResult<TypedSemanticGraph> typedResult = TypeChecker.check(resolved);
+            PhaseResult<TypedSemanticGraph> typedResult = TypeChecker.check(
+                    resolved, request.compileProfile().isAttachable());
             TypedSemanticGraph typed = success(typedResult);
             if (typed == null) {
                 return failure();
@@ -151,7 +153,8 @@ public final class LyraCompiler {
             }
 
             PhaseResult<JvmBytecodeArtifact> bytecodeResult = JvmBytecodeArtifact.emit(
-                    ir, request.javaBasePackage());
+                    ir, request.javaBasePackage(), request.compileProfile().emissionMode(),
+                    request.semanticOptions());
             JvmBytecodeArtifact bytecode = success(bytecodeResult);
             if (bytecode == null) {
                 return failure();
@@ -228,6 +231,10 @@ public final class LyraCompiler {
                 return Diagnostic.error(CompilerDiagnosticCodes.MODULE_INVALID_CONFIGURATION,
                         configurationSpan(), "Lyra artifacts require Java target 25");
             }
+            if (request.compileProfile() == CompileProfile.SESSION) {
+                return Diagnostic.error(CompilerDiagnosticCodes.MODULE_INVALID_CONFIGURATION,
+                        configurationSpan(), "the session profile is reserved for session compilation");
+            }
             if (!validJavaPackage(request.javaBasePackage())) {
                 return Diagnostic.error(CompilerDiagnosticCodes.MODULE_INVALID_CONFIGURATION,
                         configurationSpan(), "invalid Java base package: " + request.javaBasePackage());
@@ -295,7 +302,8 @@ public final class LyraCompiler {
             }
 
             JvmBytecodeArtifact bytecode = phase(JvmBytecodeArtifact.emit(
-                    ir, request.javaBasePackage()));
+                    ir, request.javaBasePackage(), EmissionMode.SESSION,
+                    request.snapshot().moduleEnvironment().revisionOptions()));
             if (bytecode == null) {
                 return failure();
             }

@@ -16,8 +16,8 @@ final class SessionTypeLoader extends ClassLoader {
         super(LyraRuntime.sharedRuntimeLoader());
     }
 
-    private SessionTypeLoader(SessionTypeLoader parent) {
-        super(parent);
+    SessionTypeLoader(SessionTypeLoader parent) {
+        super(Objects.requireNonNull(parent, "parent"));
     }
 
     static boolean isShared(String name) {
@@ -120,7 +120,17 @@ final class SessionTypeLoader extends ClassLoader {
     }
 
     void retire() {
-        for (ClassLoader loader = this; loader instanceof SessionTypeLoader current; loader = loader.getParent()) {
+        retire(true);
+    }
+
+    /** Retires only this extension, preserving an independently owned parent domain. */
+    void retireSelf() {
+        retire(false);
+    }
+
+    private void retire(boolean ancestors) {
+        for (ClassLoader loader = this; loader instanceof SessionTypeLoader current;
+             loader = ancestors ? loader.getParent() : null) {
             current.definitions.clear();
             current.retired = true;
         }

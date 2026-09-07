@@ -63,13 +63,25 @@ public final class TypeChecker {
             PrimitiveType.F64);
 
     private final ResolvedSemanticGraph resolvedGraph;
+    private final boolean attachableBoundary;
 
     public TypeChecker(ResolvedSemanticGraph resolvedGraph) {
+        this(resolvedGraph, false);
+    }
+
+    public TypeChecker(ResolvedSemanticGraph resolvedGraph, boolean attachableBoundary) {
         this.resolvedGraph = Objects.requireNonNull(resolvedGraph, "resolvedGraph");
+        this.attachableBoundary = attachableBoundary;
     }
 
     public static PhaseResult<TypedSemanticGraph> check(ResolvedSemanticGraph graph) {
         return new TypeChecker(graph).run();
+    }
+
+    /** Attachable compilations treat public @mut root reads as safe-point boundaries. */
+    public static PhaseResult<TypedSemanticGraph> check(
+            ResolvedSemanticGraph graph, boolean attachableBoundary) {
+        return new TypeChecker(graph, attachableBoundary).run();
     }
 
     public static PhaseResult<TypedSemanticGraph> typeCheck(ResolvedSemanticGraph graph) {
@@ -107,7 +119,7 @@ public final class TypeChecker {
 
     private PhaseResult<TypedSemanticGraph> run() {
         resolvedGraph.validateSourceAuthority();
-        State state = new State(resolvedGraph);
+        State state = new State(resolvedGraph, attachableBoundary);
         state.initializeContracts();
         if (state.failed()) {
             return PhaseResult.failure(state.diagnostic());
@@ -124,6 +136,7 @@ public final class TypeChecker {
     }
 
     private static final class State {
+        private final boolean attachableBoundary;
         private final ResolvedSemanticGraph graph;
         private final Map<DeclarationId, ResolvedDeclaration> declarations = new LinkedHashMap<>();
         private final Map<ReferenceId, ResolvedReference> references = new LinkedHashMap<>();
@@ -140,7 +153,12 @@ public final class TypeChecker {
         private Diagnostic deferredMutableArgumentDiagnostic;
 
         private State(ResolvedSemanticGraph graph) {
+            this(graph, false);
+        }
+
+        private State(ResolvedSemanticGraph graph, boolean attachableBoundary) {
             this.graph = graph;
+            this.attachableBoundary = attachableBoundary;
             for (ResolvedDeclaration declaration : graph.declarations()) {
                 declarations.put(declaration.id(), declaration);
             }
@@ -3277,7 +3295,7 @@ public final class TypeChecker {
             // planner and sealer below consume its immutable result and never
             // reconstruct or rerun the evaluator.
             SemanticFlowAnalyzer.PublicationResult flowResult =
-                    SemanticFlowAnalyzer.analyzeForPublication(core);
+                    SemanticFlowAnalyzer.analyzeForPublication(core, attachableBoundary);
             if (flowResult instanceof SemanticFlowAnalyzer.PublicationDiagnosticFailure failure) {
                 Diagnostic ownership = failure.diagnostic();
                 if (deferredMutableArgumentDiagnostic != null

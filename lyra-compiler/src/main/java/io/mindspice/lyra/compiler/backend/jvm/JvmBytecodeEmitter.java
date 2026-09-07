@@ -468,9 +468,10 @@ final class JvmBytecodeEmitter {
         }
 
         private boolean sharedSessionType(GeneratedClassPlan classPlan) {
-            return ir.rootModule().submissionResult().isPresent()
-                    && (classPlan.kind() == GeneratedClassKind.TUPLE_VALUE
-                    || classPlan.kind() == GeneratedClassKind.FUNCTION_INTERFACE);
+            boolean structural = classPlan.kind() == GeneratedClassKind.TUPLE_VALUE
+                    || classPlan.kind() == GeneratedClassKind.FUNCTION_INTERFACE;
+            return structural && (ir.rootModule().submissionResult().isPresent()
+                    || plan.emissionMode() == EmissionMode.ATTACHABLE);
         }
 
         private String sourceFile(GeneratedClassPlan classPlan) {
@@ -920,6 +921,15 @@ final class JvmBytecodeEmitter {
                     loadStateLifecycle();
                     code.invokevirtual(CD_LIFECYCLE, "sessionSafePoint", method("()V"));
                     code.return_();
+                }
+                case ATTACHMENT_SAFE_POINT -> {
+                    loadStateLifecycle();
+                    code.invokevirtual(CD_LIFECYCLE, "applicationSafePoint", method("()V"));
+                    code.return_();
+                }
+                case STATE_ATTACHMENT_LIFECYCLE -> {
+                    loadStateLifecycle();
+                    code.areturn();
                 }
                 case STATE_SESSION_ACCESSOR -> {
                     loadStateLifecycle();
@@ -1471,6 +1481,12 @@ final class JvmBytecodeEmitter {
                     code.areturn();
                 }
                 case FACADE_VIEW_FACTORY -> emitFacadeViewFactory();
+                case ATTACHMENT_LIFECYCLE -> {
+                    loadFacadeState();
+                    code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
+                            "$lyra$attachmentLifecycle", method("()" + CD_LIFECYCLE.descriptorString()));
+                    code.areturn();
+                }
                 case FACADE_CONSTRUCTOR -> emitFacadeConstructor();
                 case FACTORY, FACTORY_WITH_OPTIONS -> emitFacadeFactory();
                 case METADATA -> emitFacadeMetadata();

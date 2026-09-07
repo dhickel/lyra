@@ -1274,8 +1274,13 @@ public final class CallableSummarySolver {
                     ProjectionPath.root(), selectedType);
         }
         if (formula instanceof ValueFormula.Declaration declaration) {
-            return new ValueFormula.Declaration(declaration.declarationId(), declaration.moduleId(),
-                    declaration.declarationRoute().compose(selection), ProjectionPath.root(), selectedType);
+            return declaration.attachableBoundary()
+                    ? new ValueFormula.Declaration(declaration.declarationId(), declaration.moduleId(),
+                    declaration.declarationRoute().compose(selection), ProjectionPath.root(),
+                    selectedType, true)
+                    : new ValueFormula.Declaration(declaration.declarationId(), declaration.moduleId(),
+                    declaration.declarationRoute().compose(selection), ProjectionPath.root(),
+                    selectedType);
         }
         if (formula instanceof ValueFormula.CallResult call) {
             return new ValueFormula.CallResult(call.callId(), selectedType,

@@ -61,6 +61,11 @@ final class LyraOwnershipToken {
         checkUsable(true);
     }
 
+    void applicationSafePoint() {
+        owner.check();
+        lifecycle.applicationSafePoint();
+    }
+
     void checkIoAccess() {
         owner.check();
         LifecycleState state = lifecycle.rawState();

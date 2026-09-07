@@ -37,6 +37,7 @@ final class GeneratedTypePlan {
     private final JvmJavaNamePlan javaNames;
     private final List<ModuleId> initializationOrder;
     private final Optional<io.mindspice.lyra.compiler.ir.IrSessionExecution> sessionExecution;
+    private final EmissionMode emissionMode;
 
     public GeneratedTypePlan(
             String basePackage,
@@ -94,7 +95,35 @@ final class GeneratedTypePlan {
             List<GeneratedExportPlan> exports, List<ModuleId> initializationOrder,
             Map<DeclarationId, String> intrinsicFunctionClasses,
             Optional<io.mindspice.lyra.compiler.ir.IrSessionExecution> sessionExecution) {
+        this(sessionExecution, EmissionMode.NORMAL, basePackage, typeNames, classes,
+                tupleClasses, functionInterfaces, closureClasses, cellClasses,
+                moduleStates, moduleFacades, exports, initializationOrder,
+                intrinsicFunctionClasses);
+    }
+
+    GeneratedTypePlan(String basePackage, JvmTypeNameTable typeNames, List<GeneratedClassPlan> classes,
+            Map<String, String> tupleClasses, Map<String, String> functionInterfaces,
+            Map<LambdaId, String> closureClasses, Map<DeclarationId, String> cellClasses,
+            Map<ModuleId, String> moduleStates, Map<ModuleId, String> moduleFacades,
+            List<GeneratedExportPlan> exports, List<ModuleId> initializationOrder,
+            Map<DeclarationId, String> intrinsicFunctionClasses,
+            Optional<io.mindspice.lyra.compiler.ir.IrSessionExecution> sessionExecution,
+            EmissionMode emissionMode) {
+        this(sessionExecution, Objects.requireNonNull(emissionMode, "emissionMode"), basePackage,
+                typeNames, classes, tupleClasses, functionInterfaces, closureClasses, cellClasses,
+                moduleStates, moduleFacades, exports, initializationOrder, intrinsicFunctionClasses);
+    }
+
+    private GeneratedTypePlan(
+            Optional<io.mindspice.lyra.compiler.ir.IrSessionExecution> sessionExecution,
+            EmissionMode emissionMode, String basePackage, JvmTypeNameTable typeNames,
+            List<GeneratedClassPlan> classes, Map<String, String> tupleClasses,
+            Map<String, String> functionInterfaces, Map<LambdaId, String> closureClasses,
+            Map<DeclarationId, String> cellClasses, Map<ModuleId, String> moduleStates,
+            Map<ModuleId, String> moduleFacades, List<GeneratedExportPlan> exports,
+            List<ModuleId> initializationOrder, Map<DeclarationId, String> intrinsicFunctionClasses) {
         this.sessionExecution = Objects.requireNonNull(sessionExecution, "sessionExecution");
+        this.emissionMode = Objects.requireNonNull(emissionMode, "emissionMode");
         this.basePackage = Objects.requireNonNull(basePackage, "basePackage");
         this.typeNames = Objects.requireNonNull(typeNames, "typeNames");
         if (!this.basePackage.equals(typeNames.basePackage())) {
@@ -181,6 +210,14 @@ final class GeneratedTypePlan {
 
     public String basePackage() {
         return basePackage;
+    }
+
+    public EmissionMode emissionMode() {
+        return emissionMode;
+    }
+
+    public io.mindspice.lyra.runtime.ArtifactProfile artifactProfile() {
+        return emissionMode.artifactProfile();
     }
 
     public JvmTypeNameTable typeNames() {
@@ -284,14 +321,15 @@ final class GeneratedTypePlan {
                 && moduleFacades.equals(plan.moduleFacades)
                 && exports.equals(plan.exports)
                 && javaNames.equals(plan.javaNames)
-                && initializationOrder.equals(plan.initializationOrder);
+                && initializationOrder.equals(plan.initializationOrder)
+                && emissionMode == plan.emissionMode;
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(basePackage, typeNames, classes, tupleClasses, functionInterfaces,
                 closureClasses, cellClasses, intrinsicFunctionClasses, moduleStates,
-                moduleFacades, exports, javaNames, initializationOrder);
+                moduleFacades, exports, javaNames, initializationOrder, emissionMode);
     }
 
     public String canonicalSpelling() {
@@ -302,7 +340,8 @@ final class GeneratedTypePlan {
                 + "|intrinsicFunctions=" + intrinsicFunctionClasses
                 + "|exports=" + exports
                 + "|javaNames=" + javaNames
-                + "|initialization=" + initializationOrder;
+                + "|initialization=" + initializationOrder
+                + "|emission=" + emissionMode;
     }
 
     public String canonical() {

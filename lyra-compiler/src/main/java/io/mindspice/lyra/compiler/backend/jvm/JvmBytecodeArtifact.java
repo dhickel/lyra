@@ -10,6 +10,8 @@ import io.mindspice.lyra.compiler.ir.TypedIr;
 import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.source.SourceSnapshot;
 import io.mindspice.lyra.compiler.source.SourceSpan;
+import io.mindspice.lyra.runtime.ArtifactImport;
+import io.mindspice.lyra.runtime.ArtifactProfile;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -30,10 +32,35 @@ import java.util.Optional;
 public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
     /** Public compiler-pipeline bridge; the generated type plan remains internal. */
     public static PhaseResult<JvmBytecodeArtifact> emit(TypedIr ir, String basePackage) {
+        EmissionMode mode = ir != null && ir.sessionExecution().isPresent()
+                ? EmissionMode.SESSION : EmissionMode.NORMAL;
+        return emit(ir, basePackage, mode, Map.of());
+    }
+
+    public static PhaseResult<JvmBytecodeArtifact> emit(TypedIr ir, String basePackage,
+                                                         EmissionMode mode) {
+        return emit(ir, basePackage, mode, Map.of());
+    }
+
+    public static PhaseResult<JvmBytecodeArtifact> emit(TypedIr ir, String basePackage,
+                                                         EmissionMode mode,
+                                                         Map<String, String> reproducibleOptions) {
         Objects.requireNonNull(ir, "ir").requireValidated();
+        Objects.requireNonNull(mode, "mode");
+        Objects.requireNonNull(reproducibleOptions, "reproducibleOptions");
         GeneratedTypePlan plan = GeneratedTypePlanner.plan(ir,
-                Objects.requireNonNull(basePackage, "basePackage"));
-        return JvmBytecodeEmitter.emitPhase(ir, plan);
+                Objects.requireNonNull(basePackage, "basePackage"), mode);
+        PhaseResult<JvmBytecodeArtifact> result = JvmBytecodeEmitter.emitPhase(ir, plan);
+        if (result instanceof PhaseResult.Success<JvmBytecodeArtifact> success) {
+            // The emitter constructs the immutable bytecode inventory.  Copy
+            // it into a context-bearing publication object only after the
+            // phase has succeeded.
+            JvmBytecodeArtifact emitted = success.value();
+            return PhaseResult.success(new JvmBytecodeArtifact(
+                    emitted.ir(), emitted.typePlan(), emitted.classes(), emitted.descriptors(),
+                    emitted.previewRequired(), mode, reproducibleOptions), success.diagnostics());
+        }
+        return result;
     }
 
     /** Immutable export projection consumed by the internal artifact assembler. */
@@ -47,7 +74,17 @@ public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
             String javaName,
             String getterName,
             String functionValueName,
-            Optional<String> setterName) {
+            Optional<String> setterName,
+            long declarationIdentity,
+            long originDeclarationIdentity) {
+        public EmittedExport(String stableId, ModuleId moduleId, String sourceName,
+                             String canonicalSignature, String jvmDescriptor, boolean mutable,
+                             String javaName, String getterName, String functionValueName,
+                             Optional<String> setterName) {
+            this(stableId, moduleId, sourceName, canonicalSignature, jvmDescriptor, mutable,
+                    javaName, getterName, functionValueName, setterName, -1L, -1L);
+        }
+
         public EmittedExport {
             Objects.requireNonNull(stableId, "stableId");
             Objects.requireNonNull(moduleId, "moduleId");
@@ -58,6 +95,9 @@ public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
             Objects.requireNonNull(getterName, "getterName");
             Objects.requireNonNull(functionValueName, "functionValueName");
             setterName = Objects.requireNonNull(setterName, "setterName");
+            if (declarationIdentity < -1 || originDeclarationIdentity < -1) {
+                throw new IllegalArgumentException("export declaration identities must not be negative");
+            }
         }
     }
 
@@ -85,11 +125,22 @@ public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
     private final Map<String, byte[]> classFiles;
     private final Map<String, String> descriptors;
     private final boolean previewRequired;
+    private final EmissionMode emissionMode;
+    private final Map<String, String> reproducibleOptions;
 
     public JvmBytecodeArtifact(TypedIr ir, GeneratedTypePlan typePlan,
                                Map<String, byte[]> classFiles,
                                Map<String, String> descriptors,
                                boolean previewRequired) {
+        this(ir, typePlan, classFiles, descriptors, previewRequired,
+                Objects.requireNonNull(typePlan, "typePlan").emissionMode(), Map.of());
+    }
+
+    public JvmBytecodeArtifact(TypedIr ir, GeneratedTypePlan typePlan,
+                               Map<String, byte[]> classFiles,
+                               Map<String, String> descriptors,
+                               boolean previewRequired, EmissionMode emissionMode,
+                               Map<String, String> reproducibleOptions) {
         this.ir = Objects.requireNonNull(ir, "ir").requireValidated();
         this.typePlan = Objects.requireNonNull(typePlan, "typePlan");
         Objects.requireNonNull(classFiles, "classFiles");
@@ -131,6 +182,12 @@ public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
             throw new IllegalArgumentException("preview flag disagrees with emitted class-file versions");
         }
         this.previewRequired = previewRequired;
+        this.emissionMode = Objects.requireNonNull(emissionMode, "emissionMode");
+        if (typePlan.emissionMode() != emissionMode) {
+            throw new IllegalArgumentException("emission mode disagrees with generated type plan");
+        }
+        this.reproducibleOptions = Map.copyOf(Objects.requireNonNull(
+                reproducibleOptions, "reproducibleOptions"));
     }
 
     public TypedIr ir() {
@@ -191,6 +248,27 @@ public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
         return previewRequired;
     }
 
+    public EmissionMode emissionMode() {
+        return emissionMode;
+    }
+
+    public ArtifactProfile artifactProfile() {
+        return emissionMode.artifactProfile();
+    }
+
+    public Map<String, String> reproducibleOptions() {
+        return reproducibleOptions;
+    }
+
+    /** Canonical import topology retained for attachable context metadata. */
+    public List<ArtifactImport> imports() {
+        var graph = ir.typedSemanticGraph().resolvedGraph().moduleGraph();
+        return graph.edges().stream().map(edge -> new ArtifactImport(
+                runtimeModuleId(edge.from()), edge.logicalTarget().value(),
+                runtimeModuleId(edge.target()), edge.importSpan().startOffset(),
+                edge.importSpan().endOffset())).sorted().toList();
+    }
+
     public int classCount() {
         return classFiles.size();
     }
@@ -217,7 +295,10 @@ public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
                     signature, descriptor, export.isMutable(), javaInvocationName,
                     export.getterName().orElse("get$" + export.javaName()),
                     export.functionValueName().orElse("value$" + export.javaName()),
-                    export.setterName()));
+                    export.setterName(), emissionMode == EmissionMode.ATTACHABLE
+                            ? export.declarationId().ordinal() : -1L,
+                    emissionMode == EmissionMode.ATTACHABLE
+                            ? export.originDeclaration().ordinal() : -1L));
         }
         result.sort(java.util.Comparator.comparing(EmittedExport::stableId));
         return List.copyOf(result);
@@ -298,6 +379,12 @@ public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
                 .thenComparing(EmittedMethod::methodName)
                 .thenComparing(EmittedMethod::methodDescriptor));
         return List.copyOf(result);
+    }
+
+    private static io.mindspice.lyra.runtime.ModuleId runtimeModuleId(ModuleId module) {
+        return module.isUri()
+                ? io.mindspice.lyra.runtime.ModuleId.uri(module.asUri())
+                : io.mindspice.lyra.runtime.ModuleId.path(module.value());
     }
 
     private static boolean previewClassFile(byte[] bytes) {

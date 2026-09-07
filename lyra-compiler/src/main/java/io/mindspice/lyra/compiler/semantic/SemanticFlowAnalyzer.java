@@ -109,6 +109,17 @@ public final class SemanticFlowAnalyzer {
      * and never reconstructs semantic flow.
      */
     static PublicationResult analyzeForPublication(TypedSemanticCore core) {
+        return analyzeForPublication(core, false);
+    }
+
+    /**
+     * Attachable compilations model dispatch safe points as explicit effect
+     * boundaries: public {@code @mut} root bindings may hold externally
+     * written values, so reads of those bindings carry conservative
+     * producer-backed facts instead of initializer-only ownership assumptions.
+     */
+    static PublicationResult analyzeForPublication(TypedSemanticCore core,
+                                                   boolean attachableBoundary) {
         TypedSemanticCore source = Objects.requireNonNull(core, "core");
         Provenance provenance = new Provenance();
         TypedSemanticCore certifiedCore = source.withFlowProvenance(provenance);
@@ -116,7 +127,7 @@ public final class SemanticFlowAnalyzer {
         SemanticFlowResult result;
         try {
             result = analyzeInput(
-                    certifiedCore, SummaryLimits.DEFAULT, true);
+                    certifiedCore, SummaryLimits.DEFAULT, true, attachableBoundary);
         } catch (OwnershipFailure failure) {
             return new PublicationDiagnosticFailure(failure.diagnostic());
         }
@@ -222,6 +233,14 @@ public final class SemanticFlowAnalyzer {
             TypedSemanticInput graph,
             SummaryLimits limits,
             boolean publishSourceDiagnostics) {
+        return analyzeInput(graph, limits, publishSourceDiagnostics, false);
+    }
+
+    private static SemanticFlowResult analyzeInput(
+            TypedSemanticInput graph,
+            SummaryLimits limits,
+            boolean publishSourceDiagnostics,
+            boolean attachableBoundary) {
         Objects.requireNonNull(graph, "graph");
         CANONICAL_ANALYSIS_COUNT.incrementAndGet();
         Objects.requireNonNull(limits, "limits");
@@ -251,7 +270,8 @@ public final class SemanticFlowAnalyzer {
                         effectiveSummaries, producerSummaries);
             }
             return new SemanticFlowResult.Success(
-                    new Engine(graph, localSummaries, effectiveSummaries, limits).run());
+                    new Engine(graph, localSummaries, effectiveSummaries, limits,
+                            attachableBoundary).run());
         } catch (OwnershipFailure failure) {
             if (publishSourceDiagnostics) {
                 throw failure;
@@ -314,6 +334,8 @@ public final class SemanticFlowAnalyzer {
 
     private static final class Engine {
         private final TypedSemanticInput graph;
+        /** Attachable compilations treat public @mut root reads as safe-point boundaries. */
+        private final boolean attachableBoundary;
         /** Summaries authored by the current graph, retained in published facts. */
         private final CallableSummarySet localSummaries;
         /** Current plus producer-certified predecessor summaries used for transfer. */
@@ -340,16 +362,20 @@ public final class SemanticFlowAnalyzer {
                 ownershipDiagnosticOrigins = new TreeMap<>();
         private final Map<OwnershipOccurrence, Set<SourceSpan>>
                 ownershipOccurrenceOrigins = new TreeMap<>();
+        /** True while the canonical engine is executing a top-level initializer. */
+        private boolean initializationEvaluation;
 
         private Engine(
                 TypedSemanticInput graph,
                 CallableSummarySet localSummaries,
                 CallableSummarySet summaries,
-                SummaryLimits limits) {
+                SummaryLimits limits,
+                boolean attachableBoundary) {
             this.graph = Objects.requireNonNull(graph, "graph");
             this.localSummaries = Objects.requireNonNull(localSummaries, "localSummaries");
             this.summaries = Objects.requireNonNull(summaries, "summaries");
             this.limits = Objects.requireNonNull(limits, "limits");
+            this.attachableBoundary = attachableBoundary;
             for (TypedDeclaration declaration : graph.declarations()) {
                 if (declarations.put(declaration.id(), declaration) != null) {
                     throw new IllegalArgumentException("duplicate typed declaration identity");
@@ -661,7 +687,14 @@ public final class SemanticFlowAnalyzer {
                 TypedExpression form = frame.forms.get(index);
                 Optional<DeclarationId> initializer = form.kind() == TypedExpressionKind.DECLARATION
                         ? form.declarationId() : Optional.empty();
-                Eval result = evaluate(form, frame, frame.state);
+                boolean previousInitializationEvaluation = initializationEvaluation;
+                initializationEvaluation = true;
+                Eval result;
+                try {
+                    result = evaluate(form, frame, frame.state);
+                } finally {
+                    initializationEvaluation = previousInitializationEvaluation;
+                }
                 frame.state = result.state;
                 initializer.ifPresent(id -> {
                     frame.values.put(id, frame.state.binding(id)
@@ -861,7 +894,34 @@ public final class SemanticFlowAnalyzer {
                     rememberOwnershipDiagnosticOrigins(
                             values, requested, frame.module.moduleId(), expression.span());
                 }
+                // Root initialization is not dispatchable.  Keep direct
+                // top-level reads tied to their exact initializer facts; the
+                // boundary is applied when a value is captured by a callable
+                // that can execute after publication.
                 return new Lookup(values, distinctEffects(effects), lookup.executed);
+            }
+
+            /**
+             * In attachable compilations the live contents of a public
+             * {@code @mut} root value binding may be replaced by evaluation
+             * writes at any dispatch safe point.  Reads therefore carry
+             * conservative boundary facts for aggregates instead of assuming
+             * the initializer allocation is still the binding's value.
+             */
+            private ValueAlternatives attachableBoundaryValues(
+                    ValueAlternatives values,
+                    DeclarationId declaration,
+                    SourceSpan useSpan) {
+                if (values.isEmpty() || !attachableRootMutableBinding(declaration)) {
+                    return values;
+                }
+                ModuleId root = graph.resolvedGraph().moduleGraph().rootModule();
+                Optional<io.mindspice.lyra.compiler.identity.ExportId> export =
+                        graph.resolvedGraph().declaration(declaration)
+                                .flatMap(value -> graph.resolvedGraph()
+                                        .export(root, value.name()))
+                                .flatMap(ResolvedExport::exportId);
+                return attachableBoundary(values, root, declaration, export, useSpan);
             }
 
             private Optional<Lookup> retainedImportLookup(
@@ -1281,7 +1341,8 @@ public final class SemanticFlowAnalyzer {
                     }
                     state = bindOrReplace(state, declaration, lookup.value, capture.span());
                     ModuleId capturedModule = declarationModule(declaration);
-                    ValueAlternatives capturedValue = lookup.value;
+                    ValueAlternatives capturedValue = attachableBoundaryValues(
+                            lookup.value, declaration, capture.span());
                     ArrayList<EagerEffectWitness> captureEffects = new ArrayList<>();
                     FlowSiteId captureSite = siteForCapture(capture);
                     if (!capturedModule.equals(frame.module.moduleId())) {
@@ -1545,7 +1606,7 @@ public final class SemanticFlowAnalyzer {
                     }
                     rejectImportedOwnershipRequirements(
                             success.ownershipRequirements(), frame.module.moduleId(),
-                            diagnosticOrigins, Optional.of(targetModule));
+                            diagnosticOrigins, Optional.of(targetModule), initializationEvaluation);
                     value = fromFormulas(
                             success.returnValue(), frame.module.moduleId(), call.span());
                     addCallBoundaryOrigins(
@@ -2638,12 +2699,19 @@ public final class SemanticFlowAnalyzer {
                     .filter(fact -> fact.route().isPrefixOf(container)
                             || fact.route().depth() == container.depth()
                             && fact.route().overlaps(container))
+                    .filter(fact -> !initializationEvaluation
+                            || !(fact.identity() instanceof ArrayIdentity.AttachableBoundary))
                     .distinct()
                     .sorted(AggregateIdentityFact.comparator())
                     .toList();
+            boolean attachable = imported.stream().anyMatch(fact ->
+                    fact.identity() instanceof ArrayIdentity.AttachableBoundary);
             rejectImportedOwnership(
-                    imported, span, module,
-                    "an imported binding is read-only in the importing module");
+                    imported, span, module, attachable
+                            ? "a public mutable root binding may hold an externally written "
+                            + "aggregate; its contents are read-only across attachment safe points"
+                            : "an imported binding is read-only in the importing module",
+                    attachable ? "public mutable root binding" : "imported aggregate binding");
         }
 
         private void rejectImportedMutableArguments(
@@ -2657,7 +2725,10 @@ public final class SemanticFlowAnalyzer {
                 if (!function.parameterType(index).isMutable()) {
                     continue;
                 }
-                List<AggregateIdentityFact> imported = importedFacts(values.get(index));
+                List<AggregateIdentityFact> imported = importedFacts(values.get(index)).stream()
+                        .filter(fact -> !initializationEvaluation
+                                || !(fact.identity() instanceof ArrayIdentity.AttachableBoundary))
+                        .toList();
                 rejectImportedOwnership(
                         imported, arguments.get(index).span(), module,
                         "an imported aggregate alias cannot grant local mutation permission");
@@ -2677,22 +2748,44 @@ public final class SemanticFlowAnalyzer {
                 ModuleId module,
                 Map<OwnershipOriginKey, Set<SourceSpan>> diagnosticOrigins,
                 Optional<ModuleId> callableModule) {
+            rejectImportedOwnershipRequirements(requirements, module, diagnosticOrigins,
+                    callableModule, false);
+        }
+
+        private void rejectImportedOwnershipRequirements(
+                List<OwnershipRequirement> requirements,
+                ModuleId module,
+                Map<OwnershipOriginKey, Set<SourceSpan>> diagnosticOrigins,
+                Optional<ModuleId> callableModule,
+                boolean initialization) {
             for (OwnershipRequirement requirement : requirements.stream()
                     .sorted(OwnershipRequirement::compareTo).toList()) {
                 ValueAlternatives values = fromOwnershipFormulas(
                         requirement.value(), module, requirement.span());
+
+
                 rememberTransferredOwnershipOrigins(
                         values, module, diagnosticOrigins);
-                String message = requirement.kind()
+                List<AggregateIdentityFact> imported = importedFacts(values).stream()
+                        .filter(fact -> !initialization
+                                || !(fact.identity() instanceof ArrayIdentity.AttachableBoundary))
+                        .filter(fact -> requirement.kind() != OwnershipRequirement.Kind.AGGREGATE_MUTATION
+                                || callableModule.isEmpty()
+                                || !fact.identity().ownerModule().equals(callableModule.orElseThrow())
+                                || fact.identity() instanceof ArrayIdentity.AttachableBoundary)
+                        .toList();
+                boolean attachableBoundary = imported.stream().anyMatch(fact ->
+                        fact.identity() instanceof ArrayIdentity.AttachableBoundary);
+                String message = attachableBoundary
+                        ? "a public mutable root binding may hold an externally written "
+                        + "aggregate; its contents are read-only across attachment safe points"
+                        : requirement.kind()
                         == OwnershipRequirement.Kind.MUTABLE_ARGUMENT
                         ? "an imported aggregate alias cannot grant local mutation permission"
                         : "an imported binding is read-only in the importing module";
-                List<AggregateIdentityFact> imported = importedFacts(values).stream()
-                        .filter(fact -> requirement.kind() != OwnershipRequirement.Kind.AGGREGATE_MUTATION
-                                || callableModule.isEmpty()
-                                || !fact.identity().ownerModule().equals(callableModule.orElseThrow()))
-                        .toList();
-                rejectImportedOwnership(imported, requirement.span(), module, message);
+                rejectImportedOwnership(imported, requirement.span(), module, message,
+                        attachableBoundary ? "public mutable root binding"
+                                : "imported aggregate binding");
             }
         }
 
@@ -2783,6 +2876,16 @@ public final class SemanticFlowAnalyzer {
                 SourceSpan span,
                 ModuleId module,
                 String message) {
+            rejectImportedOwnership(imported, span, module, message,
+                    "imported aggregate binding");
+        }
+
+        private void rejectImportedOwnership(
+                List<AggregateIdentityFact> imported,
+                SourceSpan span,
+                ModuleId module,
+                String message,
+                String originLabel) {
             if (imported.isEmpty()) {
                 return;
             }
@@ -2792,7 +2895,7 @@ public final class SemanticFlowAnalyzer {
                         fact, module);
                 for (SourceSpan origin : origins) {
                     related.add(RelatedSpan.of(
-                            origin, "imported aggregate binding"));
+                            origin, originLabel));
                 }
             }
             related = new ArrayList<>(new LinkedHashSet<>(related));
@@ -2891,6 +2994,33 @@ public final class SemanticFlowAnalyzer {
                 DeclarationId originDeclaration,
                 Optional<io.mindspice.lyra.compiler.identity.ExportId> export,
                 SourceSpan witnessSpan) {
+            return boundaryValues(values, ownerModule, originDeclaration, export,
+                    witnessSpan, false);
+        }
+
+        /**
+         * Attachable dispatch boundary: the current contents of a public
+         * {@code @mut} root binding may be externally written aggregates, so
+         * local allocation facts are replaced by conservative boundary
+         * identities instead of initializer-only ownership assumptions.
+         */
+        private ValueAlternatives attachableBoundary(
+                ValueAlternatives values,
+                ModuleId ownerModule,
+                DeclarationId originDeclaration,
+                Optional<io.mindspice.lyra.compiler.identity.ExportId> export,
+                SourceSpan witnessSpan) {
+            return boundaryValues(values, ownerModule, originDeclaration, export,
+                    witnessSpan, true);
+        }
+
+        private ValueAlternatives boundaryValues(
+                ValueAlternatives values,
+                ModuleId ownerModule,
+                DeclarationId originDeclaration,
+                Optional<io.mindspice.lyra.compiler.identity.ExportId> export,
+                SourceSpan witnessSpan,
+                boolean attachable) {
             if (values.isEmpty()) {
                 return values;
             }
@@ -2902,15 +3032,31 @@ public final class SemanticFlowAnalyzer {
                         facts.add(fact);
                         continue;
                     }
-                    io.mindspice.lyra.compiler.identity.ExportId exportId = export
-                            .filter(id -> id.moduleId().equals(fact.identity().ownerModule()))
-                            .orElseGet(() -> exportFor(fact.identity().ownerModule(),
-                                    fact.identity().originDeclaration(), fact.identity().arrayType()));
-                    ArrayIdentity identity = ArrayIdentity.crossModuleOrigin(
-                            fact.identity().ownerModule(), fact.identity().originDeclaration(),
-                            exportId, fact.identity().arrayType());
+                    io.mindspice.lyra.compiler.identity.ExportId exportId;
+                    ModuleId identityOwner;
+                    DeclarationId identityOrigin;
+                    if (attachable) {
+                        exportId = export
+                                .filter(id -> id.moduleId().equals(ownerModule))
+                                .orElseGet(() -> exportFor(ownerModule,
+                                        originDeclaration, fact.identity().arrayType()));
+                        identityOwner = ownerModule;
+                        identityOrigin = originDeclaration;
+                    } else {
+                        exportId = export
+                                .filter(id -> id.moduleId().equals(fact.identity().ownerModule()))
+                                .orElseGet(() -> exportFor(fact.identity().ownerModule(),
+                                        fact.identity().originDeclaration(), fact.identity().arrayType()));
+                        identityOwner = fact.identity().ownerModule();
+                        identityOrigin = fact.identity().originDeclaration();
+                    }
+                    ArrayIdentity identity = attachable
+                            ? ArrayIdentity.attachableBoundary(
+                            identityOwner, identityOrigin, exportId, fact.identity().arrayType())
+                            : ArrayIdentity.crossModuleOrigin(
+                            identityOwner, identityOrigin, exportId, fact.identity().arrayType());
                     OwnershipWitness witness = OwnershipWitness.crossModule(
-                                    fact.identity().ownerModule(), fact.identity().originDeclaration(),
+                                    identityOwner, identityOrigin,
                                     fact.ownershipWitness().scopeId(),
                                     fact.ownershipWitness().sourceSpan(), exportId)
                             .atUse(witnessSpan);
@@ -2921,9 +3067,9 @@ public final class SemanticFlowAnalyzer {
                     facts.add(new io.mindspice.lyra.compiler.semantic.flow.AggregateIdentityFact(
                             identity, fact.route(), witness));
                 }
-                addPotentialImportedFacts(
+                addPotentialBoundaryFacts(
                         value.type(), ProjectionPath.root(), ownerModule,
-                        originDeclaration, export, witnessSpan, facts);
+                        originDeclaration, export, witnessSpan, facts, attachable);
                 alternatives.add(ValueAlternative.of(
                         value.type(), facts, value.callableFlows(), value.nilProvenance()));
             }
@@ -2938,6 +3084,19 @@ public final class SemanticFlowAnalyzer {
                 Optional<io.mindspice.lyra.compiler.identity.ExportId> export,
                 SourceSpan useSpan,
                 List<AggregateIdentityFact> facts) {
+            addPotentialBoundaryFacts(type, route, ownerModule, originDeclaration,
+                    export, useSpan, facts, false);
+        }
+
+        private void addPotentialBoundaryFacts(
+                LyraType type,
+                ProjectionPath route,
+                ModuleId ownerModule,
+                DeclarationId originDeclaration,
+                Optional<io.mindspice.lyra.compiler.identity.ExportId> export,
+                SourceSpan useSpan,
+                List<AggregateIdentityFact> facts,
+                boolean attachable) {
             LyraType base = type.withoutQualifiers();
             if (base instanceof ArrayType array) {
                 boolean represented = facts.stream().anyMatch(fact ->
@@ -2957,24 +3116,43 @@ public final class SemanticFlowAnalyzer {
                             .withOriginSite(ownershipOriginSite(
                                     originDeclaration, useSpan));
                     facts.add(new AggregateIdentityFact(
-                            ArrayIdentity.crossModuleOrigin(
+                            attachable
+                                    ? ArrayIdentity.attachableBoundary(
+                                    ownerModule, originDeclaration, exportId, array)
+                                    : ArrayIdentity.crossModuleOrigin(
                                     ownerModule, originDeclaration, exportId, array),
                             route, witness));
                 }
-                addPotentialImportedFacts(
+                addPotentialBoundaryFacts(
                         array.elementType(),
                         route.append(ProjectionStep.unknownArrayElement()),
-                        ownerModule, originDeclaration, export, useSpan, facts);
+                        ownerModule, originDeclaration, export, useSpan, facts, attachable);
                 return;
             }
             if (base instanceof TupleType tuple) {
                 for (int index = 0; index < tuple.arity(); index++) {
-                    addPotentialImportedFacts(
+                    addPotentialBoundaryFacts(
                             tuple.memberType(index),
                             route.append(ProjectionStep.tupleMember(index)),
-                            ownerModule, originDeclaration, export, useSpan, facts);
+                            ownerModule, originDeclaration, export, useSpan, facts, attachable);
                 }
             }
+        }
+
+        /** Exact predicate for the attachable safe-point effect boundary. */
+        private boolean attachableRootMutableBinding(DeclarationId declaration) {
+            if (!attachableBoundary) {
+                return false;
+            }
+            ResolvedDeclaration resolved = resolvedDeclarations.get(declaration);
+            if (resolved == null
+                    || !resolved.isPublic()
+                    || !resolved.isMutable()
+                    || resolved.kind() != DeclarationKind.LET) {
+                return false;
+            }
+            ModuleId root = graph.resolvedGraph().moduleGraph().rootModule();
+            return resolved.moduleId().equals(root);
         }
 
         private io.mindspice.lyra.compiler.identity.ExportId exportFor(
@@ -3008,12 +3186,14 @@ public final class SemanticFlowAnalyzer {
             ArrayList<ValueFormula> formulas = new ArrayList<>();
             for (ValueAlternative value : values) {
                 for (var fact : value.aggregateIdentities()) {
-                    formulas.add(new ValueFormula.Declaration(
+                    ValueFormula.Declaration formula = new ValueFormula.Declaration(
                             fact.identity().originDeclaration(),
                             Optional.of(fact.identity().ownerModule()),
                             fact.identity() instanceof ArrayIdentity.SessionOrigin session
                                     ? session.sourceRoute() : ProjectionPath.root(),
-                            fact.route(), fact.identity().arrayType()));
+                            fact.route(), fact.identity().arrayType());
+                    formulas.add(fact.identity() instanceof ArrayIdentity.AttachableBoundary
+                            ? formula.withAttachableBoundary() : formula);
                 }
                 for (CallableFlow callable : value.callableFlows()) {
                     formulas.add(callableFormula(callable, value.type(), contextModule, span));
@@ -3138,21 +3318,22 @@ public final class SemanticFlowAnalyzer {
                 FormulaAlternatives alternatives,
                 ModuleId contextModule,
                 SourceSpan span) {
-            return fromFormulas(alternatives, contextModule, span, true);
+            return fromFormulas(alternatives, contextModule, span, true, false);
         }
 
         private ValueAlternatives fromOwnershipFormulas(
                 FormulaAlternatives alternatives,
                 ModuleId contextModule,
                 SourceSpan span) {
-            return fromFormulas(alternatives, contextModule, span, false);
+            return fromFormulas(alternatives, contextModule, span, false, true);
         }
 
         private ValueAlternatives fromFormulas(
                 FormulaAlternatives alternatives,
                 ModuleId contextModule,
                 SourceSpan span,
-                boolean validateReturnedCallables) {
+                boolean validateReturnedCallables,
+                boolean applyAttachableBoundary) {
             ArrayList<io.mindspice.lyra.compiler.semantic.flow.AggregateIdentityFact> facts = new ArrayList<>();
             ArrayList<CallableFlow> callables = new ArrayList<>();
             ArrayList<NilProvenance> nils = new ArrayList<>();
@@ -3196,7 +3377,28 @@ public final class SemanticFlowAnalyzer {
                     }
                     SourceSpan originSpan = ownershipOriginSpan(
                             declaration.declarationId(), span);
-                    if (owner.equals(contextModule)) {
+                    io.mindspice.lyra.compiler.identity.ExportId export = null;
+                    if (declaration.attachableBoundary()
+                            || applyAttachableBoundary
+                            && attachableRootMutableBinding(declaration.declarationId())) {
+                        export = graph.resolvedGraph().declaration(declaration.declarationId())
+                                .flatMap(value -> graph.resolvedGraph()
+                                        .export(owner, value.name()))
+                                .flatMap(ResolvedExport::exportId)
+                                .orElseGet(() -> exportFor(
+                                        owner, declaration.declarationId(), arrayType));
+                        OwnershipWitness witness = OwnershipWitness.crossModule(
+                                        owner, declaration.declarationId(),
+                                        declarationScope(declaration.declarationId(), span),
+                                        originSpan, export)
+                                .atUse(span)
+                                .withOriginSite(ownershipOriginSite(
+                                        declaration.declarationId(), span));
+                        facts.add(new io.mindspice.lyra.compiler.semantic.flow.AggregateIdentityFact(
+                                ArrayIdentity.attachableBoundary(
+                                        owner, declaration.declarationId(), export, arrayType),
+                                declaration.resultRoute(), witness));
+                    } else if (owner.equals(contextModule)) {
                         OwnershipWitness witness = OwnershipWitness.local(
                                         owner, declaration.declarationId(),
                                         declarationScope(declaration.declarationId(), span),
@@ -3209,18 +3411,18 @@ public final class SemanticFlowAnalyzer {
                                         owner, declaration.declarationId(), arrayType),
                                 declaration.resultRoute(), witness));
                     } else {
-                        io.mindspice.lyra.compiler.identity.ExportId export = exportFor(
+                        io.mindspice.lyra.compiler.identity.ExportId crossExport = exportFor(
                                 owner, declaration.declarationId(), arrayType);
                         OwnershipWitness witness = OwnershipWitness.crossModule(
                                         owner, declaration.declarationId(),
                                         declarationScope(declaration.declarationId(), span),
-                                        originSpan, export)
+                                        originSpan, crossExport)
                                 .atUse(span)
                                 .withOriginSite(ownershipOriginSite(
                                         declaration.declarationId(), span));
                         facts.add(new io.mindspice.lyra.compiler.semantic.flow.AggregateIdentityFact(
                                 ArrayIdentity.crossModuleOrigin(
-                                        owner, declaration.declarationId(), export, arrayType),
+                                        owner, declaration.declarationId(), crossExport, arrayType),
                                 declaration.resultRoute(), witness));
                     }
                 } else if (formula instanceof ValueFormula.Declaration declaration

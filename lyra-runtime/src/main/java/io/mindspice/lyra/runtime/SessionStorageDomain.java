@@ -74,8 +74,14 @@ public final class SessionStorageDomain implements AutoCloseable {
         }
 
         public RootLifetime(OwnerThread owner) {
+            this(owner, null);
+        }
+
+        /** Runtime-owned extension domain over a loaded artifact's structural base. */
+        RootLifetime(OwnerThread owner, SessionTypeLoader structuralParent) {
             this.owner = Objects.requireNonNull(owner, "owner");
-            this.typeDomain = new SessionTypeLoader();
+            this.typeDomain = structuralParent == null
+                    ? new SessionTypeLoader() : new SessionTypeLoader(structuralParent);
             this.anchoredHolders.add(typeDomain);
         }
 
@@ -143,7 +149,7 @@ public final class SessionStorageDomain implements AutoCloseable {
             for (Retention retention : List.copyOf(retentions)) {
                 retention.retireInternal(true);
             }
-            typeDomain.retire();
+            typeDomain.retireSelf();
             anchoredHolders.clear();
             retentions.clear();
             closed = true;
@@ -189,12 +195,12 @@ public final class SessionStorageDomain implements AutoCloseable {
             requireOpen();
         }
 
-        private SessionTypeLoader typeDomain() {
+        SessionTypeLoader typeDomain() {
             checkOpen();
             return typeDomain;
         }
 
-        private void publishTypeDomain(SessionTypeLoader next) {
+        void publishTypeDomain(SessionTypeLoader next) {
             checkOpen();
             typeDomain = Objects.requireNonNull(next, "next");
             anchoredHolders.add(next);

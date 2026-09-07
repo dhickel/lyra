@@ -15,7 +15,8 @@ import java.util.Optional;
  * is not a runtime object identity or serialized artifact identifier.
  */
 public sealed interface ArrayIdentity extends Comparable<ArrayIdentity>
-        permits ArrayIdentity.LocalAllocation, ArrayIdentity.CrossModuleOrigin, ArrayIdentity.SessionOrigin {
+        permits ArrayIdentity.LocalAllocation, ArrayIdentity.CrossModuleOrigin,
+                ArrayIdentity.SessionOrigin, ArrayIdentity.AttachableBoundary {
     ArrayType arrayType();
 
     ModuleId ownerModule();
@@ -36,6 +37,11 @@ public sealed interface ArrayIdentity extends Comparable<ArrayIdentity>
             return "session/" + owner + "/" + session.originDeclaration() + "/" + session.sourceRoute()
                     + "/" + session.arrayType().canonicalSpelling();
         }
+        if (this instanceof AttachableBoundary boundary) {
+            return "attachable/" + owner + "/" + boundary.exportId()
+                    + "/" + boundary.originDeclaration() + "/"
+                    + boundary.arrayType().canonicalSpelling();
+        }
         CrossModuleOrigin imported = (CrossModuleOrigin) this;
         return "cross-module/" + owner + "/" + imported.exportId()
                 + "/" + imported.originDeclaration() + "/"
@@ -53,6 +59,14 @@ public sealed interface ArrayIdentity extends Comparable<ArrayIdentity>
             ExportId exportId,
             ArrayType arrayType) {
         return new CrossModuleOrigin(ownerModule, originDeclaration, exportId, arrayType);
+    }
+
+    static AttachableBoundary attachableBoundary(
+            ModuleId ownerModule,
+            DeclarationId originDeclaration,
+            ExportId exportId,
+            ArrayType arrayType) {
+        return new AttachableBoundary(ownerModule, originDeclaration, exportId, arrayType);
     }
 
     @Override
@@ -125,6 +139,45 @@ public sealed interface ArrayIdentity extends Comparable<ArrayIdentity>
             if (!ownerModule.equals(exportId.moduleId())) {
                 throw new IllegalArgumentException(
                         "cross-module export must belong to its owning module");
+            }
+        }
+
+        @Override
+        public Optional<ExportId> originExport() {
+            return Optional.of(exportId);
+        }
+
+        @Override
+        public boolean isImported() {
+            return true;
+        }
+
+        @Override
+        public String toString() {
+            return canonicalKey();
+        }
+    }
+
+    /**
+     * Conservative current value of a public {@code @mut} root binding in an
+     * attachable compilation.  The binding's live contents may be replaced by
+     * an externally written aggregate at any dispatch safe point, so this is
+     * never a fresh allocation or a proof that the current array is owned by
+     * the root module.
+     */
+    record AttachableBoundary(
+            ModuleId ownerModule,
+            DeclarationId originDeclaration,
+            ExportId exportId,
+            ArrayType arrayType) implements ArrayIdentity {
+        public AttachableBoundary {
+            Objects.requireNonNull(ownerModule, "ownerModule");
+            Objects.requireNonNull(originDeclaration, "originDeclaration");
+            Objects.requireNonNull(exportId, "exportId");
+            Objects.requireNonNull(arrayType, "arrayType");
+            if (!ownerModule.equals(exportId.moduleId())) {
+                throw new IllegalArgumentException(
+                        "attachable boundary export must belong to its owning module");
             }
         }
 

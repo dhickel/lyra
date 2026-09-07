@@ -21,6 +21,7 @@ public final class ModuleLifecycle implements AutoCloseable {
     private final RuntimeIoEnvironment ioEnvironment;
     private final SessionStorageDomain.Linkage sessionLinkage;
     private final boolean deferredSubmission;
+    private LyraOwnerController applicationController;
     private final java.util.Set<Long> attemptedBindings = new java.util.HashSet<>();
     private final java.util.Set<Long> initializedBindings = new java.util.HashSet<>();
     private boolean submissionStarted;
@@ -177,6 +178,41 @@ public final class ModuleLifecycle implements AutoCloseable {
     public void sessionSafePoint() {
         owner.check();
         if (sessionLinkage != null) sessionLinkage.safePoint();
+    }
+
+    /**
+     * Optional attachable application boundary.  A normal or session module
+     * has no service and therefore this remains an owner/lifecycle check with
+     * no dispatch.  The generated hook never manufactures a controller.
+     */
+    public void applicationSafePoint() {
+        owner.check();
+        LifecycleState current = state.get();
+        // Initialization is never dispatchable.  The generated hook may be
+        // reached from an initializer, where it is intentionally inert.
+        if (current != LifecycleState.OPEN) return;
+        LyraOwnerController controller = applicationController;
+        if (controller != null && !controller.isClosed()) controller.poll();
+    }
+
+    /** Installs the one trusted owner service for an explicitly registered root. */
+    public void registerApplicationController(LyraOwnerController controller) {
+        owner.check();
+        requireOpenAfterOwnerCheck();
+        Objects.requireNonNull(controller, "controller");
+        if (controller.ownerThread() != owner.thread()) {
+            throw new LyraThreadException("application controller belongs to another owner thread");
+        }
+        if (applicationController != null && applicationController != controller) {
+            throw new LyraLifecycleException("application service is already registered");
+        }
+        applicationController = controller;
+    }
+
+    /** Removes the service without closing the module or its root state. */
+    public void unregisterApplicationController(LyraOwnerController controller) {
+        owner.check();
+        if (applicationController == controller) applicationController = null;
     }
 
     /** Generated exact typed data accesses only; no name-based or universal-value ABI. */

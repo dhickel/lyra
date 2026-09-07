@@ -6,7 +6,12 @@ import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.source.SourceId;
 import io.mindspice.lyra.compiler.source.SourceSnapshot;
 import io.mindspice.lyra.compiler.api.WriteOptions;
+import io.mindspice.lyra.runtime.ArtifactDependency;
+import io.mindspice.lyra.runtime.ArtifactHook;
+import io.mindspice.lyra.runtime.ArtifactImport;
 import io.mindspice.lyra.runtime.ArtifactMetadata;
+import io.mindspice.lyra.runtime.ArtifactProfile;
+import io.mindspice.lyra.runtime.AttachmentContext;
 import io.mindspice.lyra.runtime.ArtifactSource;
 import io.mindspice.lyra.runtime.ArtifactRevision;
 import io.mindspice.lyra.runtime.BindingMutability;
@@ -103,7 +108,10 @@ public final class ArtifactAssembly implements ArtifactSource {
         validateGeneratedClasses(bytecode, classes);
         Map<ModuleId, SourceSnapshot> snapshots = sourceSnapshots(bytecode);
         List<ModuleMetadata> modules = moduleMetadata(bytecode, snapshots);
-        List<SourceMetadata> sources = sourceMetadata(bytecode, snapshots, options.includeSources());
+        ArtifactProfile artifactProfile = bytecode.artifactProfile();
+        boolean includeSources = options.includeSources()
+                || artifactProfile == ArtifactProfile.ATTACHABLE;
+        List<SourceMetadata> sources = sourceMetadata(bytecode, snapshots, includeSources);
         List<ExportMetadata> exports = exportMetadata(bytecode);
         Map<String, String> names = new TreeMap<>();
         for (ExportMetadata export : exports) {
@@ -142,9 +150,28 @@ public final class ArtifactAssembly implements ArtifactSource {
         Optional<RuntimeRequirement> requirement = options.packagingMode() == PackagingMode.THIN_JAR
                 ? options.runtimeRequirement()
                 : Optional.empty();
+        List<ArtifactImport> imports = artifactProfile == ArtifactProfile.NORMAL
+                ? List.of() : bytecode.imports();
+        List<ArtifactHook> hooks = artifactProfile == ArtifactProfile.ATTACHABLE
+                ? List.of(new ArtifactHook("$lyra$attachmentLifecycle",
+                        "()Lio/mindspice/lyra/runtime/ModuleLifecycle;"),
+                new ArtifactHook("$lyra$attachmentSafePoint", "()V"))
+                : List.of();
+        List<ArtifactDependency> dependencies = artifactProfile == ArtifactProfile.ATTACHABLE
+                ? List.of(new ArtifactDependency("io.mindspice", "lyra-runtime",
+                        io.mindspice.lyra.runtime.LyraRuntimeConstants.RUNTIME_VERSION,
+                        ArtifactProfile.ATTACHABLE))
+                : List.of();
+        Optional<AttachmentContext> attachmentContext = artifactProfile == ArtifactProfile.ATTACHABLE
+                ? Optional.of(attachmentContext(bytecode, modules, sources, options, imports,
+                previewRequired))
+                : Optional.empty();
+        Map<String, String> reproducibleOptions = artifactProfile == ArtifactProfile.NORMAL
+                ? Map.of() : bytecode.reproducibleOptions();
         ArtifactRevision revision = ArtifactRevision.compute(
                 options.compilerBuild(), modules, names, options.profile(),
-                options.packagingMode(), previewRequired, bytecode.javaBasePackage(), sources, requirement);
+                options.packagingMode(), previewRequired, bytecode.javaBasePackage(), sources, requirement,
+                artifactProfile, hooks, dependencies, attachmentContext, imports, reproducibleOptions);
         String artifactId = options.artifactId().orElseGet(() -> MessageDigests.sha256Hex(
                 "LYRA-ARTIFACT-ID", options.compilerBuild(),
                 root.id().canonicalSpelling(), revision.value()));
@@ -168,6 +195,12 @@ public final class ArtifactAssembly implements ArtifactSource {
                 .debugMapHash(debugMap.sha256())
                 .packagingMode(options.packagingMode())
                 .runtimeRequirement(requirement)
+                .executionProfile(artifactProfile)
+                .hookRequirements(hooks)
+                .dependencyRequirements(dependencies)
+                .attachmentContext(attachmentContext)
+                .imports(imports)
+                .reproducibleOptions(reproducibleOptions)
                 .build();
 
         // The emitter must produce facades before packaging metadata exists,
@@ -380,11 +413,13 @@ public final class ArtifactAssembly implements ArtifactSource {
                 throw new ArtifactAssemblyException("export contract is not canonical: "
                         + export.sourceName());
             }
-            ExportMetadata metadata = new ExportMetadata(module, export.sourceName(), contract,
+            ExportMetadata metadata = new ExportMetadata(
+                    new io.mindspice.lyra.runtime.ExportId(module, export.sourceName(), contract),
                     export.jvmDescriptor(), export.mutable()
                             ? BindingMutability.MUTABLE : BindingMutability.IMMUTABLE,
                     export.javaName(), export.getterName(), export.functionValueName(),
-                    export.setterName());
+                    export.setterName(), export.declarationIdentity(),
+                    export.originDeclarationIdentity());
             if (!metadata.id().id().equals(export.stableId())) {
                 throw new ArtifactAssemblyException("export identity disagrees with runtime metadata: "
                         + export.sourceName());
@@ -606,6 +641,55 @@ public final class ArtifactAssembly implements ArtifactSource {
         if (previewRequired && !profile.previewSupported()) {
             throw new ArtifactAssemblyException("preview class files need a preview-capable profile");
         }
+    }
+
+    private static AttachmentContext attachmentContext(JvmBytecodeArtifact bytecode,
+                                                        List<ModuleMetadata> modules,
+                                                        List<SourceMetadata> sources,
+                                                        ArtifactAssemblyOptions options,
+                                                        List<ArtifactImport> imports,
+                                                        boolean previewRequired) {
+        io.mindspice.lyra.runtime.ModuleId root = runtimeModuleId(
+                bytecode.typedIr().rootModule().moduleId());
+        ModuleMetadata rootMetadata = modules.stream().filter(module -> module.id().equals(root))
+                .findFirst().orElseThrow(() -> new ArtifactAssemblyException(
+                        "attachable root is absent from module metadata"));
+        ArrayList<String> graphParts = new ArrayList<>();
+        for (ModuleMetadata module : modules) {
+            graphParts.add(module.id().canonicalSpelling() + "=" + module.revision().value());
+        }
+        for (ArtifactImport imported : imports) {
+            graphParts.add(imported.fromModule().canonicalSpelling() + "->"
+                    + imported.logicalTarget() + "=" + imported.targetModule().canonicalSpelling()
+                    + "@" + imported.startOffset() + ":" + imported.endOffset());
+        }
+        String graphRevision = MessageDigests.sha256Hex("LYRA-ATTACHMENT-GRAPH",
+                graphParts.toArray(String[]::new));
+        ArrayList<String> sourceParts = new ArrayList<>();
+        for (SourceMetadata source : sources) {
+            sourceParts.add(source.sourceId().canonicalSpelling() + "=" + source.sha256()
+                    + "#" + source.entryName().orElse(""));
+        }
+        String sourceInventoryRevision = MessageDigests.sha256Hex("LYRA-ATTACHMENT-SOURCES",
+                sourceParts.toArray(String[]::new));
+        ArrayList<String> optionParts = new ArrayList<>();
+        optionParts.add(options.compilerVersion());
+        optionParts.add(options.compilerBuild());
+        optionParts.add(options.profile().name());
+        optionParts.add(Integer.toString(options.profile().javaClassFileTarget()));
+        optionParts.add(Integer.toString(options.runtimeAbi().major()));
+        optionParts.add(Integer.toString(options.runtimeAbi().minor()));
+        optionParts.add(options.packagingMode().canonicalSpelling());
+        optionParts.add(Boolean.toString(previewRequired));
+        optionParts.add(Boolean.toString(options.includeSources()));
+        optionParts.add(bytecode.javaBasePackage());
+        bytecode.reproducibleOptions().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> optionParts.add(entry.getKey() + "=" + entry.getValue()));
+        String optionsRevision = MessageDigests.sha256Hex("LYRA-ATTACHMENT-OPTIONS",
+                optionParts.toArray(String[]::new));
+        return new AttachmentContext(root, rootMetadata.revision(), graphRevision,
+                sourceInventoryRevision, optionsRevision, bytecode.javaBasePackage());
     }
 
     private static io.mindspice.lyra.runtime.ModuleId runtimeModuleId(ModuleId module) {
