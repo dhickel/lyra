@@ -514,6 +514,27 @@ public final class IrValidator {
                     }
                     continue;
                 }
+                // Imported facts whose owner module lies outside the current
+                // submission graph (registered-root storage, older retained
+                // producers) cannot point at a flow site of this graph.  The
+                // compiler-issued certificate retains the exact producer
+                // evidence instead; the session never re-synthesizes a
+                // session-owned identity for such storage.
+                if (!modules.contains(aggregate.identity().ownerModule())) {
+                    boolean certified = aggregate.identity().isImported()
+                            && semantic.resolvedGraph().sessionFlowCertificate()
+                            .map(certificate -> certificate.certifiesAggregate(
+                                    new io.mindspice.lyra.compiler.semantic.flow.AggregateIdentityFact(
+                                            aggregate.identity(), aggregate.route(),
+                                            aggregate.witness())))
+                            .orElse(false);
+                    if (!certified) {
+                        add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK,
+                                aggregate.witness().sourceSpan(),
+                                "out-of-graph aggregate provenance is not producer-certified");
+                    }
+                    continue;
+                }
                 SourceSpan expected = aggregate.originSite().map(flowSiteSpans::get).orElse(null);
                 if (expected == null || !expected.equals(aggregate.witness().sourceSpan())) {
                     add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK,

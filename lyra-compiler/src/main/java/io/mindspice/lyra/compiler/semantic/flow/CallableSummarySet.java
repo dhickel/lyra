@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.function.Function;
@@ -198,6 +199,42 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
 
     public List<CallableSummary> orderedSummaries() {
         return List.copyOf(summaries.values());
+    }
+
+    /**
+     * Retains the solved summaries belonging to one typed graph while keeping
+     * their producer-computed SCC topology.  Session analysis may solve a
+     * current graph together with inherited producer summaries, but the
+     * published phase artifact must still cover exactly the graph's typed
+     * lambdas rather than leaking borrowed summaries into its validator.
+     */
+    CallableSummarySet select(Set<LambdaId> selectedLambdas,
+                              Set<DeclarationId> selectedDeclarations,
+                              Set<DeclarationId> selectedIntrinsics) {
+        Objects.requireNonNull(selectedLambdas, "selectedLambdas");
+        Objects.requireNonNull(selectedDeclarations, "selectedDeclarations");
+        Objects.requireNonNull(selectedIntrinsics, "selectedIntrinsics");
+        List<CallableSummary> selected = summaries.values().stream()
+                .filter(summary -> selectedLambdas.contains(summary.lambdaId()))
+                .toList();
+        Map<DeclarationId, LambdaId> declarations = new TreeMap<>();
+        lambdaByDeclaration.forEach((declaration, lambda) -> {
+            if (selectedDeclarations.contains(declaration)
+                    && selectedLambdas.contains(lambda)) {
+                declarations.put(declaration, lambda);
+            }
+        });
+        Map<DeclarationId, ModuleId> intrinsics = new TreeMap<>();
+        intrinsicDeclarations.forEach((declaration, module) -> {
+            if (selectedIntrinsics.contains(declaration)) {
+                intrinsics.put(declaration, module);
+            }
+        });
+        List<CallableScc> selectedComponents = components.stream()
+                .filter(component -> component.members().stream()
+                        .allMatch(selectedLambdas::contains))
+                .toList();
+        return new CallableSummarySet(selected, declarations, intrinsics, selectedComponents);
     }
 
     public Map<DeclarationId, LambdaId> lambdaByDeclaration() {
@@ -593,7 +630,8 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
                         write.value().rootType(), values, valueOverrides);
                 requireProjectionDepth(transferredValue);
                 Optional<List<CapturedCellWrite>> transferred = transferWriteTarget(
-                        write, transferredValue, writeArguments, captures);
+                        write, transferredValue, writeArguments, captures, summary,
+                        declarationResolver);
                 if (transferred.isEmpty()) {
                     return failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
                             "a symbolic write target has no caller fact", callSpan);
@@ -783,7 +821,10 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
             CapturedCellWrite write,
             FormulaAlternatives value,
             List<FormulaAlternatives> arguments,
-            Map<io.mindspice.lyra.compiler.identity.CaptureId, FormulaAlternatives> captures) {
+            Map<io.mindspice.lyra.compiler.identity.CaptureId, FormulaAlternatives> captures,
+            CallableSummary owner,
+            Function<ValueFormula.Declaration, Optional<FormulaAlternatives>>
+                    declarationResolver) {
         if (write.isDeclarationWrite()) return Optional.of(List.of(write.withValue(value)));
         FormulaAlternatives target;
         if (write.isParameterWrite()) {
@@ -794,7 +835,27 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
         } else {
             target = captures.get(write.capture());
             if (target == null) {
-                return Optional.empty();
+                // A propagated nested-cell write can reference a capture of
+                // the origin callee instead of the current caller.  Resolve
+                // the cell through the declaration resolver.  When the cell
+                // belongs to a foreign module without facts in this
+                // compilation, the write is an already-witnessed external
+                // module effect and is skipped; it never fabricates a
+                // session-owned state update.
+                Optional<FormulaAlternatives> resolved = owner.captures().stream()
+                        .filter(capture -> capture.captureId().equals(write.capture()))
+                        .filter(capture -> capture.sharedCellId().equals(
+                                write.sharedCellId()))
+                        .findFirst()
+                        .flatMap(capture -> declarationResolver.apply(
+                                new ValueFormula.Declaration(
+                                        capture.declarationId(), Optional.empty(),
+                                        ProjectionPath.root(), ProjectionPath.root(),
+                                        capture.contract().valueType())));
+                if (resolved.isEmpty() || resolved.orElseThrow().isEmpty()) {
+                    return Optional.of(List.of());
+                }
+                target = resolved.orElseThrow();
             }
         }
         ArrayList<CapturedCellWrite> result = new ArrayList<>();

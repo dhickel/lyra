@@ -126,9 +126,26 @@ final class LyraOwnershipToken {
     boolean sameSession(LyraOwnershipToken other) {
         if (other == null) return false;
         SessionStorageDomain.Linkage linkage = sessionLinkage();
-        if (linkage == null || !linkage.authenticates(other.sessionLinkage())) return false;
+        SessionStorageDomain.Linkage otherLinkage = other.sessionLinkage();
+        // One explicitly registered root domain may interchange closures
+        // between the attachable root itself and session generations pinned
+        // to that root's lifetime.  Two independent roots never share the
+        // bridge because their root-lifetime objects are distinct.
+        SessionStorageDomain.RootLifetime mine = rootLifetime();
+        SessionStorageDomain.RootLifetime theirs = other.rootLifetime();
+        if (mine != null && mine == theirs) {
+            if (linkage == null && otherLinkage == null) return false;
+            other.checkUsable();
+            return true;
+        }
+        if (linkage == null || !linkage.authenticates(otherLinkage)) return false;
         other.checkUsable();
         return true;
+    }
+
+    private SessionStorageDomain.RootLifetime rootLifetime() {
+        if (rootLifetime != null) return rootLifetime;
+        return artifactKey instanceof LyraArtifactKey key ? key.rootLifetime() : null;
     }
 
     private SessionStorageDomain.Linkage sessionLinkage() {

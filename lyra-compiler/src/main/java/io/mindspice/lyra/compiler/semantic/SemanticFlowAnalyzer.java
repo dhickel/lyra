@@ -688,7 +688,15 @@ public final class SemanticFlowAnalyzer {
                 Optional<DeclarationId> initializer = form.kind() == TypedExpressionKind.DECLARATION
                         ? form.declarationId() : Optional.empty();
                 boolean previousInitializationEvaluation = initializationEvaluation;
-                initializationEvaluation = true;
+                // A session scratch root executes one evaluation against live
+                // registered-root storage, not protected initializer code:
+                // conservative attachable-boundary facts must never be
+                // exempted from ownership checks for its top-level forms.
+                // Real module initializers (ordinary graphs and session-owned
+                // dependencies) keep the initialization exemption.
+                initializationEvaluation = !(graph.resolvedGraph().isSessionGraph()
+                        && frame.module.moduleId().equals(
+                        graph.resolvedGraph().moduleGraph().rootModule()));
                 Eval result;
                 try {
                     result = evaluate(form, frame, frame.state);
@@ -3371,6 +3379,29 @@ public final class SemanticFlowAnalyzer {
                     ModuleId owner = declaration.moduleId().orElse(contextModule);
                     ResolvedDeclaration external = resolvedDeclarations.get(declaration.declarationId());
                     if (external != null && external.externalBinding().isPresent()) {
+                        // A registered-root certificate may carry conservative
+                        // imported facts for externally owned aggregate
+                        // contents.  Preserve them across the formula bridge
+                        // so mutation requirements never re-synthesize
+                        // session-owned identities for root storage.
+                        var certificate = graph.resolvedGraph().sessionFlowCertificate();
+                        Optional<AggregateIdentityFact> imported = certificate
+                                .filter(value -> value.certifiesBinding(
+                                        external.externalBinding().orElseThrow()))
+                                .flatMap(value -> value.valueFor(declaration.declarationId()))
+                                .flatMap(values -> values.alternatives().stream()
+                                        .flatMap(alternative -> alternative
+                                                .aggregateIdentities().stream())
+                                        .filter(fact -> fact.isImported()
+                                                && fact.route().equals(
+                                                declaration.declarationRoute()))
+                                        .findFirst())
+                                .map(fact -> fact.route().equals(declaration.resultRoute())
+                                        ? fact : fact.withRoute(declaration.resultRoute()));
+                        if (imported.isPresent()) {
+                            facts.add(imported.orElseThrow());
+                            continue;
+                        }
                         facts.add(sessionArrayFact(external, declaration.declarationRoute(),
                                 declaration.resultRoute(), arrayType, span));
                         continue;
@@ -3648,13 +3679,27 @@ public final class SemanticFlowAnalyzer {
                 return;
             }
             if (type.withoutQualifiers() instanceof ArrayType array) {
-                facts.add(new AggregateIdentityFact(
-                        new ArrayIdentity.SessionOrigin(
-                                declaration.moduleId(), declaration.id(), route, array),
-                        route,
-                        OwnershipWitness.local(
-                                declaration.moduleId(), declaration.id(),
-                                declaration.scopeId(), declaration.span()).atUse(declaration.span())));
+                // A certified producer may carry conservative imported facts
+                // (cross-module or attachable-boundary identities) for values
+                // that crossed a registered-root boundary.  Those facts are
+                // deliberately preserved: the session never inherits local
+                // ownership of externally owned aggregate contents.
+                Optional<AggregateIdentityFact> imported = alternative.aggregateIdentities()
+                        .stream()
+                        .filter(fact -> fact.route().equals(route))
+                        .filter(AggregateIdentityFact::isImported)
+                        .findFirst();
+                if (imported.isPresent()) {
+                    facts.add(imported.orElseThrow());
+                } else {
+                    facts.add(new AggregateIdentityFact(
+                            new ArrayIdentity.SessionOrigin(
+                                    declaration.moduleId(), declaration.id(), route, array),
+                            route,
+                            OwnershipWitness.local(
+                                    declaration.moduleId(), declaration.id(),
+                                    declaration.scopeId(), declaration.span()).atUse(declaration.span())));
+                }
                 certifiedExternalArrayFacts(
                         declaration, array.elementType(),
                         route.append(ProjectionStep.unknownArrayElement()), alternative, facts);

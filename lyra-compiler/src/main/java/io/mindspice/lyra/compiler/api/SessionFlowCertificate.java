@@ -451,9 +451,26 @@ public final class SessionFlowCertificate {
             TypedSemanticGraph graph,
             Map<String, ExternalBinding> exposedBindings,
             boolean retainPrefixes) {
+        return issue(predecessorSnapshot, graph, exposedBindings, retainPrefixes,
+                (state, ignored) -> state);
+    }
+
+    /**
+     * Issues a proof with an explicit boundary transform applied after the
+     * canonical overlay.  The attachment path uses this to convert public
+     * root aggregate bindings into conservative imported/boundary values
+     * before any session compilation consumes the proof.
+     */
+    static SessionFlowCertificate issue(
+            SessionSnapshot predecessorSnapshot,
+            TypedSemanticGraph graph,
+            Map<String, ExternalBinding> exposedBindings,
+            boolean retainPrefixes,
+            java.util.function.BiFunction<BindingFlowState, TypedSemanticGraph, BindingFlowState> boundaryTransform) {
         Objects.requireNonNull(predecessorSnapshot, "predecessorSnapshot");
         Objects.requireNonNull(graph, "graph");
         Objects.requireNonNull(exposedBindings, "exposedBindings");
+        Objects.requireNonNull(boundaryTransform, "boundaryTransform");
 
         SessionFlowCertificate predecessor = predecessorSnapshot.flowCertificate().orElse(null);
         SessionFlowCertificate graphPredecessor = graph.resolvedGraph()
@@ -472,6 +489,7 @@ public final class SessionFlowCertificate {
         if (retainPrefixes && predecessor != null) {
             boundary = predecessor.boundaryState().join(boundary);
         }
+        boundary = boundaryTransform.apply(boundary, graph);
         // Transferred captured writes update stable cells. Publish that current
         // value through any corresponding named binding as well, never its old initializer.
         TreeMap<DeclarationId, BindingFlowValue> currentBindings = new TreeMap<>(boundary.bindings());

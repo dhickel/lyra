@@ -75,23 +75,66 @@ public final class CallableSummaryCompiler {
         Objects.requireNonNull(limits, "limits");
         try {
             Context context = new Context(graph, limits);
-            ArrayList<CallableSummary> raw = new ArrayList<>();
+            TreeMap<LambdaId, CallableSummary> raw = new TreeMap<>();
             Set<LambdaId> retained = new TreeSet<>();
             for (TypedLambda lambda : graph.lambdas().stream()
                     .sorted(java.util.Comparator.comparing(TypedLambda::id)).toList()) {
+                CallableSummary summary = graph.resolvedGraph().isRetained(lambda.moduleId())
+                        ? graph.resolvedGraph().retainedModules().module(lambda.moduleId()).orElseThrow()
+                        .callableSummaries().summary(lambda.id()).orElseThrow()
+                        : new LambdaBuilder(context, lambda).build();
+                putSummary(raw, summary);
                 if (graph.resolvedGraph().isRetained(lambda.moduleId())) {
-                    raw.add(graph.resolvedGraph().retainedModules().module(lambda.moduleId()).orElseThrow()
-                            .callableSummaries().summary(lambda.id()).orElseThrow());
                     retained.add(lambda.id());
-                } else {
-                    raw.add(new LambdaBuilder(context, lambda).build());
                 }
             }
-            return CallableSummarySolver.solve(
-                    raw, context.lambdaByDeclaration, context.intrinsicDeclarations,
+
+            // A retained application module may call a lambda in a transitive
+            // borrowed dependency that is not itself a node in the current
+            // submission graph.  Its producer certificate is the only valid
+            // source of that summary; treating the target as absent turns a
+            // valid higher-order call into a compiler invariant failure.
+            graph.resolvedGraph().sessionFlowCertificate().ifPresent(certificate -> {
+                for (CallableSummary summary : certificate.callableSummaries().orderedSummaries()) {
+                    putSummary(raw, summary);
+                    retained.add(summary.lambdaId());
+                }
+            });
+            TreeMap<DeclarationId, LambdaId> declarationLinks = new TreeMap<>(
+                    graph.resolvedGraph().sessionFlowCertificate()
+                            .map(value -> value.callableSummaries().lambdaByDeclaration())
+                            .orElse(Map.of()));
+            context.lambdaByDeclaration.forEach((declaration, lambda) -> {
+                LambdaId previous = declarationLinks.putIfAbsent(declaration, lambda);
+                if (previous != null && !previous.equals(lambda)) {
+                    throw new IllegalArgumentException(
+                            "callable declaration links disagree about " + declaration);
+                }
+            });
+            TreeMap<DeclarationId, ModuleId> intrinsicLinks = new TreeMap<>(
+                    graph.resolvedGraph().sessionFlowCertificate()
+                            .map(value -> value.callableSummaries().intrinsicDeclarations())
+                            .orElse(Map.of()));
+            context.intrinsicDeclarations.forEach((declaration, module) -> {
+                ModuleId previous = intrinsicLinks.putIfAbsent(declaration, module);
+                if (previous != null && !previous.equals(module)) {
+                    throw new IllegalArgumentException(
+                            "callable intrinsic links disagree about " + declaration);
+                }
+            });
+            CallableSummaryResult solved = CallableSummarySolver.solve(
+                    raw.values(), declarationLinks, intrinsicLinks,
                     context.computedCallableDeclarations,
                     context.externalCallableDeclarations,
                     context.potentialCallableLambdas(), limits, retained);
+            if (solved instanceof CallableSummaryResult.Success success) {
+                Set<LambdaId> currentLambdas = graph.lambdas().stream()
+                        .map(TypedLambda::id).collect(java.util.stream.Collectors.toUnmodifiableSet());
+                return new CallableSummaryResult.Success(success.value().select(
+                        currentLambdas, context.lambdaByDeclaration.keySet(),
+                        context.intrinsicDeclarations.keySet()));
+            }
+            return solved;
         } catch (SummaryFailureException failure) {
             return CallableSummaryResult.failure(
                     CallableSummaryResult.InternalFailure.Kind.INVALID_TYPED_EXPRESSION,
@@ -107,6 +150,17 @@ public final class CallableSummaryCompiler {
                     CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
                     failure.getMessage() == null ? "invalid typed callable summary input" : failure.getMessage(),
                     Optional.empty());
+        }
+    }
+
+    private static void putSummary(
+            Map<LambdaId, CallableSummary> summaries,
+            CallableSummary summary) {
+        CallableSummary previous = summaries.putIfAbsent(summary.lambdaId(), summary);
+        if (previous != null && !previous.equals(summary)) {
+            throw new IllegalArgumentException(
+                    "callable summary identity has conflicting producer facts: "
+                            + summary.lambdaId());
         }
     }
 
@@ -486,9 +540,20 @@ public final class CallableSummaryCompiler {
                     // The data-storage profile excludes imported aggregates and
                     // callable-bearing values. Declaration formulas obtain their
                     // routed may-alias facts from the canonical caller state.
+                    // A registered-root certificate may supply conservative
+                    // imported data facts for externally owned aggregates;
+                    // those bindings are admitted without claiming session
+                    // ownership of their contents.
+                    io.mindspice.lyra.compiler.session.ExternalBinding binding =
+                            declaration.externalBinding().orElseThrow();
                     LyraType type = context.contract(declaration.id(), declaration.span()).valueType();
-                    if (!declaration.externalBinding().orElseThrow().supportsSessionStorage()
-                            && !context.externalCallableDeclarations.contains(declaration.id())) {
+                    boolean certifiedExternalData = context.graph.resolvedGraph()
+                            .sessionFlowCertificate()
+                            .map(certificate -> certificate.certifiesBinding(binding))
+                            .orElse(false);
+                    if (!binding.supportsSessionStorage()
+                            && !context.externalCallableDeclarations.contains(declaration.id())
+                            && !certifiedExternalData) {
                         throw failure("external value flow has not been certified", declaration.span());
                     }
                     initialState.put(declaration.id(), type.withoutQualifiers() instanceof PrimitiveType

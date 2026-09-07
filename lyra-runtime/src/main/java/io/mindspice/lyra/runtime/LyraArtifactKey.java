@@ -110,7 +110,7 @@ public final class LyraArtifactKey {
     public void registerModuleState(ModuleId moduleId, Object state) {
         Objects.requireNonNull(moduleId, "moduleId");
         Objects.requireNonNull(state, "state");
-        if (!deferredSubmission) return;
+        if (!deferredSubmission && rootLifetime == null) return;
         configuredOwner.ifPresent(OwnerThread::check);
         Object previous = preparedStates.putIfAbsent(moduleId, state);
         if (previous != null && previous != state) {
@@ -118,10 +118,10 @@ public final class LyraArtifactKey {
         }
     }
 
-    /** Returns the exact state shell from this prepared graph. */
+    /** Returns the exact state shell from this prepared graph or attachable root. */
     public Object moduleState(ModuleId moduleId) {
         Objects.requireNonNull(moduleId, "moduleId");
-        if (!deferredSubmission) {
+        if (!deferredSubmission && rootLifetime == null) {
             throw new LyraLinkException("ordinary artifact key has no prepared module graph");
         }
         configuredOwner.ifPresent(OwnerThread::check);

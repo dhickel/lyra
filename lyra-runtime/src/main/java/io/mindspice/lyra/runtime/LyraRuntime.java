@@ -256,24 +256,109 @@ public final class LyraRuntime {
     private static RootTypeRegistration.Binding rootBinding(ModuleHandleImpl handle,
                                                              ExportMetadata export,
                                                              Set<Class<?>> structuralTypes) {
-        Class<?> facade = handle.facade;
+        return exportBinding(handle.facade, handle.instance, export,
+                handle.context.metadata.javaPackage(), structuralTypes);
+    }
+
+    /** Returns the generated class names of one attachable root artifact. */
+    public static java.util.Set<String> attachmentClassNames(ModuleHandle root) {
+        if (!(Objects.requireNonNull(root, "root") instanceof ModuleHandleImpl handle)) {
+            throw new LyraLinkException("attachment class names require a runtime-owned module");
+        }
+        handle.requireOwner();
+        handle.requireOpen();
+        if (handle.metadata().artifactProfile() != ArtifactProfile.ATTACHABLE) {
+            throw new LyraLinkException("root artifact was not compiled with the attachable profile");
+        }
+        return handle.context.loader.classNames();
+    }
+
+    /**
+     * Returns exact typed accessor pairs for every self-owned public export of
+     * every module in one attachable root graph.  Dependency entries bind to
+     * the root graph's actual state shells (registered by the generated state
+     * constructors), never to a second instantiated graph.  Pure re-export
+     * entries are skipped because the compiler links their origin declaration
+     * through the origin module's own export record.
+     */
+    public static java.util.Map<ModuleId, java.util.Map<String, RootTypeRegistration.Binding>>
+    attachmentExportBindings(ModuleHandle root) {
+        if (!(Objects.requireNonNull(root, "root") instanceof ModuleHandleImpl handle)) {
+            throw new LyraLinkException("attachment export binding requires a runtime-owned module");
+        }
+        handle.requireOwner();
+        handle.requireOpen();
+        if (handle.metadata().artifactProfile() != ArtifactProfile.ATTACHABLE) {
+            throw new LyraLinkException("root artifact was not compiled with the attachable profile");
+        }
+        if (!handle.moduleId().equals(handle.metadata().rootModuleId())) {
+            throw new LyraLinkException("only the artifact root may expose dependency views");
+        }
+        if (handle.instanceKey.rootLifetime() == null) {
+            throw new LyraLinkException("attachable root has no retained structural domain");
+        }
+        java.util.Map<ModuleId, java.util.Map<String, RootTypeRegistration.Binding>> result =
+                new TreeMap<>();
+        for (ModuleMetadata module : handle.metadata().modules()) {
+            java.util.Map<String, RootTypeRegistration.Binding> moduleBindings = new TreeMap<>();
+            Class<?> facade = handle.context.facades.get(module.id());
+            if (facade == null) {
+                throw new LyraLinkException("module facade is absent: " + module.id());
+            }
+            Object facadeInstance = module.id().equals(handle.moduleId)
+                    ? handle.instance : attachmentFacadeView(handle, module.id(), facade);
+            for (ExportMetadata export : handle.metadata().exports()) {
+                if (!export.moduleId().equals(module.id())) continue;
+                if (export.declarationIdentity() != export.originDeclarationIdentity()) continue;
+                moduleBindings.put(export.name(), exportBinding(facade, facadeInstance, export,
+                        handle.metadata().javaPackage(),
+                        java.util.Collections.newSetFromMap(new IdentityHashMap<>())));
+            }
+            result.put(module.id(), java.util.Collections.unmodifiableMap(moduleBindings));
+        }
+        return java.util.Collections.unmodifiableMap(result);
+    }
+
+    private static Object attachmentFacadeView(ModuleHandleImpl handle, ModuleId moduleId,
+                                               Class<?> facade) {
+        Object state = handle.instanceKey.moduleState(moduleId);
         try {
-            MethodType invocationType = methodType(export.jvmDescriptor(), handle.context.loader);
+            java.lang.reflect.Constructor<?> constructor =
+                    facade.getDeclaredConstructor(state.getClass());
+            if (Modifier.isStatic(constructor.getModifiers())) {
+                throw new LyraLinkException("module facade constructor is static: " + moduleId);
+            }
+            // Generated facade constructors are package-private; the runtime
+            // composition boundary is the only caller and wraps the actual
+            // state shell of the already allocated root graph.
+            constructor.setAccessible(true);
+            return constructor.newInstance(state);
+        } catch (ReflectiveOperationException failure) {
+            throw new LyraLinkException("module view construction failed: " + moduleId,
+                    List.of(), failure);
+        }
+    }
+
+    private static RootTypeRegistration.Binding exportBinding(
+            Class<?> facade, Object facadeInstance, ExportMetadata export,
+            String javaPackage, Set<Class<?>> structuralTypes) {
+        try {
+            MethodType invocationType = methodType(export.jvmDescriptor(), facade.getClassLoader());
             String invocationName = export.isFunction() ? export.javaName() : export.getterName();
             MethodHandle invocation = findPublicVirtual(facade, invocationName, invocationType)
-                    .bindTo(handle.instance);
+                    .bindTo(facadeInstance);
             Method getterMethod = facade.getMethod(export.isFunction()
                     ? export.functionValueName() : export.getterName());
             Class<?> expectedGetterType = export.isFunction()
-                    ? SessionStorageDomain.storageClass(export.contract(), handle.context.loader,
-                    handle.context.metadata.javaPackage()) : invocationType.returnType();
+                    ? SessionStorageDomain.storageClass(export.contract(), facade.getClassLoader(),
+                    javaPackage) : invocationType.returnType();
             if (Modifier.isStatic(getterMethod.getModifiers()) || getterMethod.getParameterCount() != 0
                     || getterMethod.getReturnType() == void.class
                     || getterMethod.getReturnType() != expectedGetterType) {
                 throw new LyraLinkException("root export getter has an invalid shape: " + export.name());
             }
             MethodHandle getter = MethodHandles.publicLookup().unreflect(getterMethod)
-                    .bindTo(handle.instance);
+                    .bindTo(facadeInstance);
             Optional<MethodHandle> functionValue = export.isFunction()
                     ? Optional.of(getter) : Optional.empty();
             Optional<MethodHandle> setter = Optional.empty();
@@ -285,7 +370,7 @@ public final class LyraRuntime {
                     throw new LyraLinkException("root export setter has an invalid shape: " + export.name());
                 }
                 setter = Optional.of(MethodHandles.publicLookup().unreflect(setterMethod)
-                        .bindTo(handle.instance));
+                        .bindTo(facadeInstance));
             }
             addStructuralType(structuralTypes, getterMethod.getReturnType());
             for (Class<?> parameter : invocationType.parameterArray()) {
@@ -1136,6 +1221,10 @@ public final class LyraRuntime {
     }
 
     private static MethodType methodType(String descriptor, ArtifactClassLoader loader) {
+        return methodType(descriptor, (ClassLoader) loader);
+    }
+
+    private static MethodType methodType(String descriptor, ClassLoader loader) {
         try {
             return MethodType.fromMethodDescriptorString(descriptor, loader);
         } catch (RuntimeException | LinkageError failure) {
@@ -1377,6 +1466,10 @@ public final class LyraRuntime {
                 throw new ClassNotFoundException(name);
             }
             return defineClass(name, bytes, 0, bytes.length);
+        }
+
+        private java.util.Set<String> classNames() {
+            return java.util.Set.copyOf(definitions.keySet());
         }
 
         private Map<String, Class<?>> defineAll() {

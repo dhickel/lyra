@@ -2,6 +2,8 @@ package io.mindspice.lyra.runtime;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodType;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
@@ -46,6 +48,8 @@ public final class SessionStorageDomain implements AutoCloseable {
         OWNED,
         /** The workspace borrows a producer owned by an external root. */
         BORROWED,
+        /** A root-backed scratch producer/resource retires only when the root closes. */
+        ROOT_OWNED,
         /** A construction attempt is retained, but is not usable until initialized. */
         ATTEMPTED
     }
@@ -321,8 +325,17 @@ public final class SessionStorageDomain implements AutoCloseable {
             initialized = false;
             if (root != null) root.removeRetention(this);
             if (domain != null) domain.retentions.remove(this);
-            if (closeOwnedProducer && producerRetention && kind == RetentionKind.OWNED) {
+            if (closeOwnedProducer && producerRetention
+                    && (kind == RetentionKind.OWNED || kind == RetentionKind.ROOT_OWNED)) {
                 producer.close();
+            } else if (closeOwnedProducer && kind == RetentionKind.ROOT_OWNED
+                    && holder instanceof AutoCloseable resource) {
+                try {
+                    resource.close();
+                } catch (Exception failure) {
+                    throw new LyraLifecycleException(
+                            "root-owned attachment resource close failed", List.of(), failure);
+                }
             }
         }
 
@@ -434,13 +447,13 @@ public final class SessionStorageDomain implements AutoCloseable {
      */
     public Binding register(ModuleHandle module, Requirement requirement) {
         return register(module, module.moduleId(), requirement,
-                rootLifetime == null ? RetentionKind.OWNED : RetentionKind.BORROWED);
+                rootLifetime == null ? RetentionKind.OWNED : RetentionKind.ROOT_OWNED);
     }
 
     /** Registers a binding owned by one module view in a prepared graph. */
     public Binding register(ModuleHandle graph, ModuleId moduleId, Requirement requirement) {
         return register(graph, moduleId, requirement,
-                rootLifetime == null ? RetentionKind.OWNED : RetentionKind.BORROWED);
+                rootLifetime == null ? RetentionKind.OWNED : RetentionKind.ROOT_OWNED);
     }
 
     /** Registers an exact storage link with an explicit producer lifetime class. */
@@ -497,6 +510,95 @@ public final class SessionStorageDomain implements AutoCloseable {
     /** Retains an attempted producer without claiming initialized storage. */
     public Retention retainAttempted(ModuleHandle producer) {
         return retainProducer(producer, RetentionKind.ATTEMPTED);
+    }
+
+    /**
+     * Registers an exact external storage link against an explicitly
+     * registered attachable root.  The supplied handles must come from the
+     * root's real typed accessors; this path never re-executes initializers,
+     * never clones values, and only ever admits links into a root-backed
+     * workspace whose structural domain is anchored to the root lifetime.
+     */
+    public Binding registerExternal(ModuleHandle producer, Requirement requirement,
+                                    MethodHandle reader, MethodHandle writer) {
+        checkOpen();
+        Objects.requireNonNull(producer, "producer");
+        Objects.requireNonNull(requirement, "requirement");
+        Objects.requireNonNull(reader, "reader");
+        if (rootLifetime == null) {
+            throw new LyraLinkException(
+                    "external storage links require a root-backed session workspace");
+        }
+        if (bindings.containsKey(requirement.id())) {
+            throw new LyraLinkException("storage identity already registered");
+        }
+        if (requirement.writable() && writer == null) {
+            throw new LyraLinkException("mutable external link requires a writer");
+        }
+        if (!requirement.writable() && writer != null) {
+            throw new LyraLinkException("immutable external link cannot carry a writer");
+        }
+        Retention retention = retainProducer(producer, RetentionKind.BORROWED);
+        try {
+            Class<?> storage = storageClass(requirement.logicalType(), rootLifetime.typeDomain(),
+                    externalJavaPackage(producer));
+            MethodType readerType = MethodType.methodType(storage);
+            if (!reader.type().equals(readerType)) {
+                throw new LyraLinkException("external storage reader MethodType mismatch");
+            }
+            java.util.Optional<MethodType> functionType = externalFunctionType(
+                    requirement.logicalType(), rootLifetime.typeDomain(),
+                    externalJavaPackage(producer));
+            verifyInitialized(reader);
+            MethodType writerType = writer == null ? null
+                    : MethodType.methodType(void.class, storage);
+            if (writer != null && !writer.type().equals(writerType)) {
+                throw new LyraLinkException("external storage writer MethodType mismatch");
+            }
+            retention.markInitialized();
+            Binding binding = new Binding(this, producer, requirement, requirement.logicalType(),
+                    reader, writer, readerType, writerType, functionType, retention);
+            // An external root link is a live admission, not a staged
+            // namespace publication: the workspace may link it immediately
+            // without advancing the submission revision.
+            bindings.put(requirement.id(), binding);
+            return binding;
+        } catch (RuntimeException | Error failure) {
+            retention.retireInternal(false);
+            throw failure;
+        }
+    }
+
+    private static String externalJavaPackage(ModuleHandle producer) {
+        return producer.metadata().javaPackage();
+    }
+
+    private static java.util.Optional<MethodType> externalFunctionType(
+            LyraType type, SessionTypeLoader domain, String javaPackage) {
+        if (!(type.baseType() instanceof FunctionType)) {
+            return java.util.Optional.empty();
+        }
+        FunctionType function = (FunctionType) type.baseType();
+        Class<?>[] parameters = function.parameterTypes().stream()
+                .map(value -> storageClass(value, domain, javaPackage))
+                .toArray(Class<?>[]::new);
+        Class<?> returnType = function.returnType().baseType() instanceof PrimitiveType primitive
+                && primitive == PrimitiveType.UNIT && !function.returnType().isNilable()
+                ? void.class : storageClass(function.returnType(), domain, javaPackage);
+        MethodType expected = MethodType.methodType(returnType, parameters);
+        Class<?> functionClass = storageClass(type, domain, javaPackage);
+        try {
+            Method invoke = functionClass.getMethod("invoke", parameters);
+            MethodType actual = MethodType.methodType(invoke.getReturnType(), invoke.getParameterTypes());
+            if (!actual.equals(expected) || !Modifier.isPublic(invoke.getModifiers())
+                    || Modifier.isStatic(invoke.getModifiers())) {
+                throw new LyraLinkException("external function interface MethodType mismatch");
+            }
+            return java.util.Optional.of(actual);
+        } catch (NoSuchMethodException failure) {
+            throw new LyraLinkException("external function interface has no exact invoke method",
+                    List.of(), failure);
+        }
     }
 
     /**

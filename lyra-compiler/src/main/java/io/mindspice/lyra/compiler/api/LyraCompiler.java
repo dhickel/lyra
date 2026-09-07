@@ -12,6 +12,7 @@ import io.mindspice.lyra.compiler.diagnostic.RelatedSpan;
 import io.mindspice.lyra.compiler.grammar.GrammarMatcher;
 import io.mindspice.lyra.compiler.grammar.GrammarProgram;
 import io.mindspice.lyra.compiler.identity.DeclarationId;
+import io.mindspice.lyra.compiler.identity.ExportId;
 import io.mindspice.lyra.compiler.identity.GenerationId;
 import io.mindspice.lyra.compiler.identity.IdentityAllocator;
 import io.mindspice.lyra.compiler.identity.ProducerId;
@@ -29,10 +30,17 @@ import io.mindspice.lyra.compiler.semantic.SemanticResolver;
 import io.mindspice.lyra.compiler.semantic.TypeChecker;
 import io.mindspice.lyra.compiler.semantic.TypedModule;
 import io.mindspice.lyra.compiler.semantic.TypedSemanticGraph;
+import io.mindspice.lyra.compiler.semantic.flow.BindingFlowState;
+import io.mindspice.lyra.compiler.semantic.flow.BindingFlowValue;
+import io.mindspice.lyra.compiler.semantic.flow.BoundaryFacts;
+import io.mindspice.lyra.compiler.semantic.flow.ValueAlternatives;
+import io.mindspice.lyra.compiler.source.LogicalModuleId;
 import io.mindspice.lyra.compiler.source.ModuleGraph;
 import io.mindspice.lyra.compiler.source.ModuleGraphDiscovery;
 import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.source.PhysicalSourceKey;
+import io.mindspice.lyra.compiler.source.ResolvedSource;
+import io.mindspice.lyra.compiler.source.RevisionOptions;
 import io.mindspice.lyra.compiler.source.SourceConfiguration;
 import io.mindspice.lyra.compiler.source.SourceId;
 import io.mindspice.lyra.compiler.source.SourceSnapshot;
@@ -42,6 +50,7 @@ import io.mindspice.lyra.compiler.session.PinnedModule;
 import io.mindspice.lyra.compiler.session.SessionExecutionPlan;
 import io.mindspice.lyra.compiler.session.SessionImport;
 import io.mindspice.lyra.compiler.session.SessionModuleEnvironment;
+import io.mindspice.lyra.compiler.session.SessionRevision;
 import io.mindspice.lyra.compiler.session.SessionSnapshot;
 import io.mindspice.lyra.compiler.session.StorageIdentity;
 import io.mindspice.lyra.runtime.ArtifactMetadata;
@@ -54,6 +63,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -113,6 +123,47 @@ public final class LyraCompiler {
         }
     }
 
+    /**
+     * Compiles one reachable source graph in the attachable profile and
+     * returns the source-independent root context a host must retain to open
+     * a live {@code ApplicationAttachment}.  The ordinary {@link #compile}
+     * entry point remains the unchanged ahead-of-time surface.
+     */
+    public static AttachableCompileResult compileAttachable(CompileRequest request) {
+        Objects.requireNonNull(request, "request");
+        try {
+            if (request.compileProfile() != CompileProfile.ATTACHABLE) {
+                return new AttachableCompileResult.Failure(List.of(Diagnostic.error(
+                        CompilerDiagnosticCodes.MODULE_INVALID_CONFIGURATION,
+                        configurationSpanFor(request),
+                        "attachable compilation requires the ATTACHABLE profile")));
+            }
+            Pipeline pipeline = new Pipeline(request);
+            Pipeline.Capture capture = pipeline.runCapture();
+            if (capture == null) {
+                return new AttachableCompileResult.Failure(
+                        List.copyOf(pipeline.diagnostics()));
+            }
+            if (capture.configurationFailure() != null) {
+                return new AttachableCompileResult.Failure(
+                        List.of(capture.configurationFailure()));
+            }
+            AttachableRootContext context = attachableContext(
+                    request, capture.graph(), capture.resolved(), capture.typed(),
+                    capture.compiledArtifact().metadata(),
+                    capture.assembly());
+            return new AttachableCompileResult.Success(
+                    capture.compiledArtifact(), context, List.copyOf(pipeline.diagnostics()));
+        } catch (VirtualMachineError | ThreadDeath failure) {
+            throw failure;
+        } catch (LyraCompilerBugException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new LyraCompilerBugException(
+                    "attachable compiler invariant failed outside a phase boundary", failure);
+        }
+    }
+
     private static final class Pipeline {
         private final CompileRequest request;
         private final ArrayList<Diagnostic> diagnostics = new ArrayList<>();
@@ -122,34 +173,51 @@ public final class LyraCompiler {
         }
 
         private CompileResult run() {
+            Capture capture = runCapture();
+            if (capture == null) {
+                return failure();
+            }
+            if (capture.configurationFailure() != null) {
+                return new CompileResult.Failure(List.of(capture.configurationFailure()));
+            }
+            return new CompileResult.Success(capture.compiledArtifact(), diagnostics);
+        }
+
+        /**
+         * Runs the complete ordinary pipeline while retaining the sealed
+         * phase artifacts.  A null result means a structured phase failure
+         * was recorded in {@link #diagnostics} or as a lone configuration
+         * diagnostic on the returned capture.
+         */
+        private Capture runCapture() {
             Diagnostic configuration = validateConfiguration();
             if (configuration != null) {
-                return new CompileResult.Failure(List.of(configuration));
+                return Capture.configurationFailure(configuration);
             }
 
             PhaseResult<ModuleGraph> graphResult = discover();
             ModuleGraph graph = success(graphResult);
             if (graph == null) {
-                return failure();
+                return null;
             }
 
             PhaseResult<ResolvedSemanticGraph> resolvedResult = SemanticResolver.resolve(graph);
             ResolvedSemanticGraph resolved = success(resolvedResult);
             if (resolved == null) {
-                return failure();
+                return null;
             }
 
             PhaseResult<TypedSemanticGraph> typedResult = TypeChecker.check(
                     resolved, request.compileProfile().isAttachable());
             TypedSemanticGraph typed = success(typedResult);
             if (typed == null) {
-                return failure();
+                return null;
             }
 
             PhaseResult<TypedIr> irResult = TypedIrBuilder.lower(typed);
             TypedIr ir = success(irResult);
             if (ir == null) {
-                return failure();
+                return null;
             }
 
             PhaseResult<JvmBytecodeArtifact> bytecodeResult = JvmBytecodeArtifact.emit(
@@ -157,14 +225,14 @@ public final class LyraCompiler {
                     request.semanticOptions());
             JvmBytecodeArtifact bytecode = success(bytecodeResult);
             if (bytecode == null) {
-                return failure();
+                return null;
             }
 
             ArtifactAssembly assembly = ArtifactAssembly.assemble(
                     bytecode, PackagingMode.CLASSES, request.includeSources());
-            return new CompileResult.Success(
+            return Capture.success(graph, resolved, typed, ir,
                     new BuiltCompiledArtifact(bytecode, request.includeSources(), assembly),
-                    diagnostics);
+                    assembly);
         }
 
         private PhaseResult<ModuleGraph> discover() {
@@ -216,6 +284,30 @@ public final class LyraCompiler {
 
         private CompileResult failure() {
             return new CompileResult.Failure(diagnostics);
+        }
+
+        private List<Diagnostic> diagnostics() {
+            return diagnostics;
+        }
+
+        /** Sealed phase artifacts plus the assembled artifact for one run. */
+        private record Capture(
+                ModuleGraph graph,
+                ResolvedSemanticGraph resolved,
+                TypedSemanticGraph typed,
+                TypedIr ir,
+                BuiltCompiledArtifact compiledArtifact,
+                ArtifactAssembly assembly,
+                Diagnostic configurationFailure) {
+            private static Capture success(ModuleGraph graph, ResolvedSemanticGraph resolved,
+                    TypedSemanticGraph typed, TypedIr ir,
+                    BuiltCompiledArtifact compiledArtifact, ArtifactAssembly assembly) {
+                return new Capture(graph, resolved, typed, ir, compiledArtifact, assembly, null);
+            }
+
+            private static Capture configurationFailure(Diagnostic diagnostic) {
+                return new Capture(null, null, null, null, null, null, diagnostic);
+            }
         }
 
         private <T extends ImmutablePhaseArtifact> T sourceSuccess(PhaseResult<T> result) {
@@ -279,7 +371,6 @@ public final class LyraCompiler {
             if (graph == null) {
                 return failure();
             }
-
             graph.modules().forEach(node -> sourceOrigins.put(node.sourceId(), node.snapshot().originSourceId()));
             IdentityReservations reservations = reserveModuleIdentities(graph);
             SessionSnapshot semanticSnapshot = request.snapshot()
@@ -312,12 +403,14 @@ public final class LyraCompiler {
             if (staged.diagnostic() != null) {
                 return fail(staged.diagnostic());
             }
+            java.util.function.BiFunction<BindingFlowState, TypedSemanticGraph, BindingFlowState>
+                    rootBoundary = rootBoundaryTransform(request);
             SessionFlowCertificate stagedCertificate = SessionFlowCertificate.issue(
-                    request.snapshot(), typed, staged.snapshot().bindings(), false);
+                    request.snapshot(), typed, staged.snapshot().bindings(), false, rootBoundary);
             SessionSnapshot stagedSnapshot = staged.snapshot()
                     .withFlowCertificate(stagedCertificate);
             SessionFlowCertificate attemptedCertificate = SessionFlowCertificate.issue(
-                    request.snapshot(), typed, request.snapshot().bindings(), true);
+                    request.snapshot(), typed, request.snapshot().bindings(), true, rootBoundary);
             SessionSnapshot attemptedSnapshot = new SessionSnapshot(
                     request.snapshot().revision(), request.snapshot().bindings(),
                     request.snapshot().imports(), request.snapshot().pinnedModules(),
@@ -339,6 +432,39 @@ public final class LyraCompiler {
                     staged.imports(),
                     environment.plan(),
                     mapDiagnostics(diagnostics));
+        }
+
+        /**
+         * Converts public root-scope aggregate bindings back to conservative
+         * imported/boundary facts after every generation, so a session write
+         * of a session-allocated aggregate into root storage can never grant
+         * later evaluations definitely local ownership of that content.
+         */
+        private static java.util.function.BiFunction<BindingFlowState, TypedSemanticGraph, BindingFlowState>
+        rootBoundaryTransform(SessionCompileRequest request) {
+            if (request.attachableScope().isEmpty()) {
+                return (state, graph) -> state;
+            }
+            SessionCompileRequest.AttachableScope scope = request.attachableScope().orElseThrow();
+            io.mindspice.lyra.compiler.source.SourceSpan useSpan =
+                    SourceSpan.at(request.sourceId(), 0);
+            return (state, graph) -> {
+                java.util.TreeMap<DeclarationId, BindingFlowValue> next =
+                        new java.util.TreeMap<>(state.bindings());
+                for (String name : scope.rootBindingNames()) {
+                    ExternalBinding binding = request.snapshot().bindings().get(name);
+                    if (binding == null) continue;
+                    BindingFlowValue value = state.binding(binding.declarationId()).orElse(null);
+                    if (value == null || value.alternatives().isEmpty()) continue;
+                    ValueAlternatives converted = BoundaryFacts.conservativeExternal(
+                            graph, value.alternatives(), scope.rootModule(),
+                            binding.declarationId(), java.util.Optional.empty(),
+                            useSpan, binding.isMutable());
+                    next.put(binding.declarationId(),
+                            new BindingFlowValue(binding.contract(), converted));
+                }
+                return BindingFlowState.of(next, state.sharedCells());
+            };
         }
 
         private PhaseResult<ModuleGraph> discover() {
@@ -874,6 +1000,189 @@ public final class LyraCompiler {
                         Objects.requireNonNull(diagnostic, "diagnostic"));
             }
         }
+    }
+
+    /**
+     * Builds the source-independent attachable root context from one sealed
+     * attachable compilation.  The context never re-invokes resolvers and
+     * never re-executes initializers; it reuses the already captured source
+     * snapshots and sealed semantic/flow facts.
+     */
+    private static AttachableRootContext attachableContext(
+            CompileRequest request,
+            ModuleGraph graph,
+            ResolvedSemanticGraph resolved,
+            TypedSemanticGraph typed,
+            ArtifactMetadata metadata,
+            ArtifactAssembly assembly) {
+        SourceConfiguration configuration = request.sourceConfiguration();
+        ModuleId root = graph.rootModule();
+
+        // One application graph generation and one producer identity per
+        // retained application-owned module.
+        IdentityAllocator allocator = typed.allocator();
+        IdentityAllocator.Allocation<GenerationId> generationAlloc = allocator.allocateGeneration();
+        IdentityAllocator current = generationAlloc.next();
+        GenerationId generation = generationAlloc.id();
+        java.util.Map<ModuleId, ProducerId> producers = new java.util.TreeMap<>();
+        for (ModuleGraph.Node node : graph.modules().stream()
+                .sorted(Comparator.comparing(ModuleGraph.Node::moduleId)).toList()) {
+            IdentityAllocator.Allocation<ProducerId> producer = current.allocateProducer();
+            current = producer.next();
+            producers.put(node.moduleId(), producer.id());
+        }
+
+        // Fresh scratch-owned declaration identities for the public root scope.
+        // These deliberately never reuse the root's own declaration ordinals,
+        // so a session that also imports the application root cannot collide
+        // two declarations under one graph identity.
+        ResolvedModule rootModule = resolved.module(root).orElseThrow();
+        List<ResolvedExport> exports = rootModule.exports().stream()
+                .sorted(Comparator.comparing(ResolvedExport::name)).toList();
+        java.util.Map<String, DeclarationId> bindingIds = new java.util.TreeMap<>();
+        for (ResolvedExport export : exports) {
+            IdentityAllocator.Allocation<DeclarationId> declaration = current.allocateDeclaration();
+            current = declaration.next();
+            bindingIds.put(export.name(), declaration.id());
+        }
+
+        java.util.Map<String, ExternalBinding> bindings = new java.util.TreeMap<>();
+        for (ResolvedExport export : exports) {
+            DeclarationId id = bindingIds.get(export.name());
+            SourceSnapshot snapshot = graph.module(export.moduleId()).orElseThrow().snapshot();
+            bindings.put(export.name(), new ExternalBinding(
+                    export.name(), id, export.contract(),
+                    ExternalBinding.Visibility.PUBLIC,
+                    export.isMutable() ? ExternalBinding.AssignmentAuthority.REBINDING
+                            : ExternalBinding.AssignmentAuthority.NONE,
+                    export.isMutable()
+                            ? java.util.Optional.of(StorageIdentity.forDeclaration(id))
+                            : java.util.Optional.empty(),
+                    SourceOrigin.forText(snapshot.sourceId().value(), snapshot.utf16Length())));
+        }
+
+        // Application-owned module records, pinned sources, and the captured
+        // source inventory.  Session imports resolve through the pins and
+        // reuse these producers instead of rereading backing files.
+        java.util.Map<LogicalModuleId, PinnedModule> pins = new java.util.TreeMap<>();
+        java.util.List<SessionModuleEnvironment.ModuleRecord> records = new ArrayList<>();
+        java.util.List<SourceSnapshot> inventory = new ArrayList<>();
+        java.util.List<ResolvedSource> inputs = new ArrayList<>();
+        for (ModuleGraph.Node node : graph.modules().stream()
+                .sorted(Comparator.comparing(ModuleGraph.Node::moduleId)).toList()) {
+            inventory.add(node.snapshot());
+            if (node.logicalModule().isEmpty()) {
+                continue;
+            }
+            LogicalModuleId logical = node.logicalModule().orElseThrow();
+            inputs.add(ResolvedSource.fromSnapshot(logical, node.snapshot()));
+            if (!logical.isStdIo()) {
+                pins.put(logical, new PinnedModule(logical, node.snapshot(), node.revision(),
+                        RevisionOptions.of(configuration.revisionOptions().values())));
+            }
+            SessionModuleEnvironment.Ownership ownership = logical.isStdIo()
+                    ? SessionModuleEnvironment.Ownership.INTRINSIC
+                    : SessionModuleEnvironment.Ownership.APPLICATION;
+            ResolvedModule resolvedModule = resolved.module(node.moduleId()).orElseThrow();
+            TypedModule typedModule = typed.module(node.moduleId()).orElseThrow();
+            List<DeclarationId> initializers = resolvedModule.declarations().stream()
+                    .map(resolved::declaration)
+                    .flatMap(java.util.Optional::stream)
+                    .filter(value -> value.kind() == DeclarationKind.LET)
+                    .filter(value -> value.scopeId().equals(resolvedModule.rootScope()))
+                    .map(ResolvedDeclaration::id)
+                    .toList();
+            List<LogicalModuleId> dependencies = graph.importsFrom(node.moduleId()).stream()
+                    .map(ModuleGraph.Edge::logicalTarget)
+                    .distinct()
+                    .sorted()
+                    .toList();
+            records.add(new SessionModuleEnvironment.ModuleRecord(
+                    logical,
+                    node.moduleId(),
+                    node.snapshot(),
+                    node.revision(),
+                    generation,
+                    producers.get(node.moduleId()),
+                    ownership,
+                    resolvedModule,
+                    typedModule,
+                    resolvedModule.exports(),
+                    resolvedModule.imports(),
+                    dependencies,
+                    initializers,
+                    typed.semanticFlowFacts().finalState(node.moduleId()),
+                    java.util.Optional.ofNullable(typed.semanticFlowFacts().attemptedStates()
+                            .get(node.moduleId())),
+                    typed.semanticFlowFacts().callableSummaries(),
+                    typed,
+                    configuration.sourceRoots(),
+                    configuration.revisionOptions().values()));
+        }
+        SessionModuleEnvironment environment = new SessionModuleEnvironment(
+                records,
+                configuration.sourceRoots(),
+                configuration.revisionOptions().values(),
+                inventory,
+                inputs,
+                java.util.Optional.of(graph),
+                java.util.Optional.of(resolved),
+                java.util.Optional.of(typed),
+                java.util.Optional.of(typed.semanticFlowFacts()),
+                records);
+
+        // Conservative boundary proof: public root aggregate bindings become
+        // imported cross-module values, and the root's own public @mut
+        // aggregate bindings become attachable-boundary values whose live
+        // contents may be replaced at any dispatch safe point.  Initializer
+        // allocations are never reused as current-state targets.
+        SessionFlowCertificate certificate = SessionFlowCertificate.issue(
+                SessionSnapshot.empty(), typed, bindings, false,
+                (state, producerGraph) -> {
+                    java.util.TreeMap<DeclarationId, BindingFlowValue> next =
+                            new java.util.TreeMap<>(state.bindings());
+                    for (ResolvedExport export : exports) {
+                        DeclarationId fresh = bindingIds.get(export.name());
+                        BindingFlowValue origin = state.binding(export.originDeclaration())
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                        "attachable export has no sealed producer value: "
+                                                + export.name()));
+                        boolean boundary = export.isMutable() && !export.reExport();
+                        ModuleId owner = boundary ? root : export.originModule();
+                        DeclarationId originDeclaration = boundary
+                                ? export.declarationId() : export.originDeclaration();
+                        java.util.Optional<ExportId> exportId = boundary
+                                ? export.exportId() : export.originExport();
+                        ValueAlternatives converted = BoundaryFacts.conservativeExternal(
+                                producerGraph, origin.alternatives(), owner, originDeclaration,
+                                exportId, export.span(), boundary);
+                        next.put(fresh, new BindingFlowValue(export.contract(), converted));
+                    }
+                    return BindingFlowState.of(next, state.sharedCells());
+                });
+
+        SessionSnapshot initial = new SessionSnapshot(
+                SessionRevision.initial(), bindings, java.util.Map.of(), pins, current,
+                java.util.Optional.of(certificate), environment);
+        return new AttachableRootContext(
+                graph, resolved, typed, metadata.attachmentContext().orElseThrow(),
+                configuration.sourceRoots(), configuration.revisionOptions().values(),
+                List.copyOf(bindings.values()), pins, environment, certificate, initial, current);
+    }
+
+    private static SourceSpan configurationSpanFor(CompileRequest request) {
+        SourceId source = request.rootSource().map(SourceInput::sourceId)
+                .orElseGet(() -> request.rootModule().map(value -> value.defaultSourceId())
+                        .orElseGet(() -> request.rootPath()
+                                .map(value -> SourceId.path(rootNameFor(value)))
+                                .orElse(SourceId.path("<compile-request>.lyra"))));
+        return SourceSpan.at(source, 0);
+    }
+
+    private static String rootNameFor(Path path) {
+        Path fileName = path.getFileName();
+        String value = fileName == null ? "root.lyra" : fileName.toString();
+        return value.endsWith(".lyra") ? value : value + ".lyra";
     }
 
     private static final class BuiltCompiledArtifact implements CompiledArtifact {

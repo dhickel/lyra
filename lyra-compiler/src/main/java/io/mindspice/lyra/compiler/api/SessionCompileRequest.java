@@ -3,6 +3,7 @@ package io.mindspice.lyra.compiler.api;
 import io.mindspice.lyra.compiler.session.SessionRevision;
 import io.mindspice.lyra.compiler.session.SessionSnapshot;
 import io.mindspice.lyra.compiler.source.LogicalModuleId;
+import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.source.SourceConfiguration;
 import io.mindspice.lyra.compiler.source.SourceId;
 import io.mindspice.lyra.runtime.LyraRuntimeConstants;
@@ -30,6 +31,21 @@ public final class SessionCompileRequest {
     private final Map<String, String> semanticOptions;
     private final Optional<LogicalModuleId> reloadModule;
     private final Optional<String> reloadImportAlias;
+    private final Optional<AttachableScope> attachableScope;
+
+    /**
+     * Marks the registered-root scope of an attached workspace.  Reads and
+     * writes of these public root bindings must always carry conservative
+     * imported/boundary aggregate facts, even after a session evaluation
+     * replaced the live value with a session-allocated aggregate.
+     */
+    public record AttachableScope(ModuleId rootModule, java.util.Set<String> rootBindingNames) {
+        public AttachableScope {
+            Objects.requireNonNull(rootModule, "rootModule");
+            rootBindingNames = java.util.Set.copyOf(Objects.requireNonNull(rootBindingNames,
+                    "rootBindingNames"));
+        }
+    }
 
     private SessionCompileRequest(Builder builder) {
         source = Objects.requireNonNull(builder.source, "source");
@@ -56,6 +72,7 @@ public final class SessionCompileRequest {
         if (reloadImportAlias.isPresent() && reloadModule.isEmpty()) {
             throw new IllegalArgumentException("reload import alias requires a reload module");
         }
+        attachableScope = Optional.ofNullable(builder.attachableScope);
     }
 
     public SessionCompileRequest(EvaluationSource source, SessionSnapshot snapshot) {
@@ -125,6 +142,11 @@ public final class SessionCompileRequest {
         return reloadImportAlias;
     }
 
+    /** The registered-root scope marker of an attached workspace, if present. */
+    public Optional<AttachableScope> attachableScope() {
+        return attachableScope;
+    }
+
     public SourceConfiguration sourceConfiguration() {
         Map<String, String> revisionOptions = new LinkedHashMap<>(semanticOptions);
         revisionOptions.put("lyra.execution-profile", "submission-result-1");
@@ -146,14 +168,15 @@ public final class SessionCompileRequest {
                 && includeSources == request.includeSources
                 && semanticOptions.equals(request.semanticOptions)
                 && reloadModule.equals(request.reloadModule)
-                && reloadImportAlias.equals(request.reloadImportAlias);
+                && reloadImportAlias.equals(request.reloadImportAlias)
+                && attachableScope.equals(request.attachableScope);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(source, sourceId, snapshot, baseRevision, sourceRoots, resolvers,
                 javaBasePackage, javaTarget, previewEnabled, includeSources, semanticOptions,
-                reloadModule, reloadImportAlias);
+                reloadModule, reloadImportAlias, attachableScope);
     }
 
     public static final class Builder {
@@ -171,6 +194,7 @@ public final class SessionCompileRequest {
         private Map<String, String> semanticOptions = Map.of();
         private LogicalModuleId reloadModule;
         private String reloadImportAlias;
+        private AttachableScope attachableScope;
 
         public Builder source(EvaluationSource value) {
             source = Objects.requireNonNull(value, "source");
@@ -268,6 +292,17 @@ public final class SessionCompileRequest {
         /** Supplies the private synthetic alias used by the reload root source. */
         public Builder reloadImportAlias(String value) {
             reloadImportAlias = text(value, "reloadImportAlias");
+            return this;
+        }
+
+        /** Marks this submission as part of one attached root workspace. */
+        public Builder attachableScope(ModuleId rootModule, java.util.Set<String> rootBindingNames) {
+            attachableScope = new AttachableScope(rootModule, rootBindingNames);
+            return this;
+        }
+
+        public Builder attachableScope(AttachableScope value) {
+            attachableScope = Objects.requireNonNull(value, "attachableScope");
             return this;
         }
 

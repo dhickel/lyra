@@ -64,6 +64,7 @@ final class SemanticFlowFactValidator {
         private final TypedSemanticCore core;
         private final SemanticFlowFacts facts;
         private final Map<LambdaId, TypedLambda> lambdas = new TreeMap<>();
+        private final Map<LambdaId, CallableSummary> producerSummaries = new TreeMap<>();
         private final Map<CaptureId, ResolvedCapture> captures = new TreeMap<>();
         private final Map<DeclarationId, ResolvedDeclaration> declarations = new TreeMap<>();
         private final Set<ModuleId> modules = new TreeSet<>();
@@ -78,10 +79,12 @@ final class SemanticFlowFactValidator {
             graph.resolvedGraph().captures().forEach(capture -> captures.put(capture.id(), capture));
             graph.resolvedGraph().declarations().forEach(
                     declaration -> declarations.put(declaration.id(), declaration));
-            graph.resolvedGraph().retainedModules().modules().stream()
-                    .filter(record -> graph.resolvedGraph().isRetained(record.moduleId()))
-                    .flatMap(record -> record.producerGraph().resolvedGraph().declarations().stream())
-                    .forEach(declaration -> declarations.putIfAbsent(declaration.id(), declaration));
+            graph.resolvedGraph().retainedModules().producers().forEach(record -> {
+                record.producerGraph().resolvedGraph().declarations().forEach(declaration ->
+                        declarations.putIfAbsent(declaration.id(), declaration));
+                record.callableSummaries().summaries().forEach((lambda, summary) ->
+                        producerSummaries.putIfAbsent(lambda, summary));
+            });
             graph.modules().stream().map(TypedModule::moduleId).forEach(modules::add);
         }
 
@@ -222,14 +225,41 @@ final class SemanticFlowFactValidator {
                     require(declarations.containsKey(declaration.declarationId()),
                             "formula declaration is foreign");
                 } else if (formula instanceof ValueFormula.Lambda lambda) {
-                    require(lambdas.containsKey(lambda.lambdaId()), "formula lambda is foreign");
-                    lambda.captures().forEach((captureId, value) -> {
-                        ResolvedCapture capture = captures.get(captureId);
-                        require(capture != null
-                                        && capture.lambdaId().equals(lambda.lambdaId()),
-                                "formula lambda capture belongs to another lambda");
-                        validateFormulaAlternatives(value, owner, calls);
-                    });
+                    if (lambdas.containsKey(lambda.lambdaId())) {
+                        lambda.captures().forEach((captureId, value) -> {
+                            ResolvedCapture capture = captures.get(captureId);
+                            require(capture != null
+                                            && capture.lambdaId().equals(lambda.lambdaId()),
+                                    "formula lambda capture belongs to another lambda");
+                            validateFormulaAlternatives(value, owner, calls);
+                        });
+                    } else {
+                        // A retained callable may be produced by a borrowed
+                        // transitive application module that is not a node in
+                        // this submission graph.  Admit it only from the exact
+                        // producer certificate, never from a matching type or
+                        // guessed target.
+                        CallableSummary producer = producerSummaries.get(lambda.lambdaId());
+                        require(producer != null,
+                                "formula lambda has no retained producer certificate");
+                        require(producer.signature().asFunctionType()
+                                        .equals(lambda.functionType()),
+                                "retained formula lambda type changed");
+                        Set<CaptureId> expected = producer.captures().stream()
+                                .map(CallableSummary.CapturePlaceholder::captureId)
+                                .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
+                        require(expected.equals(lambda.captures().keySet()),
+                                "retained formula lambda captures changed");
+                        lambda.captures().forEach((captureId, value) -> {
+                            CallableSummary.CapturePlaceholder capture = producer.captures().stream()
+                                    .filter(candidate -> candidate.captureId().equals(captureId))
+                                    .findFirst().orElseThrow();
+                            require(value.rootType().withoutQualifiers()
+                                            .equals(capture.contract().valueType().withoutQualifiers()),
+                                    "retained formula lambda capture type changed");
+                            validateFormulaAlternatives(value, owner, calls);
+                        });
+                    }
                 } else if (formula instanceof ValueFormula.CallResult result) {
                     require(calls.containsKey(result.callId()),
                             "formula call result names a foreign call");
@@ -557,9 +587,13 @@ final class SemanticFlowFactValidator {
                 require(modules.contains(module), "final state names a foreign module");
                 state.bindings().forEach((declaration, value) -> {
                     if (declarations.containsKey(declaration)) {
-                        require(graph.contract(declaration)
-                                        .filter(value.contract()::equals).isPresent(),
-                                "final state binding contract changed");
+                        Optional<io.mindspice.lyra.compiler.types.BindingContract> expected =
+                                graph.contract(declaration)
+                                        .or(() -> declarations.get(declaration).contract());
+                        require(expected.filter(value.contract()::equals).isPresent(),
+                                "final state binding contract changed: " + declaration
+                                        + " expected=" + expected.orElse(null)
+                                        + " actual=" + value.contract());
                     } else {
                         // A retained closure can update a producer-owned cell
                         // whose declaration was lexically replaced and is not
