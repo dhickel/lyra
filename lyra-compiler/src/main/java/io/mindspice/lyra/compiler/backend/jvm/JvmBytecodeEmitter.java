@@ -816,7 +816,10 @@ final class JvmBytecodeEmitter {
             code.invokevirtual(CD_CLOSURE, "checkInvocationFromGeneratedCode", method("()V"));
             loopLabel = code.newLabel();
             code.labelBinding(loopLabel);
-            emitSessionSafePoint();
+            // Function boundary and direct self-tail-loop backedge.  An idle
+            // initialized application consumes at most one pending request
+            // here; an active evaluation only checks its own token.
+            emitOwnerSafePoint();
             line(lambda.bodySpan());
             installLambdaParameters();
             emitTail(lambda.body());
@@ -1172,6 +1175,26 @@ final class JvmBytecodeEmitter {
             emitLoadModuleState(module.moduleId());
             code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
                     "$lyra$sessionSafePoint", method("()V"));
+        }
+
+        /**
+         * Attachable dispatch boundary.  Only the root module's own generated
+         * code may reference the registration hook; dependency code is never
+         * instrumented.  Initialization runs before the lifecycle opens, so
+         * any hook reached there is inert at runtime.
+         */
+        private void emitAttachmentSafePoint() {
+            if (owner.plan.emissionMode() != EmissionMode.ATTACHABLE) return;
+            if (!module.moduleId().equals(owner.rootModuleId())) return;
+            emitLoadModuleState(module.moduleId());
+            code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
+                    "$lyra$attachmentSafePoint", method("()V"));
+        }
+
+        /** Function/call/form/self-tail dispatch boundary for the current mode. */
+        private void emitOwnerSafePoint() {
+            emitSessionSafePoint();
+            emitAttachmentSafePoint();
         }
 
         /** Loads one state from the single prepared graph without instantiating it. */
@@ -2931,6 +2954,7 @@ final class JvmBytecodeEmitter {
             prepareLocalFunctionLinkage(forms);
             for (int index = 0; index < forms.size() - 1; index++) {
                 IrNode form = forms.get(index);
+                emitAttachmentSafePoint();
                 if (skipAlreadyInitializedLocalFunction(form)) {
                     discardUnitForm();
                     continue;
@@ -2939,6 +2963,7 @@ final class JvmBytecodeEmitter {
                 discard(emitNode(form));
             }
             IrNode last = forms.getLast();
+            emitAttachmentSafePoint();
             if (skipAlreadyInitializedLocalFunction(last)) {
                 emitUnit();
                 return owner.mapper.map(type, JvmMappingContext.INTERNAL_VALUE);
@@ -4051,6 +4076,7 @@ final class JvmBytecodeEmitter {
         }
 
         private JvmTypePlan emitDirectCall(IrNode.DirectCall call) {
+            emitAttachmentSafePoint();
             DeclarationId id = call.targetDeclaration().orElseThrow(() ->
                     invalidPlan(call.span(), "direct call has no target declaration"));
             IrDeclaration intrinsic = intrinsicDeclaration(id);
@@ -4082,6 +4108,7 @@ final class JvmBytecodeEmitter {
         }
 
         private JvmTypePlan emitCallableCall(IrNode.CallableCall call) {
+            emitAttachmentSafePoint();
             FunctionType function = functionBase(call.target().type());
             DeclarationId target = targetDeclaration(call.target());
             IrDeclaration intrinsic = target == null ? null : intrinsicDeclaration(target);
@@ -4359,6 +4386,7 @@ final class JvmBytecodeEmitter {
                 }
                 prepareLocalFunctionLinkage(sequence.forms());
                 for (IrNode form : sequence.forms().subList(0, sequence.forms().size() - 1)) {
+                    emitAttachmentSafePoint();
                     if (skipAlreadyInitializedLocalFunction(form)) {
                         discardUnitForm();
                         continue;
@@ -4367,6 +4395,7 @@ final class JvmBytecodeEmitter {
                     discard(emitNode(form));
                 }
                 IrNode last = sequence.forms().getLast();
+                emitAttachmentSafePoint();
                 if (skipAlreadyInitializedLocalFunction(last)) {
                     emitUnit();
                     emitReturn(owner.mapper.map(PrimitiveType.UNIT, JvmMappingContext.INTERNAL_VALUE));
@@ -4387,6 +4416,7 @@ final class JvmBytecodeEmitter {
                 } else {
                     prepareLocalFunctionLinkage(block.forms());
                     for (IrNode form : block.forms().subList(0, block.forms().size() - 1)) {
+                        emitAttachmentSafePoint();
                         if (skipAlreadyInitializedLocalFunction(form)) {
                             discardUnitForm();
                             continue;
@@ -4395,6 +4425,7 @@ final class JvmBytecodeEmitter {
                         discard(emitNode(form));
                     }
                     IrNode last = block.forms().getLast();
+                    emitAttachmentSafePoint();
                     if (skipAlreadyInitializedLocalFunction(last)) {
                         emitUnit();
                         emitReturn(owner.mapper.map(PrimitiveType.UNIT, JvmMappingContext.INTERNAL_VALUE));

@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -160,6 +161,97 @@ public final class RuntimeControlTest {
         assertThrows(LyraClosedException.class, controller::requestCancellation);
         assertThrows(LyraClosedException.class, controller::requestApplicationCancellation);
         assertFalse(retained.cancel());
+    }
+
+    @Test
+    void containedPollRecordsDispatchedFailureAndCancellationWithoutRethrowing() {
+        LyraOwnerController controller = new LyraOwnerController();
+        LyraOwnerController.Dispatch failed = controller.dispatch(() -> {
+            throw new IllegalStateException("expected dispatched failure");
+        });
+        assertTrue(controller.pollContained());
+        assertEquals(LyraOwnerController.DispatchStatus.FAILED, failed.status());
+        assertInstanceOf(IllegalStateException.class, failed.failure().orElseThrow());
+        assertEquals(LyraOwnerController.Status.OPEN, controller.status());
+        assertTrue(controller.currentEvaluation().isEmpty());
+
+        LyraOwnerController.Dispatch cancelled = controller.dispatch(() -> {
+            assertTrue(controller.requestCancellation());
+            controller.safePoint();
+        });
+        assertTrue(controller.pollContained());
+        assertEquals(LyraOwnerController.DispatchStatus.CANCELLED, cancelled.status());
+        assertEquals(LyraOwnerController.Status.OPEN, controller.status());
+        assertTrue(controller.currentEvaluation().isEmpty());
+
+        // The contained boundary never poisons later evaluations.
+        LyraOwnerController.Dispatch healthy = controller.dispatch(() -> { });
+        assertTrue(controller.pollContained());
+        assertEquals(LyraOwnerController.DispatchStatus.COMPLETED, healthy.status());
+        controller.close();
+    }
+
+    @Test
+    void ordinaryPollStillRethrowsWhileTheContainedAdapterContains() {
+        LyraOwnerController controller = new LyraOwnerController();
+        LyraOwnerController.Dispatch failed = controller.dispatch(() -> {
+            throw new IllegalStateException("expected dispatched failure");
+        });
+        assertThrows(IllegalStateException.class, controller::poll);
+        assertEquals(LyraOwnerController.DispatchStatus.FAILED, failed.status());
+
+        LyraOwnerController.Dispatch cancelled = controller.dispatch(() -> {
+            assertTrue(controller.requestCancellation());
+            controller.safePoint();
+        });
+        assertThrows(LyraCancellationException.class, controller::poll);
+        assertEquals(LyraOwnerController.DispatchStatus.CANCELLED, cancelled.status());
+        assertEquals(LyraOwnerController.Status.OPEN, controller.status());
+        controller.close();
+    }
+
+    @Test
+    void applicationSafePointIsInertDuringInitializationAndContainedAtOpen() {
+        ModuleLifecycle lifecycle = new ModuleLifecycle();
+        // Initialization is never dispatchable: the generated hook stays inert
+        // even with no controller installed.
+        assertDoesNotThrow(lifecycle::applicationSafePoint);
+        lifecycle.open();
+        LyraOwnerController controller = new LyraOwnerController(lifecycle);
+        lifecycle.registerApplicationController(controller);
+
+        // At OPEN the hook consumes at most one pending request and contains
+        // its expected failure instead of throwing into the application frame.
+        LyraOwnerController.Dispatch failed = controller.dispatch(() -> {
+            throw new IllegalStateException("expected dispatched failure");
+        });
+        assertDoesNotThrow(lifecycle::applicationSafePoint);
+        assertEquals(LyraOwnerController.DispatchStatus.FAILED, failed.status());
+        assertEquals(LyraOwnerController.Status.OPEN, controller.status());
+        assertDoesNotThrow(lifecycle::applicationSafePoint);
+
+        lifecycle.unregisterApplicationController(controller);
+        controller.close();
+        lifecycle.close();
+    }
+
+    @Test
+    void admittedLeaseReuseRejectsForeignOrEndedLeasesWithoutDoubleBeginning() {
+        LyraOwnerController controller = new LyraOwnerController();
+        LyraOwnerController.EvaluationLease admitted = controller.beginEvaluation();
+        assertTrue(controller.isActiveEvaluation(admitted));
+
+        LyraOwnerController other = new LyraOwnerController();
+        LyraOwnerController.EvaluationLease foreign = other.beginEvaluation();
+        assertFalse(controller.isActiveEvaluation(foreign));
+        foreign.close();
+        other.close();
+
+        admitted.close();
+        assertFalse(controller.isActiveEvaluation(admitted));
+        assertEquals(LyraOwnerController.Status.OPEN, controller.status());
+        assertTrue(controller.currentEvaluation().isEmpty());
+        controller.close();
     }
 
     @Test

@@ -184,6 +184,12 @@ public final class ModuleLifecycle implements AutoCloseable {
      * Optional attachable application boundary.  A normal or session module
      * has no service and therefore this remains an owner/lifecycle check with
      * no dispatch.  The generated hook never manufactures a controller.
+     *
+     * <p>When a service is installed, the hook consumes at most one pending
+     * request while idle and only checks the active evaluation's exact token
+     * during evaluation.  Expected dispatched evaluation failures and
+     * cooperative cancellations are contained at this boundary so main
+     * resumes without poisoning its lifecycle or cancellation context.</p>
      */
     public void applicationSafePoint() {
         owner.check();
@@ -192,7 +198,7 @@ public final class ModuleLifecycle implements AutoCloseable {
         // reached from an initializer, where it is intentionally inert.
         if (current != LifecycleState.OPEN) return;
         LyraOwnerController controller = applicationController;
-        if (controller != null && !controller.isClosed()) controller.poll();
+        if (controller != null && !controller.isClosed()) controller.pollContained();
     }
 
     /** Installs the one trusted owner service for an explicitly registered root. */

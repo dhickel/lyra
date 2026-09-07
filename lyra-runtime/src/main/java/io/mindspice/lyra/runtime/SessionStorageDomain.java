@@ -423,6 +423,24 @@ public final class SessionStorageDomain implements AutoCloseable {
         this.types = rootLifetime == null ? new SessionTypeLoader() : rootLifetime.typeDomain;
     }
 
+    /**
+     * Creates a root-backed workspace sharing one explicitly supplied owner
+     * controller.  A live application attachment installs its registered
+     * root controller here so that synchronous submissions, owner-dispatched
+     * evaluations and generated application safe points observe exactly one
+     * active lease and never begin a second evaluation.
+     */
+    public SessionStorageDomain(RootLifetime rootLifetime, LyraOwnerController controller) {
+        this.rootLifetime = Objects.requireNonNull(rootLifetime, "rootLifetime");
+        this.controller = Objects.requireNonNull(controller, "controller");
+        this.owner = rootLifetime.owner;
+        if (!controller.owner().equals(owner)) {
+            throw new LyraThreadException("workspace controller belongs to another owner thread");
+        }
+        rootLifetime.attach(this);
+        this.types = rootLifetime.typeDomain;
+    }
+
     /** Returns the optional externally owned root lifetime. */
     public Optional<RootLifetime> rootLifetime() {
         owner.check();
@@ -639,6 +657,23 @@ public final class SessionStorageDomain implements AutoCloseable {
     public LyraOwnerController.EvaluationLease beginEvaluation() {
         checkOpen();
         return controller.beginEvaluation();
+    }
+
+    /**
+     * Reuses one already-admitted evaluation lease for an owner-dispatched
+     * evaluation.  The supplied lease must be active on this workspace's
+     * controller; no second lease is ever begun.  Ownership of the lease
+     * stays with the admitting controller poll.
+     */
+    public LyraOwnerController.EvaluationLease beginEvaluation(
+            LyraOwnerController.EvaluationLease admitted) {
+        checkOpen();
+        Objects.requireNonNull(admitted, "admitted");
+        if (!controller.isActiveEvaluation(admitted)) {
+            throw new LyraLifecycleException(
+                    "admitted evaluation lease is not active on this workspace controller");
+        }
+        return admitted;
     }
 
     public void commit(long baseRevision, List<Binding> staged) {

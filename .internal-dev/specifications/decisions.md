@@ -260,3 +260,11 @@
 - **Alternatives rejected:** runtime array-ownership guards on the raw-array ABI; blanket rejection of all mutable behavior; treating reads of such bindings as definitely local until Phase 07 dispatch exists.
 - **Caveat:** initialization is never dispatchable, so initializer-time reads keep exact local facts. The conservative boundary is represented as a distinct identity kind so same-module callable ownership checks cannot conflate it with genuinely root-owned aggregates.
 - **Affected specifications:** `repl.md`, `backend-runtime.md`; attachable profile emission, root registration and ReplProfileEmissionTest/RootTypeRegistrationTest.
+
+### Generated application polling, admission and cancellation, 2026-09-07
+
+- **Decision:** a live attachment shares its registered root controller with the storage workspace so synchronous submission, owner-dispatched evaluation and generated application safe points observe exactly one active evaluation lease. Owner-dispatched evaluation reuses the poll's admitted lease; a second lease is never begun. `ModuleLifecycle.applicationSafePoint()` polls through a contained adapter that records expected dispatched failures and cancellations on the `Dispatch` instead of unwinding into the application frame, while ordinary `LyraOwnerController.poll()` keeps its rethrowing contract. Cross-thread dispatch publication uses safely published control atomics and maps the terminal-publication/lease-release race to a truthful Busy outcome.
+- **Justification:** two controllers would let generated root boundaries dispatch nested work during a synchronous evaluation and would split cancellation observation. Containment keeps main resumable without changing the controller's ordinary semantics.
+- **Alternatives rejected:** moving the evaluation lease between controllers; suppressing busy outcomes during the terminal-publication race; forced interruption of blocking host I/O or main.
+- **Caveat:** cancellation remains cooperative. A root function or blocking I/O that never reaches a generated boundary can delay the terminal cancellation result; this is never a justification for interruption.
+- **Affected specifications:** `repl.md`, `backend-runtime.md`; `LyraOwnerController`, `SessionStorageDomain`, `ApplicationAttachment`, attachable emitter safe points, ApplicationSafePointTest/AttachmentCancellationTest.

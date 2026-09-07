@@ -58,6 +58,8 @@ public final class ApplicationAttachment implements AutoCloseable {
     private final Object admission = new Object();
     private final ModuleHandle root;
     private final RootTypeRegistration registration;
+    /** The registered root controller; safe for cross-thread dispatch publication. */
+    private final io.mindspice.lyra.runtime.LyraOwnerController controller;
     private final AttachableRootContext context;
     private final SessionStorageDomain storage;
     private final SourceRegistry sourceRegistry;
@@ -83,7 +85,13 @@ public final class ApplicationAttachment implements AutoCloseable {
         owner = registration.lifecycle().owner();
         sourceRegistry = new SourceRegistry(options);
         compilerSnapshot = context.initialSnapshot();
-        storage = new SessionStorageDomain(registration.rootLifetime());
+        // The workspace shares the registered root controller so synchronous
+        // submissions, owner-dispatched evaluations and generated application
+        // safe points observe exactly one active lease.  A dispatched
+        // evaluation reuses the poll's admitted lease; no second lease or
+        // nested evaluation can begin.
+        controller = registration.controller();
+        storage = new SessionStorageDomain(registration.rootLifetime(), controller);
         rootClassNames = LyraRuntime.attachmentClassNames(root);
     }
 
@@ -101,16 +109,28 @@ public final class ApplicationAttachment implements AutoCloseable {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(options, "options");
         RootTypeRegistration registration = LyraRuntime.registerRoot(root);
+        ApplicationAttachment attachment = null;
         try {
             requireAligned(root, context, registration);
             // The root owns the compiler context and its summaries/sources.
             registration.rootLifetime().anchorSummary(context);
-            ApplicationAttachment attachment =
-                    new ApplicationAttachment(root, registration, context, options);
+            attachment = new ApplicationAttachment(root, registration, context, options);
             attachment.registerBorrowedLinks();
             return attachment;
         } catch (RuntimeException | Error failure) {
-            registration.close();
+            // Registration and storage construction are separate ownership
+            // steps. If link registration fails part-way through, close the
+            // constructed workspace first so its active-domain slot and
+            // partial borrowed retentions cannot strand the root.
+            try {
+                if (attachment != null) {
+                    attachment.close();
+                } else {
+                    registration.close();
+                }
+            } catch (RuntimeException | Error cleanup) {
+                failure.addSuppressed(cleanup);
+            }
             throw failure;
         }
     }
@@ -248,21 +268,211 @@ public final class ApplicationAttachment implements AutoCloseable {
         return evaluate(operation);
     }
 
+    /**
+     * Publishes one owner-dispatched evaluation against the current committed
+     * revision.  The request is admitted immediately and executed on the
+     * application owner thread by the next generated safe point or explicit
+     * {@link #poll()}; the returned handle publishes the terminal result from
+     * any thread without reading root state.
+     */
+    public DispatchedEvaluation submitDispatch(EvaluationSource source) {
+        Objects.requireNonNull(source, "source");
+        return submitDispatch(new EvaluationRequest(EvaluationId.create(),
+                currentRevision(), source));
+    }
+
+    /** Convenience overload for a label-backed source origin. */
+    public DispatchedEvaluation submitDispatch(String label, String text) {
+        return submitDispatch(EvaluationSource.of(label, text));
+    }
+
+    /**
+     * Publishes a caller-identified request against its exact base revision.
+     * Stale or future revisions are API misuse and are rejected rather than
+     * silently compiling against a different namespace.  Publication is the
+     * deliberately thread-safe control operation; live work still runs only
+     * on the owner thread.
+     */
+    public DispatchedEvaluation submitDispatch(EvaluationRequest request) {
+        Objects.requireNonNull(request, "request");
+        ActiveOperation operation;
+        DispatchedEvaluation dispatched;
+        synchronized (admission) {
+            EvaluationResult rejected = dispatchAdmissionFailure(request);
+            if (rejected != null) {
+                return DispatchedEvaluation.rejected(this, request, rejected);
+            }
+            // Truthful transient busyness: the previous evaluation's terminal
+            // publication can race its lease release on the shared controller.
+            if (controller.hasLiveWork()) {
+                return DispatchedEvaluation.rejected(this, request,
+                        new EvaluationResult.Busy(request, revision, Optional.empty()));
+            }
+            dispatched = new DispatchedEvaluation(this, request);
+            operation = new ActiveOperation(request, dispatched);
+            active = operation;
+        }
+        try {
+            io.mindspice.lyra.runtime.LyraOwnerController.Dispatch dispatch =
+                    controller.dispatch(() -> runDispatchedEvaluation(operation, dispatched));
+            // Controller close/cancel may win immediately after publication.
+            // Observe that terminal transition so a rejected queued request
+            // cannot leave the attachment's active slot stranded forever.
+            dispatch.whenTerminal(() -> dispatchTerminal(
+                    operation, dispatched, dispatch));
+        } catch (RuntimeException | Error failure) {
+            releaseActiveIfPresent(operation);
+            EvaluationResult rejected = dispatchRejection(operation, failure);
+            dispatched.publish(rejected);
+        }
+        return dispatched;
+    }
+
+    /**
+     * Explicit Java-host poll on the original owner.  It services at most one
+     * pending dispatched evaluation without an application executor, and
+     * never propagates an expected evaluation failure or cancellation into
+     * the hosting frame.
+     */
+    public boolean poll() {
+        owner.check();
+        requireOpen();
+        return controller.pollContained();
+    }
+
+    /**
+     * Runs one admitted dispatched evaluation inside the owner poll.  The
+     * poll's dispatch lease is already active on the shared controller; the
+     * evaluation explicitly reuses that admitted context instead of beginning
+     * a second lease.
+     */
+    private void runDispatchedEvaluation(ActiveOperation operation,
+                                         DispatchedEvaluation dispatched) {
+        io.mindspice.lyra.runtime.LyraOwnerController.EvaluationLease admitted =
+                controller.currentEvaluation()
+                        .orElseThrow(() -> new IllegalStateException(
+                                "dispatched evaluation has no admitted lease"));
+        operation.admittedLease = admitted;
+        try {
+            dispatched.publish(evaluate(operation));
+        } catch (RuntimeException | Error failure) {
+            dispatched.publishFailure(failure);
+            throw failure;
+        } catch (Throwable failure) {
+            io.mindspice.lyra.runtime.LyraInternalException wrapped =
+                    new io.mindspice.lyra.runtime.LyraInternalException(
+                            "owner-dispatched evaluation failed", List.of(), List.of(), failure);
+            dispatched.publishFailure(wrapped);
+            throw wrapped;
+        }
+    }
+
+    private EvaluationResult dispatchRejection(ActiveOperation operation, Throwable failure) {
+        if (failure instanceof LyraClosedException) {
+            return new EvaluationResult.Closed(operation.request, revision,
+                    SessionLifecycleState.CLOSED);
+        }
+        if (failure instanceof LyraLifecycleException) {
+            return new EvaluationResult.Busy(operation.request, revision, Optional.empty());
+        }
+        throw rethrowRuntime(failure);
+    }
+
+    /**
+     * Completes an attachment handle when the controller removes a request
+     * without running its operation (for example, service close or direct
+     * controller cancellation). The callback only touches volatile/control
+     * metadata and the attachment admission lock, never root state.
+     */
+    private void dispatchTerminal(
+            ActiveOperation operation,
+            DispatchedEvaluation dispatched,
+            io.mindspice.lyra.runtime.LyraOwnerController.Dispatch terminal) {
+        EvaluationResult result = null;
+        Throwable failure = null;
+        synchronized (admission) {
+            if (active != operation) return;
+            switch (terminal.status()) {
+                case CANCELLED -> {
+                    operation.cancellationRequested = true;
+                    result = completeCancelledLocked(operation);
+                }
+                case CLOSED -> {
+                    active = null;
+                    result = new EvaluationResult.Closed(operation.request, revision,
+                            SessionLifecycleState.CLOSED);
+                }
+                case FAILED -> {
+                    active = null;
+                    Throwable cause = terminal.failure().orElseGet(
+                            () -> new LyraLifecycleException("owner dispatch failed"));
+                    if (cause instanceof LyraClosedException) {
+                        result = new EvaluationResult.Closed(operation.request, revision,
+                                SessionLifecycleState.CLOSED);
+                    } else if (cause instanceof LyraLifecycleException) {
+                        result = new EvaluationResult.Busy(operation.request, revision,
+                                Optional.empty());
+                    } else {
+                        failure = cause;
+                    }
+                }
+                default -> {
+                    return;
+                }
+            }
+        }
+        if (result != null) {
+            dispatched.publish(result);
+        } else if (failure != null) {
+            dispatched.publishFailure(failure);
+        }
+    }
+
+    private static RuntimeException rethrowRuntime(Throwable failure) {
+        if (failure instanceof RuntimeException runtime) {
+            return runtime;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        throw new io.mindspice.lyra.runtime.LyraInternalException(
+                "dispatch publication failed", List.of(), List.of(), failure);
+    }
+
     /** Called only while holding admission; no source or namespace work occurs here. */
     private EvaluationResult admissionFailure(EvaluationRequest request) {
+        EvaluationResult failure = dispatchAdmissionFailure(request);
+        if (failure != null) return failure;
+        try {
+            if (registration.isClosed()
+                    || registration.rootLifetime().isClosed()) {
+                return new EvaluationResult.Closed(request, revision,
+                        SessionLifecycleState.CLOSED);
+            }
+        } catch (LyraClosedException closedRoot) {
+            return new EvaluationResult.Closed(request, revision, SessionLifecycleState.CLOSED);
+        }
+        owner.check();
+        if (controller.hasLiveWork()) {
+            return new EvaluationResult.Busy(request, revision, Optional.empty());
+        }
+        return null;
+    }
+
+    /**
+     * Thread-safe admission shared by synchronous and dispatched submission.
+     * It reads only safely published control metadata; no root or module
+     * state is inspected.  The root-closed case for a dispatched request is
+     * surfaced when the controller rejects publication with a closed failure.
+     */
+    private EvaluationResult dispatchAdmissionFailure(EvaluationRequest request) {
         SessionRevision current = revision;
         if (request.revision().value() > current.value()) {
             throw new IllegalArgumentException(
                     "evaluation request targets a future session revision: "
                             + request.revision() + " > " + current);
         }
-        try {
-            if (lifecycle == SessionLifecycleState.CLOSED
-                    || registration.isClosed()
-                    || registration.rootLifetime().isClosed()) {
-                return new EvaluationResult.Closed(request, current, SessionLifecycleState.CLOSED);
-            }
-        } catch (LyraClosedException closedRoot) {
+        if (lifecycle == SessionLifecycleState.CLOSED) {
             return new EvaluationResult.Closed(request, current, SessionLifecycleState.CLOSED);
         }
         if (lifecycle == SessionLifecycleState.FAILED) {
@@ -280,7 +490,6 @@ public final class ApplicationAttachment implements AutoCloseable {
             }
             return new EvaluationResult.Busy(request, current, Optional.of(active.request.evaluationId()));
         }
-        owner.check();
         return null;
     }
 
@@ -301,6 +510,19 @@ public final class ApplicationAttachment implements AutoCloseable {
         }
     }
 
+    /** Cancels only the exact handle admitted by this attachment generation. */
+    boolean cancel(DispatchedEvaluation dispatched) {
+        Objects.requireNonNull(dispatched, "dispatched");
+        synchronized (admission) {
+            if (lifecycle != SessionLifecycleState.OPEN || active == null
+                    || active.dispatched != dispatched) {
+                return false;
+            }
+            active.requestCancellation();
+            return true;
+        }
+    }
+
     /**
      * Clears scratch names, aliases, history and control state without moving
      * the revision backwards.  Root-held values, the retained structural
@@ -313,6 +535,9 @@ public final class ApplicationAttachment implements AutoCloseable {
             if (active != null) {
                 active.requestCancellation();
                 throw new LyraLifecycleException("cannot reset while an evaluation is active");
+            }
+            if (controller.hasLiveWork()) {
+                throw new LyraLifecycleException("cannot reset while an owner operation is active");
             }
             storage.reset();
             storageBindings.clear();
@@ -347,6 +572,9 @@ public final class ApplicationAttachment implements AutoCloseable {
             if (active != null) {
                 active.requestCancellation();
                 throw new LyraLifecycleException("cannot close while an evaluation is active");
+            }
+            if (controller.hasLiveWork()) {
+                throw new LyraLifecycleException("cannot close while an owner operation is active");
             }
             storage.close();
             storageBindings.clear();
@@ -495,9 +723,13 @@ public final class ApplicationAttachment implements AutoCloseable {
             LoadedArtifact loaded = null;
             ModuleHandle module = null;
             boolean retained = false;
-            try (var lease = storage.beginEvaluation()) {
-                operation.lease = lease;
-                if (operation.isCancellationRequested()) lease.requestCancellation();
+            io.mindspice.lyra.runtime.LyraOwnerController.EvaluationLease lease =
+                    operation.admittedLease == null
+                            ? storage.beginEvaluation()
+                            : storage.beginEvaluation(operation.admittedLease);
+            operation.lease = lease;
+            if (operation.isCancellationRequested()) lease.requestCancellation();
+            try {
                 loaded = LyraRuntime.loadSubmission(artifact,
                         LoadOptions.defaults().withPreviewEnabled(options.previewEnabled())
                                 .withIoEnvironment(options.ioEnvironment()), linkage);
@@ -549,6 +781,13 @@ public final class ApplicationAttachment implements AutoCloseable {
                 if (!retained) {
                     if (module != null) module.close();
                     if (loaded != null) loaded.close();
+                }
+                // A direct synchronous submission owns its lease and ends it
+                // here on every compile/link/runtime/cancel path.  An
+                // owner-dispatched evaluation reuses the poll's admitted
+                // lease, which the poll's finally ends exactly once.
+                if (operation.admittedLease == null) {
+                    lease.close();
                 }
             }
         } catch (LyraCompilerBugException failure) {
@@ -825,15 +1064,23 @@ public final class ApplicationAttachment implements AutoCloseable {
 
     private static final class ActiveOperation {
         private final EvaluationRequest request;
+        private final DispatchedEvaluation dispatched;
         private volatile boolean cancellationRequested;
         private volatile io.mindspice.lyra.runtime.LyraOwnerController.EvaluationLease lease;
+        /** Owner-dispatched evaluations reuse the poll's admitted lease. */
+        private volatile io.mindspice.lyra.runtime.LyraOwnerController.EvaluationLease admittedLease;
         private volatile ModuleHandle module;
         private io.mindspice.lyra.compiler.session.SessionExecutionPlan executionPlan;
         private SourceId compilerSourceId;
         private boolean retained;
 
         private ActiveOperation(EvaluationRequest request) {
+            this(request, null);
+        }
+
+        private ActiveOperation(EvaluationRequest request, DispatchedEvaluation dispatched) {
             this.request = Objects.requireNonNull(request, "request");
+            this.dispatched = dispatched;
         }
 
         private boolean requestCancellation() {

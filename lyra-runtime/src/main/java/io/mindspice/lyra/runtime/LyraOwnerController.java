@@ -128,6 +128,26 @@ public final class LyraOwnerController implements AutoCloseable {
     }
 
     /**
+     * Returns whether the supplied lease is currently active on this exact
+     * controller.  An admitted lease may be reused by an owner-dispatched
+     * evaluation only when this predicate holds; never create a second lease.
+     */
+    public boolean isActiveEvaluation(EvaluationLease lease) {
+        Objects.requireNonNull(lease, "lease");
+        return lease.controller == this && lease.isActive();
+    }
+
+    /**
+     * Thread-safe busy probe for cross-thread admission.  It reads only the
+     * safely published control atomics and never touches owner state, so a
+     * publisher racing a terminal result can observe truthful transient
+     * busyness instead of a stale admission.
+     */
+    public boolean hasLiveWork() {
+        return active.get() != null || pending.get() != null;
+    }
+
+    /**
      * Ends a lease. Ending an already-ended lease is harmless, which keeps
      * explicit cleanup and try-with-resources equivalent.
      */
@@ -218,8 +238,28 @@ public final class LyraOwnerController implements AutoCloseable {
      * Explicit owner poll. It runs at most one pending request and returns
      * whether a request was consumed. While an evaluation is active it only
      * checks that evaluation's cancellation and never dispatches nested work.
+     * An expected dispatched failure or cancellation is recorded on the
+     * {@link Dispatch} and rethrown into the polling frame.
      */
     public boolean poll() {
+        return pollInternal(false);
+    }
+
+    /**
+     * Contained owner poll for optional attachment boundaries.
+     *
+     * <p>Unlike {@link #poll()}, an expected dispatched evaluation failure or
+     * cooperative cancellation is recorded on its {@link Dispatch} and never
+     * propagates into the application frame that reached the safe point.
+     * Idle initialized application code still consumes at most one pending
+     * request, and while an evaluation is active the poll only checks that
+     * evaluation's exact token; no nested work is dispatched.</p>
+     */
+    public boolean pollContained() {
+        return pollInternal(true);
+    }
+
+    private boolean pollInternal(boolean contained) {
         owner.check();
         requireReadyOnOwner();
         if (active.get() != null) {
@@ -241,8 +281,10 @@ public final class LyraOwnerController implements AutoCloseable {
         } catch (Throwable failure) {
             request.failed(failure);
             request.cancellation.retire();
-            rethrow(failure);
-            return false;
+            if (!contained || mustEscapeContained(failure)) {
+                rethrow(failure);
+            }
+            return true;
         }
 
         try {
@@ -258,10 +300,14 @@ public final class LyraOwnerController implements AutoCloseable {
             request.completed();
         } catch (LyraCancellationException cancellation) {
             request.cancelled(cancellation);
-            throw cancellation;
+            if (!contained) {
+                throw cancellation;
+            }
         } catch (Throwable failure) {
             request.failed(failure);
-            rethrow(failure);
+            if (!contained || mustEscapeContained(failure)) {
+                rethrow(failure);
+            }
         } finally {
             endEvaluation(lease);
         }
@@ -352,15 +398,25 @@ public final class LyraOwnerController implements AutoCloseable {
                 return false;
             }
             if (current == DispatchStatus.PENDING) {
-                request.cancellation.request();
-                if (request.status.compareAndSet(DispatchStatus.PENDING,
+                // Claim cancellation before touching the token. Close may
+                // retire that token concurrently; the terminal state is the
+                // authoritative request identity in that race.
+                if (!request.status.compareAndSet(DispatchStatus.PENDING,
                         DispatchStatus.CANCELLED)) {
-                    pending.compareAndSet(request, null);
-                    request.operation.set(null);
-                    request.cancellation.retire();
-                    return true;
+                    continue;
                 }
-                continue;
+                pending.compareAndSet(request, null);
+                request.operation.set(null);
+                try {
+                    request.cancellation.request();
+                } catch (LyraClosedException ignored) {
+                    // Controller close won the token-publication race. The
+                    // request is already terminal and cannot affect later
+                    // work, so cancellation remains a successful transition.
+                }
+                request.cancellation.retire();
+                request.notifyTerminal();
+                return true;
             }
             // RUNNING: publishing the token request is sufficient. The
             // owner will observe it at the next generated/explicit safe point.
@@ -390,6 +446,15 @@ public final class LyraOwnerController implements AutoCloseable {
 
     private LyraClosedException closedException() {
         return new LyraClosedException("owner controller is closed");
+    }
+
+    private static boolean mustEscapeContained(Throwable failure) {
+        // Optional attachment containment is for expected evaluation faults,
+        // not host-integrity/fatal JVM signals. Those must retain the normal
+        // host-control contract even when an application reached a safe point.
+        return failure instanceof VirtualMachineError
+                || failure instanceof ThreadDeath
+                || failure instanceof LinkageError;
     }
 
     private static void rethrow(Throwable failure) {
@@ -489,6 +554,8 @@ public final class LyraOwnerController implements AutoCloseable {
         private final LyraCancellation cancellation;
         private final AtomicReference<DispatchStatus> status =
                 new AtomicReference<>(DispatchStatus.PENDING);
+        private final AtomicReference<Runnable> terminalListener =
+                new AtomicReference<>();
         private volatile Throwable failure;
 
         private Dispatch(LyraOwnerController controller, Runnable operation,
@@ -523,6 +590,33 @@ public final class LyraOwnerController implements AutoCloseable {
             return controller.cancelDispatch(this);
         }
 
+        /**
+         * Installs one internal terminal observer without exposing live owner
+         * state to the publishing thread. The observer is invoked exactly
+         * once, even when cancellation or close wins the race first.
+         */
+        public void whenTerminal(Runnable listener) {
+            Objects.requireNonNull(listener, "listener");
+            if (status.get().isTerminal()) {
+                listener.run();
+                return;
+            }
+            if (!terminalListener.compareAndSet(null, listener)) {
+                throw new IllegalStateException("dispatch already has a terminal observer");
+            }
+            if (status.get().isTerminal()
+                    && terminalListener.compareAndSet(listener, null)) {
+                listener.run();
+            }
+        }
+
+        private void notifyTerminal() {
+            Runnable listener = terminalListener.getAndSet(null);
+            if (listener != null) {
+                listener.run();
+            }
+        }
+
         private boolean claimForExecution() {
             return status.compareAndSet(DispatchStatus.PENDING, DispatchStatus.RUNNING);
         }
@@ -530,6 +624,7 @@ public final class LyraOwnerController implements AutoCloseable {
         private void completed() {
             status.set(DispatchStatus.COMPLETED);
             cancellation.retire();
+            notifyTerminal();
         }
 
         private void cancelled(Throwable signal) {
@@ -537,6 +632,7 @@ public final class LyraOwnerController implements AutoCloseable {
             status.set(DispatchStatus.CANCELLED);
             operation.set(null);
             cancellation.retire();
+            notifyTerminal();
         }
 
         private void failed(Throwable cause) {
@@ -544,12 +640,14 @@ public final class LyraOwnerController implements AutoCloseable {
             status.set(DispatchStatus.FAILED);
             operation.set(null);
             cancellation.retire();
+            notifyTerminal();
         }
 
         private void closeFromController() {
             operation.set(null);
             status.set(DispatchStatus.CLOSED);
             cancellation.retire();
+            notifyTerminal();
         }
     }
 }
