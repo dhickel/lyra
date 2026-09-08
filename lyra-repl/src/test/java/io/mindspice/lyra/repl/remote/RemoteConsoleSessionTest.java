@@ -11,8 +11,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.nio.file.Path;
+import java.io.IOException;
+
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -125,7 +126,7 @@ class RemoteConsoleSessionTest {
             attached.client().close();
             assertEquals(ConsoleSession.EvaluationStatus.CANCELLED,
                     evaluation.get(5, TimeUnit.SECONDS).status());
-            waitUntil(() -> server.authenticatedControllerCount() == 0);
+            waitUntil(() -> server.controllerCount() == 0);
             assertTrue(server.isOpen());
             assertEquals(0, adapter.resets.get());
             assertEquals(0, adapter.evaluations.get());
@@ -137,10 +138,7 @@ class RemoteConsoleSessionTest {
 
     private RemoteServer server(RemoteSessionAdapter adapter, OwnerDispatcher owner)
             throws IOException {
-        return RemoteServer.open(adapter, owner,
-                RemoteServerOptions.builder()
-                        .credentialFile(temporaryDirectory.resolve("credential-" + UUID.randomUUID()))
-                        .build());
+        return RemoteServer.open(adapter, owner);
     }
 
     private static void waitUntil(java.util.function.BooleanSupplier condition)

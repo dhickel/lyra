@@ -6,50 +6,30 @@ import io.mindspice.lyra.repl.EvaluationId;
 import io.mindspice.lyra.repl.EvaluationRequest;
 import io.mindspice.lyra.repl.EvaluationResult;
 import io.mindspice.lyra.repl.EvaluationSource;
-import io.mindspice.lyra.repl.LyraSession;
+import io.mindspice.lyra.repl.ManagedConsoleSession;
 import io.mindspice.lyra.repl.SessionRevision;
-import io.mindspice.lyra.repl.SourceOrigin;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CodingErrorAction;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.DirectoryStream;
-import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
-import java.nio.file.LinkOption;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Explicit embedding adapter for the synchronous local session API.
- * Queries share the local console's metadata-only, non-executing path; no
- * live handles or alternate evaluator cross the transport. Server-side
- * LOAD reads a file exactly once into a captured file-URI source; RELOAD
- * invokes the session reload exactly once and returns its real initializer
- * progress. Completion is bounded metadata/filesystem lookup that never
- * compiles, pins or executes source.
+ * Owner-routed adapter over a managed local console. Every live operation is
+ * admitted by the managed console and executed on its dedicated owner loop;
+ * the adapter never runs session work itself. Full-fidelity submissions
+ * preserve exact values, diagnostics and initializer progress.
  */
-public final class LyraSessionAdapter implements RemoteSessionAdapter, AutoCloseable {
-    private final LyraSession session;
-    private final ConsoleSession console;
+public final class ManagedConsoleSessionAdapter implements RemoteSessionAdapter {
+    private final ManagedConsoleSession console;
     private final UUID sessionId = UUID.randomUUID();
 
-    private LyraSessionAdapter(LyraSession session) {
-        this.session = Objects.requireNonNull(session, "session");
-        this.console = ConsoleSession.local(session);
+    private ManagedConsoleSessionAdapter(ManagedConsoleSession console) {
+        this.console = Objects.requireNonNull(console, "console");
     }
 
-    public static LyraSessionAdapter of(LyraSession session) {
-        return new LyraSessionAdapter(session);
+    public static ManagedConsoleSessionAdapter of(ManagedConsoleSession console) {
+        return new ManagedConsoleSessionAdapter(console);
     }
 
     @Override
@@ -71,10 +51,10 @@ public final class LyraSessionAdapter implements RemoteSessionAdapter, AutoClose
                 throw new IllegalStateException("evaluation cancellation token was already admitted");
             }
             cancellation.observe();
-            return new EvaluationResult.Cancelled(request, revision(),
+            return new EvaluationResult.Cancelled(request, console.revision(),
                     Cancellation.observed(request.evaluationId()));
         }
-        return session.submit(request, cancellation::isRequested);
+        return console.submit(request, cancellation::isRequested);
     }
 
     @Override
@@ -100,17 +80,17 @@ public final class LyraSessionAdapter implements RemoteSessionAdapter, AutoClose
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(cancellation, "cancellation");
-        EvaluationRequest evaluation = new EvaluationRequest(EvaluationId.of(request.requestId()),
-                request.revision(), source);
+        EvaluationRequest evaluation = new EvaluationRequest(
+                EvaluationId.of(request.requestId()), request.revision(), source);
         if (!cancellation.admit()) {
             if (!cancellation.isRequested()) {
                 throw new IllegalStateException("evaluation cancellation token was already admitted");
             }
             cancellation.observe();
-            return new EvaluationResult.Cancelled(evaluation, revision(),
-                    Cancellation.observed(EvaluationId.of(request.requestId())));
+            return new EvaluationResult.Cancelled(evaluation, console.revision(),
+                    Cancellation.observed(evaluation.evaluationId()));
         }
-        return session.submit(evaluation, cancellation::isRequested);
+        return console.submit(evaluation, cancellation::isRequested);
     }
 
     @Override
@@ -126,32 +106,41 @@ public final class LyraSessionAdapter implements RemoteSessionAdapter, AutoClose
             return new EvaluationResult.Cancelled(
                     new EvaluationRequest(EvaluationId.of(request.requestId()),
                             request.revision(), EvaluationSource.of("reload " + request.target(), "")),
-                    revision(), Cancellation.observed(EvaluationId.of(request.requestId())));
+                    console.revision(), Cancellation.observed(EvaluationId.of(request.requestId())));
         }
-        return session.reload(request.target(), EvaluationId.of(request.requestId()),
-                cancellation::isRequested);
+        return console.submitReloadResult(request.target(),
+                EvaluationId.of(request.requestId()), cancellation::isRequested);
     }
 
     @Override
     public boolean cancel(EvaluationId evaluationId) {
-        return session.cancel(Objects.requireNonNull(evaluationId, "evaluationId"));
+        Objects.requireNonNull(evaluationId, "evaluationId");
+        ConsoleSession.Control control = console.cancel(evaluationId);
+        return control.status() == ConsoleSession.ControlStatus.REQUESTED
+                || control.status() == ConsoleSession.ControlStatus.OK;
     }
 
     @Override
     public void reset() {
-        session.reset();
+        ConsoleSession.Control control = console.reset();
+        if (control.status() == ConsoleSession.ControlStatus.BUSY
+                || control.status() == ConsoleSession.ControlStatus.CLOSED) {
+            throw new RemoteSessionUnavailableException(
+                    "managed console reset is unavailable: " + control.status());
+        }
     }
 
     @Override
     public RemoteQuery.Result query(RemoteQuery query) {
         Objects.requireNonNull(query, "query");
-        var request = query.kind() == RemoteQuery.Kind.BINDINGS
+        ConsoleSession.QueryRequest request = query.kind() == RemoteQuery.Kind.BINDINGS
                 ? ConsoleSession.QueryRequest.bindings()
                 : ConsoleSession.QueryRequest.type(query.source().orElseThrow());
-        var result = console.query(request);
+        ConsoleSession.Query result = console.query(request);
         var status = switch (result.status()) {
             case OK -> RemoteQuery.Status.OK;
             case CLOSED -> RemoteQuery.Status.CLOSED;
+            case BUSY -> throw new RemoteSessionUnavailableException("managed console is busy");
             default -> RemoteQuery.Status.UNAVAILABLE;
         };
         if (result.bindings().stream().anyMatch(value -> value.name().length() > 1024
@@ -159,15 +148,16 @@ public final class LyraSessionAdapter implements RemoteSessionAdapter, AutoClose
                 || result.inferredType().filter(value -> value.length() > 4096).isPresent()) {
             return RemoteQuery.Result.unavailable("query metadata exceeds the transport limit");
         }
-        var bindings = result.bindings().stream().limit(RemoteProtocol.MAX_QUERY_BINDINGS)
-                .map(value -> new RemoteBinding(value.name(), value.canonicalType(), value.visibility(), value.mutable()))
+        List<RemoteBinding> bindings = result.bindings().stream()
+                .limit(RemoteProtocol.MAX_QUERY_BINDINGS)
+                .map(value -> new RemoteBinding(value.name(), value.canonicalType(),
+                        value.visibility(), value.mutable()))
                 .toList();
         Optional<String> detail = result.detail().map(value -> {
             if (value.length() <= 4096) return value;
             int end = Character.isHighSurrogate(value.charAt(4094)) ? 4094 : 4095;
             return value.substring(0, end) + "…";
         });
-        if (result.bindings().size() > bindings.size()) detail = Optional.of("binding listing truncated");
         return new RemoteQuery.Result(status, bindings, result.inferredType(), detail);
     }
 
@@ -176,7 +166,7 @@ public final class LyraSessionAdapter implements RemoteSessionAdapter, AutoClose
         Objects.requireNonNull(request, "request");
         return switch (request.kind()) {
             case MODULE_FILES -> RemoteFileCompletion.moduleFiles(
-                    session.sourceRoots(), request.prefix());
+                    console.sourceRoots(), request.prefix());
             case BINDING_MEMBERS -> memberCompletion(request.binding().orElseThrow());
         };
     }
@@ -190,7 +180,7 @@ public final class LyraSessionAdapter implements RemoteSessionAdapter, AutoClose
                 .filter(binding -> binding.name().equals(bindingName))
                 .findFirst();
         if (target.isEmpty()) {
-            return RemoteCompletion.Result.notFound("unknown binding: " + bindingName);
+            return RemoteCompletion.Result.notFound("unknown committed binding: " + bindingName);
         }
         List<RemoteCompletion.Item> members = RemoteCompletion.members(
                 target.orElseThrow().canonicalType());
@@ -199,11 +189,5 @@ public final class LyraSessionAdapter implements RemoteSessionAdapter, AutoClose
                     Optional.of("binding has no metadata-completable members"));
         }
         return new RemoteCompletion.Result(RemoteCompletion.Status.OK, members, Optional.empty());
-    }
-
-    /** Closes the explicitly supplied session on its owner thread. */
-    @Override
-    public void close() {
-        session.close();
     }
 }

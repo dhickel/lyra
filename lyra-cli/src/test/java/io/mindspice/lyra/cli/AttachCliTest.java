@@ -10,7 +10,6 @@ import io.mindspice.lyra.repl.remote.RemoteQuery;
 import io.mindspice.lyra.repl.remote.RemoteServer;
 import io.mindspice.lyra.repl.remote.RemoteServerOptions;
 import io.mindspice.lyra.repl.remote.RemoteSessionAdapter;
-import io.mindspice.lyra.repl.remote.TokenCredential;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -21,13 +20,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -35,22 +31,24 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+/**
+ * Credential-free CLI attach: the v2 endpoint takes no token file, rejects
+ * non-loopback and zero ports, and drives the plain console over the real
+ * remote transport without forwarding host streams.
+ */
 class AttachCliTest {
     @TempDir
     Path temporaryDirectory;
 
     @Test
-    void attachRequiresExplicitEndpointAndTokenFileAndRejectsNonLoopbackPorts() {
+    void attachRequiresExplicitEndpointAndAcceptsNoTokenOptions() {
         for (String[] arguments : List.of(
                 new String[] {"attach"},
-                new String[] {"attach", "127.0.0.1:1"},
-                new String[] {"attach", "--token-file", "token"},
-                new String[] {"attach", "127.0.0.1:0", "--token-file", "token"},
-                new String[] {"attach", "8.8.8.8:1", "--token-file", "token"},
-                new String[] {"attach", "127.0.0.1:1", "--token-file", "token",
-                        "--token-file", "other"})) {
+                new String[] {"attach", "127.0.0.1:0"},
+                new String[] {"attach", "8.8.8.8:1"},
+                new String[] {"attach", "127.0.0.1:1", "--token-file", "token"},
+                new String[] {"attach", "127.0.0.1:1", "--credential-file", "x"})) {
             Invocation result = invoke(arguments, "");
             assertEquals(2, result.status(), String.join(" ", arguments));
             assertTrue(result.stderr().contains(LyraCli.USAGE_TEXT), result.stderr());
@@ -58,74 +56,34 @@ class AttachCliTest {
     }
 
     @Test
-    void attachRejectsInvalidOrInsecureTokenPathsBeforeConnecting() throws Exception {
-        Path invalid = temporaryDirectory.resolve("invalid.token");
-        Files.writeString(invalid, "not-a-token\n", StandardCharsets.US_ASCII);
-        Invocation invalidResult = invoke(new String[] {
-                "attach", "127.0.0.1:1", "--token-file", invalid.toString()}, "");
-        assertEquals(2, invalidResult.status());
-        assertTrue(invalidResult.stderr().contains("invalid token file"), invalidResult.stderr());
-
-        Path valid = temporaryDirectory.resolve("valid.token");
-        try (TokenCredential ignored = TokenCredential.create(valid)) {
-            boolean posix;
-            try {
-                Files.getPosixFilePermissions(valid);
-                posix = true;
-            } catch (UnsupportedOperationException failure) {
-                posix = false;
-            }
-            assumeTrue(posix, "POSIX permissions are unavailable");
-            Files.setPosixFilePermissions(valid, Set.of(
-                    PosixFilePermission.OWNER_READ,
-                    PosixFilePermission.OWNER_WRITE,
-                    PosixFilePermission.GROUP_READ));
-        }
-        Invocation permissive = invoke(new String[] {
-                "attach", "127.0.0.1:1", "--token-file", valid.toString()}, "");
-        assertEquals(2, permissive.status());
-        assertTrue(permissive.stderr().contains("invalid token file"), permissive.stderr());
-
-        Path target = temporaryDirectory.resolve("target.token");
-        try (TokenCredential ignored = TokenCredential.create(target)) {
-            Path link = temporaryDirectory.resolve("link.token");
-            try {
-                Files.createSymbolicLink(link, target.getFileName());
-            } catch (UnsupportedOperationException | SecurityException failure) {
-                return;
-            }
-            Invocation symlink = invoke(new String[] {
-                    "attach", "127.0.0.1:1", "--token-file", link.toString()}, "");
-            assertEquals(2, symlink.status());
-            assertTrue(symlink.stderr().contains("invalid token file"), symlink.stderr());
-        }
+    void attachHasNoCredentialPathAnywhereInTheCommandSurface() {
+        String help = invoke(new String[] {"--help"}, "").stdout();
+        assertTrue(help.contains("attach ENDPOINT"), help);
+        assertFalse(help.contains("token"), help);
+        assertFalse(help.contains("credential"), help);
     }
 
     @Test
-    void attachReportsAuthenticatedHandshakeErrors() throws Exception {
+    void attachReportsControllerBusyHandshakeErrors() throws Exception {
         PumpOwner owner = new PumpOwner();
         TestAdapter adapter = new TestAdapter(owner.ownerThread);
-        try (RemoteServer server = server(adapter, owner)) {
-            Path wrong = temporaryDirectory.resolve("wrong.token");
-            try (TokenCredential ignored = TokenCredential.create(wrong)) {
-                Invocation result = invoke(new String[] {
-                        "attach", server.endpoint().address().toString(),
-                        "--token-file", wrong.toString()}, "");
-                assertEquals(1, result.status());
-                assertTrue(result.stderr().contains("AUTHENTICATION_FAILED"), result.stderr());
-                assertFalse(result.stderr().contains(ignored.toString()), result.stderr());
-            }
+        try (RemoteServer server = server(adapter, owner);
+             RemoteHolder ignored = RemoteHolder.connect(server)) {
+            Invocation result = invoke(new String[] {
+                    "attach", server.endpoint().address().toString()}, "");
+            assertEquals(1, result.status());
+            assertTrue(result.stderr().contains("CONTROLLER_BUSY"), result.stderr());
         }
     }
 
     @Test
-    void attachUsesPlainInjectedStreamsAndMapsEvaluationQueriesResetAndHistory() throws Exception {
+    void attachUsesPlainInjectedStreamsAndMapsEvaluationQueriesResetAndHistory()
+            throws Exception {
         PumpOwner owner = new PumpOwner();
         TestAdapter adapter = new TestAdapter(owner.ownerThread);
         try (RemoteServer server = server(adapter, owner)) {
             Invocation result = invokeWhilePumping(server, owner,
-                    new String[] {"attach", server.endpoint().address().toString(),
-                            "--token-file", server.endpoint().credentialFile().toString()},
+                    new String[] {"attach", server.endpoint().address().toString()},
                     "source\n:bindings\n:reset\n:history\n:quit\n");
             assertEquals(0, result.status(), result.stderr());
             assertTrue(result.stdout().contains("answer :I32 @mut"), result.stdout());
@@ -144,14 +102,32 @@ class AttachCliTest {
         TestAdapter adapter = new TestAdapter(owner.ownerThread);
         try (RemoteServer server = server(adapter, owner)) {
             Invocation result = invokeWhilePumping(server, owner,
-                    new String[] {"attach", server.endpoint().address().toString(),
-                            "--token-file", server.endpoint().credentialFile().toString()},
+                    new String[] {"attach", server.endpoint().address().toString()},
                     ":type let @pub notExecuted :I32 = 1\n:reload\n:quit\n");
             assertEquals(2, result.status());
             assertTrue(result.stderr().contains("LYR-REPL-TYPE-UNSUPPORTED"), result.stderr());
             assertTrue(result.stderr().contains("status=UNAVAILABLE"), result.stderr());
             assertTrue(result.stderr().contains("LYR-REPL-RELOAD-UNSUPPORTED"), result.stderr());
             assertEquals(0, adapter.evaluations.get());
+        }
+    }
+
+    /** A direct v2 client holding the single controller slot. */
+    private static final class RemoteHolder implements AutoCloseable {
+        private final io.mindspice.lyra.repl.remote.RemoteClient client;
+
+        private RemoteHolder(io.mindspice.lyra.repl.remote.RemoteClient client) {
+            this.client = client;
+        }
+
+        static RemoteHolder connect(RemoteServer server) throws IOException {
+            return new RemoteHolder(io.mindspice.lyra.repl.remote.RemoteClient
+                    .connect(server.endpoint()));
+        }
+
+        @Override
+        public void close() {
+            client.close();
         }
     }
 
@@ -197,10 +173,7 @@ class AttachCliTest {
     }
 
     private RemoteServer server(RemoteSessionAdapter adapter, PumpOwner owner) throws IOException {
-        return RemoteServer.open(adapter, owner,
-                RemoteServerOptions.builder()
-                        .credentialFile(temporaryDirectory.resolve("server-" + UUID.randomUUID()))
-                        .build());
+        return RemoteServer.open(adapter, owner, RemoteServerOptions.defaults());
     }
 
     private record Invocation(int status, String stdout, String stderr) {

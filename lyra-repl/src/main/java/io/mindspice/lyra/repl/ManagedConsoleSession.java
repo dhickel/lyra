@@ -2,6 +2,7 @@ package io.mindspice.lyra.repl;
 
 import io.mindspice.lyra.runtime.LyraLifecycleException;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -10,6 +11,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 
 /**
@@ -181,6 +183,50 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
         }
     }
 
+    /**
+     * The configured source-discovery roots for execution-host file
+     * listing. Read-only configuration data; never live session state.
+     */
+    public List<Path> sourceRoots() {
+        return options.sourceRoots();
+    }
+
+    /**
+     * Owner-routed submission carrying the caller's exact evaluation
+     * identity, base revision and admission-time cancellation probe. This is
+     * the narrow seam used by owner adapters (for example the remote
+     * protocol) that must correlate cross-thread cancellation to one exact
+     * admitted operation.
+     */
+    public EvaluationResult submit(EvaluationRequest request,
+                                   BooleanSupplier cancellationRequested) {
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(cancellationRequested, "cancellationRequested");
+        EvaluateOperation operation;
+        synchronized (admission) {
+            if (closed) {
+                return closedEvaluationResult(request);
+            }
+            if (active != null) {
+                return busyEvaluationResult(request);
+            }
+            operation = new EvaluateOperation(request, cancellationRequested);
+            active = operation;
+        }
+        enqueue(operation);
+        operation.awaitTerminal();
+        return operation.rawResult;
+    }
+
+    private EvaluationResult closedEvaluationResult(EvaluationRequest request) {
+        return new EvaluationResult.Closed(request, revision(),
+                SessionLifecycleState.CLOSED);
+    }
+
+    private EvaluationResult busyEvaluationResult(EvaluationRequest request) {
+        return new EvaluationResult.Busy(request, revision(), Optional.empty());
+    }
+
     @Override
     public Evaluation evaluate(EvaluationSource source) {
         Objects.requireNonNull(source, "source");
@@ -289,6 +335,18 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
      */
     public Evaluation reload(String moduleOrAlias) {
         Objects.requireNonNull(moduleOrAlias, "moduleOrAlias");
+        return submitReload(moduleOrAlias, EvaluationId.create(), () -> false);
+    }
+
+    /**
+     * Owner-routed reload carrying the caller's exact evaluation identity
+     * and admission-time cancellation probe.
+     */
+    public Evaluation submitReload(String moduleOrAlias, EvaluationId evaluationId,
+                                   BooleanSupplier cancellationRequested) {
+        Objects.requireNonNull(moduleOrAlias, "moduleOrAlias");
+        Objects.requireNonNull(evaluationId, "evaluationId");
+        Objects.requireNonNull(cancellationRequested, "cancellationRequested");
         ReloadOperation operation;
         synchronized (admission) {
             EvaluationRequest placeholder = request(
@@ -299,7 +357,37 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
             if (active != null) {
                 return busyEvaluation(placeholder, active);
             }
-            operation = new ReloadOperation(moduleOrAlias);
+            operation = new ReloadOperation(moduleOrAlias, evaluationId,
+                    cancellationRequested);
+            active = operation;
+        }
+        enqueue(operation);
+        operation.awaitTerminal();
+        return operation.result;
+    }
+
+    /**
+     * Owner-routed reload returning the raw session result, preserving exact
+     * values and initializer progress for full-fidelity owner adapters.
+     */
+    public EvaluationResult submitReloadResult(String moduleOrAlias,
+                                               EvaluationId evaluationId,
+                                               BooleanSupplier cancellationRequested) {
+        Objects.requireNonNull(moduleOrAlias, "moduleOrAlias");
+        Objects.requireNonNull(evaluationId, "evaluationId");
+        Objects.requireNonNull(cancellationRequested, "cancellationRequested");
+        ReloadResultOperation operation;
+        synchronized (admission) {
+            EvaluationRequest placeholder = request(
+                    EvaluationSource.of("reload " + moduleOrAlias, ""));
+            if (closed) {
+                return closedEvaluationResult(placeholder);
+            }
+            if (active != null) {
+                return busyEvaluationResult(placeholder);
+            }
+            operation = new ReloadResultOperation(moduleOrAlias, evaluationId,
+                    cancellationRequested);
             active = operation;
         }
         enqueue(operation);
@@ -432,16 +520,26 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
 
     private static final class EvaluateOperation extends Operation {
         private final EvaluationRequest request;
+        private final BooleanSupplier externalProbe;
         private final AtomicBoolean cancellationRequested = new AtomicBoolean();
         private volatile Evaluation result;
+        private volatile EvaluationResult rawResult;
 
         private EvaluateOperation(EvaluationRequest request) {
+            this(request, () -> false);
+        }
+
+        private EvaluateOperation(EvaluationRequest request,
+                                  BooleanSupplier externalProbe) {
             this.request = Objects.requireNonNull(request, "request");
+            this.externalProbe = Objects.requireNonNull(externalProbe, "externalProbe");
         }
 
         @Override
         void execute(LyraSession session) {
-            EvaluationResult outcome = session.submit(request, cancellationRequested::get);
+            EvaluationResult outcome = session.submit(request,
+                    () -> cancellationRequested.get() || externalProbe.getAsBoolean());
+            rawResult = outcome;
             result = ConsolePresentation.evaluation(outcome);
         }
     }
@@ -458,15 +556,47 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
 
     private static final class ReloadOperation extends Operation {
         private final String moduleOrAlias;
+        private final EvaluationId evaluationId;
+        private final BooleanSupplier cancellationRequested;
         private Evaluation result;
 
         private ReloadOperation(String moduleOrAlias) {
+            this(moduleOrAlias, EvaluationId.create(), () -> false);
+        }
+
+        private ReloadOperation(String moduleOrAlias, EvaluationId evaluationId,
+                                BooleanSupplier cancellationRequested) {
             this.moduleOrAlias = Objects.requireNonNull(moduleOrAlias, "moduleOrAlias");
+            this.evaluationId = Objects.requireNonNull(evaluationId, "evaluationId");
+            this.cancellationRequested = Objects.requireNonNull(
+                    cancellationRequested, "cancellationRequested");
         }
 
         @Override
         void execute(LyraSession session) {
-            result = ConsolePresentation.evaluation(session.reload(moduleOrAlias));
+            result = ConsolePresentation.evaluation(session.reload(
+                    moduleOrAlias, evaluationId, cancellationRequested));
+        }
+    }
+
+    private static final class ReloadResultOperation extends Operation {
+        private final String moduleOrAlias;
+        private final EvaluationId evaluationId;
+        private final AtomicBoolean cancellationRequested = new AtomicBoolean();
+        private final BooleanSupplier externalProbe;
+        private EvaluationResult result;
+
+        private ReloadResultOperation(String moduleOrAlias, EvaluationId evaluationId,
+                                      BooleanSupplier externalProbe) {
+            this.moduleOrAlias = Objects.requireNonNull(moduleOrAlias, "moduleOrAlias");
+            this.evaluationId = Objects.requireNonNull(evaluationId, "evaluationId");
+            this.externalProbe = Objects.requireNonNull(externalProbe, "externalProbe");
+        }
+
+        @Override
+        void execute(LyraSession session) {
+            result = session.reload(moduleOrAlias, evaluationId,
+                    () -> cancellationRequested.get() || externalProbe.getAsBoolean());
         }
     }
 

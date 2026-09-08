@@ -17,7 +17,7 @@ The reactor contains four classpath modules:
 
 - `lyra-runtime`: runtime values, metadata, lifecycle, I/O, loading, and launcher support;
 - `lyra-compiler`: source resolution, lexer/parser, semantic analysis, validated typed IR, direct Class-File API emission, and artifact assembly;
-- `lyra-repl`: owner-confined session contracts, bounded authenticated transport, and plain-console session behavior;
+- `lyra-repl`: owner-confined session contracts, bounded credential-free loopback v2 transport, and plain-console session behavior;
 - `lyra-cli`: command parsing, compilation/execution commands, REPL/attachment adapters, and launch scripts.
 
 ## CLI
@@ -33,11 +33,11 @@ A runnable bundled artifact requires a public `main :Fn<Array<String>;I32>` expo
 
 ## Java API
 
-`io.mindspice.lyra.compiler.api.LyraCompiler` compiles immutable source requests to validated `CompiledArtifact` values. `io.mindspice.lyra.runtime.LyraRuntime` loads artifacts, and exact typed `ExportHandle` method handles are available from an instantiated `ModuleHandle`. Generated facades expose typed methods, getters, permitted setters, function-value getters, metadata, and lifecycle operations. The optional `io.mindspice.lyra.repl` module currently exposes owner-confined session contracts and authenticated transport boundaries.
+`io.mindspice.lyra.compiler.api.LyraCompiler` compiles immutable source requests to validated `CompiledArtifact` values. `io.mindspice.lyra.runtime.LyraRuntime` loads artifacts, and exact typed `ExportHandle` method handles are available from an instantiated `ModuleHandle`. Generated facades expose typed methods, getters, permitted setters, function-value getters, metadata, and lifecycle operations. The optional `io.mindspice.lyra.repl` module currently exposes owner-confined session contracts and credential-free loopback v2 transport boundaries.
 
 ## REPL status
 
-The plain/JLine consoles, non-executing `:type`, and authenticated loopback protocol are tested. Sessions now retain exact typed scalar storage across submissions, including private bindings and captured scalar cells, and return bounded snapshots of executed final expressions. Generated session form/function/tail-loop boundaries support cooperative API cancellation. For example, three inputs `let @mut count :I32 = 1`, `count := 2`, and `count` return `I32` value `2` without rerunning earlier source.
+The plain/JLine consoles, non-executing `:type`, and credential-free loopback protocol v2 are tested. Sessions now retain exact typed scalar storage across submissions, including private bindings and captured scalar cells, and return bounded snapshots of executed final expressions. Generated session form/function/tail-loop boundaries support cooperative API cancellation. For example, three inputs `let @mut count :I32 = 1`, `count := 2`, and `count` return `I32` value `2` without rerunning earlier source.
 
 Arrays and tuples containing scalars or further data aggregates also persist through exact typed storage and shared structural JVM classes. For example, submit `let @mut items :Array<I32> = Array<I32>[1]`, then `let alias = items`, then `items[0] := 42`; reading `alias[0]` returns `I32 42`. Rebinding selects a new value without changing earlier aliases. Completed data mutations survive a later failure or cancellation without publishing failed declarations.
 

@@ -24,6 +24,7 @@ import io.mindspice.lyra.runtime.OwnerThread;
 import io.mindspice.lyra.runtime.RootTypeRegistration;
 import io.mindspice.lyra.runtime.SessionStorageDomain;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -208,6 +209,31 @@ public final class ApplicationAttachment implements AutoCloseable {
         owner.check();
         requireOpen();
         return root;
+    }
+
+    /**
+     * The current committed workspace revision. Safe for control metadata
+     * reads from transport threads; never touches live root state.
+     */
+    public SessionRevision revision() {
+        synchronized (admission) {
+            return revision;
+        }
+    }
+
+    /** Whether this service surface is still open. */
+    public boolean isOpen() {
+        synchronized (admission) {
+            return lifecycle == SessionLifecycleState.OPEN;
+        }
+    }
+
+    /**
+     * The configured source-discovery roots for execution-host file
+     * listing. Read-only configuration data; never live root state.
+     */
+    public List<Path> sourceRoots() {
+        return options.sourceRoots();
     }
 
     /** The exact public-root registration installed for this attachment. */

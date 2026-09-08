@@ -677,8 +677,9 @@ expected = {
     "SessionCapturedInstanceFlowTest", "SessionDeclarationWriteFlowTest", "SessionFailureFlowTest",
     "SessionRepairCompatibilityTest", "SessionTypeAdmissionTest", "SessionCompilerTest",
     "ExecutedSnapshotTest", "SessionJavaConsumerTest", "ReplContractsTest",
-    "RemoteConsoleSessionTest", "RemoteProtocolTest", "RemoteServerTest",
-    "RemoteWireSecurityTest", "Phase21CliTest", "Phase22CliConformanceTest",
+    "RemoteConsoleSessionTest", "RemoteProtocolV2Test", "RemoteServerTest",
+    "RemoteWireRobustnessTest", "RemoteSessionExecutionTest", "NoAuthAttachmentTest",
+    "RemoteFileModuleTest", "Phase21CliTest", "Phase22CliConformanceTest",
     "AttachCliTest", "JLineConsoleTest", "JLinePtyTest",
 }
 short = {name.rsplit(".", 1)[-1] for name in names}
@@ -756,7 +757,7 @@ test_group diagnostics Phase22ConformanceTest RuntimeFoundationTest Phase20IoTes
 test_group cli Phase21CliTest Phase22CliConformanceTest
 test_group repl-session LyraSessionTest ReplContractsTest PersistentScalarTest PersistentAggregateTest PersistentCallableTest SessionStorageLinkTest SessionAggregateLinkTest SessionCallableRuntimeTest SessionCapturedInstanceFlowTest SessionDeclarationWriteFlowTest SessionFailureFlowTest SessionRepairCompatibilityTest SessionTypeAdmissionTest SessionJavaConsumerTest
 test_group repl-results ExecutedSnapshotTest SessionCompilerTest
-test_group repl-remote RemoteConsoleSessionTest RemoteProtocolTest RemoteServerTest RemoteWireSecurityTest
+test_group repl-remote RemoteConsoleSessionTest RemoteProtocolV2Test RemoteServerTest RemoteWireRobustnessTest RemoteSessionExecutionTest NoAuthAttachmentTest RemoteFileModuleTest
 test_group repl-console PlainConsoleTest ConsoleParsingTest AttachCliTest JLineConsoleTest JLinePtyTest
 
 if [[ -x "$PYTHON_BIN" ]]; then

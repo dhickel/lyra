@@ -13,7 +13,6 @@ import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -93,18 +92,8 @@ public final class ProtocolCodec {
             case ProtocolMessage.ServerHello value -> object(
                     "kind", string("serverHello"), "version", number(value.version()),
                     "sessionId", string(value.sessionId().toString()),
-                    "challenge", string(Base64.getUrlEncoder().withoutPadding()
-                            .encodeToString(value.challenge())));
-            case ProtocolMessage.Authenticate value -> object(
-                    "kind", string("authenticate"), "version", number(value.version()),
-                    "sessionId", string(value.sessionId().toString()),
-                    "challenge", string(Base64.getUrlEncoder().withoutPadding()
-                            .encodeToString(value.challenge())),
-                    "token", string(value.token()));
-            case ProtocolMessage.Authenticated value -> object(
-                    "kind", string("authenticated"), "version", number(value.version()),
-                    "sessionId", string(value.sessionId().toString()),
                     "revision", number(value.revision()),
+                    "mutationSequence", number(value.mutationSequence()),
                     "lastSequence", number(value.lastSequence()),
                     optional("activeRequest", value.activeRequestId().map(UUID::toString)));
             case ProtocolMessage.EvaluateRequest value -> object(
@@ -112,19 +101,36 @@ public final class ProtocolCodec {
                     "requestId", string(value.requestId().toString()),
                     "sequence", number(value.sequence()),
                     "revision", number(value.revision().value()),
+                    "mutationSequence", number(value.mutationSequence()),
                     "source", sourceToJson(value.source()));
+            case ProtocolMessage.LoadRequest value -> object(
+                    "kind", string("load"), "version", number(value.version()),
+                    "requestId", string(value.requestId().toString()),
+                    "sequence", number(value.sequence()),
+                    "revision", number(value.revision().value()),
+                    "mutationSequence", number(value.mutationSequence()),
+                    "path", string(value.path()));
+            case ProtocolMessage.ReloadRequest value -> object(
+                    "kind", string("reload"), "version", number(value.version()),
+                    "requestId", string(value.requestId().toString()),
+                    "sequence", number(value.sequence()),
+                    "revision", number(value.revision().value()),
+                    "mutationSequence", number(value.mutationSequence()),
+                    "target", string(value.target()));
             case ProtocolMessage.Accepted value -> object(
                     "kind", string("accepted"), "version", number(value.version()),
                     "requestId", string(value.requestId().toString()),
                     "sequence", number(value.sequence()),
                     "status", string(value.status().name()),
-                    "revision", number(value.revision()));
+                    "revision", number(value.revision()),
+                    "mutationSequence", number(value.mutationSequence()));
             case ProtocolMessage.Status value -> object(
                     "kind", string("status"), "version", number(value.version()),
                     "requestId", string(value.requestId().toString()),
                     "sequence", number(value.sequence()),
                     "status", string(value.status().name()),
                     "revision", number(value.revision()),
+                    "mutationSequence", number(value.mutationSequence()),
                     optional("detail", value.detail()));
             case ProtocolMessage.Result value -> resultToJson(value);
             case ProtocolMessage.CancelRequest value -> object(
@@ -137,24 +143,46 @@ public final class ProtocolCodec {
                     "requestId", string(value.requestId().toString()),
                     "status", string(value.status().name()),
                     "revision", number(value.revision()),
+                    "mutationSequence", number(value.mutationSequence()),
                     optional("detail", value.detail()));
             case ProtocolMessage.ResetRequest value -> object(
                     "kind", string("reset"), "version", number(value.version()),
                     "operationId", string(value.operationId().toString()),
-                    "expectedRevision", number(value.expectedRevision()));
+                    "expectedRevision", number(value.expectedRevision()),
+                    "expectedMutationSequence", number(value.expectedMutationSequence()));
             case ProtocolMessage.ResetResult value -> object(
                     "kind", string("resetResult"), "version", number(value.version()),
                     "operationId", string(value.operationId().toString()),
                     "status", string(value.status().name()),
                     "revision", number(value.revision()),
+                    "mutationSequence", number(value.mutationSequence()),
                     optional("detail", value.detail()));
             case ProtocolMessage.QueryRequest value -> object(
                     "kind", string("query"), "version", number(value.version()),
                     "queryId", string(value.queryId().toString()),
                     "queryKind", string(value.queryKind().name()),
+                    "expectedRevision", number(value.expectedRevision()),
+                    "expectedMutationSequence", number(value.expectedMutationSequence()),
                     optional("requestId", value.requestId().map(UUID::toString)),
                     optional("source", value.typeSource().map(ProtocolCodec::sourceToJson)));
             case ProtocolMessage.QueryResult value -> queryResultToJson(value);
+            case ProtocolMessage.CompletionRequest value -> object(
+                    "kind", string("completion"), "version", number(value.version()),
+                    "completionId", string(value.completionId().toString()),
+                    "completionKind", string(value.kind().name()),
+                    "expectedRevision", number(value.expectedRevision()),
+                    "expectedMutationSequence", number(value.expectedMutationSequence()),
+                    optional("prefix", value.prefix()),
+                    optional("binding", value.binding()));
+            case ProtocolMessage.CompletionResult value -> object(
+                    "kind", string("completionResult"), "version", number(value.version()),
+                    "completionId", string(value.completionId().toString()),
+                    "status", string(value.status().name()),
+                    "revision", number(value.revision()),
+                    "mutationSequence", number(value.mutationSequence()),
+                    "items", array(value.items().stream()
+                            .map(item -> (StrictJson.Value) completionItemToJson(item)).toList()),
+                    optional("detail", value.detail()));
             case ProtocolMessage.Error value -> object(
                     "kind", string("error"), "version", number(value.version()),
                     "code", string(value.code().name()), "detail", string(value.detail()),
@@ -173,10 +201,16 @@ public final class ProtocolCodec {
                 "sequence", number(value.sequence()),
                 "status", string(value.status().name()),
                 "revision", number(value.revision()),
+                "mutationSequence", number(value.mutationSequence()),
                 "diagnostics", array(diagnostics),
                 optional("value", value.value().map(ProtocolCodec::valueToJson)),
                 optional("failureSummary", value.failureSummary()),
-                optional("activeRequest", value.activeRequestId().map(UUID::toString)));
+                optional("activeRequest", value.activeRequestId().map(UUID::toString)),
+                "initializers", array(value.initializers().stream()
+                        .map(item -> (StrictJson.Value) object(
+                                "moduleId", string(item.moduleId()),
+                                "state", string(item.state().name())))
+                        .toList()));
     }
 
     private static StrictJson.ObjectValue queryResultToJson(ProtocolMessage.QueryResult value) {
@@ -186,8 +220,10 @@ public final class ProtocolCodec {
                 "queryKind", string(value.queryKind().name()),
                 "status", string(value.status().name()),
                 "revision", number(value.revision()),
+                "mutationSequence", number(value.mutationSequence()),
                 optional("request", value.request().map(ProtocolCodec::requestSnapshotToJson)),
                 optional("terminalResult", value.terminalResult().map(ProtocolCodec::resultToJson)),
+                optional("terminalStatus", value.terminalStatus().map(Enum::name)),
                 "bindings", array(value.bindings().stream()
                         .map(item -> (StrictJson.Value) bindingToJson(item)).toList()),
                 optional("inferredType", value.inferredType()),
@@ -231,6 +267,11 @@ public final class ProtocolCodec {
                 "visibility", string(value.visibility()), "mutable", bool(value.mutable()));
     }
 
+    private static StrictJson.ObjectValue completionItemToJson(ProtocolMessage.CompletionItem value) {
+        return object("name", string(value.name()), "kind", string(value.kind().name()),
+                optional("type", value.typeSpelling()));
+    }
+
     private static StrictJson.ObjectValue valueToJson(ProtocolMessage.ValueSnapshot value) {
         return object("type", string(value.canonicalType()), "data", valueDataToJson(value.data()));
     }
@@ -266,14 +307,14 @@ public final class ProtocolCodec {
         int version = version(object);
         if (version != RemoteProtocol.VERSION) {
             throw new ProtocolException(ProtocolException.Reason.UNSUPPORTED_VERSION,
-                    "unsupported REPL protocol version");
+                    "unsupported REPL protocol version: " + version);
         }
         return switch (kind) {
             case "clientHello" -> clientHello(object, version);
             case "serverHello" -> serverHello(object, version);
-            case "authenticate" -> authenticate(object, version);
-            case "authenticated" -> authenticated(object, version);
             case "evaluate" -> evaluate(object, version);
+            case "load" -> load(object, version);
+            case "reload" -> reload(object, version);
             case "accepted" -> accepted(object, version);
             case "status" -> status(object, version);
             case "result" -> result(object, version);
@@ -283,6 +324,8 @@ public final class ProtocolCodec {
             case "resetResult" -> resetResult(object, version);
             case "query" -> query(object, version);
             case "queryResult" -> queryResult(object, version);
+            case "completion" -> completion(object, version);
+            case "completionResult" -> completionResult(object, version);
             case "error" -> error(object, version);
             default -> throw schema("unknown protocol message kind: " + kind);
         };
@@ -295,54 +338,61 @@ public final class ProtocolCodec {
     }
 
     private static ProtocolMessage.ServerHello serverHello(StrictJson.ObjectValue object, int version) {
-        keys(object, "kind", "version", "sessionId", "challenge");
+        keys(object, "kind", "version", "sessionId", "revision", "mutationSequence",
+                "lastSequence", "activeRequest");
         return new ProtocolMessage.ServerHello(version, uuid(object, "sessionId"),
-                ProtocolValues.decodeBase64(string(object, "challenge"), "challenge",
-                        RemoteProtocol.CHALLENGE_BYTES));
-    }
-
-    private static ProtocolMessage.Authenticate authenticate(StrictJson.ObjectValue object, int version) {
-        keys(object, "kind", "version", "sessionId", "challenge", "token");
-        return new ProtocolMessage.Authenticate(version, uuid(object, "sessionId"),
-                ProtocolValues.decodeBase64(string(object, "challenge"), "challenge",
-                        RemoteProtocol.CHALLENGE_BYTES), string(object, "token"));
-    }
-
-    private static ProtocolMessage.Authenticated authenticated(
-            StrictJson.ObjectValue object, int version) {
-        keys(object, "kind", "version", "sessionId", "revision", "lastSequence", "activeRequest");
-        return new ProtocolMessage.Authenticated(version, uuid(object, "sessionId"),
-                nonNegativeLong(object, "revision"), nonNegativeLong(object, "lastSequence"),
-                optionalUuid(object, "activeRequest"));
+                nonNegativeLong(object, "revision"), nonNegativeLong(object, "mutationSequence"),
+                nonNegativeLong(object, "lastSequence"), optionalUuid(object, "activeRequest"));
     }
 
     private static ProtocolMessage.EvaluateRequest evaluate(
             StrictJson.ObjectValue object, int version) {
-        keys(object, "kind", "version", "requestId", "sequence", "revision", "source");
+        keys(object, "kind", "version", "requestId", "sequence", "revision",
+                "mutationSequence", "source");
         return new ProtocolMessage.EvaluateRequest(version, uuid(object, "requestId"),
                 positiveLong(object, "sequence"), new SessionRevision(nonNegativeLong(object, "revision")),
-                source(object, "source"));
+                nonNegativeLong(object, "mutationSequence"), source(object, "source"));
+    }
+
+    private static ProtocolMessage.LoadRequest load(StrictJson.ObjectValue object, int version) {
+        keys(object, "kind", "version", "requestId", "sequence", "revision",
+                "mutationSequence", "path");
+        return new ProtocolMessage.LoadRequest(version, uuid(object, "requestId"),
+                positiveLong(object, "sequence"), new SessionRevision(nonNegativeLong(object, "revision")),
+                nonNegativeLong(object, "mutationSequence"), string(object, "path"));
+    }
+
+    private static ProtocolMessage.ReloadRequest reload(StrictJson.ObjectValue object, int version) {
+        keys(object, "kind", "version", "requestId", "sequence", "revision",
+                "mutationSequence", "target");
+        return new ProtocolMessage.ReloadRequest(version, uuid(object, "requestId"),
+                positiveLong(object, "sequence"), new SessionRevision(nonNegativeLong(object, "revision")),
+                nonNegativeLong(object, "mutationSequence"), string(object, "target"));
     }
 
     private static ProtocolMessage.Accepted accepted(StrictJson.ObjectValue object, int version) {
-        keys(object, "kind", "version", "requestId", "sequence", "status", "revision");
+        keys(object, "kind", "version", "requestId", "sequence", "status", "revision",
+                "mutationSequence");
         return new ProtocolMessage.Accepted(version, uuid(object, "requestId"),
                 positiveLong(object, "sequence"), enumValue(ProtocolMessage.RemoteStatus.class,
-                        string(object, "status"), "status"), nonNegativeLong(object, "revision"));
+                        string(object, "status"), "status"), nonNegativeLong(object, "revision"),
+                nonNegativeLong(object, "mutationSequence"));
     }
 
     private static ProtocolMessage.Status status(StrictJson.ObjectValue object, int version) {
-        keys(object, "kind", "version", "requestId", "sequence", "status", "revision", "detail");
+        keys(object, "kind", "version", "requestId", "sequence", "status", "revision",
+                "mutationSequence", "detail");
         return new ProtocolMessage.Status(version, uuid(object, "requestId"),
                 positiveLong(object, "sequence"), enumValue(ProtocolMessage.RemoteStatus.class,
                         string(object, "status"), "status"), nonNegativeLong(object, "revision"),
-                optionalString(object, "detail"));
+                nonNegativeLong(object, "mutationSequence"), optionalString(object, "detail"));
     }
 
     private static ProtocolMessage.Result result(StrictJson.ObjectValue object, int version)
             throws ProtocolException {
         keys(object, "kind", "version", "requestId", "sequence", "status", "revision",
-                "diagnostics", "value", "failureSummary", "activeRequest");
+                "mutationSequence", "diagnostics", "value", "failureSummary", "activeRequest",
+                "initializers");
         ProtocolMessage.RemoteStatus status = enumValue(ProtocolMessage.RemoteStatus.class,
                 string(object, "status"), "status");
         if (!status.isTerminal()) {
@@ -350,8 +400,9 @@ public final class ProtocolCodec {
         }
         return new ProtocolMessage.Result(version, uuid(object, "requestId"),
                 positiveLong(object, "sequence"), status, nonNegativeLong(object, "revision"),
-                diagnostics(object, "diagnostics"), optionalValue(object, "value"),
-                optionalString(object, "failureSummary"), optionalUuid(object, "activeRequest"));
+                nonNegativeLong(object, "mutationSequence"), diagnostics(object, "diagnostics"),
+                optionalValue(object, "value"), optionalString(object, "failureSummary"),
+                optionalUuid(object, "activeRequest"), initializers(object, "initializers"));
     }
 
     private static ProtocolMessage.CancelRequest cancel(StrictJson.ObjectValue object, int version) {
@@ -362,45 +413,77 @@ public final class ProtocolCodec {
 
     private static ProtocolMessage.CancelResult cancelResult(
             StrictJson.ObjectValue object, int version) {
-        keys(object, "kind", "version", "operationId", "requestId", "status", "revision", "detail");
+        keys(object, "kind", "version", "operationId", "requestId", "status", "revision",
+                "mutationSequence", "detail");
         return new ProtocolMessage.CancelResult(version, uuid(object, "operationId"),
                 uuid(object, "requestId"), enumValue(ProtocolMessage.ControlStatus.class,
                         string(object, "status"), "status"), nonNegativeLong(object, "revision"),
-                optionalString(object, "detail"));
+                nonNegativeLong(object, "mutationSequence"), optionalString(object, "detail"));
     }
 
     private static ProtocolMessage.ResetRequest reset(StrictJson.ObjectValue object, int version) {
-        keys(object, "kind", "version", "operationId", "expectedRevision");
+        keys(object, "kind", "version", "operationId", "expectedRevision",
+                "expectedMutationSequence");
         return new ProtocolMessage.ResetRequest(version, uuid(object, "operationId"),
-                nonNegativeLong(object, "expectedRevision"));
+                nonNegativeLong(object, "expectedRevision"),
+                nonNegativeLong(object, "expectedMutationSequence"));
     }
 
     private static ProtocolMessage.ResetResult resetResult(
             StrictJson.ObjectValue object, int version) {
-        keys(object, "kind", "version", "operationId", "status", "revision", "detail");
+        keys(object, "kind", "version", "operationId", "status", "revision",
+                "mutationSequence", "detail");
         return new ProtocolMessage.ResetResult(version, uuid(object, "operationId"),
                 enumValue(ProtocolMessage.ControlStatus.class, string(object, "status"), "status"),
-                nonNegativeLong(object, "revision"), optionalString(object, "detail"));
+                nonNegativeLong(object, "revision"), nonNegativeLong(object, "mutationSequence"),
+                optionalString(object, "detail"));
     }
 
     private static ProtocolMessage.QueryRequest query(StrictJson.ObjectValue object, int version) {
-        keys(object, "kind", "version", "queryId", "queryKind", "requestId", "source");
+        keys(object, "kind", "version", "queryId", "queryKind", "expectedRevision",
+                "expectedMutationSequence", "requestId", "source");
         ProtocolMessage.QueryKind kind = enumValue(ProtocolMessage.QueryKind.class,
                 string(object, "queryKind"), "queryKind");
         return new ProtocolMessage.QueryRequest(version, uuid(object, "queryId"), kind,
+                nonNegativeLong(object, "expectedRevision"),
+                nonNegativeLong(object, "expectedMutationSequence"),
                 optionalUuid(object, "requestId"), optionalSource(object, "source"));
     }
 
     private static ProtocolMessage.QueryResult queryResult(
             StrictJson.ObjectValue object, int version) throws ProtocolException {
         keys(object, "kind", "version", "queryId", "queryKind", "status", "revision",
-                "request", "terminalResult", "bindings", "inferredType", "detail");
+                "mutationSequence", "request", "terminalResult", "terminalStatus", "bindings",
+                "inferredType", "detail");
         return new ProtocolMessage.QueryResult(version, uuid(object, "queryId"),
                 enumValue(ProtocolMessage.QueryKind.class, string(object, "queryKind"), "queryKind"),
                 enumValue(ProtocolMessage.QueryStatus.class, string(object, "status"), "status"),
-                nonNegativeLong(object, "revision"), optionalRequestSnapshot(object, "request"),
-                optionalResult(object, "terminalResult"), bindings(object, "bindings"),
-                optionalString(object, "inferredType"), optionalString(object, "detail"));
+                nonNegativeLong(object, "revision"), nonNegativeLong(object, "mutationSequence"),
+                optionalRequestSnapshot(object, "request"), optionalResult(object, "terminalResult"),
+                bindings(object, "bindings"), optionalString(object, "inferredType"),
+                optionalString(object, "detail"), optionalRemoteStatus(object, "terminalStatus"));
+    }
+
+    private static ProtocolMessage.CompletionRequest completion(
+            StrictJson.ObjectValue object, int version) {
+        keys(object, "kind", "version", "completionId", "completionKind", "expectedRevision",
+                "expectedMutationSequence", "prefix", "binding");
+        return new ProtocolMessage.CompletionRequest(version, uuid(object, "completionId"),
+                enumValue(ProtocolMessage.CompletionKind.class,
+                        string(object, "completionKind"), "completionKind"),
+                nonNegativeLong(object, "expectedRevision"),
+                nonNegativeLong(object, "expectedMutationSequence"),
+                optionalString(object, "prefix"), optionalString(object, "binding"));
+    }
+
+    private static ProtocolMessage.CompletionResult completionResult(
+            StrictJson.ObjectValue object, int version) {
+        keys(object, "kind", "version", "completionId", "status", "revision",
+                "mutationSequence", "items", "detail");
+        return new ProtocolMessage.CompletionResult(version, uuid(object, "completionId"),
+                enumValue(ProtocolMessage.QueryStatus.class, string(object, "status"), "status"),
+                nonNegativeLong(object, "revision"), nonNegativeLong(object, "mutationSequence"),
+                completionItems(object, "items"), optionalString(object, "detail"));
     }
 
     private static ProtocolMessage.Error error(StrictJson.ObjectValue object, int version) {
@@ -473,6 +556,41 @@ public final class ProtocolCodec {
             throw new IllegalArgumentException("diagnostic span offset is too large");
         }
         return new ProtocolMessage.Span(string(object, "sourceId"), (int) start, (int) end);
+    }
+
+    private static List<ProtocolMessage.Initializer> initializers(
+            StrictJson.ObjectValue object, String field) {
+        List<StrictJson.Value> values = array(object, field);
+        if (values.size() > RemoteProtocol.MAX_INITIALIZERS) {
+            throw new IllegalArgumentException("too many initializer entries");
+        }
+        return values.stream().map(ProtocolCodec::initializer).toList();
+    }
+
+    private static ProtocolMessage.Initializer initializer(StrictJson.Value value) {
+        StrictJson.ObjectValue object = requireObject(value, "initializer");
+        keys(object, "moduleId", "state");
+        return new ProtocolMessage.Initializer(string(object, "moduleId"),
+                enumValue(ProtocolMessage.InitializerState.class,
+                        string(object, "state"), "state"));
+    }
+
+    private static List<ProtocolMessage.CompletionItem> completionItems(
+            StrictJson.ObjectValue object, String field) {
+        List<StrictJson.Value> values = array(object, field);
+        if (values.size() > RemoteProtocol.MAX_COMPLETION_ITEMS) {
+            throw new IllegalArgumentException("too many completion items");
+        }
+        return values.stream().map(ProtocolCodec::completionItem).toList();
+    }
+
+    private static ProtocolMessage.CompletionItem completionItem(StrictJson.Value value) {
+        StrictJson.ObjectValue object = requireObject(value, "completion item");
+        keys(object, "name", "kind", "type");
+        return new ProtocolMessage.CompletionItem(string(object, "name"),
+                enumValue(ProtocolMessage.CompletionItemKind.class,
+                        string(object, "kind"), "kind"),
+                optionalString(object, "type"));
     }
 
     private static Optional<ProtocolMessage.ValueSnapshot> optionalValue(
@@ -635,6 +753,12 @@ public final class ProtocolCodec {
             throw new IllegalArgumentException(field + " must be a string");
         }
         return Optional.of(string.value());
+    }
+
+    private static Optional<ProtocolMessage.RemoteStatus> optionalRemoteStatus(
+            StrictJson.ObjectValue object, String field) {
+        return optionalString(object, field).map(value ->
+                enumValue(ProtocolMessage.RemoteStatus.class, value, field));
     }
 
     private static Optional<Long> optionalLong(StrictJson.ObjectValue object, String field) {

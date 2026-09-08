@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
@@ -29,21 +30,48 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class RemoteWireSecurityTest {
+/**
+ * Wire-robustness coverage for the credential-free v2 protocol: v1 upgrade
+ * diagnostics, ordering, duplicates, absolute handshake deadlines,
+ * cancellation races, session identity, oversized payload truncation with
+ * terminal retention and host I/O separation.
+ */
+class RemoteWireRobustnessTest {
     @TempDir
     Path temporaryDirectory;
+
+    @Test
+    void versionOnePeerReceivesAnExplicitUpgradeError() throws Exception {
+        RemoteServerTest.QueueOwner owner = new RemoteServerTest.QueueOwner();
+        RemoteServerTest.FakeSession session = new RemoteServerTest.FakeSession(owner.ownerThread);
+        try (RemoteServer server = RemoteServer.open(session, owner);
+             Socket socket = new Socket(server.endpoint().address().address(),
+                     server.endpoint().address().port())) {
+            socket.setSoTimeout(2_000);
+            FrameCodec frames = new FrameCodec();
+            // A v1 client hello: version 1 with the legacy schema, sent as
+            // raw bytes because the v2 model cannot construct it.
+            String v1Hello = "{\"kind\":\"clientHello\",\"version\":1,"
+                    + "\"clientId\":\"" + UUID.randomUUID() + "\"}";
+            frames.writeFrame(socket.getOutputStream(),
+                    v1Hello.getBytes(StandardCharsets.UTF_8));
+            ProtocolMessage.Error error = assertInstanceOf(
+                    ProtocolMessage.Error.class,
+                    ProtocolCodec.decode(frames.readFrame(socket.getInputStream()).orElseThrow()));
+            assertEquals(ProtocolMessage.ErrorCode.UNSUPPORTED_VERSION, error.code());
+            assertTrue(error.detail().contains("upgrade"), error.detail());
+            assertTrue(server.isOpen());
+        }
+    }
 
     @Test
     void acceptedIsQueuedBeforeInlineOwnerStatuses() throws Exception {
         InlineOwner owner = new InlineOwner();
         InlineSession session = new InlineSession();
-        try (RemoteServer server = RemoteServer.open(session, owner,
-                RemoteServerOptions.builder()
-                        .credentialFile(temporaryDirectory.resolve("ordering-credential"))
-                        .build());
+        try (RemoteServer server = RemoteServer.open(session, owner);
              RawConnection connection = RawConnection.open(server.endpoint())) {
             ProtocolMessage.EvaluateRequest request = new ProtocolMessage.EvaluateRequest(
-                    UUID.randomUUID(), 1, SessionRevision.initial(),
+                    UUID.randomUUID(), 1, SessionRevision.initial(), 0,
                     EvaluationSource.of("ordering.lyra", ""));
             connection.send(request);
 
@@ -58,31 +86,44 @@ class RemoteWireSecurityTest {
     void duplicateIdentityAndSequenceNeverExecuteSourceTwice() throws Exception {
         RemoteServerTest.QueueOwner owner = new RemoteServerTest.QueueOwner();
         RemoteServerTest.FakeSession session = new RemoteServerTest.FakeSession(owner.ownerThread);
-        try (RemoteServer server = RemoteServer.open(session, owner,
-                RemoteServerOptions.builder()
-                        .credentialFile(temporaryDirectory.resolve("credential"))
-                        .build());
+        try (RemoteServer server = RemoteServer.open(session, owner);
              RawConnection connection = RawConnection.open(server.endpoint())) {
             UUID requestId = UUID.randomUUID();
             ProtocolMessage.EvaluateRequest request = new ProtocolMessage.EvaluateRequest(
-                    requestId, 1, SessionRevision.initial(), EvaluationSource.of("raw.lyra", ""));
+                    requestId, 1, SessionRevision.initial(), 0,
+                    EvaluationSource.of("raw.lyra", ""));
             connection.send(request);
             assertInstanceOf(ProtocolMessage.Accepted.class, connection.read());
             pumpUntil(server, () -> session.evaluations.get() == 1);
             ProtocolMessage.Result first = readResult(connection);
             assertEquals(ProtocolMessage.RemoteStatus.SUCCESS, first.status());
 
+            // An identical duplicate replays the retained result without
+            // re-execution.
             connection.send(request);
             ProtocolMessage.Result replay = readResult(connection);
             assertEquals(first, replay);
             assertEquals(1, session.evaluations.get());
 
-            ProtocolMessage.EvaluateRequest duplicateSequence = new ProtocolMessage.EvaluateRequest(
-                    UUID.randomUUID(), 1, new SessionRevision(1), EvaluationSource.of("other.lyra", ""));
-            connection.send(duplicateSequence);
+            // A duplicate identity with different contents is rejected.
+            ProtocolMessage.EvaluateRequest changed = new ProtocolMessage.EvaluateRequest(
+                    requestId, 1, SessionRevision.initial(), 0,
+                    EvaluationSource.of("raw.lyra", "let x :I32 = 1"));
+            connection.send(changed);
             ProtocolMessage.Error error = assertInstanceOf(
                     ProtocolMessage.Error.class, connection.read());
-            assertEquals(ProtocolMessage.ErrorCode.REQUEST_EXPIRED, error.code());
+            assertEquals(ProtocolMessage.ErrorCode.INVALID_SCHEMA, error.code());
+            assertEquals(1, session.evaluations.get());
+
+            // A duplicate sequence with a fresh identity is expired, not
+            // re-executed.
+            ProtocolMessage.EvaluateRequest duplicateSequence = new ProtocolMessage.EvaluateRequest(
+                    UUID.randomUUID(), 1, new SessionRevision(1), 1,
+                    EvaluationSource.of("other.lyra", ""));
+            connection.send(duplicateSequence);
+            assertEquals(ProtocolMessage.ErrorCode.REQUEST_EXPIRED,
+                    assertInstanceOf(ProtocolMessage.Error.class,
+                            connection.read()).code());
             assertEquals(1, session.evaluations.get());
         }
     }
@@ -91,18 +132,16 @@ class RemoteWireSecurityTest {
     void duplicatePendingResetIdentitySharesResultAndRejectsDifferentContents() throws Exception {
         RemoteServerTest.QueueOwner owner = new RemoteServerTest.QueueOwner();
         RemoteServerTest.FakeSession session = new RemoteServerTest.FakeSession(owner.ownerThread);
-        try (RemoteServer server = RemoteServer.open(session, owner,
-                RemoteServerOptions.builder()
-                        .credentialFile(temporaryDirectory.resolve("reset-identity-credential"))
-                        .build());
+        try (RemoteServer server = RemoteServer.open(session, owner);
              RawConnection connection = RawConnection.open(server.endpoint())) {
             UUID operationId = UUID.randomUUID();
-            ProtocolMessage.ResetRequest reset = new ProtocolMessage.ResetRequest(operationId, 0);
+            ProtocolMessage.ResetRequest reset = new ProtocolMessage.ResetRequest(
+                    operationId, 0, 0);
             connection.send(reset);
             waitUntil(owner::hasPending);
 
             connection.send(reset);
-            connection.send(new ProtocolMessage.ResetRequest(operationId, 1));
+            connection.send(new ProtocolMessage.ResetRequest(operationId, 1, 0));
             ProtocolMessage.Error error = assertInstanceOf(
                     ProtocolMessage.Error.class, connection.read());
             assertEquals(ProtocolMessage.ErrorCode.INVALID_SCHEMA, error.code());
@@ -125,62 +164,51 @@ class RemoteWireSecurityTest {
         RemoteServerTest.FakeSession session = new RemoteServerTest.FakeSession(owner.ownerThread);
         try (RemoteServer server = RemoteServer.open(session, owner,
                 RemoteServerOptions.builder()
-                        .credentialFile(temporaryDirectory.resolve("drip-credential"))
                         .handshakeTimeout(Duration.ofMillis(150))
                         .build());
              Socket socket = new Socket(server.endpoint().address().address(),
                      server.endpoint().address().port())) {
             socket.setSoTimeout(2_000);
             FrameCodec frames = new FrameCodec();
-            ProtocolCodec.write(frames, socket.getOutputStream(), new ProtocolMessage.ClientHello(
-                    RemoteProtocol.VERSION, UUID.randomUUID(), server.endpoint().sessionId()));
-            ProtocolMessage.ServerHello hello = assertInstanceOf(
-                    ProtocolMessage.ServerHello.class,
-                    ProtocolCodec.decode(frames.readFrame(socket.getInputStream()).orElseThrow()));
-            try (TokenCredential credential = TokenCredential.read(server.endpoint().credentialFile())) {
-                ProtocolMessage.Authenticate authenticate = new ProtocolMessage.Authenticate(
-                        RemoteProtocol.VERSION, hello.sessionId(), hello.challenge(),
-                        credential.encodedForTransport());
-                ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-                ProtocolCodec.write(frames, encoded, authenticate);
-                byte[] bytes = encoded.toByteArray();
-                Thread drip = new Thread(() -> {
-                    try {
-                        for (byte value : bytes) {
-                            socket.getOutputStream().write(value & 0xff);
-                            socket.getOutputStream().flush();
-                            Thread.sleep(20);
-                        }
-                    } catch (IOException ignored) {
-                        // The server closes the connection when the deadline expires.
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                    }
-                });
-                drip.start();
+            ProtocolMessage.ClientHello hello = new ProtocolMessage.ClientHello(
+                    RemoteProtocol.VERSION, UUID.randomUUID(), server.endpoint().sessionId());
+            ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+            ProtocolCodec.write(frames, encoded, hello);
+            byte[] bytes = encoded.toByteArray();
+            Thread drip = new Thread(() -> {
                 try {
-                    ProtocolMessage.Error error = assertInstanceOf(
-                            ProtocolMessage.Error.class,
-                            ProtocolCodec.decode(
-                                    frames.readFrame(socket.getInputStream()).orElseThrow()));
-                    assertEquals(ProtocolMessage.ErrorCode.HANDSHAKE_TIMEOUT, error.code());
-                } finally {
-                    drip.interrupt();
-                    drip.join(2_000);
+                    for (byte value : bytes) {
+                        socket.getOutputStream().write(value & 0xff);
+                        socket.getOutputStream().flush();
+                        Thread.sleep(20);
+                    }
+                } catch (IOException ignored) {
+                    // The server closes the connection when the deadline expires.
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
                 }
+            });
+            drip.start();
+            try {
+                ProtocolMessage.Error error = assertInstanceOf(
+                        ProtocolMessage.Error.class,
+                        ProtocolCodec.decode(
+                                frames.readFrame(socket.getInputStream()).orElseThrow()));
+                assertEquals(ProtocolMessage.ErrorCode.HANDSHAKE_TIMEOUT, error.code());
+            } finally {
+                drip.interrupt();
+                drip.join(2_000);
             }
         }
     }
 
     @Test
     void clientHandshakeDeadlineIsAbsoluteAcrossAByteDrip() throws Exception {
-        Path credentialPath = temporaryDirectory.resolve("client-drip-credential");
         UUID sessionId = UUID.randomUUID();
-        try (TokenCredential ignored = TokenCredential.create(credentialPath);
-             ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
             RemoteEndpoint endpoint = new RemoteEndpoint(
                     new LoopbackEndpoint(InetAddress.getLoopbackAddress(), listener.getLocalPort()),
-                    credentialPath, sessionId);
+                    sessionId);
             AtomicReference<Throwable> serverFailure = new AtomicReference<>();
             Thread server = new Thread(() -> {
                 boolean dripping = false;
@@ -190,16 +218,9 @@ class RemoteWireSecurityTest {
                     assertInstanceOf(ProtocolMessage.ClientHello.class,
                             ProtocolCodec.decode(
                                     frames.readFrame(socket.getInputStream()).orElseThrow()));
-                    byte[] challenge = new byte[RemoteProtocol.CHALLENGE_BYTES];
-                    ProtocolCodec.write(frames, socket.getOutputStream(),
-                            new ProtocolMessage.ServerHello(
-                                    RemoteProtocol.VERSION, sessionId, challenge));
-                    assertInstanceOf(ProtocolMessage.Authenticate.class,
-                            ProtocolCodec.decode(
-                                    frames.readFrame(socket.getInputStream()).orElseThrow()));
                     ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-                    ProtocolCodec.write(frames, encoded, new ProtocolMessage.Authenticated(
-                            RemoteProtocol.VERSION, sessionId, 0, 0, Optional.empty()));
+                    ProtocolCodec.write(frames, encoded, new ProtocolMessage.ServerHello(
+                            RemoteProtocol.VERSION, sessionId, 0, 0, 0, Optional.empty()));
                     dripping = true;
                     for (byte value : encoded.toByteArray()) {
                         socket.getOutputStream().write(value & 0xff);
@@ -239,13 +260,10 @@ class RemoteWireSecurityTest {
         RemoteServerTest.QueueOwner owner = new RemoteServerTest.QueueOwner();
         CoordinatedCancelSession session = new CoordinatedCancelSession(owner.ownerThread);
         AtomicReference<Throwable> cancelFailure = new AtomicReference<>();
-        try (RemoteServer server = RemoteServer.open(session, owner,
-                RemoteServerOptions.builder()
-                        .credentialFile(temporaryDirectory.resolve("cancel-order-credential"))
-                        .build());
+        try (RemoteServer server = RemoteServer.open(session, owner);
              RawConnection connection = RawConnection.open(server.endpoint())) {
             ProtocolMessage.EvaluateRequest request = new ProtocolMessage.EvaluateRequest(
-                    UUID.randomUUID(), 1, SessionRevision.initial(),
+                    UUID.randomUUID(), 1, SessionRevision.initial(), 0,
                     EvaluationSource.of("cancel-order.lyra", ""));
             connection.send(request);
             assertInstanceOf(ProtocolMessage.Accepted.class, connection.read());
@@ -285,34 +303,23 @@ class RemoteWireSecurityTest {
     }
 
     @Test
-    void authenticatedSessionIdentityMustMatchTheServerHello() throws Exception {
-        Path credentialPath = temporaryDirectory.resolve("identity-credential");
+    void sessionIdentityMustMatchTheServerHello() throws Exception {
         UUID expectedSession = UUID.randomUUID();
-        UUID authenticatedSession = UUID.randomUUID();
-        try (TokenCredential credential = TokenCredential.create(credentialPath);
-             ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+        UUID mismatchedSession = UUID.randomUUID();
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
             RemoteEndpoint endpoint = new RemoteEndpoint(
                     new LoopbackEndpoint(InetAddress.getLoopbackAddress(), listener.getLocalPort()),
-                    credentialPath, expectedSession);
+                    expectedSession);
             AtomicReference<Throwable> serverFailure = new AtomicReference<>();
             Thread server = new Thread(() -> {
                 try (Socket socket = listener.accept()) {
                     FrameCodec frames = new FrameCodec();
-                    ProtocolMessage.ClientHello ignored = assertInstanceOf(
-                            ProtocolMessage.ClientHello.class,
+                    assertInstanceOf(ProtocolMessage.ClientHello.class,
                             ProtocolCodec.decode(
                                     frames.readFrame(socket.getInputStream()).orElseThrow()));
-                    byte[] challenge = new byte[RemoteProtocol.CHALLENGE_BYTES];
                     ProtocolCodec.write(frames, socket.getOutputStream(),
                             new ProtocolMessage.ServerHello(
-                                    RemoteProtocol.VERSION, expectedSession, challenge));
-                    ProtocolMessage.Authenticate authenticate = assertInstanceOf(
-                            ProtocolMessage.Authenticate.class,
-                            ProtocolCodec.decode(
-                                    frames.readFrame(socket.getInputStream()).orElseThrow()));
-                    ProtocolCodec.write(frames, socket.getOutputStream(),
-                            new ProtocolMessage.Authenticated(
-                                    RemoteProtocol.VERSION, authenticatedSession, 0, 0,
+                                    RemoteProtocol.VERSION, mismatchedSession, 0, 0, 0,
                                     Optional.empty()));
                 } catch (Throwable failure) {
                     serverFailure.set(failure);
@@ -336,10 +343,7 @@ class RemoteWireSecurityTest {
         RemoteServerTest.QueueOwner owner = new RemoteServerTest.QueueOwner();
         RemoteServerTest.FakeSession session = new RemoteServerTest.FakeSession(owner.ownerThread);
         try (RemoteServer server = RemoteServer.open(session, owner,
-                RemoteServerOptions.builder()
-                        .credentialFile(temporaryDirectory.resolve("credential"))
-                        .handshakeTimeout(Duration.ofMillis(50))
-                        .build());
+                RemoteServerOptions.builder().handshakeTimeout(Duration.ofMillis(50)).build());
              Socket socket = new Socket(server.endpoint().address().address(),
                      server.endpoint().address().port())) {
             socket.setSoTimeout(2_000);
@@ -348,6 +352,75 @@ class RemoteWireSecurityTest {
                     ProtocolMessage.Error.class,
                     ProtocolCodec.decode(frames.readFrame(socket.getInputStream()).orElseThrow()));
             assertEquals(ProtocolMessage.ErrorCode.HANDSHAKE_TIMEOUT, error.code());
+            assertTrue(server.isOpen());
+        }
+    }
+
+    @Test
+    void oversizedDynamicResultIsTruncatedButKeepsTerminalStatus() throws Exception {
+        RemoteServerTest.QueueOwner owner = new RemoteServerTest.QueueOwner();
+        LargeValueSession session = new LargeValueSession(owner.ownerThread);
+        try (RemoteServer server = RemoteServer.open(session, owner,
+                RemoteServerOptions.builder().maxFrameBytes(512).build());
+             RemoteClient client = RemoteClient.connect(server.endpoint(),
+                     RemoteClientOptions.builder().maxFrameBytes(512).build())) {
+            RemoteRequest request = client.submit(EvaluationSource.of("large.lyra", ""));
+            pumpUntil(server, request.result()::isDone);
+            ProtocolMessage.Result result = request.result().get(5, TimeUnit.SECONDS);
+            // Terminal status is preserved even when the dynamic payload
+            // exceeds the frame bound.
+            assertEquals(ProtocolMessage.RemoteStatus.SUCCESS, result.status());
+            assertEquals(new SessionRevision(1), client.revision());
+            assertTrue(result.value().isEmpty());
+            assertTrue(result.diagnostics().isEmpty());
+            assertTrue(result.failureSummary().orElse("").contains("bounded"));
+        }
+    }
+
+    @Test
+    void largeDynamicResultBelowTheFrameBoundRemainsTerminalAndComplete()
+            throws Exception {
+        RemoteServerTest.QueueOwner owner = new RemoteServerTest.QueueOwner();
+        LargeValueSession session = new LargeValueSession(owner.ownerThread);
+        try (RemoteServer server = RemoteServer.open(session, owner);
+             RemoteClient client = RemoteClient.connect(server.endpoint())) {
+            RemoteRequest request = client.submit(EvaluationSource.of("large-fit.lyra", ""));
+            pumpUntil(server, request.result()::isDone);
+            ProtocolMessage.Result result = request.result().get(5, TimeUnit.SECONDS);
+            assertEquals(ProtocolMessage.RemoteStatus.SUCCESS, result.status());
+            assertTrue(result.value().isPresent());
+            assertEquals("x".repeat(16 * 1024),
+                    ((ProtocolMessage.Scalar) result.value().orElseThrow().data()).value());
+        }
+    }
+
+    @Test
+    void malformedFramesAndOversizedFramesAreRejectedWithoutStateDamage()
+            throws Exception {
+        RemoteServerTest.QueueOwner owner = new RemoteServerTest.QueueOwner();
+        RemoteServerTest.FakeSession session = new RemoteServerTest.FakeSession(owner.ownerThread);
+        try (RemoteServer server = RemoteServer.open(session, owner,
+                RemoteServerOptions.builder().maxFrameBytes(4096).build());
+             Socket socket = new Socket(server.endpoint().address().address(),
+                     server.endpoint().address().port())) {
+            socket.setSoTimeout(2_000);
+            FrameCodec frames = new FrameCodec(4096);
+            // A valid hello, then a corrupt follow-up frame must not kill the
+            // listener.
+            ProtocolCodec.write(frames, socket.getOutputStream(),
+                    new ProtocolMessage.ClientHello(RemoteProtocol.VERSION,
+                            UUID.randomUUID(), server.endpoint().sessionId()));
+            assertInstanceOf(ProtocolMessage.ServerHello.class,
+                    ProtocolCodec.decode(frames.readFrame(socket.getInputStream()).orElseThrow()));
+
+            ByteArrayOutputStream oversized = new ByteArrayOutputStream();
+            oversized.write(new byte[] {0, 0, 0x20, 0});
+            socket.getOutputStream().write(oversized.toByteArray());
+            socket.getOutputStream().flush();
+
+            ProtocolMessage.Error error = assertInstanceOf(ProtocolMessage.Error.class,
+                    ProtocolCodec.decode(frames.readFrame(socket.getInputStream()).orElseThrow()));
+            assertEquals(ProtocolMessage.ErrorCode.FRAME_TOO_LARGE, error.code());
             assertTrue(server.isOpen());
         }
     }
@@ -437,6 +510,49 @@ class RemoteWireSecurityTest {
         }
     }
 
+    /** Session that publishes a large dynamic result every time. */
+    private static final class LargeValueSession implements RemoteSessionAdapter {
+        private static final io.mindspice.lyra.repl.SnapshotLimits LARGE_LIMITS =
+                new io.mindspice.lyra.repl.SnapshotLimits(8, 1024, 64 * 1024);
+        private final UUID sessionId = UUID.randomUUID();
+        private final Thread ownerThread;
+        private SessionRevision revision = SessionRevision.initial();
+
+        private LargeValueSession(Thread ownerThread) {
+            this.ownerThread = ownerThread;
+        }
+
+        @Override
+        public UUID sessionId() {
+            return sessionId;
+        }
+
+        @Override
+        public SessionRevision revision() {
+            return revision;
+        }
+
+        @Override
+        public EvaluationResult evaluate(EvaluationRequest request,
+                                         RemoteCancellation cancellation) {
+            assertEquals(ownerThread, Thread.currentThread());
+            revision = revision.next();
+            return new EvaluationResult.Success(request, revision,
+                    Optional.of(new io.mindspice.lyra.repl.ValueSnapshot(
+                            io.mindspice.lyra.runtime.LyraType.parse("String"),
+                            new io.mindspice.lyra.repl.ValueSnapshot.Scalar(
+                                    io.mindspice.lyra.repl.ScalarKind.STRING,
+                                    "x".repeat(16 * 1024)),
+                            LARGE_LIMITS)),
+                    List.of());
+        }
+
+        @Override
+        public void reset() {
+            assertEquals(ownerThread, Thread.currentThread());
+        }
+    }
+
     private static final class InlineOwner implements OwnerDispatcher {
         @Override
         public boolean isOwnerThread() {
@@ -505,14 +621,7 @@ class RemoteWireSecurityTest {
             RawConnection connection = new RawConnection(socket);
             connection.send(new ProtocolMessage.ClientHello(
                     RemoteProtocol.VERSION, UUID.randomUUID(), endpoint.sessionId()));
-            ProtocolMessage.ServerHello hello = assertInstanceOf(
-                    ProtocolMessage.ServerHello.class, connection.read());
-            try (TokenCredential credential = TokenCredential.read(endpoint.credentialFile())) {
-                connection.send(new ProtocolMessage.Authenticate(
-                        RemoteProtocol.VERSION, hello.sessionId(), hello.challenge(),
-                        credential.encodedForTransport()));
-            }
-            assertInstanceOf(ProtocolMessage.Authenticated.class, connection.read());
+            assertInstanceOf(ProtocolMessage.ServerHello.class, connection.read());
             return connection;
         }
 

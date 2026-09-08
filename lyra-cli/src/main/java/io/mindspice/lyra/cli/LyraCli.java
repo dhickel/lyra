@@ -32,7 +32,7 @@ import io.mindspice.lyra.repl.remote.LoopbackEndpoint;
 import io.mindspice.lyra.repl.remote.RemoteConsoleSession;
 import io.mindspice.lyra.repl.remote.RemoteEndpoint;
 import io.mindspice.lyra.repl.remote.RemoteOperationException;
-import io.mindspice.lyra.repl.remote.TokenCredential;
+
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -56,7 +56,7 @@ public final class LyraCli {
             + "\n"
             + "Commands:\n"
             + "  repl [ROOT] [--history PATH] [--plain] [--keymap emacs|vi]\n"
-            + "  attach ENDPOINT --token-file PATH\n"
+            + "  attach ENDPOINT\n"
             + "  run ROOT [--source-root DIR]* [-- ARGS...]\n"
             + "  compile ROOT [--source-root DIR]* [--output PATH]\n"
             + "         [--format classes|thin-jar|bundled-jar]\n"
@@ -248,15 +248,10 @@ public final class LyraCli {
     }
 
     private static RemoteEndpoint attachEndpoint(AttachCommand command) {
-        RemoteEndpoint endpoint = parseAttachEndpoint(command.endpoint(), command.tokenFile());
-        try (TokenCredential ignored = TokenCredential.read(command.tokenFile())) {
-            return endpoint;
-        } catch (IOException | RuntimeException failure) {
-            throw new UsageFailure("invalid token file: " + message(failure));
-        }
+        return parseAttachEndpoint(command.endpoint());
     }
 
-    private static RemoteEndpoint parseAttachEndpoint(String spelling, Path tokenFile) {
+    private static RemoteEndpoint parseAttachEndpoint(String spelling) {
         Objects.requireNonNull(spelling, "spelling");
         String host;
         String portSpelling;
@@ -293,7 +288,7 @@ public final class LyraCli {
             throw new UsageFailure("attach endpoint port must be in 1..65535: " + port);
         }
         try {
-            return new RemoteEndpoint(LoopbackEndpoint.of(host, port), tokenFile);
+            return new RemoteEndpoint(LoopbackEndpoint.of(host, port));
         } catch (java.net.UnknownHostException | IllegalArgumentException failure) {
             throw new UsageFailure("invalid loopback attach ENDPOINT: " + spelling
                     + " (" + message(failure) + ")");
@@ -717,13 +712,11 @@ public final class LyraCli {
         }
     }
 
-    private record AttachCommand(String endpoint, Path tokenFile) implements ParsedCommand {
+    private record AttachCommand(String endpoint) implements ParsedCommand {
         private AttachCommand {
             if (endpoint == null || endpoint.isBlank()) {
                 throw new IllegalArgumentException("attach ENDPOINT must not be blank");
             }
-            tokenFile = Objects.requireNonNull(tokenFile, "tokenFile")
-                    .toAbsolutePath().normalize();
         }
     }
 
@@ -882,24 +875,14 @@ public final class LyraCli {
                 throw new UsageFailure("attach requires explicit ENDPOINT");
             }
             String endpoint = args[1];
-            Optional<Path> tokenFile = Optional.empty();
             for (int index = 2; index < args.length; index++) {
-                String token = args[index];
-                if (token == null) {
+                if (args[index] == null) {
                     throw new UsageFailure("argument must not be null");
                 }
-                if (!token.equals("--token-file")) {
-                    throw new UsageFailure("attach accepts only --token-file: " + token);
-                }
-                if (tokenFile.isPresent()) {
-                    throw new UsageFailure("duplicate option: --token-file");
-                }
-                tokenFile = Optional.of(pathValue(args, ++index, "--token-file"));
+                throw new UsageFailure("attach accepts no options; "
+                        + "the protocol is credential-free: " + args[index]);
             }
-            if (tokenFile.isEmpty()) {
-                throw new UsageFailure("attach requires --token-file PATH");
-            }
-            return new AttachCommand(endpoint, tokenFile.orElseThrow());
+            return new AttachCommand(endpoint);
         }
 
         private static ParsedCommand parseRun(String root, String[] args) {

@@ -19,6 +19,7 @@ import io.mindspice.lyra.runtime.ModuleHandle;
 import io.mindspice.lyra.runtime.LoadedArtifact;
 import io.mindspice.lyra.runtime.OwnerThread;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -93,6 +94,14 @@ public final class LyraSession implements AutoCloseable {
     }
 
     /**
+     * The configured source-discovery roots. Read-only configuration data
+     * used by execution-host file listing; it never exposes live state.
+     */
+    public List<Path> sourceRoots() {
+        return options.sourceRoots();
+    }
+
+    /**
      * Submits source using the current committed revision and a new identity.
      * The returned result is terminal; this method never queues a second
      * operation.
@@ -131,6 +140,46 @@ public final class LyraSession implements AutoCloseable {
     /** Reloads one retained REPL-owned module by logical name or namespace alias. */
     public EvaluationResult reload(String moduleOrAlias) {
         Objects.requireNonNull(moduleOrAlias, "moduleOrAlias");
+        return reload(moduleOrAlias, EvaluationId.create(), () -> false);
+    }
+
+    /** Owner-confined explicit reload; old generations are never retargeted. */
+    public EvaluationResult reload(LogicalModuleId logicalModule) {
+        Objects.requireNonNull(logicalModule, "logicalModule");
+        owner.check();
+        return reload(logicalModule, EvaluationId.create(), () -> false);
+    }
+
+    /**
+     * Owner-confined reload carrying the caller's evaluation identity and an
+     * admission-time cancellation probe. Used by owner adapters that must
+     * correlate cancellation to an exact external request identity.
+     */
+    public EvaluationResult reload(
+            LogicalModuleId logicalModule, EvaluationId evaluationId,
+            BooleanSupplier cancellationRequested) {
+        Objects.requireNonNull(logicalModule, "logicalModule");
+        Objects.requireNonNull(evaluationId, "evaluationId");
+        Objects.requireNonNull(cancellationRequested, "cancellationRequested");
+        owner.check();
+        String alias = "__lyra_reload_" + evaluationId.value().toString().replace("-", "");
+        EvaluationSource source = EvaluationSource.of(
+                "reload " + logicalModule.value(),
+                "import " + logicalModule.value() + " as " + alias);
+        return submit(new EvaluationRequest(evaluationId, revision, source),
+                cancellationRequested, Optional.of(logicalModule), Optional.of(alias));
+    }
+
+    /**
+     * Owner-confined reload by logical name or namespace alias carrying the
+     * caller's evaluation identity and cancellation probe.
+     */
+    public EvaluationResult reload(
+            String moduleOrAlias, EvaluationId evaluationId,
+            BooleanSupplier cancellationRequested) {
+        Objects.requireNonNull(moduleOrAlias, "moduleOrAlias");
+        Objects.requireNonNull(evaluationId, "evaluationId");
+        Objects.requireNonNull(cancellationRequested, "cancellationRequested");
         owner.check();
         List<LogicalModuleId> matches = new java.util.ArrayList<>();
         compilerSnapshot.importAlias(moduleOrAlias)
@@ -156,20 +205,7 @@ public final class LyraSession implements AutoCloseable {
                     CompilerDiagnosticCodes.MODULE_DUPLICATE_IDENTITY,
                     "reload target is ambiguous: " + moduleOrAlias);
         }
-        return reload(distinct.getFirst());
-    }
-
-    /** Owner-confined explicit reload; old generations are never retargeted. */
-    public EvaluationResult reload(LogicalModuleId logicalModule) {
-        Objects.requireNonNull(logicalModule, "logicalModule");
-        owner.check();
-        EvaluationId evaluationId = EvaluationId.create();
-        String alias = "__lyra_reload_" + evaluationId.value().toString().replace("-", "");
-        EvaluationSource source = EvaluationSource.of(
-                "reload " + logicalModule.value(),
-                "import " + logicalModule.value() + " as " + alias);
-        return submit(new EvaluationRequest(evaluationId, revision, source),
-                () -> false, Optional.of(logicalModule), Optional.of(alias));
+        return reload(distinct.getFirst(), evaluationId, cancellationRequested);
     }
 
     private EvaluationResult reloadTargetFailure(

@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Console target for an authenticated attached session. It is deliberately
+ * Console target for a trusted attached session. It is deliberately
  * limited to the existing fixed RemoteClient operations and never forwards
  * process streams or resubmits source after a disconnect.
  */
@@ -69,6 +69,154 @@ public final class RemoteConsoleSession implements ConsoleSession {
     }
 
     /**
+     * Server-side file load. The server reads the UTF-8 file exactly once
+     * and submits the captured file-URI source; the client never reads the
+     * load path locally.
+     */
+    public Evaluation load(String path) {
+        Objects.requireNonNull(path, "path");
+        if (!client.isConnected()) {
+            return cancelled(EvaluationId.create(),
+                    "remote connection is disconnected; load cancelled");
+        }
+        final RemoteRequest request;
+        try {
+            request = client.load(path);
+        } catch (IOException | RuntimeException failure) {
+            return unavailable(EvaluationId.create(), failure);
+        }
+        EvaluationId evaluationId = EvaluationId.of(request.requestId());
+        activeRequests.put(evaluationId, request);
+        try {
+            return awaitEvaluation(request);
+        } finally {
+            activeRequests.remove(evaluationId, request);
+        }
+    }
+
+    /**
+     * Server-side module reload by logical name or namespace alias. The
+     * target is resolved and rebuilt on the execution host exactly once and
+     * the result carries the host's real initializer progress.
+     */
+    public Evaluation reload(String target) {
+        Objects.requireNonNull(target, "target");
+        if (!client.isConnected()) {
+            return cancelled(EvaluationId.create(),
+                    "remote connection is disconnected; reload cancelled");
+        }
+        final RemoteRequest request;
+        try {
+            request = client.reload(target);
+        } catch (IOException | RuntimeException failure) {
+            return unavailable(EvaluationId.create(), failure);
+        }
+        EvaluationId evaluationId = EvaluationId.of(request.requestId());
+        activeRequests.put(evaluationId, request);
+        try {
+            return awaitEvaluation(request);
+        } finally {
+            activeRequests.remove(evaluationId, request);
+        }
+    }
+
+    /** Bounded metadata completion executed on the server, never locally. */
+    public Completion complete(CompletionRequest request) {
+        Objects.requireNonNull(request, "request");
+        try {
+            java.util.concurrent.CompletableFuture<ProtocolMessage.CompletionResult> future =
+                    switch (request.kind()) {
+                        case MODULE_FILES -> client.completeModuleFiles(request.prefix());
+                        case BINDING_MEMBERS -> client.completeBindingMembers(
+                                request.binding().orElseThrow());
+                    };
+            ProtocolMessage.CompletionResult result = await(future);
+            return new Completion(map(result.status()), result.items().stream()
+                    .map(item -> new CompletionItem(item.name(), map(item.kind()),
+                            item.typeSpelling()))
+                    .toList(), result.detail());
+        } catch (IOException | RuntimeException failure) {
+            QueryStatus status = client.isConnected()
+                    ? QueryStatus.UNAVAILABLE : QueryStatus.DISCONNECTED;
+            return new Completion(status, List.of(), Optional.of(message(failure)));
+        }
+    }
+
+    /** A bounded completion request mirroring the wire schema. */
+    public record CompletionRequest(Kind kind, Optional<String> prefix, Optional<String> binding) {
+        public CompletionRequest {
+            kind = Objects.requireNonNull(kind, "kind");
+            prefix = Objects.requireNonNull(prefix, "prefix");
+            binding = Objects.requireNonNull(binding, "binding");
+            if (kind == Kind.BINDING_MEMBERS && binding.isEmpty()) {
+                throw new IllegalArgumentException("member completion needs a binding name");
+            }
+            if (kind != Kind.BINDING_MEMBERS && binding.isPresent()) {
+                throw new IllegalArgumentException("binding name is only valid for member completion");
+            }
+        }
+
+        public static CompletionRequest moduleFiles(Optional<String> prefix) {
+            return new CompletionRequest(Kind.MODULE_FILES, prefix, Optional.empty());
+        }
+
+        public static CompletionRequest bindingMembers(String binding) {
+            return new CompletionRequest(Kind.BINDING_MEMBERS, Optional.empty(),
+                    Optional.of(binding));
+        }
+
+        public enum Kind {
+            MODULE_FILES,
+            BINDING_MEMBERS
+        }
+    }
+
+    public record Completion(QueryStatus status, List<CompletionItem> items,
+                             Optional<String> detail) {
+        public Completion {
+            status = Objects.requireNonNull(status, "status");
+            items = List.copyOf(Objects.requireNonNull(items, "items"));
+            detail = Objects.requireNonNull(detail, "detail");
+        }
+    }
+
+    public record CompletionItem(String name, ItemKind kind, Optional<String> typeSpelling) {
+        public CompletionItem {
+            name = Objects.requireNonNull(name, "name");
+            kind = Objects.requireNonNull(kind, "kind");
+            typeSpelling = Objects.requireNonNull(typeSpelling, "typeSpelling");
+        }
+    }
+
+    public enum ItemKind {
+        FILE,
+        DIRECTORY,
+        MODULE,
+        MEMBER
+    }
+
+    private static QueryStatus map(ProtocolMessage.QueryStatus status) {
+        return switch (status) {
+            case OK -> QueryStatus.OK;
+            case NOT_FOUND -> QueryStatus.NOT_FOUND;
+            case EXPIRED -> QueryStatus.EXPIRED;
+            case BUSY -> QueryStatus.BUSY;
+            case STALE -> QueryStatus.BUSY;
+            case UNAVAILABLE -> QueryStatus.UNAVAILABLE;
+            case CLOSED -> QueryStatus.CLOSED;
+        };
+    }
+
+    private static ItemKind map(ProtocolMessage.CompletionItemKind kind) {
+        return switch (kind) {
+            case FILE -> ItemKind.FILE;
+            case DIRECTORY -> ItemKind.DIRECTORY;
+            case MODULE -> ItemKind.MODULE;
+            case MEMBER -> ItemKind.MEMBER;
+        };
+    }
+
+    /**
      * Queries a retained request by identity after reconnect. The source is
      * never available to or replayed by this method.
      */
@@ -116,9 +264,11 @@ public final class RemoteConsoleSession implements ConsoleSession {
             RequestStatus status = status(evaluationId);
             return switch (status.state()) {
                 case SUCCESS, COMPILATION_FAILURE, RUNTIME_FAILURE, CANCELLED,
-                        BUSY, CLOSED, UNAVAILABLE, REVISION_CONFLICT, REJECTED, EXPIRED
+                        BUSY, CLOSED, UNAVAILABLE, REJECTED, EXPIRED
                         -> new Control(ControlStatus.ALREADY_TERMINAL, status.revision(),
                         status.detail());
+                case REVISION_CONFLICT -> new Control(ControlStatus.REVISION_CONFLICT,
+                        status.revision(), status.detail());
                 case NOT_FOUND -> new Control(ControlStatus.NOT_FOUND, status.revision(),
                         status.detail());
                 case DISCONNECTED -> new Control(ControlStatus.DISCONNECTED,
@@ -254,7 +404,7 @@ public final class RemoteConsoleSession implements ConsoleSession {
             case OK -> QueryStatus.OK;
             case NOT_FOUND -> QueryStatus.NOT_FOUND;
             case EXPIRED -> QueryStatus.EXPIRED;
-            case BUSY -> QueryStatus.BUSY;
+            case BUSY, STALE -> QueryStatus.BUSY;
             case UNAVAILABLE -> QueryStatus.UNAVAILABLE;
             case CLOSED -> QueryStatus.CLOSED;
         };
@@ -272,6 +422,11 @@ public final class RemoteConsoleSession implements ConsoleSession {
             return new RequestStatus(id, terminal.sequence(), mapState(terminal.status()),
                     new SessionRevision(terminal.revision()), terminal.failureSummary());
         }
+        if (result.terminalStatus().isPresent()) {
+            long sequence = result.request().map(ProtocolMessage.RequestSnapshot::sequence).orElse(0L);
+            return new RequestStatus(id, sequence, mapState(result.terminalStatus().orElseThrow()),
+                    new SessionRevision(result.revision()), result.detail());
+        }
         if (result.request().isPresent()) {
             ProtocolMessage.RequestSnapshot snapshot = result.request().orElseThrow();
             return new RequestStatus(id, snapshot.sequence(), mapState(snapshot.status()),
@@ -282,6 +437,7 @@ public final class RemoteConsoleSession implements ConsoleSession {
             case NOT_FOUND -> RequestState.NOT_FOUND;
             case EXPIRED -> RequestState.EXPIRED;
             case BUSY -> RequestState.BUSY;
+            case STALE -> RequestState.REVISION_CONFLICT;
             case UNAVAILABLE -> RequestState.UNAVAILABLE;
             case CLOSED -> RequestState.CLOSED;
         };

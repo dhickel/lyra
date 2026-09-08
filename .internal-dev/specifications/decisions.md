@@ -268,3 +268,20 @@
 - **Alternatives rejected:** moving the evaluation lease between controllers; suppressing busy outcomes during the terminal-publication race; forced interruption of blocking host I/O or main.
 - **Caveat:** cancellation remains cooperative. A root function or blocking I/O that never reaches a generated boundary can delay the terminal cancellation result; this is never a justification for interruption.
 - **Affected specifications:** `repl.md`, `backend-runtime.md`; `LyraOwnerController`, `SessionStorageDomain`, `ApplicationAttachment`, attachable emitter safe points, ApplicationSafePointTest/AttachmentCancellationTest.
+
+## 2026-09-08 — Credential-Free Remote Protocol v2 Wire Design
+
+### Source and review
+
+- **Source:** owner-authorized Phase 09 execution of the accepted REPL completion plan.
+- **Affected specification:** `repl.md` (remote protocol section); no language or AOT contract changed.
+- **Review timing:** revisit when Phase 12 bootstrap/launcher composition or a later protocol version needs the wire.
+
+### Decision
+
+- **Decision:** the v2 ready hello carries session identity, revision, mutation sequence, the request-sequence watermark and the active request. Freshness on every stateful operation is the pair (revision, mutationSequence); successful evaluations advance revision, reset advances only the mutation sequence, and stale pairs are rejected before owner work (`REVISION_CONFLICT`/`STALE`).
+- **Decision:** LOAD/RELOAD are sequence-bearing request identities answered by the ordinary `Result` with real initializer progress; a LOAD file is read exactly once into a file-URI source with source/label/envelope bounds preflighted before effects, and bound violations terminate `REJECTED`. Completion is two fixed operations (module files under configured roots, binding members from a fixed core-type metadata table) with no compilation, pinning, expression execution or generic file/reflection RPC.
+- **Decision:** the attachment remote adapter uses the synchronous owner-thread submission path with a separate remote-server controller; owner-dispatched reset/query/completion keep their existing admission semantics. The dispatched-handle composition is left to the launcher phase.
+- **Justification:** mutation-sequence freshness is the only reset-safe coordination that preserves the local revision contract; request-identity LOAD/RELOAD keeps duplicate/sequence/cancel correlation uniform; synchronous owner routing avoids nested-dispatch deadlocks while socket threads stay control-only.
+- **Alternatives rejected:** dropping the sequence watermark from the hello (broke reconnect reconciliation), owner-queuing stale rejections (unnecessary owner work), a value-losing managed-console adapter, and generic completion/RPC surfaces.
+- **Caveat:** large dynamic result payloads are truncated to the frame bound while terminal status is preserved; attachment reload remains an explicit structured unavailable outcome until scratch-module reload has a root-lifetime surface.

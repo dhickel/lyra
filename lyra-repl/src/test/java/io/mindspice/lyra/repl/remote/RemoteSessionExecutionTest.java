@@ -20,7 +20,7 @@ class RemoteSessionExecutionTest {
     void realSessionQueriesExecuteOnOwnerAndRuntimeFramesSurviveTheWire() throws Exception {
         try (var session = LyraSession.open(); var controller = new LyraOwnerController();
              var server = RemoteServer.open(LyraSessionAdapter.of(session), controller,
-                     RemoteServerOptions.builder().credentialFile(temporary.resolve("token")).build());
+                     RemoteServerOptions.defaults());
              var client = RemoteClient.connect(server.endpoint())) {
             var first = client.submit(EvaluationSource.of("binding.lyra", "let @mut count :I32 = 1"));
             pump(server, first.result());
@@ -60,7 +60,7 @@ class RemoteSessionExecutionTest {
         try (var session = LyraSession.open(); var controller = new LyraOwnerController()) {
             assertInstanceOf(EvaluationResult.Success.class, session.submit("existing.lyra", "let @mut count :I32 = 1"));
             try (var server = RemoteServer.open(LyraSessionAdapter.of(session), controller,
-                    RemoteServerOptions.builder().credentialFile(temporary.resolve("existing-token")).build());
+                    RemoteServerOptions.defaults());
                  var client = RemoteClient.connect(server.endpoint())) {
                 assertEquals(new SessionRevision(1), client.revision());
                 assertInstanceOf(EvaluationResult.Success.class, session.submit("owner.lyra", "count := 41"));

@@ -29,13 +29,6 @@ public final class ProtocolException extends IOException {
         MALFORMED_JSON,
         INVALID_SCHEMA,
         UNSUPPORTED_VERSION,
-        HANDSHAKE_REQUIRED,
-        AUTHENTICATION_FAILED,
-        CONTROLLER_BUSY,
-        SESSION_MISMATCH,
-        SEQUENCE_REJECTED,
-        REQUEST_EXPIRED,
-        CONNECTION_LIMIT,
         HANDSHAKE_TIMEOUT
     }
 }

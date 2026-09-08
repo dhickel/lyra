@@ -76,12 +76,12 @@ public final class RemoteRequest {
     }
 
     /** Settles a locally retained request that the server has expired. */
-    void expired(long revision, Optional<String> detail) {
+    void expired(long revision, long mutationSequence, Optional<String> detail) {
         Objects.requireNonNull(detail, "detail");
         completed(new ProtocolMessage.Result(
-                RemoteProtocol.VERSION, requestId, sequence,
-                ProtocolMessage.RemoteStatus.EXPIRED, revision, List.of(), Optional.empty(),
-                detail, Optional.empty()));
+                requestId, sequence,
+                ProtocolMessage.RemoteStatus.EXPIRED, revision, mutationSequence,
+                List.of(), Optional.empty(), detail, Optional.empty()));
     }
 
     void failed(Throwable failure) {

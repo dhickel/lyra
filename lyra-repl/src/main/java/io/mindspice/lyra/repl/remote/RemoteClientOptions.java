@@ -15,8 +15,8 @@ public final class RemoteClientOptions {
     private RemoteClientOptions(Builder builder) {
         connectTimeout = timeout(builder.connectTimeout, "connectTimeout");
         handshakeTimeout = timeout(builder.handshakeTimeout, "handshakeTimeout");
-        maxFrameBytes = bound(builder.maxFrameBytes, 1, RemoteProtocol.MAX_FRAME_BYTES,
-                "maxFrameBytes");
+        maxFrameBytes = bound(builder.maxFrameBytes, RemoteProtocol.MIN_FRAME_BYTES,
+                RemoteProtocol.MAX_FRAME_BYTES, "maxFrameBytes");
         maxOutstandingOperations = bound(builder.maxOutstandingOperations, 1, 256,
                 "maxOutstandingOperations");
     }

@@ -16,7 +16,7 @@ The planning baseline for this REPL completion is commit `ae793e7d6776f6611fa78a
 source -> lex -> parse -> module discovery -> resolve -> type-check -> typed IR -> Java 25 bytecode -> artifact/runtime/CLI
 ```
 
-The current product foundation includes `lyra-runtime`, `lyra-compiler`, `lyra-repl`, and `lyra-cli`, including direct bytecode emission, class/JAR output, loading, lifecycle, typed facades, `run`/`compile`, owner-confined session execution, plain/JLine consoles, and authenticated loopback transport. Scalar, source-local data-aggregate and compiler-certified source-local callable live-storage linkage, shared structural type/loading domains and executed result snapshots are implemented. Imported-module persistence, reload, configured-root/application attachment, and cooperative application safe points remain active extensions and are not implemented until proven by code and tests.
+The current product foundation includes `lyra-runtime`, `lyra-compiler`, `lyra-repl`, and `lyra-cli`, including direct bytecode emission, class/JAR output, loading, lifecycle, typed facades, `run`/`compile`, owner-confined session execution, plain/JLine consoles, and credential-free loopback protocol v2 transport. Scalar, source-local data-aggregate and compiler-certified source-local callable live-storage linkage, shared structural type/loading domains and executed result snapshots are implemented. Imported-module persistence, reload, configured-root/application attachment, and cooperative application safe points remain active extensions and are not implemented until proven by code and tests.
 
 Implementation should progress in small, tested slices:
 
@@ -31,7 +31,7 @@ Do not invent behavior outside the living language and backend/runtime specifica
 
 ## Project Overview
 
-This is a Java-based compiler/runtime for a standalone functional JVM language, with an optional owner-confined REPL and authenticated loopback transport. The language uses LISP-like forms, unique accessor operators, and a grammar-driven parsing system. The normative target is direct Java 25 class/JAR output and standalone/Java use first, with Java game-engine interop later.
+This is a Java-based compiler/runtime for a standalone functional JVM language, with an optional owner-confined REPL and credential-free loopback protocol v2 transport. The language uses LISP-like forms, unique accessor operators, and a grammar-driven parsing system. The normative target is direct Java 25 class/JAR output and standalone/Java use first, with Java game-engine interop later.
 
 ## Build Commands
 
@@ -60,11 +60,11 @@ This is a Java-based compiler/runtime for a standalone functional JVM language, 
 - Loads and verifies generated artifacts, enforces owner-thread/lifecycle/closure boundaries, provides typed export handles, standard I/O, and launcher support.
 
 **REPL** (`lyra-repl/src/main/java/io/mindspice/lyra/repl/`)
-- Provides owner-confined sessions, staged metadata publication, immutable request/results, bounded snapshots/contracts, plain-console behavior, and authenticated loopback protocol adapters.
+- Provides owner-confined sessions, staged metadata publication, immutable request/results, bounded snapshots/contracts, plain-console behavior, and credential-free loopback protocol v2 adapters.
 - Session compilation links prior scalar, data-aggregate and compiler-certified callable bindings to their original initialized storage through exact typed accessors and a separate authenticated domain. Structural tuple/function-interface types are shared, but state/closures/cells remain generation-local and are retained by producer authority. Imported module persistence remains unsupported; no source replay is used.
 
 **CLI** (`lyra-cli/src/main/java/io/mindspice/lyra/cli/`)
-- Provides the `run`/`compile` commands, dependency-free plain fallback, JLine editing, and authenticated `attach` transport.
+- Provides the `run`/`compile` commands, dependency-free plain fallback, JLine editing, and credential-free loopback `attach` transport.
 
 **Error Handling**
 - Compiler phase boundaries and session APIs use immutable structured diagnostics; expected unsupported/live-linkage behavior is represented by stable compiler/session codes rather than unchecked placeholders.

@@ -1,15 +1,13 @@
 package io.mindspice.lyra.repl.remote;
 
-import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Objects;
 
-/** Immutable bounded configuration for a loopback REPL server. */
+/** Immutable bounded configuration for a credential-free loopback REPL server. */
 public final class RemoteServerOptions {
     public static final RemoteServerOptions DEFAULT = builder().build();
 
     private final int port;
-    private final Path credentialFile;
     private final Duration handshakeTimeout;
     private final int maxFrameBytes;
     private final int maxConnections;
@@ -17,16 +15,12 @@ public final class RemoteServerOptions {
     private final int maxOutboundMessages;
     private final int maxOutboundBytes;
     private final int maxDiagnostics;
-    private final boolean deleteTemporaryCredentialOnClose;
 
     private RemoteServerOptions(Builder builder) {
         port = port(builder.port);
-        credentialFile = builder.credentialFile == null
-                ? null
-                : builder.credentialFile.toAbsolutePath().normalize();
         handshakeTimeout = timeout(builder.handshakeTimeout, "handshakeTimeout");
-        maxFrameBytes = bound(builder.maxFrameBytes, 1, RemoteProtocol.MAX_FRAME_BYTES,
-                "maxFrameBytes");
+        maxFrameBytes = bound(builder.maxFrameBytes, RemoteProtocol.MIN_FRAME_BYTES,
+                RemoteProtocol.MAX_FRAME_BYTES, "maxFrameBytes");
         maxConnections = bound(builder.maxConnections, 1, 128, "maxConnections");
         maxRetainedResults = bound(builder.maxRetainedResults, 1,
                 RemoteProtocol.MAX_RETAINED_RESULTS, "maxRetainedResults");
@@ -35,7 +29,6 @@ public final class RemoteServerOptions {
                 RemoteProtocol.MAX_FRAME_BYTES * 2, "maxOutboundBytes");
         maxDiagnostics = bound(builder.maxDiagnostics, 1, RemoteProtocol.MAX_DIAGNOSTICS,
                 "maxDiagnostics");
-        deleteTemporaryCredentialOnClose = builder.deleteTemporaryCredentialOnClose;
     }
 
     public static Builder builder() {
@@ -48,10 +41,6 @@ public final class RemoteServerOptions {
 
     public int port() {
         return port;
-    }
-
-    public java.util.Optional<Path> credentialFile() {
-        return java.util.Optional.ofNullable(credentialFile);
     }
 
     public Duration handshakeTimeout() {
@@ -82,13 +71,8 @@ public final class RemoteServerOptions {
         return maxDiagnostics;
     }
 
-    public boolean deleteTemporaryCredentialOnClose() {
-        return deleteTemporaryCredentialOnClose;
-    }
-
     public static final class Builder {
         private int port;
-        private Path credentialFile;
         private Duration handshakeTimeout = Duration.ofSeconds(5);
         private int maxFrameBytes = RemoteProtocol.MAX_FRAME_BYTES;
         private int maxConnections = 16;
@@ -96,15 +80,9 @@ public final class RemoteServerOptions {
         private int maxOutboundMessages = 64;
         private int maxOutboundBytes = RemoteProtocol.MAX_FRAME_BYTES;
         private int maxDiagnostics = RemoteProtocol.MAX_DIAGNOSTICS;
-        private boolean deleteTemporaryCredentialOnClose = true;
 
         public Builder port(int value) {
             port = value;
-            return this;
-        }
-
-        public Builder credentialFile(Path value) {
-            credentialFile = Objects.requireNonNull(value, "credentialFile");
             return this;
         }
 
@@ -140,11 +118,6 @@ public final class RemoteServerOptions {
 
         public Builder maxDiagnostics(int value) {
             maxDiagnostics = value;
-            return this;
-        }
-
-        public Builder deleteTemporaryCredentialOnClose(boolean value) {
-            deleteTemporaryCredentialOnClose = value;
             return this;
         }
 

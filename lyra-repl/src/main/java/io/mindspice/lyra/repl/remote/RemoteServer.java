@@ -3,6 +3,7 @@ package io.mindspice.lyra.repl.remote;
 import io.mindspice.lyra.repl.EvaluationId;
 import io.mindspice.lyra.repl.EvaluationRequest;
 import io.mindspice.lyra.repl.EvaluationResult;
+import io.mindspice.lyra.repl.EvaluationSource;
 import io.mindspice.lyra.repl.SessionRevision;
 import io.mindspice.lyra.repl.ValueSnapshot;
 import io.mindspice.lyra.runtime.LyraOwnerController;
@@ -17,10 +18,7 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -33,25 +31,24 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Authenticated loopback protocol service. Socket threads parse, validate and
- * enqueue bounded operations; the supplied owner dispatcher is the only path
- * that invokes the live session adapter.
+ * Credential-free version-two loopback protocol service. Socket threads
+ * parse, validate and enqueue bounded operations; the supplied owner
+ * dispatcher is the only path that invokes the live session adapter. No
+ * token, credential file, challenge or authentication state exists anywhere
+ * in this service.
  */
 public final class RemoteServer implements AutoCloseable {
-    private static final SecureRandom RANDOM = new SecureRandom();
-
     private final RemoteSessionAdapter session;
     private final OwnerDispatcher owner;
     private final RemoteServerOptions options;
     private final FrameCodec frames;
     private final ServerSocket serverSocket;
-    private final TokenCredential credential;
-    private final boolean temporaryCredential;
     private final UUID sessionId;
     private final Object stateLock = new Object();
     private final Map<UUID, RequestRecord> requests = new LinkedHashMap<>();
     private final Map<UUID, ControlResponse> controlResponses = new LinkedHashMap<>();
     private final Map<UUID, QueryRecord> queries = new LinkedHashMap<>();
+    private final Map<UUID, CompletionRecord> completions = new LinkedHashMap<>();
     private final AtomicReference<Connection> controller = new AtomicReference<>();
     private final Map<Connection, Boolean> connections = new ConcurrentHashMap<>();
     private final Semaphore connectionSlots;
@@ -59,25 +56,23 @@ public final class RemoteServer implements AutoCloseable {
     private final Thread acceptThread;
     private volatile long currentRevision;
     private long lastSequence;
+    private long mutationSequence;
     private RequestRecord activeRequest;
     private ControlRecord pendingControl;
     private QueryRecord pendingQuery;
+    private CompletionRecord pendingCompletion;
 
     private RemoteServer(
             RemoteSessionAdapter session,
             OwnerDispatcher owner,
             RemoteServerOptions options,
             FrameCodec frames,
-            ServerSocket serverSocket,
-            TokenCredential credential,
-            boolean temporaryCredential) throws IOException {
+            ServerSocket serverSocket) {
         this.session = session;
         this.owner = owner;
         this.options = options;
         this.frames = frames;
         this.serverSocket = serverSocket;
-        this.credential = credential;
-        this.temporaryCredential = temporaryCredential;
         this.sessionId = session.sessionId();
         SessionRevision revision = session.revision();
         if (revision.value() < 0) {
@@ -90,7 +85,7 @@ public final class RemoteServer implements AutoCloseable {
         this.acceptThread.setDaemon(true);
     }
 
-    /** Starts a server on loopback, using an ephemeral port by default. */
+    /** Starts a credential-free server on loopback, using an ephemeral port by default. */
     public static RemoteServer open(RemoteSessionAdapter session, OwnerDispatcher owner)
             throws IOException {
         return open(session, owner, RemoteServerOptions.defaults());
@@ -119,33 +114,19 @@ public final class RemoteServer implements AutoCloseable {
         if (!owner.isOwnerThread()) {
             throw new IllegalStateException("remote server must be opened on the owner thread");
         }
-
-        TokenCredential credential;
-        boolean temporary = options.credentialFile().isEmpty();
-        try {
-            credential = temporary
-                    ? TokenCredential.createTemporary()
-                    : TokenCredential.create(options.credentialFile().orElseThrow());
-        } catch (IOException failure) {
-            throw failure;
-        }
         ServerSocket socket = new ServerSocket();
         try {
             socket.setReuseAddress(false);
             socket.bind(LoopbackEndpoint.bind(options.port()).socketAddress(),
                     options.maxConnections());
             RemoteServer server = new RemoteServer(session, owner, options,
-                    new FrameCodec(options.maxFrameBytes()), socket, credential, temporary);
+                    new FrameCodec(options.maxFrameBytes()), socket);
             server.acceptThread.start();
             return server;
         } catch (IOException | RuntimeException failure) {
             try {
                 socket.close();
             } catch (IOException ignored) {
-            }
-            credential.close();
-            if (temporary) {
-                deleteQuietly(credential.path());
             }
             throw failure;
         }
@@ -154,14 +135,14 @@ public final class RemoteServer implements AutoCloseable {
     public RemoteEndpoint endpoint() {
         LoopbackEndpoint address = new LoopbackEndpoint(
                 serverSocket.getInetAddress(), serverSocket.getLocalPort());
-        return new RemoteEndpoint(address, credential.path(), sessionId);
+        return new RemoteEndpoint(address, sessionId);
     }
 
     public boolean isOpen() {
         return !closed.get();
     }
 
-    public int authenticatedControllerCount() {
+    public int controllerCount() {
         return controller.get() == null ? 0 : 1;
     }
 
@@ -192,13 +173,16 @@ public final class RemoteServer implements AutoCloseable {
         RequestRecord requestToCancel;
         ControlRecord controlToCancel;
         QueryRecord queryToCancel;
+        CompletionRecord completionToCancel;
         synchronized (stateLock) {
             requestToCancel = activeRequest;
             controlToCancel = pendingControl;
             queryToCancel = pendingQuery;
+            completionToCancel = pendingCompletion;
             activeRequest = null;
             pendingControl = null;
             pendingQuery = null;
+            pendingCompletion = null;
             if (requestToCancel != null && !requestToCancel.terminal) {
                 requestToCancel.cancellation.request();
                 requestToCancel.status = ProtocolMessage.RemoteStatus.CANCELLATION_REQUESTED;
@@ -215,9 +199,8 @@ public final class RemoteServer implements AutoCloseable {
         if (queryToCancel != null) {
             cancelDispatch(queryToCancel.dispatch);
         }
-        credential.close();
-        if (temporaryCredential && options.deleteTemporaryCredentialOnClose()) {
-            deleteQuietly(credential.path());
+        if (completionToCancel != null) {
+            cancelDispatch(completionToCancel.dispatch);
         }
     }
 
@@ -269,6 +252,9 @@ public final class RemoteServer implements AutoCloseable {
         try {
             long handshakeDeadline = System.nanoTime() + options.handshakeTimeout().toNanos();
             ProtocolMessage first = readHandshakeMessage(connection, handshakeDeadline);
+            if (first == null) {
+                return;
+            }
             if (!(first instanceof ProtocolMessage.ClientHello hello)) {
                 sendDirect(connection, error(ProtocolMessage.ErrorCode.INVALID_OPERATION,
                         "client hello is required", null, null, false));
@@ -279,65 +265,33 @@ public final class RemoteServer implements AutoCloseable {
                         "endpoint belongs to another session", null, null, false));
                 return;
             }
-
-            byte[] challenge = new byte[RemoteProtocol.CHALLENGE_BYTES];
-            RANDOM.nextBytes(challenge);
-            try {
-                sendDirect(connection, new ProtocolMessage.ServerHello(
-                        RemoteProtocol.VERSION, sessionId, challenge));
-                ProtocolMessage second = readHandshakeMessage(connection, handshakeDeadline);
-                if (!(second instanceof ProtocolMessage.Authenticate authenticate)) {
-                    sendDirect(connection, error(ProtocolMessage.ErrorCode.AUTHENTICATION_FAILED,
-                            "authentication is required", null, null, false));
-                    return;
-                }
-                boolean challengeMatches = MessageDigest.isEqual(challenge, authenticate.challenge());
-                boolean sessionMatches = authenticate.sessionId().equals(sessionId);
-                boolean tokenMatches = credential.matches(authenticate.token());
-                if (!challengeMatches || !sessionMatches || !tokenMatches) {
-                    sendDirect(connection, error(ProtocolMessage.ErrorCode.AUTHENTICATION_FAILED,
-                            "authentication failed", null, null, false));
-                    return;
-                }
-                if (!controller.compareAndSet(null, connection)) {
-                    sendDirect(connection, error(ProtocolMessage.ErrorCode.CONTROLLER_BUSY,
-                            "an authenticated controller is already connected", null, null, true));
-                    return;
-                }
-                connection.authenticated.set(true);
-                long revision;
-                long sequence;
-                Optional<UUID> active;
-                synchronized (stateLock) {
-                    revision = currentRevision;
-                    sequence = lastSequence;
-                    active = activeRequest == null
-                            ? Optional.empty() : Optional.of(activeRequest.request.requestId());
-                }
-                connection.socket.setSoTimeout(0);
-                sendDirect(connection, new ProtocolMessage.Authenticated(
-                        RemoteProtocol.VERSION, sessionId, revision, sequence, active));
-                connection.startWriter();
-                readLoop(connection);
-            } finally {
-                java.util.Arrays.fill(challenge, (byte) 0);
+            if (!controller.compareAndSet(null, connection)) {
+                sendDirect(connection, error(ProtocolMessage.ErrorCode.CONTROLLER_BUSY,
+                        "a controller is already connected", null, null, true));
+                return;
             }
+            long revision;
+            long sequence;
+            long mutation;
+            Optional<UUID> active;
+            synchronized (stateLock) {
+                revision = currentRevision;
+                sequence = lastSequence;
+                mutation = mutationSequence;
+                active = activeRequest == null
+                        ? Optional.empty() : Optional.of(activeRequest.request.requestId());
+            }
+            connection.socket.setSoTimeout(0);
+            sendDirect(connection, new ProtocolMessage.ServerHello(
+                    RemoteProtocol.VERSION, sessionId, revision, mutation, sequence, active));
+            connection.startWriter();
+            readLoop(connection);
         } catch (SocketTimeoutException timeout) {
-            if (connection.authenticated.get()) {
-                send(connection, error(ProtocolMessage.ErrorCode.HANDSHAKE_TIMEOUT,
-                        "connection timed out", null, null, true));
-            } else {
-                sendDirectQuietly(connection, error(ProtocolMessage.ErrorCode.HANDSHAKE_TIMEOUT,
-                        "handshake timed out", null, null, true));
-            }
+            sendDirectQuietly(connection, error(ProtocolMessage.ErrorCode.HANDSHAKE_TIMEOUT,
+                    "handshake timed out", null, null, true));
         } catch (ProtocolException malformed) {
-            if (connection.authenticated.get()) {
-                send(connection, error(errorCode(malformed),
-                        safeProtocolDetail(malformed), null, null, false));
-            } else {
-                sendDirectQuietly(connection, error(errorCode(malformed),
-                        safeProtocolDetail(malformed), null, null, false));
-            }
+            sendDirectQuietly(connection, error(errorCode(malformed),
+                    safeProtocolDetail(malformed), null, null, false));
         } catch (IOException ignored) {
             // Connection teardown is handled below; no sensitive detail is sent.
         } finally {
@@ -352,55 +306,93 @@ public final class RemoteServer implements AutoCloseable {
                 return;
             }
             switch (message) {
-                case ProtocolMessage.EvaluateRequest request -> handleEvaluate(connection, request);
+                case ProtocolMessage.EvaluateRequest request ->
+                        handleSubmit(connection, request, SubmitKind.EVALUATE);
+                case ProtocolMessage.LoadRequest request ->
+                        handleSubmit(connection, request, SubmitKind.LOAD);
+                case ProtocolMessage.ReloadRequest request ->
+                        handleSubmit(connection, request, SubmitKind.RELOAD);
                 case ProtocolMessage.CancelRequest request -> handleCancel(connection, request);
                 case ProtocolMessage.ResetRequest request -> handleReset(connection, request);
                 case ProtocolMessage.QueryRequest request -> handleQuery(connection, request);
+                case ProtocolMessage.CompletionRequest request ->
+                        handleCompletion(connection, request);
                 default -> {
                     send(connection, error(ProtocolMessage.ErrorCode.INVALID_OPERATION,
-                            "message is not valid after authentication", null, null, false));
+                            "message is not valid for a connected controller", null, null, false));
                     return;
                 }
             }
         }
     }
 
-    private void handleEvaluate(Connection connection, ProtocolMessage.EvaluateRequest request) {
+    private record WireRequest(
+            UUID requestId,
+            long sequence,
+            SessionRevision revision,
+            long mutationSequence) {
+        private WireRequest {
+            requestId = java.util.Objects.requireNonNull(requestId, "requestId");
+            revision = java.util.Objects.requireNonNull(revision, "revision");
+        }
+    }
+
+    private static WireRequest wireRequest(ProtocolMessage message) {
+        return switch (message) {
+            case ProtocolMessage.EvaluateRequest request -> new WireRequest(
+                    request.requestId(), request.sequence(), request.revision(),
+                    request.mutationSequence());
+            case ProtocolMessage.LoadRequest request -> new WireRequest(
+                    request.requestId(), request.sequence(), request.revision(),
+                    request.mutationSequence());
+            case ProtocolMessage.ReloadRequest request -> new WireRequest(
+                    request.requestId(), request.sequence(), request.revision(),
+                    request.mutationSequence());
+            default -> throw new IllegalArgumentException(
+                    "message is not a submit request: " + message);
+        };
+    }
+
+    private void handleSubmit(Connection connection, ProtocolMessage message, SubmitKind kind) {
+        WireRequest wire = wireRequest(message);
         RequestRecord record;
         ProtocolMessage replay = null;
         ProtocolMessage immediate = null;
         synchronized (stateLock) {
-            RequestRecord existing = requests.get(request.requestId());
+            RequestRecord existing = requests.get(wire.requestId());
             if (existing != null) {
-                if (!existing.sameRequest(request)) {
+                if (!existing.sameRequest(message)) {
                     immediate = error(ProtocolMessage.ErrorCode.INVALID_SCHEMA,
                             "request identity was reused with different contents",
-                            request.requestId(), null, false);
+                            wire.requestId(), null, false);
                 } else {
                     existing.connection = connection;
                     replay = existing.replay();
                 }
-            } else if (request.sequence() <= lastSequence) {
+            } else if (wire.sequence() <= lastSequence) {
                 immediate = error(ProtocolMessage.ErrorCode.REQUEST_EXPIRED,
                         "request sequence is expired or already consumed",
-                        request.requestId(), null, false);
-            } else if (request.sequence() != lastSequence + 1) {
+                        wire.requestId(), null, false);
+            } else if (wire.sequence() != lastSequence + 1) {
                 immediate = error(ProtocolMessage.ErrorCode.SEQUENCE_REJECTED,
                         "request sequence is not the next session sequence",
-                        request.requestId(), null, false);
+                        wire.requestId(), null, false);
             } else {
-                lastSequence = request.sequence();
-                record = new RequestRecord(request, connection);
-                requests.put(request.requestId(), record);
+                lastSequence = wire.sequence();
+                record = new RequestRecord(message, kind, connection);
+                requests.put(wire.requestId(), record);
                 evictRequestsLocked();
-                if (request.revision().value() != currentRevision) {
+                if (wire.revision().value() != currentRevision
+                        || wire.mutationSequence() != mutationSequence) {
                     immediate = finishLocked(record, terminalResult(record,
                             ProtocolMessage.RemoteStatus.REVISION_CONFLICT, currentRevision,
-                            Optional.of("request revision does not match the session"),
-                            Optional.empty(), Optional.empty()));
-                } else if (activeRequest != null || pendingControl != null || pendingQuery != null) {
+                            mutationSequence,
+                            Optional.of("request revision or mutation sequence does not "
+                                    + "match the session"), Optional.empty(), Optional.empty()));
+                } else if (activeRequest != null || pendingControl != null
+                        || pendingQuery != null || pendingCompletion != null) {
                     immediate = finishLocked(record, terminalResult(record,
-                            ProtocolMessage.RemoteStatus.BUSY, currentRevision,
+                            ProtocolMessage.RemoteStatus.BUSY, currentRevision, mutationSequence,
                             Optional.of("the owner is busy"), Optional.empty(),
                             activeRequest == null ? Optional.empty()
                                     : Optional.of(activeRequest.request.requestId())));
@@ -411,12 +403,14 @@ public final class RemoteServer implements AutoCloseable {
                     // writer is FIFO, so RUNNING and terminal messages cannot
                     // overtake this response even if the owner polls immediately.
                     send(connection, new ProtocolMessage.Accepted(
-                            RemoteProtocol.VERSION, request.requestId(), request.sequence(),
-                            ProtocolMessage.RemoteStatus.QUEUED, currentRevision));
+                            RemoteProtocol.VERSION, wire.requestId(), wire.sequence(),
+                            ProtocolMessage.RemoteStatus.QUEUED, currentRevision,
+                            mutationSequence));
                     record.dispatch = dispatchEvaluation(record);
                     if (record.dispatch == null) {
                         immediate = finishLocked(record, terminalResult(record,
                                 ProtocolMessage.RemoteStatus.BUSY, currentRevision,
+                                mutationSequence,
                                 Optional.of("the owner dispatcher is busy"), Optional.empty(),
                                 Optional.empty()));
                     }
@@ -453,6 +447,7 @@ public final class RemoteServer implements AutoCloseable {
             if (record.cancellation.isRequested()) {
                 ProtocolMessage.Result cancelled = terminalResult(record,
                         ProtocolMessage.RemoteStatus.CANCELLED, currentRevision,
+                        mutationSequence,
                         Optional.of("evaluation cancelled before execution"),
                         Optional.empty(), Optional.empty());
                 finishLocked(record, cancelled);
@@ -463,15 +458,29 @@ public final class RemoteServer implements AutoCloseable {
             record.status = ProtocolMessage.RemoteStatus.RUNNING;
             send(record.connection, new ProtocolMessage.Status(
                     RemoteProtocol.VERSION, record.request.requestId(), record.request.sequence(),
-                    ProtocolMessage.RemoteStatus.RUNNING, currentRevision, Optional.empty()));
+                    ProtocolMessage.RemoteStatus.RUNNING, currentRevision, mutationSequence,
+                    Optional.empty()));
         }
 
         EvaluationResult evaluation;
         try {
-            EvaluationRequest request = new EvaluationRequest(
-                    EvaluationId.of(record.request.requestId()), record.request.revision(),
-                    record.request.source());
-            evaluation = session.evaluate(request, record.cancellation);
+            evaluation = switch (record.kind) {
+                case EVALUATE -> {
+                    ProtocolMessage.EvaluateRequest wire = (ProtocolMessage.EvaluateRequest)
+                            record.message;
+                    EvaluationRequest request = new EvaluationRequest(
+                            EvaluationId.of(record.request.requestId()), record.request.revision(),
+                            wire.source());
+                    yield session.evaluate(request, record.cancellation);
+                }
+                case LOAD -> session.load((ProtocolMessage.LoadRequest) record.message,
+                        record.cancellation, options.maxFrameBytes());
+                case RELOAD -> session.reload((ProtocolMessage.ReloadRequest) record.message,
+                        record.cancellation);
+            };
+        } catch (RemoteLoadException loadFailure) {
+            completeRejected(record, loadFailure.getMessage());
+            return;
         } catch (RemoteSessionUnavailableException unavailable) {
             completeEvaluation(record, unavailable.getMessage(), null);
             return;
@@ -484,6 +493,44 @@ public final class RemoteServer implements AutoCloseable {
         completeEvaluation(record, null, evaluation);
     }
 
+    /**
+     * LOAD captures its source once on the owner operation, then checks the
+     * equivalent source-bearing request envelope before invoking the adapter.
+     */
+    static void preflightLoadEnvelope(ProtocolMessage.LoadRequest load,
+                                      EvaluationSource source, int maxFrameBytes) {
+        try {
+            ProtocolMessage.EvaluateRequest envelope = new ProtocolMessage.EvaluateRequest(
+                    RemoteProtocol.VERSION, load.requestId(), load.sequence(), load.revision(),
+                    load.mutationSequence(), source);
+            if (ProtocolCodec.encode(envelope).length > maxFrameBytes) {
+                throw new RemoteLoadException(
+                        "server-side load source and envelope exceed the transport frame limit");
+            }
+        } catch (RemoteLoadException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new RemoteLoadException(
+                    "server-side load source exceeds the transport bounds");
+        }
+    }
+
+    /** A pre-effect LOAD rejection is terminal, explicit and never re-executed. */
+    private void completeRejected(RequestRecord record, String detail) {
+        ProtocolMessage result;
+        synchronized (stateLock) {
+            if (record.terminal) {
+                return;
+            }
+            result = finishLocked(record, terminalResult(record,
+                    ProtocolMessage.RemoteStatus.REJECTED, currentRevision, mutationSequence,
+                    Optional.ofNullable(detail).filter(value -> !value.isBlank())
+                            .or(() -> Optional.of("server-side load was rejected")),
+                    Optional.empty(), Optional.empty()));
+            send(record.connection, result);
+        }
+    }
+
     private void completeEvaluation(
             RequestRecord record, String unavailableDetail, EvaluationResult evaluation) {
         ProtocolMessage result;
@@ -492,19 +539,25 @@ public final class RemoteServer implements AutoCloseable {
                 return;
             }
             long revision = currentRevision;
+            long mutation = mutationSequence;
             if (evaluation != null) {
                 revision = Math.max(revision, evaluation.revision().value());
+                if (revision > currentRevision) {
+                    mutationSequence++;
+                }
+                mutation = mutationSequence;
                 currentRevision = revision;
                 try {
                     result = resultFor(record, evaluation);
                 } catch (RuntimeException serializationFailure) {
                     result = terminalResult(record, ProtocolMessage.RemoteStatus.UNAVAILABLE,
-                            revision, Optional.of("evaluation result was unavailable"),
+                            revision, mutation,
+                            Optional.of("evaluation result was unavailable"),
                             Optional.empty(), Optional.empty());
                 }
             } else {
                 result = terminalResult(record, ProtocolMessage.RemoteStatus.UNAVAILABLE,
-                        revision, Optional.ofNullable(unavailableDetail)
+                        revision, mutation, Optional.ofNullable(unavailableDetail)
                                 .or(() -> Optional.of("attached session is unavailable")),
                         Optional.empty(), Optional.empty());
             }
@@ -537,12 +590,14 @@ public final class RemoteServer implements AutoCloseable {
             ProtocolMessage.CancelResult response;
             if (record == null) {
                 response = new ProtocolMessage.CancelResult(RemoteProtocol.VERSION,
-                        request.operationId(), request.requestId(), ProtocolMessage.ControlStatus.NOT_FOUND,
-                        currentRevision, Optional.of("request is not retained"));
+                        request.operationId(), request.requestId(),
+                        ProtocolMessage.ControlStatus.NOT_FOUND, currentRevision,
+                        mutationSequence, Optional.of("request is not retained"));
             } else if (record.terminal) {
                 response = new ProtocolMessage.CancelResult(RemoteProtocol.VERSION,
                         request.operationId(), request.requestId(),
-                        ProtocolMessage.ControlStatus.ALREADY_TERMINAL, currentRevision, Optional.empty());
+                        ProtocolMessage.ControlStatus.ALREADY_TERMINAL, currentRevision,
+                        mutationSequence, Optional.empty());
             } else {
                 record.cancellation.request();
                 OwnerDispatcher.Dispatch dispatch = record.dispatch;
@@ -550,6 +605,7 @@ public final class RemoteServer implements AutoCloseable {
                     pendingCancellation = true;
                     finishLocked(record, terminalResult(record,
                             ProtocolMessage.RemoteStatus.CANCELLED, currentRevision,
+                            mutationSequence,
                             Optional.of("evaluation cancelled before owner execution"),
                             Optional.empty(), Optional.empty()));
                     record.cancellation.complete();
@@ -559,7 +615,7 @@ public final class RemoteServer implements AutoCloseable {
                 response = new ProtocolMessage.CancelResult(RemoteProtocol.VERSION,
                         request.operationId(), request.requestId(),
                         ProtocolMessage.ControlStatus.REQUESTED, currentRevision,
-                        Optional.of("cancellation requested cooperatively"));
+                        mutationSequence, Optional.of("cancellation requested cooperatively"));
             }
             rememberControlLocked(request.operationId(), response);
             cached = response;
@@ -572,7 +628,7 @@ public final class RemoteServer implements AutoCloseable {
                             RemoteProtocol.VERSION, record.request.requestId(),
                             record.request.sequence(),
                             ProtocolMessage.RemoteStatus.CANCELLATION_REQUESTED,
-                            currentRevision,
+                            currentRevision, mutationSequence,
                             Optional.of("cancellation requested cooperatively")));
                 }
             }
@@ -590,7 +646,8 @@ public final class RemoteServer implements AutoCloseable {
             ControlResponse prior = cachedControlEntry(request.operationId());
             if (prior != null) {
                 if (prior.kind() != ControlKind.RESET
-                        || prior.expectedRevision() != request.expectedRevision()) {
+                        || prior.expectedRevision() != request.expectedRevision()
+                        || prior.expectedMutationSequence() != request.expectedMutationSequence()) {
                     send(connection, error(ProtocolMessage.ErrorCode.INVALID_SCHEMA,
                             "control identity was reused with different contents", null,
                             request.operationId(), false));
@@ -602,7 +659,9 @@ public final class RemoteServer implements AutoCloseable {
             if (pendingControl != null
                     && pendingControl.operationId.equals(request.operationId())) {
                 if (pendingControl.kind != ControlKind.RESET
-                        || pendingControl.expectedRevision != request.expectedRevision()) {
+                        || pendingControl.expectedRevision != request.expectedRevision()
+                        || pendingControl.expectedMutationSequence
+                        != request.expectedMutationSequence()) {
                     send(connection, error(ProtocolMessage.ErrorCode.INVALID_SCHEMA,
                             "control identity was reused with different contents", null,
                             request.operationId(), false));
@@ -611,24 +670,29 @@ public final class RemoteServer implements AutoCloseable {
                 // result, which will be sent by the original operation.
                 return;
             }
-            if (request.expectedRevision() != currentRevision) {
+            if (request.expectedRevision() != currentRevision
+                    || request.expectedMutationSequence() != mutationSequence) {
                 cached = new ProtocolMessage.ResetResult(RemoteProtocol.VERSION,
                         request.operationId(), ProtocolMessage.ControlStatus.REVISION_CONFLICT,
-                        currentRevision, Optional.of("reset targets a stale session revision"));
-                rememberControlLocked(request.operationId(), cached, request.expectedRevision());
+                        currentRevision, mutationSequence,
+                        Optional.of("reset targets a stale session revision or mutation sequence"));
+                rememberControlLocked(request.operationId(), cached,
+                        request.expectedRevision(), request.expectedMutationSequence());
                 send(connection, cached);
                 return;
             }
-            if (activeRequest != null || pendingControl != null || pendingQuery != null) {
+            if (activeRequest != null || pendingControl != null || pendingQuery != null
+                    || pendingCompletion != null) {
                 cached = new ProtocolMessage.ResetResult(RemoteProtocol.VERSION,
                         request.operationId(), ProtocolMessage.ControlStatus.BUSY,
-                        currentRevision, Optional.of("the owner is busy"));
-                rememberControlLocked(request.operationId(), cached, request.expectedRevision());
+                        currentRevision, mutationSequence, Optional.of("the owner is busy"));
+                rememberControlLocked(request.operationId(), cached,
+                        request.expectedRevision(), request.expectedMutationSequence());
                 send(connection, cached);
                 return;
             }
             control = new ControlRecord(request.operationId(), connection, ControlKind.RESET,
-                    request.expectedRevision());
+                    request.expectedRevision(), request.expectedMutationSequence());
             pendingControl = control;
             try {
                 control.dispatch = owner.dispatch(() -> runReset(control));
@@ -636,8 +700,10 @@ public final class RemoteServer implements AutoCloseable {
                 pendingControl = null;
                 cached = new ProtocolMessage.ResetResult(RemoteProtocol.VERSION,
                         request.operationId(), ProtocolMessage.ControlStatus.UNAVAILABLE,
-                        currentRevision, Optional.of("owner dispatcher is unavailable"));
-                rememberControlLocked(request.operationId(), cached, request.expectedRevision());
+                        currentRevision, mutationSequence,
+                        Optional.of("owner dispatcher is unavailable"));
+                rememberControlLocked(request.operationId(), cached,
+                        request.expectedRevision(), request.expectedMutationSequence());
                 send(connection, cached);
                 return;
             }
@@ -645,16 +711,20 @@ public final class RemoteServer implements AutoCloseable {
                 pendingControl = null;
                 cached = new ProtocolMessage.ResetResult(RemoteProtocol.VERSION,
                         request.operationId(), ProtocolMessage.ControlStatus.BUSY,
-                        currentRevision, Optional.of("owner dispatcher is busy"));
-                rememberControlLocked(request.operationId(), cached, request.expectedRevision());
+                        currentRevision, mutationSequence,
+                        Optional.of("owner dispatcher is busy"));
+                rememberControlLocked(request.operationId(), cached,
+                        request.expectedRevision(), request.expectedMutationSequence());
                 send(connection, cached);
             } else if (pendingControl == control
                     && dispatchCannotProduceResult(control.dispatch)) {
                 pendingControl = null;
                 cached = new ProtocolMessage.ResetResult(RemoteProtocol.VERSION,
                         request.operationId(), ProtocolMessage.ControlStatus.UNAVAILABLE,
-                        currentRevision, Optional.of("owner dispatcher is unavailable"));
-                rememberControlLocked(request.operationId(), cached, request.expectedRevision());
+                        currentRevision, mutationSequence,
+                        Optional.of("owner dispatcher is unavailable"));
+                rememberControlLocked(request.operationId(), cached,
+                        request.expectedRevision(), request.expectedMutationSequence());
                 send(connection, cached);
             }
         }
@@ -667,24 +737,31 @@ public final class RemoteServer implements AutoCloseable {
             long revision = session.revision().value();
             synchronized (stateLock) {
                 currentRevision = Math.max(currentRevision, revision);
+                // A reset clears scratch state even when the local revision
+                // is unchanged. Bump the mutation sequence so stale console
+                // metadata can never be applied after the reset.
+                mutationSequence++;
                 result = new ProtocolMessage.ResetResult(RemoteProtocol.VERSION,
                         control.operationId, ProtocolMessage.ControlStatus.OK,
-                        currentRevision, Optional.empty());
+                        currentRevision, mutationSequence, Optional.empty());
             }
         } catch (RemoteSessionUnavailableException unavailable) {
             result = new ProtocolMessage.ResetResult(RemoteProtocol.VERSION,
                     control.operationId, ProtocolMessage.ControlStatus.UNAVAILABLE,
-                    currentRevision, Optional.ofNullable(unavailable.getMessage()));
+                    currentRevision, mutationSequence,
+                    Optional.ofNullable(unavailable.getMessage()));
         } catch (RuntimeException failure) {
             result = new ProtocolMessage.ResetResult(RemoteProtocol.VERSION,
                     control.operationId, ProtocolMessage.ControlStatus.UNAVAILABLE,
-                    currentRevision, Optional.of("attached session reset is unavailable"));
+                    currentRevision, mutationSequence,
+                    Optional.of("attached session reset is unavailable"));
         }
         synchronized (stateLock) {
             if (pendingControl == control) {
                 pendingControl = null;
             }
-            rememberControlLocked(control.operationId, result, control.expectedRevision);
+            rememberControlLocked(control.operationId, result,
+                    control.expectedRevision, control.expectedMutationSequence);
         }
         send(control.connection, result);
     }
@@ -710,62 +787,83 @@ public final class RemoteServer implements AutoCloseable {
             query = new QueryRecord(request, connection);
             queries.put(request.queryId(), query);
             evictQueriesLocked();
-            switch (request.queryKind()) {
-                case SESSION -> {
-                    Optional<ProtocolMessage.RequestSnapshot> active = activeRequest == null
-                            ? Optional.empty() : Optional.of(activeRequest.snapshot());
-                    immediate = new ProtocolMessage.QueryResult(RemoteProtocol.VERSION,
-                            request.queryId(), request.queryKind(), ProtocolMessage.QueryStatus.OK,
-                            currentRevision, active,
-                            activeRequest != null && activeRequest.terminal
-                                    ? Optional.ofNullable(activeRequest.terminalResult) : Optional.empty(),
-                            List.of(), Optional.empty(), Optional.empty());
-                    query.result = immediate;
-                }
-                case REQUEST -> {
-                    RequestRecord requested = requests.get(request.requestId().orElseThrow());
-                    if (requested == null) {
+            if (request.expectedRevision() != currentRevision
+                    || request.expectedMutationSequence() != mutationSequence) {
+                immediate = new ProtocolMessage.QueryResult(RemoteProtocol.VERSION,
+                        request.queryId(), request.queryKind(), ProtocolMessage.QueryStatus.STALE,
+                        currentRevision, mutationSequence, Optional.empty(), Optional.empty(),
+                        List.of(), Optional.empty(),
+                        Optional.of("query targets a stale session revision or mutation sequence"));
+                query.result = immediate;
+            } else {
+                switch (request.queryKind()) {
+                    case SESSION -> {
+                        Optional<ProtocolMessage.RequestSnapshot> active = activeRequest == null
+                                ? Optional.empty() : Optional.of(activeRequest.snapshot());
                         immediate = new ProtocolMessage.QueryResult(RemoteProtocol.VERSION,
                                 request.queryId(), request.queryKind(),
-                                lastSequence > 0 ? ProtocolMessage.QueryStatus.EXPIRED
-                                        : ProtocolMessage.QueryStatus.NOT_FOUND, currentRevision,
-                                Optional.empty(), Optional.empty(), List.of(), Optional.empty(),
-                                Optional.of("request is not retained"));
-                    } else {
-                        immediate = new ProtocolMessage.QueryResult(RemoteProtocol.VERSION,
-                                request.queryId(), request.queryKind(), ProtocolMessage.QueryStatus.OK,
-                                currentRevision, Optional.of(requested.snapshot()),
-                                requested.terminal ? Optional.ofNullable(requested.terminalResult)
-                                        : Optional.empty(), List.of(), Optional.empty(), Optional.empty());
-                    }
-                    query.result = immediate;
-                }
-                case BINDINGS, TYPE -> {
-                    if (activeRequest != null || pendingControl != null || pendingQuery != null) {
-                        immediate = new ProtocolMessage.QueryResult(RemoteProtocol.VERSION,
-                                request.queryId(), request.queryKind(), ProtocolMessage.QueryStatus.BUSY,
-                                currentRevision, Optional.empty(), Optional.empty(), List.of(),
-                                Optional.empty(), Optional.of("the owner is busy"));
+                                ProtocolMessage.QueryStatus.OK, currentRevision,
+                                mutationSequence, active,
+                                activeRequest != null && activeRequest.terminal
+                                        ? Optional.ofNullable(activeRequest.terminalResult)
+                                        : Optional.empty(),
+                                List.of(), Optional.empty(), Optional.empty());
                         query.result = immediate;
-                    } else {
-                        pendingQuery = query;
-                        try {
-                            query.dispatch = owner.dispatch(() -> runQuery(query));
-                        } catch (RuntimeException failure) {
-                            pendingQuery = null;
-                            immediate = unavailableQuery(query, "owner dispatcher is unavailable");
-                            query.result = immediate;
+                    }
+                    case REQUEST -> {
+                        RequestRecord requested = requests.get(request.requestId().orElseThrow());
+                        if (requested == null) {
+                            immediate = new ProtocolMessage.QueryResult(RemoteProtocol.VERSION,
+                                    request.queryId(), request.queryKind(),
+                                    lastSequence > 0 ? ProtocolMessage.QueryStatus.EXPIRED
+                                            : ProtocolMessage.QueryStatus.NOT_FOUND,
+                                    currentRevision, mutationSequence,
+                                    Optional.empty(), Optional.empty(), List.of(),
+                                    Optional.empty(), Optional.of("request is not retained"));
+                        } else {
+                            immediate = new ProtocolMessage.QueryResult(RemoteProtocol.VERSION,
+                                    request.queryId(), request.queryKind(),
+                                    ProtocolMessage.QueryStatus.OK, currentRevision,
+                                    mutationSequence, Optional.of(requested.snapshot()),
+                                    requested.terminal
+                                            ? Optional.ofNullable(requested.terminalResult)
+                                            : Optional.empty(), List.of(), Optional.empty(),
+                                    Optional.empty());
                         }
-                        if (query.dispatch == null && query.result == null) {
-                            pendingQuery = null;
-                            immediate = unavailableQuery(query, "owner dispatcher is busy");
+                        query.result = immediate;
+                    }
+                    case BINDINGS, TYPE -> {
+                        if (activeRequest != null || pendingControl != null
+                                || pendingQuery != null || pendingCompletion != null) {
+                            immediate = new ProtocolMessage.QueryResult(RemoteProtocol.VERSION,
+                                    request.queryId(), request.queryKind(),
+                                    ProtocolMessage.QueryStatus.BUSY, currentRevision,
+                                    mutationSequence, Optional.empty(), Optional.empty(),
+                                    List.of(), Optional.empty(),
+                                    Optional.of("the owner is busy"));
                             query.result = immediate;
-                        } else if (query.result == null && pendingQuery == query
-                                && dispatchCannotProduceResult(query.dispatch)) {
-                            pendingQuery = null;
-                            immediate = unavailableQuery(query,
-                                    "owner dispatcher is unavailable");
-                            query.result = immediate;
+                        } else {
+                            pendingQuery = query;
+                            try {
+                                query.dispatch = owner.dispatch(() -> runQuery(query));
+                            } catch (RuntimeException failure) {
+                                pendingQuery = null;
+                                immediate = unavailableQuery(query,
+                                        "owner dispatcher is unavailable");
+                                query.result = immediate;
+                            }
+                            if (query.dispatch == null && query.result == null) {
+                                pendingQuery = null;
+                                immediate = unavailableQuery(query,
+                                        "owner dispatcher is busy");
+                                query.result = immediate;
+                            } else if (query.result == null && pendingQuery == query
+                                    && dispatchCannotProduceResult(query.dispatch)) {
+                                pendingQuery = null;
+                                immediate = unavailableQuery(query,
+                                        "owner dispatcher is unavailable");
+                                query.result = immediate;
+                            }
                         }
                     }
                 }
@@ -799,9 +897,9 @@ public final class RemoteServer implements AutoCloseable {
         synchronized (stateLock) {
             currentRevision = Math.max(currentRevision, observedRevision);
             result = new ProtocolMessage.QueryResult(
-                    RemoteProtocol.VERSION, query.request.queryId(), query.request.queryKind(), status,
-                    currentRevision, Optional.empty(), Optional.empty(), answer.bindings(),
-                    answer.inferredType(), answer.detail());
+                    RemoteProtocol.VERSION, query.request.queryId(), query.request.queryKind(),
+                    status, currentRevision, mutationSequence, Optional.empty(),
+                    Optional.empty(), answer.bindings(), answer.inferredType(), answer.detail());
             query.result = result;
             if (pendingQuery == query) {
                 pendingQuery = null;
@@ -810,11 +908,124 @@ public final class RemoteServer implements AutoCloseable {
         send(query.connection, result);
     }
 
+    private void handleCompletion(Connection connection,
+                                  ProtocolMessage.CompletionRequest request) {
+        CompletionRecord completion;
+        ProtocolMessage.CompletionResult immediate = null;
+        synchronized (stateLock) {
+            CompletionRecord existing = completions.get(request.completionId());
+            if (existing != null) {
+                if (!existing.request.equals(request)) {
+                    send(connection, error(ProtocolMessage.ErrorCode.INVALID_SCHEMA,
+                            "completion identity was reused with different contents", null,
+                            request.completionId(), false));
+                } else if (existing.result != null) {
+                    send(connection, existing.result);
+                } else {
+                    send(connection, error(ProtocolMessage.ErrorCode.BUSY,
+                            "completion is already pending", null, request.completionId(), true));
+                }
+                return;
+            }
+            completion = new CompletionRecord(request, connection);
+            completions.put(request.completionId(), completion);
+            evictCompletionsLocked();
+            if (request.expectedRevision() != currentRevision
+                    || request.expectedMutationSequence() != mutationSequence) {
+                immediate = new ProtocolMessage.CompletionResult(RemoteProtocol.VERSION,
+                        request.completionId(), ProtocolMessage.QueryStatus.STALE,
+                        currentRevision, mutationSequence, List.of(),
+                        Optional.of("completion targets a stale session revision "
+                                + "or mutation sequence"));
+                completion.result = immediate;
+            } else if (activeRequest != null || pendingControl != null
+                    || pendingQuery != null || pendingCompletion != null) {
+                immediate = new ProtocolMessage.CompletionResult(RemoteProtocol.VERSION,
+                        request.completionId(), ProtocolMessage.QueryStatus.BUSY,
+                        currentRevision, mutationSequence, List.of(),
+                        Optional.of("the owner is busy"));
+                completion.result = immediate;
+            } else {
+                pendingCompletion = completion;
+                try {
+                    completion.dispatch = owner.dispatch(() -> runCompletion(completion));
+                } catch (RuntimeException failure) {
+                    pendingCompletion = null;
+                    immediate = unavailableCompletion(completion,
+                            "owner dispatcher is unavailable");
+                    completion.result = immediate;
+                }
+                if (completion.dispatch == null && completion.result == null) {
+                    pendingCompletion = null;
+                    immediate = unavailableCompletion(completion, "owner dispatcher is busy");
+                    completion.result = immediate;
+                } else if (completion.result == null && pendingCompletion == completion
+                        && dispatchCannotProduceResult(completion.dispatch)) {
+                    pendingCompletion = null;
+                    immediate = unavailableCompletion(completion,
+                            "owner dispatcher is unavailable");
+                    completion.result = immediate;
+                }
+            }
+        }
+        if (immediate != null) {
+            send(connection, immediate);
+        }
+    }
+
+    private void runCompletion(CompletionRecord completion) {
+        RemoteCompletion remote = new RemoteCompletion(
+                completion.request.kind() == ProtocolMessage.CompletionKind.BINDING_MEMBERS
+                        ? RemoteCompletion.Kind.BINDING_MEMBERS : RemoteCompletion.Kind.MODULE_FILES,
+                completion.request.prefix(), completion.request.binding());
+        RemoteCompletion.Result answer;
+        long observedRevision = currentRevision;
+        try {
+            answer = session.complete(remote);
+            observedRevision = session.revision().value();
+        } catch (RuntimeException failure) {
+            answer = RemoteCompletion.Result.unavailable(
+                    "attached session completion is unavailable");
+        }
+        ProtocolMessage.QueryStatus status = switch (answer.status()) {
+            case OK -> ProtocolMessage.QueryStatus.OK;
+            case NOT_FOUND -> ProtocolMessage.QueryStatus.NOT_FOUND;
+            case BUSY -> ProtocolMessage.QueryStatus.BUSY;
+            case STALE -> ProtocolMessage.QueryStatus.STALE;
+            case UNAVAILABLE -> ProtocolMessage.QueryStatus.UNAVAILABLE;
+            case CLOSED -> ProtocolMessage.QueryStatus.CLOSED;
+        };
+        ProtocolMessage.CompletionResult result;
+        synchronized (stateLock) {
+            currentRevision = Math.max(currentRevision, observedRevision);
+            List<ProtocolMessage.CompletionItem> items = answer.items().stream()
+                    .map(item -> new ProtocolMessage.CompletionItem(item.name(),
+                            ProtocolMessage.CompletionItemKind.valueOf(item.kind().name()),
+                            item.typeSpelling()))
+                    .toList();
+            result = new ProtocolMessage.CompletionResult(
+                    RemoteProtocol.VERSION, completion.request.completionId(), status,
+                    currentRevision, mutationSequence, items, answer.detail());
+            completion.result = result;
+            if (pendingCompletion == completion) {
+                pendingCompletion = null;
+            }
+        }
+        send(completion.connection, result);
+    }
+
     private ProtocolMessage.QueryResult unavailableQuery(QueryRecord query, String detail) {
         return new ProtocolMessage.QueryResult(RemoteProtocol.VERSION, query.request.queryId(),
                 query.request.queryKind(), ProtocolMessage.QueryStatus.UNAVAILABLE,
-                currentRevision, Optional.empty(), Optional.empty(), List.of(), Optional.empty(),
-                Optional.of(detail));
+                currentRevision, mutationSequence, Optional.empty(), Optional.empty(),
+                List.of(), Optional.empty(), Optional.of(detail));
+    }
+
+    private ProtocolMessage.CompletionResult unavailableCompletion(
+            CompletionRecord completion, String detail) {
+        return new ProtocolMessage.CompletionResult(RemoteProtocol.VERSION,
+                completion.request.completionId(), ProtocolMessage.QueryStatus.UNAVAILABLE,
+                currentRevision, mutationSequence, List.of(), Optional.of(detail));
     }
 
     private void cancelDispatch(RequestRecord record) {
@@ -881,6 +1092,7 @@ public final class RemoteServer implements AutoCloseable {
         RequestRecord request;
         ControlRecord control;
         QueryRecord query;
+        CompletionRecord completion;
         synchronized (stateLock) {
             request = activeRequest != null && activeRequest.connection == connection
                     ? activeRequest : null;
@@ -888,6 +1100,8 @@ public final class RemoteServer implements AutoCloseable {
                     ? pendingControl : null;
             query = pendingQuery != null && pendingQuery.connection == connection
                     ? pendingQuery : null;
+            completion = pendingCompletion != null
+                    && pendingCompletion.connection == connection ? pendingCompletion : null;
             if (request != null && !request.terminal) {
                 request.connection = null;
                 request.cancellation.request();
@@ -899,6 +1113,9 @@ public final class RemoteServer implements AutoCloseable {
             if (query != null) {
                 pendingQuery = null;
             }
+            if (completion != null) {
+                pendingCompletion = null;
+            }
         }
         if (request != null) {
             boolean pending = cancelPending(request.dispatch);
@@ -908,6 +1125,7 @@ public final class RemoteServer implements AutoCloseable {
                     if (!request.terminal) {
                         ProtocolMessage.Result cancelled = terminalResult(request,
                                 ProtocolMessage.RemoteStatus.CANCELLED, currentRevision,
+                                mutationSequence,
                                 Optional.of("controller disconnected before owner execution"),
                                 Optional.empty(), Optional.empty());
                         finishLocked(request, cancelled);
@@ -920,15 +1138,20 @@ public final class RemoteServer implements AutoCloseable {
             cancelDispatch(control.dispatch);
             ProtocolMessage.ResetResult cancelled = new ProtocolMessage.ResetResult(
                     RemoteProtocol.VERSION, control.operationId,
-                    ProtocolMessage.ControlStatus.CANCELLED, currentRevision,
+                    ProtocolMessage.ControlStatus.CANCELLED, currentRevision, mutationSequence,
                     Optional.of("controller disconnected"));
             synchronized (stateLock) {
-                rememberControlLocked(control.operationId, cancelled, control.expectedRevision);
+                rememberControlLocked(control.operationId, cancelled,
+                        control.expectedRevision, control.expectedMutationSequence);
             }
         }
         if (query != null) {
             cancelDispatch(query.dispatch);
             query.result = unavailableQuery(query, "controller disconnected");
+        }
+        if (completion != null) {
+            cancelDispatch(completion.dispatch);
+            completion.result = unavailableCompletion(completion, "controller disconnected");
         }
     }
 
@@ -1008,6 +1231,7 @@ public final class RemoteServer implements AutoCloseable {
             ProtocolMessage bounded = switch (message) {
                 case ProtocolMessage.Result result -> fitResult(result);
                 case ProtocolMessage.QueryResult result -> fitQueryResult(result);
+                case ProtocolMessage.CompletionResult result -> fitCompletionResult(result);
                 default -> message;
             };
             connection.enqueue(bounded);
@@ -1056,7 +1280,6 @@ public final class RemoteServer implements AutoCloseable {
         return switch (exception.reason()) {
             case FRAME_TOO_LARGE -> ProtocolMessage.ErrorCode.FRAME_TOO_LARGE;
             case UNSUPPORTED_VERSION -> ProtocolMessage.ErrorCode.UNSUPPORTED_VERSION;
-            case AUTHENTICATION_FAILED -> ProtocolMessage.ErrorCode.AUTHENTICATION_FAILED;
             case HANDSHAKE_TIMEOUT -> ProtocolMessage.ErrorCode.HANDSHAKE_TIMEOUT;
             default -> ProtocolMessage.ErrorCode.MALFORMED_MESSAGE;
         };
@@ -1065,7 +1288,9 @@ public final class RemoteServer implements AutoCloseable {
     private String safeProtocolDetail(ProtocolException exception) {
         return switch (exception.reason()) {
             case FRAME_TOO_LARGE -> "frame exceeds configured bound";
-            case UNSUPPORTED_VERSION -> "unsupported protocol version";
+            case UNSUPPORTED_VERSION ->
+                    "unsupported protocol version; upgrade to protocol version "
+                            + RemoteProtocol.VERSION;
             default -> "malformed protocol message";
         };
     }
@@ -1091,8 +1316,22 @@ public final class RemoteServer implements AutoCloseable {
         Optional<String> summary = evaluation.failureSummary();
         Optional<UUID> active = evaluation instanceof EvaluationResult.Busy busy
                 ? busy.activeEvaluationId().map(valueId -> valueId.value()) : Optional.empty();
-        return terminalResult(record, status, evaluation.revision().value(), summary,
-                value, active, diagnostics);
+        List<ProtocolMessage.Initializer> initializers = initializers(evaluation);
+        return terminalResult(record, status, evaluation.revision().value(), mutationSequence,
+                summary, value, active, diagnostics, initializers);
+    }
+
+    private static List<ProtocolMessage.Initializer> initializers(EvaluationResult evaluation) {
+        io.mindspice.lyra.repl.InitializerProgress progress = evaluation.initializerProgress();
+        List<ProtocolMessage.Initializer> entries = new ArrayList<>();
+        progress.scheduled().forEach(item -> entries.add(new ProtocolMessage.Initializer(
+                item.moduleId().value(), ProtocolMessage.InitializerState.SCHEDULED)));
+        progress.attempted().forEach(item -> entries.add(new ProtocolMessage.Initializer(
+                item.moduleId().value(), ProtocolMessage.InitializerState.ATTEMPTED)));
+        progress.completed().forEach(item -> entries.add(new ProtocolMessage.Initializer(
+                item.moduleId().value(), ProtocolMessage.InitializerState.COMPLETED)));
+        return entries.size() > RemoteProtocol.MAX_INITIALIZERS
+                ? entries.subList(0, RemoteProtocol.MAX_INITIALIZERS) : entries;
     }
 
     private static ProtocolMessage.Diagnostic diagnostic(io.mindspice.lyra.repl.ConsoleSession.DiagnosticInfo value) {
@@ -1152,23 +1391,28 @@ public final class RemoteServer implements AutoCloseable {
             RequestRecord record,
             ProtocolMessage.RemoteStatus status,
             long revision,
+            long mutationSequence,
             Optional<String> summary,
             Optional<ProtocolMessage.ValueSnapshot> value,
             Optional<UUID> active) {
-        return terminalResult(record, status, revision, summary, value, active, List.of());
+        return terminalResult(record, status, revision, mutationSequence, summary, value, active,
+                List.of(), List.of());
     }
 
     private static ProtocolMessage.Result terminalResult(
             RequestRecord record,
             ProtocolMessage.RemoteStatus status,
             long revision,
+            long mutationSequence,
             Optional<String> summary,
             Optional<ProtocolMessage.ValueSnapshot> value,
             Optional<UUID> active,
-            List<ProtocolMessage.Diagnostic> diagnostics) {
+            List<ProtocolMessage.Diagnostic> diagnostics,
+            List<ProtocolMessage.Initializer> initializers) {
         return new ProtocolMessage.Result(RemoteProtocol.VERSION,
                 record.request.requestId(), record.request.sequence(), status,
-                Math.max(0L, revision), diagnostics, value, summary, active);
+                Math.max(0L, revision), Math.max(0L, mutationSequence),
+                diagnostics, value, summary, active, initializers);
     }
 
     private ProtocolMessage finishLocked(RequestRecord record, ProtocolMessage result) {
@@ -1195,27 +1439,28 @@ public final class RemoteServer implements AutoCloseable {
     private void rememberControlLocked(UUID operationId, ProtocolMessage response) {
         if (response instanceof ProtocolMessage.CancelResult cancel) {
             rememberControlLocked(operationId, response, ControlKind.CANCEL,
-                    cancel.requestId(), -1L);
+                    cancel.requestId(), -1L, -1L);
         } else {
             rememberControlLocked(operationId, response, ControlKind.RESET,
-                    null, -1L);
+                    null, -1L, -1L);
         }
     }
 
     private void rememberControlLocked(UUID operationId, ProtocolMessage response,
-                                        long expectedRevision) {
+                                        long expectedRevision, long expectedMutationSequence) {
         ControlKind kind = response instanceof ProtocolMessage.CancelResult
                 ? ControlKind.CANCEL : ControlKind.RESET;
         UUID target = response instanceof ProtocolMessage.CancelResult cancel
                 ? cancel.requestId() : null;
-        rememberControlLocked(operationId, response, kind, target, expectedRevision);
+        rememberControlLocked(operationId, response, kind, target, expectedRevision,
+                expectedMutationSequence);
     }
 
     private void rememberControlLocked(UUID operationId, ProtocolMessage response,
                                         ControlKind kind, UUID targetRequestId,
-                                        long expectedRevision) {
+                                        long expectedRevision, long expectedMutationSequence) {
         controlResponses.put(operationId, new ControlResponse(
-                kind, targetRequestId, expectedRevision, response));
+                kind, targetRequestId, expectedRevision, expectedMutationSequence, response));
         while (controlResponses.size() > options.maxRetainedResults()) {
             UUID first = controlResponses.keySet().iterator().next();
             controlResponses.remove(first);
@@ -1254,29 +1499,45 @@ public final class RemoteServer implements AutoCloseable {
         }
     }
 
-    private ProtocolMessage.Result fitResult(ProtocolMessage.Result result) {
-        try {
-            if (ProtocolCodec.encode(result).length <= options.maxFrameBytes()) {
-                return result;
+    private void evictCompletionsLocked() {
+        while (completions.size() > options.maxRetainedResults()) {
+            UUID remove = null;
+            for (Map.Entry<UUID, CompletionRecord> entry : completions.entrySet()) {
+                if (entry.getValue().result != null
+                        && entry.getValue() != pendingCompletion) {
+                    remove = entry.getKey();
+                    break;
+                }
             }
-        } catch (IllegalArgumentException ignored) {
-            // Fall through to a data-free terminal result.
+            if (remove == null) {
+                return;
+            }
+            completions.remove(remove);
         }
-        ProtocolMessage.Result reduced = new ProtocolMessage.Result(
-                RemoteProtocol.VERSION, result.requestId(), result.sequence(), result.status(),
-                result.revision(), List.of(), Optional.empty(),
-                result.failureSummary().map(value -> bounded(value, 512)),
-                result.activeRequestId());
-        try {
-            if (ProtocolCodec.encode(reduced).length <= options.maxFrameBytes()) {
+    }
+
+    private ProtocolMessage.Result fitResult(ProtocolMessage.Result result) {
+        if (fitsFrame(result)) {
+            return result;
+        }
+        String marker = " (result payload was bounded to the transport frame limit)";
+        for (int maximum = 320; maximum >= 32; maximum -= 16) {
+            int bound = maximum;
+            Optional<String> detail = Optional.of(result.failureSummary()
+                    .map(value -> bounded(value, bound) + marker)
+                    .orElse("result payload was bounded to the transport frame limit"));
+            ProtocolMessage.Result reduced = new ProtocolMessage.Result(
+                    RemoteProtocol.VERSION, result.requestId(), result.sequence(), result.status(),
+                    result.revision(), result.mutationSequence(), List.of(), Optional.empty(),
+                    detail, result.activeRequestId(), List.of());
+            if (fitsFrame(reduced)) {
                 return reduced;
             }
-        } catch (IllegalArgumentException ignored) {
         }
         return new ProtocolMessage.Result(
                 RemoteProtocol.VERSION, result.requestId(), result.sequence(), result.status(),
-                result.revision(), List.of(), Optional.empty(), Optional.empty(),
-                result.activeRequestId());
+                result.revision(), result.mutationSequence(), List.of(), Optional.empty(),
+                Optional.empty(), result.activeRequestId(), List.of());
     }
 
     private ProtocolMessage.QueryResult fitQueryResult(ProtocolMessage.QueryResult result) {
@@ -1299,28 +1560,23 @@ public final class RemoteServer implements AutoCloseable {
             }
         }
 
-        ProtocolMessage.QueryResult withoutTerminal = queryVariant(result, request,
-                Optional.empty(), List.of(), inferredType, detail);
-        if (fitsFrame(withoutTerminal)) {
-            return withoutTerminal;
-        }
-        if (request.isPresent()) {
-            ProtocolMessage.QueryResult requestOnly = queryVariant(result, request,
-                    Optional.empty(), List.of(), Optional.empty(), Optional.empty());
-            if (fitsFrame(requestOnly)) {
-                return requestOnly;
-            }
+        Optional<String> boundedDetail = Optional.of(result.detail()
+                .map(value -> bounded(value, 256) + " (query payload was bounded to the transport frame limit)")
+                .orElse("query result was bounded to the transport frame limit"));
+        ProtocolMessage.QueryResult withoutBindings = queryVariant(result, request, terminal,
+                List.of(), Optional.empty(), boundedDetail);
+        if (fitsFrame(withoutBindings)) {
+            return withoutBindings;
         }
         ProtocolMessage.QueryResult withoutRequest = queryVariant(result, Optional.empty(),
-                Optional.empty(), List.of(), inferredType, detail);
+                terminal, List.of(), Optional.empty(), boundedDetail);
         if (fitsFrame(withoutRequest)) {
             return withoutRequest;
         }
-        ProtocolMessage.QueryResult withBoundedDetail = queryVariant(result, Optional.empty(),
-                Optional.empty(), List.of(), Optional.empty(),
-                Optional.of("query result was bounded to the transport frame limit"));
-        if (fitsFrame(withBoundedDetail)) {
-            return withBoundedDetail;
+        ProtocolMessage.QueryResult statusOnly = queryVariant(result, Optional.empty(),
+                Optional.empty(), List.of(), Optional.empty(), boundedDetail);
+        if (fitsFrame(statusOnly)) {
+            return statusOnly;
         }
         ProtocolMessage.QueryResult minimal = queryVariant(result, Optional.empty(),
                 Optional.empty(), List.of(), Optional.empty(), Optional.empty());
@@ -1331,6 +1587,45 @@ public final class RemoteServer implements AutoCloseable {
         return minimal;
     }
 
+    private ProtocolMessage.CompletionResult fitCompletionResult(
+            ProtocolMessage.CompletionResult result) {
+        if (fitsFrame(result)) {
+            return result;
+        }
+        List<ProtocolMessage.CompletionItem> items = result.items();
+        Optional<String> detail = result.detail().map(value -> bounded(value, 512));
+        for (int count = items.size() - 1; count >= 0; count--) {
+            ProtocolMessage.CompletionResult reduced = completionVariant(result,
+                    items.subList(0, count), detail);
+            if (fitsFrame(reduced)) {
+                return reduced;
+            }
+        }
+        ProtocolMessage.CompletionResult withDetail = completionVariant(result, List.of(),
+                Optional.of(result.detail()
+                        .map(value -> bounded(value, 256) + " (completion payload was bounded to the transport frame limit)")
+                        .orElse("completion result was bounded to the transport frame limit")));
+        if (fitsFrame(withDetail)) {
+            return withDetail;
+        }
+        ProtocolMessage.CompletionResult minimal = completionVariant(result, List.of(),
+                Optional.empty());
+        if (!fitsFrame(minimal)) {
+            throw new IllegalStateException(
+                    "configured frame bound cannot encode a completion result");
+        }
+        return minimal;
+    }
+
+    private static ProtocolMessage.CompletionResult completionVariant(
+            ProtocolMessage.CompletionResult source,
+            List<ProtocolMessage.CompletionItem> items,
+            Optional<String> detail) {
+        return new ProtocolMessage.CompletionResult(RemoteProtocol.VERSION,
+                source.completionId(), source.status(), source.revision(),
+                source.mutationSequence(), items, detail);
+    }
+
     private static ProtocolMessage.QueryResult queryVariant(
             ProtocolMessage.QueryResult source,
             Optional<ProtocolMessage.RequestSnapshot> request,
@@ -1339,8 +1634,8 @@ public final class RemoteServer implements AutoCloseable {
             Optional<String> inferredType,
             Optional<String> detail) {
         return new ProtocolMessage.QueryResult(RemoteProtocol.VERSION, source.queryId(),
-                source.queryKind(), source.status(), source.revision(), request, terminal,
-                bindings, inferredType, detail);
+                source.queryKind(), source.status(), source.revision(), source.mutationSequence(),
+                request, terminal, bindings, inferredType, detail, source.terminalStatus());
     }
 
     private static ProtocolMessage.RequestSnapshot boundedRequestSnapshot(
@@ -1367,13 +1662,6 @@ public final class RemoteServer implements AutoCloseable {
         return value.substring(0, end) + "…";
     }
 
-    private static void deleteQuietly(Path path) {
-        try {
-            Files.deleteIfExists(path);
-        } catch (IOException ignored) {
-        }
-    }
-
     private static void closeQuietly(Socket socket) {
         if (socket != null) {
             try {
@@ -1381,6 +1669,12 @@ public final class RemoteServer implements AutoCloseable {
             } catch (IOException ignored) {
             }
         }
+    }
+
+    private enum SubmitKind {
+        EVALUATE,
+        LOAD,
+        RELOAD
     }
 
     private final class Connection {
@@ -1393,7 +1687,6 @@ public final class RemoteServer implements AutoCloseable {
                 new ArrayBlockingQueue<>(options.maxOutboundMessages());
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicBoolean cleanupScheduled = new AtomicBoolean();
-        private final AtomicBoolean authenticated = new AtomicBoolean();
         private final java.util.concurrent.atomic.AtomicInteger outboundBytes =
                 new java.util.concurrent.atomic.AtomicInteger();
         private Thread writer;
@@ -1457,8 +1750,11 @@ public final class RemoteServer implements AutoCloseable {
         }
     }
 
-    private static final class RequestRecord {
-        private final ProtocolMessage.EvaluateRequest request;
+    private final class RequestRecord {
+        private final WireRequest request;
+        private final SubmitKind kind;
+        /** The exact original wire message; duplicates compare against it. */
+        private final ProtocolMessage message;
         private final RemoteCancellation cancellation = new RemoteCancellation();
         private volatile Connection connection;
         private volatile OwnerDispatcher.Dispatch dispatch;
@@ -1467,16 +1763,19 @@ public final class RemoteServer implements AutoCloseable {
         private volatile boolean terminal;
         private volatile ProtocolMessage.Result terminalResult;
 
-        private RequestRecord(ProtocolMessage.EvaluateRequest request, Connection connection) {
-            this.request = request;
+        private RequestRecord(ProtocolMessage message, SubmitKind kind, Connection connection) {
+            this.message = java.util.Objects.requireNonNull(message, "message");
+            this.request = RemoteServer.wireRequest(message);
+            this.kind = kind;
             this.connection = connection;
             this.revision = request.revision().value();
         }
 
-        private boolean sameRequest(ProtocolMessage.EvaluateRequest other) {
-            return request.sequence() == other.sequence()
-                    && request.revision().equals(other.revision())
-                    && request.source().equals(other.source());
+        private boolean sameRequest(ProtocolMessage other) {
+            // Identical duplicates replay the retained outcome without
+            // re-execution; any changed field is a mismatched reuse and is
+            // rejected by the caller.
+            return message.equals(other);
         }
 
         private ProtocolMessage replay() {
@@ -1485,11 +1784,11 @@ public final class RemoteServer implements AutoCloseable {
             }
             if (status == ProtocolMessage.RemoteStatus.CANCELLATION_REQUESTED) {
                 return new ProtocolMessage.Status(RemoteProtocol.VERSION, request.requestId(),
-                        request.sequence(), status, revision,
+                        request.sequence(), status, revision, mutationSequence,
                         Optional.of("cancellation requested cooperatively"));
             }
             return new ProtocolMessage.Accepted(RemoteProtocol.VERSION, request.requestId(),
-                    request.sequence(), status, revision);
+                    request.sequence(), status, revision, mutationSequence);
         }
 
         private ProtocolMessage.RequestSnapshot snapshot() {
@@ -1503,14 +1802,16 @@ public final class RemoteServer implements AutoCloseable {
         private final Connection connection;
         private final ControlKind kind;
         private final long expectedRevision;
+        private final long expectedMutationSequence;
         private OwnerDispatcher.Dispatch dispatch;
 
         private ControlRecord(UUID operationId, Connection connection, ControlKind kind,
-                              long expectedRevision) {
+                              long expectedRevision, long expectedMutationSequence) {
             this.operationId = operationId;
             this.connection = connection;
             this.kind = kind;
             this.expectedRevision = expectedRevision;
+            this.expectedMutationSequence = expectedMutationSequence;
         }
     }
 
@@ -1531,10 +1832,24 @@ public final class RemoteServer implements AutoCloseable {
         }
     }
 
+    private static final class CompletionRecord {
+        private final ProtocolMessage.CompletionRequest request;
+        private final Connection connection;
+        private OwnerDispatcher.Dispatch dispatch;
+        private ProtocolMessage.CompletionResult result;
+
+        private CompletionRecord(ProtocolMessage.CompletionRequest request,
+                                 Connection connection) {
+            this.request = request;
+            this.connection = connection;
+        }
+    }
+
     private record ControlResponse(
             ControlKind kind,
             UUID targetRequestId,
             long expectedRevision,
+            long expectedMutationSequence,
             ProtocolMessage response) {
     }
 

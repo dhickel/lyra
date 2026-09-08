@@ -10,26 +10,30 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Closed wire-schema model for the version-one REPL protocol.
+ * Closed wire-schema model for the version-two credential-free REPL protocol.
  *
  * <p>There is deliberately no generic call/reflective operation in this
- * hierarchy. Every permitted operation has a fixed, bounded schema.</p>
+ * hierarchy. Every permitted operation has a fixed, bounded schema. The
+ * handshake carries session identity, revision and mutation sequence; no
+ * credential, token or challenge exists anywhere in the wire model.</p>
  */
 public sealed interface ProtocolMessage
         permits ProtocolMessage.ClientHello,
         ProtocolMessage.ServerHello,
-        ProtocolMessage.Authenticate,
-        ProtocolMessage.Authenticated,
         ProtocolMessage.EvaluateRequest,
         ProtocolMessage.Accepted,
         ProtocolMessage.Status,
         ProtocolMessage.Result,
+        ProtocolMessage.LoadRequest,
+        ProtocolMessage.ReloadRequest,
         ProtocolMessage.CancelRequest,
         ProtocolMessage.CancelResult,
         ProtocolMessage.ResetRequest,
         ProtocolMessage.ResetResult,
         ProtocolMessage.QueryRequest,
         ProtocolMessage.QueryResult,
+        ProtocolMessage.CompletionRequest,
+        ProtocolMessage.CompletionResult,
         ProtocolMessage.Error {
     int version();
 
@@ -48,66 +52,24 @@ public sealed interface ProtocolMessage
         }
     }
 
+    /**
+     * The single ready message. It carries the authoritative session
+     * identity, revision, mutation sequence, request-sequence watermark and
+     * currently active request so a reconnecting client can reconcile
+     * without resubmitting source.
+     */
     record ServerHello(
             int version,
             UUID sessionId,
-            byte[] challenge) implements ProtocolMessage {
+            long revision,
+            long mutationSequence,
+            long lastSequence,
+            Optional<UUID> activeRequestId) implements ProtocolMessage {
         public ServerHello {
             requireVersion(version);
             sessionId = Objects.requireNonNull(sessionId, "sessionId");
-            challenge = Objects.requireNonNull(challenge, "challenge").clone();
-            if (challenge.length != RemoteProtocol.CHALLENGE_BYTES) {
-                throw new IllegalArgumentException("challenge has an invalid length");
-            }
-        }
-
-        @Override
-        public byte[] challenge() {
-            return challenge.clone();
-        }
-    }
-
-    record Authenticate(
-            int version,
-            UUID sessionId,
-            byte[] challenge,
-            String token) implements ProtocolMessage {
-        public Authenticate {
-            requireVersion(version);
-            sessionId = Objects.requireNonNull(sessionId, "sessionId");
-            challenge = Objects.requireNonNull(challenge, "challenge").clone();
-            if (challenge.length != RemoteProtocol.CHALLENGE_BYTES) {
-                throw new IllegalArgumentException("challenge has an invalid length");
-            }
-            token = ProtocolValues.token(token, "token", 256);
-        }
-
-        public Authenticate(UUID sessionId, byte[] challenge, String token) {
-            this(RemoteProtocol.VERSION, sessionId, challenge, token);
-        }
-
-        @Override
-        public byte[] challenge() {
-            return challenge.clone();
-        }
-
-        @Override
-        public String toString() {
-            return "Authenticate[version=" + version + ",sessionId=" + sessionId
-                    + ",challenge=<redacted>,token=<redacted>]";
-        }
-    }
-
-    record Authenticated(
-            int version,
-            UUID sessionId,
-            long revision,
-            long lastSequence,
-            Optional<UUID> activeRequestId) implements ProtocolMessage {
-        public Authenticated {
-            requireVersion(version);
-            sessionId = Objects.requireNonNull(sessionId, "sessionId");
             revision = ProtocolValues.nonNegativeLong(revision, "revision");
+            mutationSequence = ProtocolValues.nonNegativeLong(mutationSequence, "mutationSequence");
             lastSequence = ProtocolValues.nonNegativeLong(lastSequence, "lastSequence");
             activeRequestId = Objects.requireNonNull(activeRequestId, "activeRequestId");
         }
@@ -118,12 +80,14 @@ public sealed interface ProtocolMessage
             UUID requestId,
             long sequence,
             SessionRevision revision,
+            long mutationSequence,
             EvaluationSource source) implements ProtocolMessage {
         public EvaluateRequest {
             requireVersion(version);
             requestId = Objects.requireNonNull(requestId, "requestId");
             sequence = ProtocolValues.positiveLong(sequence, "sequence");
             revision = Objects.requireNonNull(revision, "revision");
+            mutationSequence = ProtocolValues.nonNegativeLong(mutationSequence, "mutationSequence");
             source = Objects.requireNonNull(source, "source");
             if (source.utf16Length() > RemoteProtocol.MAX_SOURCE_CHARACTERS) {
                 throw new IllegalArgumentException("source exceeds protocol bound");
@@ -134,8 +98,53 @@ public sealed interface ProtocolMessage
         }
 
         public EvaluateRequest(UUID requestId, long sequence,
-                               SessionRevision revision, EvaluationSource source) {
-            this(RemoteProtocol.VERSION, requestId, sequence, revision, source);
+                               SessionRevision revision, long mutationSequence,
+                               EvaluationSource source) {
+            this(RemoteProtocol.VERSION, requestId, sequence, revision, mutationSequence, source);
+        }
+    }
+
+    record LoadRequest(
+            int version,
+            UUID requestId,
+            long sequence,
+            SessionRevision revision,
+            long mutationSequence,
+            String path) implements ProtocolMessage {
+        public LoadRequest {
+            requireVersion(version);
+            requestId = Objects.requireNonNull(requestId, "requestId");
+            sequence = ProtocolValues.positiveLong(sequence, "sequence");
+            revision = Objects.requireNonNull(revision, "revision");
+            mutationSequence = ProtocolValues.nonNegativeLong(mutationSequence, "mutationSequence");
+            path = ProtocolValues.text(path, "path", RemoteProtocol.MAX_LOAD_PATH_CHARACTERS);
+        }
+
+        public LoadRequest(UUID requestId, long sequence, SessionRevision revision,
+                           long mutationSequence, String path) {
+            this(RemoteProtocol.VERSION, requestId, sequence, revision, mutationSequence, path);
+        }
+    }
+
+    record ReloadRequest(
+            int version,
+            UUID requestId,
+            long sequence,
+            SessionRevision revision,
+            long mutationSequence,
+            String target) implements ProtocolMessage {
+        public ReloadRequest {
+            requireVersion(version);
+            requestId = Objects.requireNonNull(requestId, "requestId");
+            sequence = ProtocolValues.positiveLong(sequence, "sequence");
+            revision = Objects.requireNonNull(revision, "revision");
+            mutationSequence = ProtocolValues.nonNegativeLong(mutationSequence, "mutationSequence");
+            target = ProtocolValues.token(target, "target", RemoteProtocol.MAX_RELOAD_TARGET_CHARACTERS);
+        }
+
+        public ReloadRequest(UUID requestId, long sequence, SessionRevision revision,
+                             long mutationSequence, String target) {
+            this(RemoteProtocol.VERSION, requestId, sequence, revision, mutationSequence, target);
         }
     }
 
@@ -144,7 +153,8 @@ public sealed interface ProtocolMessage
             UUID requestId,
             long sequence,
             RemoteStatus status,
-            long revision) implements ProtocolMessage {
+            long revision,
+            long mutationSequence) implements ProtocolMessage {
         public Accepted {
             requireVersion(version);
             requestId = Objects.requireNonNull(requestId, "requestId");
@@ -154,6 +164,7 @@ public sealed interface ProtocolMessage
                 throw new IllegalArgumentException("accepted status must be queued or running");
             }
             revision = ProtocolValues.nonNegativeLong(revision, "revision");
+            mutationSequence = ProtocolValues.nonNegativeLong(mutationSequence, "mutationSequence");
         }
     }
 
@@ -163,6 +174,7 @@ public sealed interface ProtocolMessage
             long sequence,
             RemoteStatus status,
             long revision,
+            long mutationSequence,
             Optional<String> detail) implements ProtocolMessage {
         public Status {
             requireVersion(version);
@@ -173,6 +185,7 @@ public sealed interface ProtocolMessage
                 throw new IllegalArgumentException("status messages must be nonterminal: " + status);
             }
             revision = ProtocolValues.nonNegativeLong(revision, "revision");
+            mutationSequence = ProtocolValues.nonNegativeLong(mutationSequence, "mutationSequence");
             detail = Objects.requireNonNull(detail, "detail")
                     .map(value -> ProtocolValues.text(value, "detail", 4096));
         }
@@ -184,10 +197,12 @@ public sealed interface ProtocolMessage
             long sequence,
             RemoteStatus status,
             long revision,
+            long mutationSequence,
             List<Diagnostic> diagnostics,
             Optional<ValueSnapshot> value,
             Optional<String> failureSummary,
-            Optional<UUID> activeRequestId) implements ProtocolMessage {
+            Optional<UUID> activeRequestId,
+            List<Initializer> initializers) implements ProtocolMessage {
         public Result {
             requireVersion(version);
             requestId = Objects.requireNonNull(requestId, "requestId");
@@ -197,6 +212,7 @@ public sealed interface ProtocolMessage
                 throw new IllegalArgumentException("result status must be terminal: " + status);
             }
             revision = ProtocolValues.nonNegativeLong(revision, "revision");
+            mutationSequence = ProtocolValues.nonNegativeLong(mutationSequence, "mutationSequence");
             diagnostics = copyDiagnostics(diagnostics);
             value = Objects.requireNonNull(value, "value");
             failureSummary = Objects.requireNonNull(failureSummary, "failureSummary")
@@ -206,14 +222,30 @@ public sealed interface ProtocolMessage
                 throw new IllegalArgumentException(
                         "active request identity is only valid for a busy result");
             }
+            initializers = copyInitializers(initializers);
         }
 
         public Result(UUID requestId, long sequence, RemoteStatus status, long revision,
-                      List<Diagnostic> diagnostics, Optional<ValueSnapshot> value,
-                      Optional<String> failureSummary, Optional<UUID> activeRequestId) {
-            this(RemoteProtocol.VERSION, requestId, sequence, status, revision,
-                    diagnostics, value, failureSummary, activeRequestId);
+                      long mutationSequence, List<Diagnostic> diagnostics,
+                      Optional<ValueSnapshot> value, Optional<String> failureSummary,
+                      Optional<UUID> activeRequestId) {
+            this(RemoteProtocol.VERSION, requestId, sequence, status, revision, mutationSequence,
+                    diagnostics, value, failureSummary, activeRequestId, List.of());
         }
+    }
+
+    /** One initializer module entry of a submission's real execution progress. */
+    record Initializer(String moduleId, InitializerState state) {
+        public Initializer {
+            moduleId = ProtocolValues.token(moduleId, "initializer module id", 4096);
+            state = Objects.requireNonNull(state, "state");
+        }
+    }
+
+    enum InitializerState {
+        SCHEDULED,
+        ATTEMPTED,
+        COMPLETED
     }
 
     record CancelRequest(
@@ -237,6 +269,7 @@ public sealed interface ProtocolMessage
             UUID requestId,
             ControlStatus status,
             long revision,
+            long mutationSequence,
             Optional<String> detail) implements ProtocolMessage {
         public CancelResult {
             requireVersion(version);
@@ -244,6 +277,7 @@ public sealed interface ProtocolMessage
             requestId = Objects.requireNonNull(requestId, "requestId");
             status = Objects.requireNonNull(status, "status");
             revision = ProtocolValues.nonNegativeLong(revision, "revision");
+            mutationSequence = ProtocolValues.nonNegativeLong(mutationSequence, "mutationSequence");
             detail = Objects.requireNonNull(detail, "detail")
                     .map(value -> ProtocolValues.text(value, "detail", 4096));
         }
@@ -252,15 +286,24 @@ public sealed interface ProtocolMessage
     record ResetRequest(
             int version,
             UUID operationId,
-            long expectedRevision) implements ProtocolMessage {
+            long expectedRevision,
+            long expectedMutationSequence) implements ProtocolMessage {
         public ResetRequest {
             requireVersion(version);
             operationId = Objects.requireNonNull(operationId, "operationId");
             expectedRevision = ProtocolValues.nonNegativeLong(expectedRevision, "expectedRevision");
+            expectedMutationSequence = ProtocolValues.nonNegativeLong(
+                    expectedMutationSequence, "expectedMutationSequence");
         }
 
         public ResetRequest(UUID operationId, long expectedRevision) {
-            this(RemoteProtocol.VERSION, operationId, expectedRevision);
+            this(RemoteProtocol.VERSION, operationId, expectedRevision, 0);
+        }
+
+        public ResetRequest(UUID operationId, long expectedRevision,
+                            long expectedMutationSequence) {
+            this(RemoteProtocol.VERSION, operationId, expectedRevision,
+                    expectedMutationSequence);
         }
     }
 
@@ -269,12 +312,14 @@ public sealed interface ProtocolMessage
             UUID operationId,
             ControlStatus status,
             long revision,
+            long mutationSequence,
             Optional<String> detail) implements ProtocolMessage {
         public ResetResult {
             requireVersion(version);
             operationId = Objects.requireNonNull(operationId, "operationId");
             status = Objects.requireNonNull(status, "status");
             revision = ProtocolValues.nonNegativeLong(revision, "revision");
+            mutationSequence = ProtocolValues.nonNegativeLong(mutationSequence, "mutationSequence");
             detail = Objects.requireNonNull(detail, "detail")
                     .map(value -> ProtocolValues.text(value, "detail", 4096));
         }
@@ -284,12 +329,17 @@ public sealed interface ProtocolMessage
             int version,
             UUID queryId,
             QueryKind queryKind,
+            long expectedRevision,
+            long expectedMutationSequence,
             Optional<UUID> requestId,
             Optional<EvaluationSource> typeSource) implements ProtocolMessage {
         public QueryRequest {
             requireVersion(version);
             queryId = Objects.requireNonNull(queryId, "queryId");
             queryKind = Objects.requireNonNull(queryKind, "queryKind");
+            expectedRevision = ProtocolValues.nonNegativeLong(expectedRevision, "expectedRevision");
+            expectedMutationSequence = ProtocolValues.nonNegativeLong(
+                    expectedMutationSequence, "expectedMutationSequence");
             requestId = Objects.requireNonNull(requestId, "requestId");
             typeSource = Objects.requireNonNull(typeSource, "typeSource");
             if (queryKind == QueryKind.REQUEST && requestId.isEmpty()) {
@@ -314,24 +364,26 @@ public sealed interface ProtocolMessage
             });
         }
 
-        public static QueryRequest session(UUID queryId) {
+        public static QueryRequest session(UUID queryId, long revision, long mutationSequence) {
             return new QueryRequest(RemoteProtocol.VERSION, queryId, QueryKind.SESSION,
-                    Optional.empty(), Optional.empty());
+                    revision, mutationSequence, Optional.empty(), Optional.empty());
         }
 
-        public static QueryRequest request(UUID queryId, UUID requestId) {
+        public static QueryRequest request(UUID queryId, long revision, long mutationSequence,
+                                           UUID requestId) {
             return new QueryRequest(RemoteProtocol.VERSION, queryId, QueryKind.REQUEST,
-                    Optional.of(requestId), Optional.empty());
+                    revision, mutationSequence, Optional.of(requestId), Optional.empty());
         }
 
-        public static QueryRequest bindings(UUID queryId) {
+        public static QueryRequest bindings(UUID queryId, long revision, long mutationSequence) {
             return new QueryRequest(RemoteProtocol.VERSION, queryId, QueryKind.BINDINGS,
-                    Optional.empty(), Optional.empty());
+                    revision, mutationSequence, Optional.empty(), Optional.empty());
         }
 
-        public static QueryRequest type(UUID queryId, EvaluationSource source) {
+        public static QueryRequest type(UUID queryId, long revision, long mutationSequence,
+                                        EvaluationSource source) {
             return new QueryRequest(RemoteProtocol.VERSION, queryId, QueryKind.TYPE,
-                    Optional.empty(), Optional.of(source));
+                    revision, mutationSequence, Optional.empty(), Optional.of(source));
         }
     }
 
@@ -341,17 +393,20 @@ public sealed interface ProtocolMessage
             QueryKind queryKind,
             QueryStatus status,
             long revision,
+            long mutationSequence,
             Optional<RequestSnapshot> request,
             Optional<Result> terminalResult,
             List<RemoteBinding> bindings,
             Optional<String> inferredType,
-            Optional<String> detail) implements ProtocolMessage {
+            Optional<String> detail,
+            Optional<RemoteStatus> terminalStatus) implements ProtocolMessage {
         public QueryResult {
             requireVersion(version);
             queryId = Objects.requireNonNull(queryId, "queryId");
             queryKind = Objects.requireNonNull(queryKind, "queryKind");
             status = Objects.requireNonNull(status, "status");
             revision = ProtocolValues.nonNegativeLong(revision, "revision");
+            mutationSequence = ProtocolValues.nonNegativeLong(mutationSequence, "mutationSequence");
             request = Objects.requireNonNull(request, "request");
             terminalResult = Objects.requireNonNull(terminalResult, "terminalResult");
             bindings = copyBindings(bindings);
@@ -359,7 +414,114 @@ public sealed interface ProtocolMessage
                     .map(value -> ProtocolValues.text(value, "inferredType", 4096));
             detail = Objects.requireNonNull(detail, "detail")
                     .map(value -> ProtocolValues.text(value, "detail", 4096));
+            terminalStatus = Objects.requireNonNull(terminalStatus, "terminalStatus");
+            terminalStatus.ifPresent(value -> {
+                if (!value.isTerminal()) {
+                    throw new IllegalArgumentException(
+                            "query terminal status must be terminal: " + value);
+                }
+            });
+            if (terminalResult.isPresent()) {
+                RemoteStatus resultStatus = terminalResult.orElseThrow().status();
+                if (terminalStatus.isPresent() && terminalStatus.orElseThrow() != resultStatus) {
+                    throw new IllegalArgumentException(
+                            "terminal status does not match the nested terminal result");
+                }
+                terminalStatus = Optional.of(resultStatus);
+            }
         }
+
+        /** Compatibility constructor for the original v2 query shape. */
+        public QueryResult(
+                int version,
+                UUID queryId,
+                QueryKind queryKind,
+                QueryStatus status,
+                long revision,
+                long mutationSequence,
+                Optional<RequestSnapshot> request,
+                Optional<Result> terminalResult,
+                List<RemoteBinding> bindings,
+                Optional<String> inferredType,
+                Optional<String> detail) {
+            this(version, queryId, queryKind, status, revision, mutationSequence, request,
+                    terminalResult, bindings, inferredType, detail, Optional.empty());
+        }
+    }
+
+    /** Bounded metadata-only completion request; it never compiles or pins. */
+    record CompletionRequest(
+            int version,
+            UUID completionId,
+            CompletionKind kind,
+            long expectedRevision,
+            long expectedMutationSequence,
+            Optional<String> prefix,
+            Optional<String> binding) implements ProtocolMessage {
+        public CompletionRequest {
+            requireVersion(version);
+            completionId = Objects.requireNonNull(completionId, "completionId");
+            kind = Objects.requireNonNull(kind, "kind");
+            expectedRevision = ProtocolValues.nonNegativeLong(expectedRevision, "expectedRevision");
+            expectedMutationSequence = ProtocolValues.nonNegativeLong(
+                    expectedMutationSequence, "expectedMutationSequence");
+            prefix = Objects.requireNonNull(prefix, "prefix").map(value ->
+                    ProtocolValues.text(value, "prefix", RemoteProtocol.MAX_COMPLETION_PREFIX_CHARACTERS));
+            binding = Objects.requireNonNull(binding, "binding").map(value ->
+                    ProtocolValues.token(value, "binding", RemoteProtocol.MAX_COMPLETION_ITEM_CHARACTERS));
+            if (kind == CompletionKind.BINDING_MEMBERS && binding.isEmpty()) {
+                throw new IllegalArgumentException("member completion needs a binding name");
+            }
+            if (kind != CompletionKind.BINDING_MEMBERS && binding.isPresent()) {
+                throw new IllegalArgumentException("binding name is only valid for member completion");
+            }
+        }
+    }
+
+    record CompletionResult(
+            int version,
+            UUID completionId,
+            QueryStatus status,
+            long revision,
+            long mutationSequence,
+            List<CompletionItem> items,
+            Optional<String> detail) implements ProtocolMessage {
+        public CompletionResult {
+            requireVersion(version);
+            completionId = Objects.requireNonNull(completionId, "completionId");
+            status = Objects.requireNonNull(status, "status");
+            revision = ProtocolValues.nonNegativeLong(revision, "revision");
+            mutationSequence = ProtocolValues.nonNegativeLong(mutationSequence, "mutationSequence");
+            items = copyCompletionItems(items);
+            detail = Objects.requireNonNull(detail, "detail")
+                    .map(value -> ProtocolValues.text(value, "detail", 4096));
+        }
+    }
+
+    record CompletionItem(String name, CompletionItemKind kind, Optional<String> typeSpelling) {
+        public CompletionItem {
+            name = ProtocolValues.token(name, "completion item name",
+                    RemoteProtocol.MAX_COMPLETION_ITEM_CHARACTERS);
+            kind = Objects.requireNonNull(kind, "kind");
+            typeSpelling = Objects.requireNonNull(typeSpelling, "typeSpelling").map(value ->
+                    ProtocolValues.token(value, "completion item type", 4096));
+        }
+
+        public CompletionItem(String name, CompletionItemKind kind) {
+            this(name, kind, Optional.empty());
+        }
+    }
+
+    enum CompletionItemKind {
+        FILE,
+        DIRECTORY,
+        MODULE,
+        MEMBER
+    }
+
+    enum CompletionKind {
+        MODULE_FILES,
+        BINDING_MEMBERS
     }
 
     record Error(
@@ -513,6 +675,7 @@ public sealed interface ProtocolMessage
         NOT_FOUND,
         EXPIRED,
         BUSY,
+        STALE,
         UNAVAILABLE,
         CLOSED
     }
@@ -533,7 +696,6 @@ public sealed interface ProtocolMessage
         UNSUPPORTED_VERSION,
         MALFORMED_MESSAGE,
         INVALID_SCHEMA,
-        AUTHENTICATION_FAILED,
         CONTROLLER_BUSY,
         SESSION_MISMATCH,
         HANDSHAKE_TIMEOUT,
@@ -593,6 +755,18 @@ public sealed interface ProtocolMessage
         return List.copyOf(copy);
     }
 
+    private static List<Initializer> copyInitializers(List<Initializer> values) {
+        Objects.requireNonNull(values, "initializers");
+        if (values.size() > RemoteProtocol.MAX_INITIALIZERS) {
+            throw new IllegalArgumentException("too many initializer entries");
+        }
+        ArrayList<Initializer> copy = new ArrayList<>(values.size());
+        for (Initializer value : values) {
+            copy.add(Objects.requireNonNull(value, "initializers must not contain null"));
+        }
+        return List.copyOf(copy);
+    }
+
     private static List<RelatedSpan> copyRelatedSpans(List<RelatedSpan> values) {
         Objects.requireNonNull(values, "relatedSpans");
         if (values.size() > 32) {
@@ -613,6 +787,18 @@ public sealed interface ProtocolMessage
         ArrayList<RemoteBinding> copy = new ArrayList<>(values.size());
         for (RemoteBinding value : values) {
             copy.add(Objects.requireNonNull(value, "bindings must not contain null"));
+        }
+        return List.copyOf(copy);
+    }
+
+    private static List<CompletionItem> copyCompletionItems(List<CompletionItem> values) {
+        Objects.requireNonNull(values, "items");
+        if (values.size() > RemoteProtocol.MAX_COMPLETION_ITEMS) {
+            throw new IllegalArgumentException("too many completion items");
+        }
+        ArrayList<CompletionItem> copy = new ArrayList<>(values.size());
+        for (CompletionItem value : values) {
+            copy.add(Objects.requireNonNull(value, "items must not contain null"));
         }
         return List.copyOf(copy);
     }
