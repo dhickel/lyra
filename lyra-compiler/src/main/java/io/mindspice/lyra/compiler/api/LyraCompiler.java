@@ -2,6 +2,7 @@ package io.mindspice.lyra.compiler.api;
 
 import io.mindspice.lyra.compiler.ast.SyntaxProgram;
 import io.mindspice.lyra.compiler.artifact.ArtifactAssembly;
+import io.mindspice.lyra.compiler.artifact.ArtifactAssemblyException;
 import io.mindspice.lyra.compiler.backend.jvm.EmissionMode;
 import io.mindspice.lyra.compiler.backend.jvm.JvmBytecodeArtifact;
 import io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes;
@@ -87,6 +88,8 @@ public final class LyraCompiler {
             throw failure;
         } catch (LyraCompilerBugException failure) {
             throw failure;
+        } catch (ArtifactAssemblyException failure) {
+            throw failure;
         } catch (RuntimeException failure) {
             throw new LyraCompilerBugException("compiler invariant failed outside a phase boundary", failure);
         }
@@ -116,6 +119,8 @@ public final class LyraCompiler {
         } catch (VirtualMachineError | ThreadDeath failure) {
             throw failure;
         } catch (LyraCompilerBugException failure) {
+            throw failure;
+        } catch (ArtifactAssemblyException failure) {
             throw failure;
         } catch (RuntimeException failure) {
             throw new LyraCompilerBugException(
@@ -157,6 +162,8 @@ public final class LyraCompiler {
         } catch (VirtualMachineError | ThreadDeath failure) {
             throw failure;
         } catch (LyraCompilerBugException failure) {
+            throw failure;
+        } catch (ArtifactAssemblyException failure) {
             throw failure;
         } catch (RuntimeException failure) {
             throw new LyraCompilerBugException(
@@ -222,16 +229,18 @@ public final class LyraCompiler {
 
             PhaseResult<JvmBytecodeArtifact> bytecodeResult = JvmBytecodeArtifact.emit(
                     ir, request.javaBasePackage(), request.compileProfile().emissionMode(),
-                    request.semanticOptions());
+                    request.semanticOptions(), request.debugCapable());
             JvmBytecodeArtifact bytecode = success(bytecodeResult);
             if (bytecode == null) {
                 return null;
             }
 
             ArtifactAssembly assembly = ArtifactAssembly.assemble(
-                    bytecode, PackagingMode.CLASSES, request.includeSources());
+                    bytecode, PackagingMode.CLASSES, request.includeSources(),
+                    request.debugCapable());
             return Capture.success(graph, resolved, typed, ir,
-                    new BuiltCompiledArtifact(bytecode, request.includeSources(), assembly),
+                    new BuiltCompiledArtifact(bytecode, request.includeSources(),
+                            request.debugCapable(), assembly),
                     assembly);
         }
 
@@ -423,7 +432,7 @@ public final class LyraCompiler {
                     stagedSnapshot.revision(),
                     stagedSnapshot,
                     attemptedSnapshot,
-                    new BuiltCompiledArtifact(bytecode, request.includeSources(), assembly),
+                    new BuiltCompiledArtifact(bytecode, request.includeSources(), false, assembly),
                     graph,
                     resolved,
                     typed,
@@ -1188,12 +1197,14 @@ public final class LyraCompiler {
     private static final class BuiltCompiledArtifact implements CompiledArtifact {
         private final JvmBytecodeArtifact bytecode;
         private final boolean includeSources;
+        private final boolean debugCapable;
         private final ArtifactAssembly classesAssembly;
 
         private BuiltCompiledArtifact(JvmBytecodeArtifact bytecode, boolean includeSources,
-                                      ArtifactAssembly classesAssembly) {
+                                      boolean debugCapable, ArtifactAssembly classesAssembly) {
             this.bytecode = Objects.requireNonNull(bytecode, "bytecode");
             this.includeSources = includeSources;
+            this.debugCapable = debugCapable;
             this.classesAssembly = Objects.requireNonNull(classesAssembly, "classesAssembly");
         }
 
@@ -1224,7 +1235,7 @@ public final class LyraCompiler {
             Objects.requireNonNull(mode, "mode");
             Objects.requireNonNull(options, "options");
             ArtifactAssembly assembly = ArtifactAssembly.assemble(
-                    bytecode, mode.packagingMode(), includeSources);
+                    bytecode, mode.packagingMode(), includeSources, debugCapable);
             assembly.writeJar(output, options.force());
         }
     }

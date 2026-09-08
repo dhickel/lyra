@@ -51,6 +51,10 @@ public final class ArtifactAssembly implements ArtifactSource {
     public static final String ARTIFACT_METADATA_PATH = "META-INF/lyra/artifact.json";
     public static final String DEBUG_MAP_PATH = "META-INF/lyra/debug-map.json";
     public static final String SOURCES_PATH = "META-INF/lyra/sources/";
+    private static final String METADATA_CHUNK_PREFIX = "\u0001LYRA-METADATA-CHUNK-";
+    private static final String METADATA_CHUNK_SUFFIX = "\u0001";
+    private static final int METADATA_CHUNK_COUNT = 32;
+    private static final int METADATA_CHUNK_BYTES = 60_000;
 
     private final JvmBytecodeArtifact bytecode;
     private final ArtifactMetadata metadata;
@@ -98,6 +102,19 @@ public final class ArtifactAssembly implements ArtifactSource {
                 .packagingMode(mode).includeSources(includeSources).build());
     }
 
+    /**
+     * Assembles one mode with the versioned debug REPL capability when
+     * requested.  Debug publications embed every reachable source snapshot
+     * and declare the exact compiler/REPL/runtime closure requirement.
+     */
+    public static ArtifactAssembly assemble(JvmBytecodeArtifact bytecode,
+                                            PackagingMode mode, boolean includeSources,
+                                            boolean replCapable) {
+        return assemble(bytecode, ArtifactAssemblyOptions.builder()
+                .packagingMode(mode).includeSources(includeSources)
+                .replCapable(replCapable).build());
+    }
+
     static ArtifactAssembly assemble(JvmBytecodeArtifact bytecode,
                                      ArtifactAssemblyOptions options) {
         Objects.requireNonNull(bytecode, "bytecode");
@@ -105,12 +122,16 @@ public final class ArtifactAssembly implements ArtifactSource {
         bytecode.typedIr().requireValidated();
 
         Map<String, byte[]> classes = copyBytes(bytecode.classes(), "generated class files");
-        validateGeneratedClasses(bytecode, classes);
+        validateGeneratedClasses(bytecode, classes, options.replCapable());
         Map<ModuleId, SourceSnapshot> snapshots = sourceSnapshots(bytecode);
         List<ModuleMetadata> modules = moduleMetadata(bytecode, snapshots);
         ArtifactProfile artifactProfile = bytecode.artifactProfile();
+        // Debug-capable publications embed every reachable source snapshot
+        // even when ordinary include-sources is off; the embedded context is
+        // the reconstruction boundary, not an opt-in source omission.
         boolean includeSources = options.includeSources()
-                || artifactProfile == ArtifactProfile.ATTACHABLE;
+                || artifactProfile == ArtifactProfile.ATTACHABLE
+                || options.replCapable();
         List<SourceMetadata> sources = sourceMetadata(bytecode, snapshots, includeSources);
         List<ExportMetadata> exports = exportMetadata(bytecode);
         Map<String, String> names = new TreeMap<>();
@@ -138,7 +159,7 @@ public final class ArtifactAssembly implements ArtifactSource {
             }
         }
         Map<String, byte[]> runtimeEntries = options.packagingMode() == PackagingMode.BUNDLED_JAR
-                ? BundledRuntime.collect(classes.keySet()) : Map.of();
+                ? BundledRuntime.collect(classes.keySet(), options.replCapable()) : Map.of();
         boolean previewRequired = bytecode.previewRequired()
                 || runtimeEntries.values().stream().anyMatch(ArtifactAssembly::previewClassFile);
         validateProfile(options.profile(), options.runtimeAbi(), previewRequired);
@@ -151,27 +172,25 @@ public final class ArtifactAssembly implements ArtifactSource {
                 ? options.runtimeRequirement()
                 : Optional.empty();
         List<ArtifactImport> imports = artifactProfile == ArtifactProfile.NORMAL
-                ? List.of() : bytecode.imports();
+                && !options.replCapable() ? List.of() : bytecode.imports();
         List<ArtifactHook> hooks = artifactProfile == ArtifactProfile.ATTACHABLE
                 ? List.of(new ArtifactHook("$lyra$attachmentLifecycle",
                         "()Lio/mindspice/lyra/runtime/ModuleLifecycle;"),
                 new ArtifactHook("$lyra$attachmentSafePoint", "()V"))
                 : List.of();
-        List<ArtifactDependency> dependencies = artifactProfile == ArtifactProfile.ATTACHABLE
-                ? List.of(new ArtifactDependency("io.mindspice", "lyra-runtime",
-                        io.mindspice.lyra.runtime.LyraRuntimeConstants.RUNTIME_VERSION,
-                        ArtifactProfile.ATTACHABLE))
-                : List.of();
+        List<ArtifactDependency> dependencies = dependencyRequirements(
+                artifactProfile, options.replCapable());
         Optional<AttachmentContext> attachmentContext = artifactProfile == ArtifactProfile.ATTACHABLE
                 ? Optional.of(attachmentContext(bytecode, modules, sources, options, imports,
                 previewRequired))
                 : Optional.empty();
         Map<String, String> reproducibleOptions = artifactProfile == ArtifactProfile.NORMAL
-                ? Map.of() : bytecode.reproducibleOptions();
+                && !options.replCapable() ? Map.of() : bytecode.reproducibleOptions();
         ArtifactRevision revision = ArtifactRevision.compute(
                 options.compilerBuild(), modules, names, options.profile(),
                 options.packagingMode(), previewRequired, bytecode.javaBasePackage(), sources, requirement,
-                artifactProfile, hooks, dependencies, attachmentContext, imports, reproducibleOptions);
+                artifactProfile, hooks, dependencies, attachmentContext, imports, reproducibleOptions,
+                options.replCapable());
         String artifactId = options.artifactId().orElseGet(() -> MessageDigests.sha256Hex(
                 "LYRA-ARTIFACT-ID", options.compilerBuild(),
                 root.id().canonicalSpelling(), revision.value()));
@@ -201,6 +220,7 @@ public final class ArtifactAssembly implements ArtifactSource {
                 .attachmentContext(attachmentContext)
                 .imports(imports)
                 .reproducibleOptions(reproducibleOptions)
+                .replCapable(options.replCapable())
                 .build();
 
         // The emitter must produce facades before packaging metadata exists,
@@ -215,7 +235,7 @@ public final class ArtifactAssembly implements ArtifactSource {
             putEntry(allEntries, EntryNames.classEntry(entry.getKey()), entry.getValue());
         }
         for (Map.Entry<String, byte[]> entry : runtimeEntries.entrySet()) {
-            validateRuntimeClass(entry.getKey(), entry.getValue());
+            validateClosureClass(entry.getKey(), entry.getValue(), options.replCapable());
             putEntry(allEntries, entry.getKey(), entry.getValue());
         }
         putEntry(allEntries, ARTIFACT_METADATA_PATH, metadata.canonicalUtf8());
@@ -387,6 +407,7 @@ public final class ArtifactAssembly implements ArtifactSource {
                                                        Map<ModuleId, SourceSnapshot> snapshots,
                                                        boolean includeSources) {
         ArrayList<SourceMetadata> result = new ArrayList<>();
+        Set<String> sourceEntries = new HashSet<>();
         for (Map.Entry<ModuleId, SourceSnapshot> entry : snapshots.entrySet()) {
             SourceSnapshot snapshot = entry.getValue();
             byte[] bytes = snapshot.utf8Bytes();
@@ -395,12 +416,35 @@ public final class ArtifactAssembly implements ArtifactSource {
                         + snapshot.sourceId());
             }
             Optional<String> sourceEntry = includeSources
-                    ? Optional.of(sourceEntryName(snapshot.sourceId())) : Optional.empty();
+                    ? Optional.of(uniqueSourceEntryName(snapshot.sourceId(), sourceEntries))
+                    : Optional.empty();
             result.add(new SourceMetadata(runtimeSourceId(snapshot.sourceId()),
                     snapshot.sourceId().value(), snapshot.sha256(), sourceEntry));
         }
         result.sort(SourceMetadata::compareTo);
         return List.copyOf(result);
+    }
+
+    /**
+     * Keeps the historical path entry spelling where possible while ensuring
+     * a path source can never collide with the hash-based URI spelling.  The
+     * source identity kind remains explicit in metadata; the suffix is only
+     * an entry-name collision escape and is deterministic for a fixed graph.
+     */
+    private static String uniqueSourceEntryName(SourceId sourceId, Set<String> used) {
+        String base = sourceEntryName(sourceId);
+        if (used.add(base)) {
+            return base;
+        }
+        String stem = base.endsWith(".lyra")
+                ? base.substring(0, base.length() - ".lyra".length()) : base;
+        String kind = sourceId.isUri() ? "uri" : "path";
+        for (int index = 1; ; index++) {
+            String candidate = stem + "-" + kind + (index == 1 ? "" : "-" + index) + ".lyra";
+            if (used.add(candidate)) {
+                return candidate;
+            }
+        }
     }
 
     private static List<ExportMetadata> exportMetadata(JvmBytecodeArtifact artifact) {
@@ -486,11 +530,11 @@ public final class ArtifactAssembly implements ArtifactSource {
     }
 
     /**
-     * Replaces the one provisional metadata CONSTANT_Utf8 in a generated
-     * facade.  Class files are a length-prefixed stream, so changing this
-     * constant requires rebuilding the tail of the file rather than mutating
-     * bytes in place.  No class semantics or member offsets are encoded as
-     * absolute file offsets.
+     * Replaces the marker-addressable provisional metadata constants in a
+     * generated facade.  Class files are a length-prefixed stream, so changing
+     * these constants requires rebuilding the tail rather than mutating bytes
+     * in place.  No class semantics or member offsets are encoded as absolute
+     * file offsets.
      */
     private static byte[] replaceEmbeddedMetadata(
             String binaryName, byte[] bytes, String metadataJson) {
@@ -499,18 +543,22 @@ public final class ArtifactAssembly implements ArtifactSource {
         if (bytes.length < 10 || u4(bytes, 0) != 0xCAFEBABE) {
             throw new ArtifactAssemblyException("facade is not a class file: " + binaryName);
         }
+        int[] starts = new int[METADATA_CHUNK_COUNT];
+        int[] ends = new int[METADATA_CHUNK_COUNT];
+        boolean[] seenChunks = new boolean[METADATA_CHUNK_COUNT];
+        byte[][] replacements = new byte[METADATA_CHUNK_COUNT][];
         int constantPoolCount = u2(bytes, 8);
         int offset = 10;
         int matches = 0;
-        int replacementStart = -1;
-        int replacementEnd = -1;
-        byte[] replacement = null;
+        int legacyMatches = 0;
+        int legacyStart = -1;
+        int legacyEnd = -1;
+        byte[] legacyReplacement = null;
         for (int index = 1; index < constantPoolCount; index++) {
             if (offset >= bytes.length) {
                 throw new ArtifactAssemblyException("truncated facade constant pool: " + binaryName);
             }
-            int tag = bytes[offset++]
-                    & 0xff;
+            int tag = bytes[offset++] & 0xff;
             switch (tag) {
                 case 1 -> {
                     if (offset > bytes.length - 2) {
@@ -526,10 +574,24 @@ public final class ArtifactAssembly implements ArtifactSource {
                     if (value.startsWith("{\"schemaVersion\":1,\"languageContractVersion\":1,"
                             + "\"compilerVersion\":")
                             && value.endsWith(",\"_lyraProvisional\":true}")) {
+                        legacyMatches++;
+                        legacyStart = offset;
+                        legacyEnd = dataEnd;
+                        legacyReplacement = modifiedUtf8Bytes(metadataJson, binaryName);
+                    }
+                    int chunk = metadataChunkIndex(value);
+                    if (chunk >= 0) {
+                        if (seenChunks[chunk]) {
+                            throw new ArtifactAssemblyException(
+                                    "duplicate facade metadata chunk " + chunk + " for " + binaryName);
+                        }
+                        starts[chunk] = offset;
+                        ends[chunk] = dataEnd;
+                        seenChunks[chunk] = true;
                         matches++;
-                        replacementStart = offset;
-                        replacementEnd = dataEnd;
-                        replacement = modifiedUtf8Bytes(metadataJson, binaryName);
+                    } else if (chunk == -2) {
+                        throw new ArtifactAssemblyException(
+                                "invalid facade metadata chunk marker for " + binaryName);
                     }
                     offset = dataEnd;
                 }
@@ -545,20 +607,103 @@ public final class ArtifactAssembly implements ArtifactSource {
                         "invalid facade constant-pool tag: " + tag);
             }
         }
-        if (matches != 1 || replacement == null) {
-            throw new ArtifactAssemblyException("facade metadata constant count is " + matches
-                    + " for " + binaryName);
+        if (legacyMatches == 1 && matches == 0 && legacyReplacement != null) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream(
+                    bytes.length - (legacyEnd - legacyStart) + legacyReplacement.length);
+            try {
+                output.write(bytes, 0, legacyStart);
+                output.write(legacyReplacement);
+                output.write(bytes, legacyEnd, bytes.length - legacyEnd);
+            } catch (IOException impossible) {
+                throw new AssertionError(impossible);
+            }
+            return output.toByteArray();
         }
-        ByteArrayOutputStream output = new ByteArrayOutputStream(
-                bytes.length - (replacementEnd - replacementStart) + replacement.length);
+        if (legacyMatches != 0 || matches != METADATA_CHUNK_COUNT) {
+            throw new ArtifactAssemblyException("facade metadata marker count is "
+                    + (legacyMatches + matches) + " for " + binaryName);
+        }
+        List<String> chunks = metadataChunks(metadataJson);
+        for (int index = 0; index < METADATA_CHUNK_COUNT; index++) {
+            replacements[index] = modifiedUtf8Bytes(
+                    metadataChunkMarker(index) + chunks.get(index), binaryName);
+        }
+        ArrayList<Integer> replacementOrder = new ArrayList<>(METADATA_CHUNK_COUNT);
+        for (int index = 0; index < METADATA_CHUNK_COUNT; index++) {
+            replacementOrder.add(index);
+        }
+        replacementOrder.sort((left, right) -> Integer.compare(starts[left], starts[right]));
+        ByteArrayOutputStream output = new ByteArrayOutputStream(bytes.length);
         try {
-            output.write(bytes, 0, replacementStart);
-            output.write(replacement);
-            output.write(bytes, replacementEnd, bytes.length - replacementEnd);
+            int cursor = 0;
+            for (int index : replacementOrder) {
+                output.write(bytes, cursor, starts[index] - cursor);
+                output.write(replacements[index]);
+                cursor = ends[index];
+            }
+            output.write(bytes, cursor, bytes.length - cursor);
         } catch (IOException impossible) {
             throw new AssertionError(impossible);
         }
         return output.toByteArray();
+    }
+
+    private static List<String> metadataChunks(String value) {
+        ArrayList<String> result = new ArrayList<>(METADATA_CHUNK_COUNT);
+        int offset = 0;
+        for (int index = 0; index < METADATA_CHUNK_COUNT; index++) {
+            int start = offset;
+            int bytes = 0;
+            while (offset < value.length()) {
+                char character = value.charAt(offset);
+                int characterBytes = character == '\u0000' ? 2
+                        : character <= 0x7f ? 1
+                        : character <= 0x7ff ? 2 : 3;
+                if (bytes + characterBytes > METADATA_CHUNK_BYTES) {
+                    break;
+                }
+                bytes += characterBytes;
+                offset++;
+            }
+            if (start == offset && offset < value.length()) {
+                throw new ArtifactAssemblyException(
+                        "facade metadata exceeds the supported size");
+            }
+            result.add(value.substring(start, offset));
+        }
+        if (offset < value.length()) {
+            throw new ArtifactAssemblyException(
+                    "facade metadata exceeds the supported size");
+        }
+        while (result.size() < METADATA_CHUNK_COUNT) {
+            result.add("");
+        }
+        return List.copyOf(result);
+    }
+
+    private static String metadataChunkMarker(int index) {
+        return METADATA_CHUNK_PREFIX + index + METADATA_CHUNK_SUFFIX;
+    }
+
+    /** Returns -1 for an ordinary constant and -2 for a malformed marker. */
+    private static int metadataChunkIndex(String value) {
+        if (!value.startsWith(METADATA_CHUNK_PREFIX)) {
+            return -1;
+        }
+        int suffix = value.indexOf(METADATA_CHUNK_SUFFIX, METADATA_CHUNK_PREFIX.length());
+        if (suffix < 0) {
+            return -2;
+        }
+        String digits = value.substring(METADATA_CHUNK_PREFIX.length(), suffix);
+        if (digits.isEmpty() || (digits.length() > 1 && digits.charAt(0) == '0')) {
+            return -2;
+        }
+        try {
+            int index = Integer.parseInt(digits);
+            return index >= 0 && index < METADATA_CHUNK_COUNT ? index : -2;
+        } catch (NumberFormatException failure) {
+            return -2;
+        }
     }
 
     private static int checkedAdvance(int offset, int length, byte[] bytes, String binaryName) {
@@ -591,9 +736,44 @@ public final class ArtifactAssembly implements ArtifactSource {
         }
     }
 
-    private static void validateRuntimeClass(String entryName, byte[] bytes) {
-        if (!entryName.startsWith("io/mindspice/lyra/runtime/") || !entryName.endsWith(".class")) {
-            throw new ArtifactAssemblyException("bundled runtime contains an invalid entry: " + entryName);
+    /**
+     * The debug closure requirement is fixed: the compiler and REPL
+     * distribution plus the runtime at the artifact's own execution profile.
+     * Ordinary and attachable publications keep their existing requirement
+     * sets so schema-1 compatibility is unchanged.
+     */
+    private static List<ArtifactDependency> dependencyRequirements(
+            ArtifactProfile artifactProfile, boolean replCapable) {
+        if (replCapable) {
+            ArtifactProfile runtimeProfile = artifactProfile == ArtifactProfile.ATTACHABLE
+                    ? ArtifactProfile.ATTACHABLE : ArtifactProfile.NORMAL;
+            return List.of(
+                    new ArtifactDependency("io.mindspice", "lyra-compiler",
+                            io.mindspice.lyra.runtime.LyraRuntimeConstants.COMPILER_VERSION,
+                            ArtifactProfile.NORMAL),
+                    new ArtifactDependency("io.mindspice", "lyra-repl",
+                            io.mindspice.lyra.runtime.LyraRuntimeConstants.REPL_VERSION,
+                            ArtifactProfile.NORMAL),
+                    new ArtifactDependency("io.mindspice", "lyra-runtime",
+                            io.mindspice.lyra.runtime.LyraRuntimeConstants.RUNTIME_VERSION,
+                            runtimeProfile));
+        }
+        if (artifactProfile == ArtifactProfile.ATTACHABLE) {
+            return List.of(new ArtifactDependency("io.mindspice", "lyra-runtime",
+                    io.mindspice.lyra.runtime.LyraRuntimeConstants.RUNTIME_VERSION,
+                    ArtifactProfile.ATTACHABLE));
+        }
+        return List.of();
+    }
+
+    private static void validateClosureClass(String entryName, byte[] bytes, boolean replCapable) {
+        boolean runtimeEntry = entryName.startsWith("io/mindspice/lyra/runtime/");
+        boolean productionClosure = replCapable
+                && (entryName.startsWith("io/mindspice/lyra/compiler/")
+                || entryName.startsWith("io/mindspice/lyra/repl/"));
+        if ((!runtimeEntry && !productionClosure) || !entryName.endsWith(".class")) {
+            throw new ArtifactAssemblyException(
+                    "bundled production closure contains an invalid entry: " + entryName);
         }
         String binaryName = entryName.substring(0, entryName.length() - ".class".length())
                 .replace('/', '.');
@@ -601,15 +781,22 @@ public final class ArtifactAssembly implements ArtifactSource {
     }
 
     private static void validateGeneratedClasses(JvmBytecodeArtifact artifact,
-                                                 Map<String, byte[]> classes) {
+                                                 Map<String, byte[]> classes,
+                                                 boolean replCapable) {
         if (!List.copyOf(classes.keySet()).equals(artifact.classNames())) {
             throw new ArtifactAssemblyException("generated class inventory is not the validated plan inventory");
         }
         for (Map.Entry<String, byte[]> entry : classes.entrySet()) {
-            if (entry.getKey().startsWith("io.mindspice.lyra.runtime.")) {
+            String binaryName = entry.getKey();
+            if (binaryName.startsWith("io.mindspice.lyra.runtime.")
+                    || replCapable && (binaryName.startsWith("io.mindspice.lyra.compiler.")
+                    || binaryName.startsWith("io.mindspice.lyra.repl."))) {
                 throw new ArtifactAssemblyException(
-                        "generated classes may not occupy the shared runtime namespace: "
-                                + entry.getKey());
+                        replCapable && !binaryName.startsWith("io.mindspice.lyra.runtime.")
+                                ? "debug-capable generated classes may not occupy the bundled production closure namespace: "
+                                + binaryName
+                                : "generated classes may not occupy the shared runtime namespace: "
+                                + binaryName);
             }
             ClassFileReader.ParsedClass parsed = ClassFileReader.read(entry.getKey(), entry.getValue());
             EntryNames.require(entry.getKey().replace('.', '/') + ".class");
@@ -683,6 +870,9 @@ public final class ArtifactAssembly implements ArtifactSource {
         optionParts.add(Boolean.toString(previewRequired));
         optionParts.add(Boolean.toString(options.includeSources()));
         optionParts.add(bytecode.javaBasePackage());
+        if (options.replCapable()) {
+            optionParts.add("repl-capable");
+        }
         bytecode.reproducibleOptions().entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())
                 .forEach(entry -> optionParts.add(entry.getKey() + "=" + entry.getValue()));

@@ -28,6 +28,7 @@ public final class CompileRequest {
     private final boolean includeSources;
     private final Map<String, String> semanticOptions;
     private final CompileProfile compileProfile;
+    private final boolean debugCapable;
 
     private CompileRequest(Builder builder) {
         int roots = (builder.rootPath == null ? 0 : 1)
@@ -50,6 +51,11 @@ public final class CompileRequest {
         includeSources = builder.includeSources;
         semanticOptions = copyOptions(builder.semanticOptions);
         compileProfile = Objects.requireNonNull(builder.compileProfile, "compileProfile");
+        debugCapable = builder.debugCapable;
+        if (debugCapable && compileProfile == CompileProfile.SESSION) {
+            throw new IllegalArgumentException(
+                    "debug-capable publications are not supported for the session profile");
+        }
     }
 
     public CompileRequest(Path root) {
@@ -186,6 +192,21 @@ public final class CompileRequest {
         return compileProfile.isAttachable();
     }
 
+    /**
+     * True when the compiled publication must embed the complete source
+     * snapshot, resolution-topology, and reproducible-option context and
+     * declare the exact production closure requirement for debug-capable
+     * REPL deployment.
+     */
+    public boolean debugCapable() {
+        return debugCapable;
+    }
+
+    /** Alias for the debug-capability accessor. */
+    public boolean debug() {
+        return debugCapable;
+    }
+
     /** Converts the public source settings to the graph-discovery contract. */
     public SourceConfiguration sourceConfiguration() {
         List<io.mindspice.lyra.compiler.source.SourceResolver> internalResolvers =
@@ -207,14 +228,15 @@ public final class CompileRequest {
                 && previewEnabled == request.previewEnabled
                 && includeSources == request.includeSources
                 && semanticOptions.equals(request.semanticOptions)
-                && compileProfile == request.compileProfile;
+                && compileProfile == request.compileProfile
+                && debugCapable == request.debugCapable;
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(rootPath, rootModule, rootSource, sourceRoots, resolvers,
                 javaBasePackage, javaTarget, previewEnabled, includeSources, semanticOptions,
-                compileProfile);
+                compileProfile, debugCapable);
     }
 
     @Override
@@ -307,6 +329,7 @@ public final class CompileRequest {
         private boolean includeSources;
         private Map<String, String> semanticOptions = Map.of();
         private CompileProfile compileProfile = CompileProfile.NORMAL;
+        private boolean debugCapable;
 
         public Builder root(Path value) {
             clearRoot();
@@ -482,6 +505,21 @@ public final class CompileRequest {
 
         public Builder replEnabled(boolean value) {
             return attachable(value);
+        }
+
+        /**
+         * Marks the publication as debug-capable: embedded source context,
+         * resolution topology, reproducible options, and the exact declared
+         * compiler/REPL/runtime closure requirement.  Generated code stays
+         * on the selected profile; NORMAL remains the uninstrumented ABI.
+         */
+        public Builder debugCapable(boolean value) {
+            debugCapable = value;
+            return this;
+        }
+
+        public Builder debug(boolean value) {
+            return debugCapable(value);
         }
 
         public Builder semanticOptions(Map<String, String> values) {

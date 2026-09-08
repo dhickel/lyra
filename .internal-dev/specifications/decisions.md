@@ -269,7 +269,25 @@
 - **Caveat:** cancellation remains cooperative. A root function or blocking I/O that never reaches a generated boundary can delay the terminal cancellation result; this is never a justification for interruption.
 - **Affected specifications:** `repl.md`, `backend-runtime.md`; `LyraOwnerController`, `SessionStorageDomain`, `ApplicationAttachment`, attachable emitter safe points, ApplicationSafePointTest/AttachmentCancellationTest.
 
-## 2026-09-08 — Credential-Free Remote Protocol v2 Wire Design
+## 2026-09-08 — Deterministic Debug Artifact Packaging (Phase 11)
+
+### Source and review
+
+- **Source:** accepted REPL completion plan phase 11 (deterministic debug artifact packaging) executed on the Phase-10 baseline.
+- **Affected specifications:** `repl.md` (artifacts and compatibility), `backend-runtime.md` (artifact metadata).
+- **Review timing:** revisit when Phase 12 launcher/activation composition or a later packaging requirement needs the wire.
+
+### Decision
+
+- **Decision:** debug capability is a versioned canonical metadata declaration (`replCapability`, schema 1) orthogonal to the generated-code execution profile. Debug publications always embed the complete reachable source snapshots, canonical import resolution topology, and reproducible scalar options, and declare the exact fixed closure: `io.mindspice:lyra-compiler`, `io.mindspice:lyra-repl`, `io.mindspice:lyra-runtime` at the artifact's own profile. The capability input enters the artifact revision only when declared, so ordinary schema-1 encodings, revisions, and runtime-only bundles stay byte-identical (proven by a frozen pre-Phase-11 fixture).
+- **Decision:** packaged reconstruction rebuilds the recorded graph through the ordinary compiler pipeline from embedded sources only; it never touches resolver objects, original files, initializers, or serialized IR. A rebuilt mismatch is a structured compatibility error, not a silently accepted context.
+- **Decision:** `io.mindspice.lyra.repl.ReplLauncher` is the fixed profile-aware Main-Class of debug bundled JARs. It locates its artifact from its own code source (bundled) or an explicit documented artifact-location argument (classes/thin), preflights the declared closure with a fixed source compile that executes no Lyra code, and preserves the ordinary exact `main`/exit contract. Ordinary bundles keep the dependency-free runtime `LyraLauncher`; the runtime compares launcher spellings only.
+- **Decision:** bundled closure collection reads fixed production code sources by package prefix (runtime, compiler, and the REPL anchor discovered without a static compiler->REPL dependency) and never scans arbitrary class-loader or Surefire resources. CLI, JLine, JMH, JUnit, test, and credential material is excluded by construction; missing or conflicting inventories are actionable packaging errors.
+- **Justification:** the declared-layout approach preserves schema-1 compatibility and ordinary AOT isolation while giving debug deployments a verified, reconstructible source context and a genuinely self-contained compiler/REPL closure.
+- **Alternatives rejected:** equating debug capability with the attachable execution profile (would change ordinary generated code), arbitrary classpath scanning for closure collection (would leak test/CLI/JLine material), and launcher-side resolver or IR serialization (would violate the no-live-objects reconstruction boundary).
+- **Caveat:** the launcher owns package launch composition only; run activation, listener bootstrap, and wait behavior belong to Phase 12.
+
+
 
 ### Source and review
 

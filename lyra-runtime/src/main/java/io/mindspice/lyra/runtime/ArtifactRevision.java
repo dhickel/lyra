@@ -13,6 +13,7 @@ import java.util.Optional;
 /** Deterministic revision of artifact compatibility inputs. */
 public final class ArtifactRevision implements Comparable<ArtifactRevision> {
     public static final String DOMAIN_TAG = "LYRA-ARTIFACT-REVISION";
+    private static final String REPL_CAPABILITY_DOMAIN = "LYRA-REPL-CAPABILITY";
     private final String value;
 
     private ArtifactRevision(String value) {
@@ -111,6 +112,32 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
                                            Optional<AttachmentContext> attachmentContext,
                                            List<? extends ArtifactImport> imports,
                                            Map<String, String> reproducibleOptions) {
+        return compute(compilerBuild, modules, javaNameMap, profile, packagingMode,
+                previewRequired, javaPackage, sources, runtimeRequirement, executionProfile,
+                hooks, dependencies, attachmentContext, imports, reproducibleOptions, false);
+    }
+
+    /**
+     * Computes a revision including the versioned debug capability when
+     * declared.  The capability input is emitted only for debug-capable
+     * publications so ordinary schema-1 revisions remain byte-identical.
+     */
+    public static ArtifactRevision compute(String compilerBuild,
+                                           List<ModuleMetadata> modules,
+                                           Map<String, String> javaNameMap,
+                                           RuntimeProfile profile,
+                                           PackagingMode packagingMode,
+                                           boolean previewRequired,
+                                           String javaPackage,
+                                           List<? extends SourceMetadata> sources,
+                                           Optional<RuntimeRequirement> runtimeRequirement,
+                                           ArtifactProfile executionProfile,
+                                           List<? extends ArtifactHook> hooks,
+                                           List<? extends ArtifactDependency> dependencies,
+                                           Optional<AttachmentContext> attachmentContext,
+                                           List<? extends ArtifactImport> imports,
+                                           Map<String, String> reproducibleOptions,
+                                           boolean replCapable) {
         CanonicalJson.requireUtf8(compilerBuild, "compilerBuild");
         if (compilerBuild.isBlank()) {
             throw new IllegalArgumentException("compilerBuild must not be blank");
@@ -157,7 +184,7 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
         }
         return computeWithMapCount(compilerBuild, sortedModules, javaNameMap, profile, packagingMode,
                 previewRequired, javaPackage, sortedSources, runtimeRequirement, executionProfile,
-                hooks, dependencies, attachmentContext, imports, reproducibleOptions);
+                hooks, dependencies, attachmentContext, imports, reproducibleOptions, replCapable);
     }
 
     private static ArtifactRevision computeWithMapCount(String compilerBuild,
@@ -174,7 +201,8 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
                                                         List<? extends ArtifactDependency> dependencies,
                                                         Optional<AttachmentContext> attachmentContext,
                                                         List<? extends ArtifactImport> imports,
-                                                        Map<String, String> reproducibleOptions) {
+                                                        Map<String, String> reproducibleOptions,
+                                                        boolean replCapable) {
         MessageDigest digest = sha256();
         putString(digest, DOMAIN_TAG);
         putInt(digest, LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION);
@@ -228,6 +256,10 @@ public final class ArtifactRevision implements Comparable<ArtifactRevision> {
             putInt(digest, requirement.minimumRuntimeAbi().major());
             putInt(digest, requirement.minimumRuntimeAbi().minor());
         });
+        if (replCapable) {
+            putString(digest, REPL_CAPABILITY_DOMAIN);
+            putInt(digest, LyraRuntimeConstants.REPL_CAPABILITY_SCHEMA);
+        }
         if (extended) {
             putInt(digest, hooks.size());
             hooks.stream().map(Objects::requireNonNull).sorted().forEach(hook -> {

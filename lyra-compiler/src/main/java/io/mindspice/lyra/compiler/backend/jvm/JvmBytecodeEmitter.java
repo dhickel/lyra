@@ -109,12 +109,28 @@ final class JvmBytecodeEmitter {
     private static final ClassDesc CD_SHORT = cd("java.lang.Short");
     private static final ClassDesc CD_CHARACTER = cd("java.lang.Character");
     private static final ClassDesc CD_LOCALE = cd("java.util.Locale");
+    /*
+     * A facade still exposes its metadata without depending on the artifact
+     * container.  CONSTANT_Utf8 is limited to 65,535 modified-UTF-8 bytes,
+     * while debug metadata may legitimately grow with graph/options size.
+     * Reserve a fixed, marker-addressable chunk inventory so ArtifactAssembly
+     * can replace the provisional text with a packaging-specific final value.
+     */
+    private static final String METADATA_CHUNK_PREFIX = "\u0001LYRA-METADATA-CHUNK-";
+    private static final String METADATA_CHUNK_SUFFIX = "\u0001";
+    private static final int METADATA_CHUNK_COUNT = 32;
+    private static final int METADATA_CHUNK_BYTES = 60_000;
 
     private JvmBytecodeEmitter() {
     }
 
     /** Emits all supported classes in the supplied deterministic plan order. */
     static JvmBytecodeArtifact emit(TypedIr ir, GeneratedTypePlan plan) {
+        return emit(ir, plan, false);
+    }
+
+    static JvmBytecodeArtifact emit(TypedIr ir, GeneratedTypePlan plan,
+                                    boolean chunkedMetadata) {
         TypedIr validated = Objects.requireNonNull(ir, "ir").requireValidated();
         Objects.requireNonNull(plan, "plan");
         try {
@@ -123,16 +139,21 @@ final class JvmBytecodeEmitter {
             throw new JvmEmissionException(validated.rootModule().span(),
                     "invalid JVM type plan: " + failure.getMessage(), true, failure);
         }
-        Emitter emitter = new Emitter(validated, plan);
+        Emitter emitter = new Emitter(validated, plan, chunkedMetadata);
         emitter.validateSupportedInput();
         return emitter.emit();
     }
 
     /** Structured phase boundary for expected emission failures. */
     static PhaseResult<JvmBytecodeArtifact> emitPhase(TypedIr ir, GeneratedTypePlan plan) {
+        return emitPhase(ir, plan, false);
+    }
+
+    static PhaseResult<JvmBytecodeArtifact> emitPhase(TypedIr ir, GeneratedTypePlan plan,
+                                                      boolean chunkedMetadata) {
         Objects.requireNonNull(ir, "ir").requireValidated();
         try {
-            return PhaseResult.success(emit(ir, plan));
+            return PhaseResult.success(emit(ir, plan, chunkedMetadata));
         } catch (JvmEmissionException failure) {
             return PhaseResult.failure(Diagnostic.error(
                     failure.invalidPlan()
@@ -239,6 +260,7 @@ final class JvmBytecodeEmitter {
         private final TypedIr ir;
         private final GeneratedTypePlan plan;
         private final JvmAbiMapper mapper;
+        private final boolean chunkedMetadata;
         private final Map<DeclarationId, IrDeclaration> declarations;
         private final Map<LambdaId, io.mindspice.lyra.compiler.ir.IrLambda> lambdas;
         private final Map<CaptureId, IrCapture> captures;
@@ -250,10 +272,11 @@ final class JvmBytecodeEmitter {
         private final Map<String, byte[]> bytes = new LinkedHashMap<>();
         private final Map<String, String> descriptors = new LinkedHashMap<>();
 
-        private Emitter(TypedIr ir, GeneratedTypePlan plan) {
+        private Emitter(TypedIr ir, GeneratedTypePlan plan, boolean chunkedMetadata) {
             this.ir = ir;
             this.plan = plan;
             this.mapper = plan.mapper();
+            this.chunkedMetadata = chunkedMetadata;
             this.declarations = ir.declarations().stream()
                     .collect(java.util.stream.Collectors.toUnmodifiableMap(
                             IrDeclaration::id, value -> value));
@@ -1749,7 +1772,27 @@ final class JvmBytecodeEmitter {
         }
 
         private void emitFacadeMetadata() {
-            code.ldc(metadataJson());
+            if (!owner.chunkedMetadata) {
+                code.ldc(metadataJson());
+                code.invokestatic(CD_METADATA_READER, "read",
+                        method("(Ljava/lang/String;)L" + RUNTIME + "ArtifactMetadata;"));
+                code.areturn();
+                return;
+            }
+            List<String> chunks;
+            try {
+                chunks = metadataChunks(metadataJson());
+            } catch (IllegalArgumentException failure) {
+                throw unsupported(memberSpan(), failure.getMessage());
+            }
+            for (int index = 0; index < METADATA_CHUNK_COUNT; index++) {
+                code.ldc(metadataChunkMarker(index) + chunks.get(index));
+                code.ldc(metadataChunkMarker(index).length());
+                code.invokevirtual(CD_STRING, "substring", method("(I)Ljava/lang/String;"));
+                if (index > 0) {
+                    code.invokevirtual(CD_STRING, "concat", method("(Ljava/lang/String;)Ljava/lang/String;"));
+                }
+            }
             code.invokestatic(CD_METADATA_READER, "read",
                     method("(Ljava/lang/String;)L" + RUNTIME + "ArtifactMetadata;"));
             code.areturn();
@@ -1849,6 +1892,41 @@ final class JvmBytecodeEmitter {
             // for the metadata that must be replaced at publication time.
             return canonical.substring(0, canonical.length() - 1)
                     + ",\"_lyraProvisional\":true}";
+        }
+
+        private static List<String> metadataChunks(String value) {
+            ArrayList<String> result = new ArrayList<>(METADATA_CHUNK_COUNT);
+            int offset = 0;
+            for (int index = 0; index < METADATA_CHUNK_COUNT; index++) {
+                int start = offset;
+                int bytes = 0;
+                while (offset < value.length()) {
+                    char character = value.charAt(offset);
+                    int characterBytes = character == '\u0000' ? 2
+                            : character <= 0x7f ? 1
+                            : character <= 0x7ff ? 2 : 3;
+                    if (bytes + characterBytes > METADATA_CHUNK_BYTES) {
+                        break;
+                    }
+                    bytes += characterBytes;
+                    offset++;
+                }
+                if (start == offset && offset < value.length()) {
+                    throw new IllegalArgumentException("facade metadata exceeds the supported size");
+                }
+                result.add(value.substring(start, offset));
+            }
+            if (offset < value.length()) {
+                throw new IllegalArgumentException("facade metadata exceeds the supported size");
+            }
+            while (result.size() < METADATA_CHUNK_COUNT) {
+                result.add("");
+            }
+            return List.copyOf(result);
+        }
+
+        private static String metadataChunkMarker(int index) {
+            return METADATA_CHUNK_PREFIX + index + METADATA_CHUNK_SUFFIX;
         }
 
         private void emitFacadeClose() {

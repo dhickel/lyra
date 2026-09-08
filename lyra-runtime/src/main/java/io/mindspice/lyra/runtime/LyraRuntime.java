@@ -38,8 +38,12 @@ public final class LyraRuntime {
     private static final String GENERATED_PREFIX = "$lyra$";
     private static final String FACADE_PREFIX = "$lyra$facade$";
     private static final String RUNTIME_PACKAGE = "io.mindspice.lyra.runtime.";
+    private static final String COMPILER_PACKAGE = "io.mindspice.lyra.compiler.";
+    private static final String REPL_PACKAGE = "io.mindspice.lyra.repl.";
     private static final String REQUIRED_LAUNCHER_ENTRY =
             "io/mindspice/lyra/runtime/LyraLauncher.class";
+    private static final String REQUIRED_REPL_LAUNCHER_ENTRY =
+            "io/mindspice/lyra/repl/ReplLauncher.class";
     private static final String MANIFEST_PATH = "META-INF/MANIFEST.MF";
     private static final String SOURCES_PATH = "META-INF/lyra/sources/";
     private static final int CLASS_FILE_MAGIC = 0xcafebabe;
@@ -949,7 +953,14 @@ public final class LyraRuntime {
         expected.put("Lyra-Packaging-Mode", metadata.packagingMode().canonicalSpelling());
         expected.put("Lyra-Preview-Required", Boolean.toString(metadata.previewRequired()));
         if (metadata.packagingMode() == PackagingMode.BUNDLED_JAR) {
-            expected.put("Main-Class", "io.mindspice.lyra.runtime.LyraLauncher");
+            // Profile-aware launcher composition: ordinary bundles use the
+            // dependency-free runtime launcher; debug-capable bundles use the
+            // fixed REPL launcher that owns the compiler/REPL closure
+            // preflight.  The runtime compares the declared spelling only and
+            // has no static dependency on the REPL distribution.
+            expected.put("Main-Class", metadata.replCapable()
+                    ? REQUIRED_REPL_LAUNCHER_ENTRY.replace('/', '.').replace(".class", "")
+                    : "io.mindspice.lyra.runtime.LyraLauncher");
         }
         if (!attributeOrder.equals(attributeOrder.stream().sorted().toList())
                 || !expected.equals(attributes)) {
@@ -960,8 +971,14 @@ public final class LyraRuntime {
     private static void validateClassEntries(Map<String, byte[]> entries,
                                              ArtifactMetadata metadata) {
         if (metadata.packagingMode() == PackagingMode.BUNDLED_JAR
+                && !metadata.replCapable()
                 && !entries.containsKey(REQUIRED_LAUNCHER_ENTRY)) {
             throw compatibility("bundled artifact is missing its Lyra launcher", null);
+        }
+        if (metadata.packagingMode() == PackagingMode.BUNDLED_JAR
+                && metadata.replCapable()
+                && !entries.containsKey(REQUIRED_REPL_LAUNCHER_ENTRY)) {
+            throw compatibility("debug bundled artifact is missing its REPL launcher", null);
         }
         if (metadata.javaPackage().equals("java") || metadata.javaPackage().startsWith("java.")) {
             throw compatibility("generated artifact namespace is reserved by the JVM: "
@@ -970,6 +987,14 @@ public final class LyraRuntime {
         if (metadata.javaPackage().equals("io.mindspice.lyra.runtime")
                 || metadata.javaPackage().startsWith("io.mindspice.lyra.runtime.")) {
             throw compatibility("generated artifact namespace conflicts with the shared runtime: "
+                    + metadata.javaPackage(), null);
+        }
+        if (metadata.replCapable()
+                && (metadata.javaPackage().equals("io.mindspice.lyra.compiler")
+                || metadata.javaPackage().startsWith("io.mindspice.lyra.compiler.")
+                || metadata.javaPackage().equals("io.mindspice.lyra.repl")
+                || metadata.javaPackage().startsWith("io.mindspice.lyra.repl."))) {
+            throw compatibility("debug artifact namespace conflicts with its production closure: "
                     + metadata.javaPackage(), null);
         }
         int expectedMajor = metadata.javaClassFileTarget() + 44;
@@ -984,7 +1009,9 @@ public final class LyraRuntime {
             classCount++;
             String binaryName = binaryNameForClassEntry(name);
             boolean bundledRuntime = metadata.packagingMode() == PackagingMode.BUNDLED_JAR
-                    && binaryName.startsWith(RUNTIME_PACKAGE);
+                    && (binaryName.startsWith(RUNTIME_PACKAGE)
+                    || metadata.replCapable() && (binaryName.startsWith(COMPILER_PACKAGE)
+                    || binaryName.startsWith(REPL_PACKAGE)));
             if (!bundledRuntime) {
                 generatedClassCount++;
                 if (!binaryName.startsWith(packagePrefix)
@@ -1029,7 +1056,9 @@ public final class LyraRuntime {
             }
             String binaryName = binaryNameForClassEntry(entry.getKey());
             if (metadata.packagingMode() == PackagingMode.BUNDLED_JAR
-                    && binaryName.startsWith(RUNTIME_PACKAGE)) {
+                    && (binaryName.startsWith(RUNTIME_PACKAGE)
+                    || metadata.replCapable() && (binaryName.startsWith(COMPILER_PACKAGE)
+                    || binaryName.startsWith(REPL_PACKAGE)))) {
                 continue;
             }
             classes.put(binaryName, entry.getValue().clone());

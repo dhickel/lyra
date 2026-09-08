@@ -107,8 +107,12 @@ final class ArtifactOutputWriter {
                 new ManifestAttribute("Lyra-Packaging-Mode", metadata.packagingMode().canonicalSpelling()),
                 new ManifestAttribute("Lyra-Preview-Required", Boolean.toString(metadata.previewRequired()))));
         if (metadata.packagingMode() == io.mindspice.lyra.runtime.PackagingMode.BUNDLED_JAR) {
-            attributes.add(new ManifestAttribute("Main-Class",
-                    "io.mindspice.lyra.runtime.LyraLauncher"));
+            // Profile-aware launcher composition: ordinary bundles run the
+            // dependency-free runtime launcher; debug-capable bundles run the
+            // fixed REPL launcher that owns the closure preflight.
+            attributes.add(new ManifestAttribute("Main-Class", metadata.replCapable()
+                    ? "io.mindspice.lyra.repl.ReplLauncher"
+                    : "io.mindspice.lyra.runtime.LyraLauncher"));
         }
         ArrayList<ManifestAttribute> sorted = new ArrayList<>(attributes);
         sorted.sort(Comparator.comparing(ManifestAttribute::name));

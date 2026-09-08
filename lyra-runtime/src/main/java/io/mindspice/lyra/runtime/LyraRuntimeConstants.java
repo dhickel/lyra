@@ -16,7 +16,12 @@ public final class LyraRuntimeConstants {
     public static final String JAVA_PROFILE = "java-25";
     public static final String RUNTIME_GROUP_ID = "io.mindspice";
     public static final String RUNTIME_ARTIFACT_ID = "lyra-runtime";
+    public static final String COMPILER_ARTIFACT_ID = "lyra-compiler";
+    public static final String REPL_ARTIFACT_ID = "lyra-repl";
     public static final String RUNTIME_VERSION = "1.0-SNAPSHOT";
+    public static final String COMPILER_VERSION = RUNTIME_VERSION;
+    public static final String REPL_VERSION = RUNTIME_VERSION;
+    public static final int REPL_CAPABILITY_SCHEMA = ReplCapability.SCHEMA;
     public static final String DEBUG_MAP_PATH = "META-INF/lyra/debug-map.json";
     public static final String ARTIFACT_METADATA_PATH = "META-INF/lyra/artifact.json";
 

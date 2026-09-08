@@ -18,6 +18,7 @@ final class ArtifactAssemblyOptions {
 
     private final PackagingMode packagingMode;
     private final boolean includeSources;
+    private final boolean replCapable;
     private final RuntimeProfile profile;
     private final RuntimeAbi runtimeAbi;
     private final String compilerVersion;
@@ -28,6 +29,7 @@ final class ArtifactAssemblyOptions {
     private ArtifactAssemblyOptions(Builder builder) {
         this.packagingMode = Objects.requireNonNull(builder.packagingMode, "packagingMode");
         this.includeSources = builder.includeSources;
+        this.replCapable = builder.replCapable;
         this.profile = Objects.requireNonNull(builder.profile, "profile");
         this.runtimeAbi = Objects.requireNonNull(builder.runtimeAbi, "runtimeAbi");
         if (!this.runtimeAbi.equals(profile.runtimeAbi())) {
@@ -82,6 +84,11 @@ final class ArtifactAssemblyOptions {
         return includeSources;
     }
 
+    /** True when the publication declares the debug REPL capability. */
+    boolean replCapable() {
+        return replCapable;
+    }
+
     RuntimeProfile profile() {
         return profile;
     }
@@ -109,6 +116,7 @@ final class ArtifactAssemblyOptions {
     static final class Builder {
         private PackagingMode packagingMode = PackagingMode.CLASSES;
         private boolean includeSources;
+        private boolean replCapable;
         private RuntimeProfile profile = RuntimeProfile.CURRENT;
         private RuntimeAbi runtimeAbi = RuntimeAbi.CURRENT;
         private String compilerVersion = DEFAULT_COMPILER_VERSION;
@@ -123,6 +131,11 @@ final class ArtifactAssemblyOptions {
 
         Builder includeSources(boolean value) {
             includeSources = value;
+            return this;
+        }
+
+        Builder replCapable(boolean value) {
+            replCapable = value;
             return this;
         }
 

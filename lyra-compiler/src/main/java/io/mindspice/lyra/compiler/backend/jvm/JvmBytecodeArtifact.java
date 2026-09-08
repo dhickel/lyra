@@ -45,12 +45,21 @@ public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
     public static PhaseResult<JvmBytecodeArtifact> emit(TypedIr ir, String basePackage,
                                                          EmissionMode mode,
                                                          Map<String, String> reproducibleOptions) {
+        return emit(ir, basePackage, mode, reproducibleOptions, false);
+    }
+
+    /** Internal compiler bridge that enables the large-metadata facade form. */
+    public static PhaseResult<JvmBytecodeArtifact> emit(TypedIr ir, String basePackage,
+                                                         EmissionMode mode,
+                                                         Map<String, String> reproducibleOptions,
+                                                         boolean chunkedMetadata) {
         Objects.requireNonNull(ir, "ir").requireValidated();
         Objects.requireNonNull(mode, "mode");
         Objects.requireNonNull(reproducibleOptions, "reproducibleOptions");
         GeneratedTypePlan plan = GeneratedTypePlanner.plan(ir,
                 Objects.requireNonNull(basePackage, "basePackage"), mode);
-        PhaseResult<JvmBytecodeArtifact> result = JvmBytecodeEmitter.emitPhase(ir, plan);
+        PhaseResult<JvmBytecodeArtifact> result = JvmBytecodeEmitter.emitPhase(
+                ir, plan, chunkedMetadata);
         if (result instanceof PhaseResult.Success<JvmBytecodeArtifact> success) {
             // The emitter constructs the immutable bytecode inventory.  Copy
             // it into a context-bearing publication object only after the

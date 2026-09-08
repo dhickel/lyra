@@ -30,7 +30,7 @@ public final class ArtifactMetadataReader {
             "runtimeAbi", "profile", "javaPackage", "previewSupported", "javaClassFileTarget", "previewRequired", "artifactId",
             "artifactRevision", "rootModuleId", "rootModuleRevision", "modules", "sources", "exports",
             "javaNameMap", "debugMapVersion", "debugMapHash", "packagingMode",
-            "runtimeRequirement", "executionProfile", "hookRequirements",
+            "runtimeRequirement", "replCapability", "executionProfile", "hookRequirements",
             "dependencyRequirements", "attachmentContext", "imports", "reproducibleOptions");
     private static final Set<String> REQUIRED_FIELDS = Set.of(
             "schemaVersion", "languageContractVersion", "compilerVersion", "compilerBuild",
@@ -155,12 +155,30 @@ public final class ArtifactMetadataReader {
         Map<String, String> options = object.containsKey("reproducibleOptions")
                 ? decodeOptions(objectValue(object.get("reproducibleOptions"), "reproducibleOptions"))
                 : Map.of();
-        validateProfileEncoding(object, executionProfile);
+        Optional<ReplCapability> replCapability = object.containsKey("replCapability")
+                ? Optional.of(decodeReplCapability(
+                        objectValue(object.get("replCapability"), "replCapability")))
+                : Optional.empty();
+        validateProfileEncoding(object, executionProfile, replCapability.isPresent());
         return new ArtifactMetadata(schemaVersion, languageVersion, compilerVersion, compilerBuild,
                 runtimeAbi, profile, target, previewRequired, artifactId, artifactRevision,
                 rootModuleId, rootModuleRevision, modules, sources, javaPackage, exports, names, debugMapVersion,
                 debugMapHash, packagingMode, requirement, executionProfile, hooks, dependencies,
-                attachmentContext, imports, options);
+                attachmentContext, imports, options, replCapability);
+    }
+
+    private static ReplCapability decodeReplCapability(Map<String, Object> object) {
+        validateObjectKeys(object, List.of("schema"), Set.of("schema"), "REPL capability");
+        if (object.size() != 1) {
+            throw new IllegalArgumentException(
+                    "REPL capability must be the canonical {\"schema\":1} object");
+        }
+        Object value = object.get("schema");
+        if (!(value instanceof java.math.BigInteger schema)
+                || !schema.equals(java.math.BigInteger.ONE)) {
+            throw new IllegalArgumentException("REPL capability must be the canonical {\"schema\":1} object");
+        }
+        return ReplCapability.CURRENT;
     }
 
     private static List<ModuleMetadata> decodeModules(List<Object> values) {
@@ -283,14 +301,33 @@ public final class ArtifactMetadataReader {
     }
 
     private static void validateProfileEncoding(Map<String, Object> object,
-                                                 ArtifactProfile profile) {
+                                                 ArtifactProfile profile,
+                                                 boolean replCapable) {
         List<String> extensionFields = List.of("executionProfile", "hookRequirements",
                 "dependencyRequirements", "attachmentContext", "imports",
                 "reproducibleOptions");
-        if (profile == ArtifactProfile.NORMAL) {
+        if (profile == ArtifactProfile.NORMAL && !replCapable) {
             if (extensionFields.stream().anyMatch(object::containsKey)) {
                 throw new IllegalArgumentException(
                         "normal schema-1 metadata must omit profile extension fields");
+            }
+            return;
+        }
+        if (profile == ArtifactProfile.NORMAL) {
+            // Debug-capable normal publications declare the context and the
+            // closure requirement but keep the ordinary generated-code ABI.
+            List<String> required = List.of("hookRequirements", "dependencyRequirements",
+                    "imports", "reproducibleOptions");
+            for (String field : required) {
+                if (!object.containsKey(field)) {
+                    throw new IllegalArgumentException(
+                            "debug-capable normal metadata is missing required profile field: " + field);
+                }
+            }
+            if (object.containsKey("executionProfile")
+                    || object.containsKey("attachmentContext")) {
+                throw new IllegalArgumentException(
+                        "debug-capable normal metadata must omit executionProfile and attachmentContext");
             }
             return;
         }
@@ -453,7 +490,8 @@ public final class ArtifactMetadataReader {
                 metadata.javaNameMap(), metadata.profile(), metadata.packagingMode(), metadata.previewRequired(),
                 metadata.javaPackage(), metadata.sources(), metadata.runtimeRequirement(),
                 metadata.executionProfile(), metadata.hookRequirements(), metadata.dependencyRequirements(),
-                metadata.attachmentContext(), metadata.imports(), metadata.reproducibleOptions());
+                metadata.attachmentContext(), metadata.imports(), metadata.reproducibleOptions(),
+                metadata.replCapable());
         if (!expected.equals(metadata.artifactRevision())) {
             throw compatibility("artifact revision does not match canonical metadata inputs", null);
         }
