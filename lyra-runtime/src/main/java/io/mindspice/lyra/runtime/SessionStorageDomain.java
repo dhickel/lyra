@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * Owner-confined typed storage authority for in-process submission linkage.
@@ -66,6 +67,8 @@ public final class SessionStorageDomain implements AutoCloseable {
                 Collections.newSetFromMap(new IdentityHashMap<>());
         private final Set<Object> anchoredHolders =
                 Collections.newSetFromMap(new IdentityHashMap<>());
+        /** One optional-module source catalog shared by every service on this root. */
+        private Object sharedSourceHolder;
         private SessionStorageDomain activeDomain;
         private boolean closed;
 
@@ -122,6 +125,30 @@ public final class SessionStorageDomain implements AutoCloseable {
             return anchor(holder);
         }
 
+        /**
+         * Returns the one source catalog shared by successive attachment
+         * services on this root, creating and anchoring it on first use.
+         * Runtime deliberately treats the holder as opaque so it acquires no
+         * compiler or REPL dependency.
+         */
+        public <T> T sharedSourceHolder(Class<T> holderType,
+                                        Supplier<? extends T> factory) {
+            owner.check();
+            requireOpen();
+            Objects.requireNonNull(holderType, "holderType");
+            Objects.requireNonNull(factory, "factory");
+            if (sharedSourceHolder == null) {
+                sharedSourceHolder = Objects.requireNonNull(factory.get(),
+                        "source holder factory returned null");
+                anchoredHolders.add(sharedSourceHolder);
+            }
+            if (!holderType.isInstance(sharedSourceHolder)) {
+                throw new LyraLifecycleException(
+                        "root lifetime already owns an incompatible source holder");
+            }
+            return holderType.cast(sharedSourceHolder);
+        }
+
         /** Anchors immutable semantic/callable summary data required by a live producer. */
         public <T> T anchorSummary(T holder) {
             return anchor(holder);
@@ -155,6 +182,7 @@ public final class SessionStorageDomain implements AutoCloseable {
             }
             typeDomain.retireSelf();
             anchoredHolders.clear();
+            sharedSourceHolder = null;
             retentions.clear();
             closed = true;
             activeDomain = null;

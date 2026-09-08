@@ -856,6 +856,21 @@ public final class ModuleGraphDiscovery {
                                 + " cannot be reused with a different stable identity or byte sequence"));
             }
             if (snapshot == null) {
+                // A pinned module owns an exact retained snapshot whose
+                // origin identity is the public resolver source.  Reuse that
+                // snapshot verbatim so a later graph keeps the producer's
+                // original identity instead of re-capturing with the
+                // qualified session identity as its origin.
+                PinnedModule pinned = forceFresh
+                        ? null : pinnedModules.get(source.logicalModule());
+                if (pinned != null
+                        && pinned.moduleId().sourceId().equals(source.sourceId())
+                        && Arrays.equals(pinned.snapshot().capturedUtf8Bytes(),
+                                source.capturedUtf8Bytes())) {
+                    snapshot = pinned.snapshot();
+                }
+            }
+            if (snapshot == null) {
                 byte[] bytes = source.capturedUtf8Bytes();
                 byte[] cachedBytes = forceFresh ? null : bytesByPhysical.get(source.physicalKey());
                 if (cachedBytes != null && !Arrays.equals(cachedBytes, bytes)) {

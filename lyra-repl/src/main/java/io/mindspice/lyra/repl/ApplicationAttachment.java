@@ -84,7 +84,20 @@ public final class ApplicationAttachment implements AutoCloseable {
         this.context = Objects.requireNonNull(context, "context");
         this.options = Objects.requireNonNull(options, "options");
         owner = registration.lifecycle().owner();
-        sourceRegistry = new SourceRegistry(options);
+        SourceRegistry requestedSources = new SourceRegistry(options);
+        List<io.mindspice.lyra.compiler.source.SourceSnapshot> rootSources =
+                context.moduleEnvironment().sourceInventory();
+        if (!requestedSources.canRetainGraph(rootSources)) {
+            throw new IllegalArgumentException(
+                    "attached root source context exceeds the configured source registry capacity");
+        }
+        sourceRegistry = registration.rootLifetime().sharedSourceHolder(
+                SourceRegistry.class, () -> requestedSources);
+        if (!sourceRegistry.fitsWithin(requestedSources)) {
+            throw new IllegalArgumentException(
+                    "retained root producer sources exceed the configured source registry capacity");
+        }
+        retainRootSources();
         compilerSnapshot = context.initialSnapshot();
         // The workspace shares the registered root controller so synchronous
         // submissions, owner-dispatched evaluations and generated application
@@ -156,6 +169,17 @@ public final class ApplicationAttachment implements AutoCloseable {
             throw new io.mindspice.lyra.runtime.LyraCompatibilityException(
                     "registered root metadata disagrees with the supplied root handle");
         }
+    }
+
+    /** Retains every source needed to render failures from the live application graph. */
+    private void retainRootSources() {
+        List<io.mindspice.lyra.compiler.source.SourceSnapshot> sources =
+                context.moduleEnvironment().sourceInventory();
+        if (!sourceRegistry.canRetainGraph(sources)) {
+            throw new IllegalArgumentException(
+                    "attached root source context exceeds the configured source registry capacity");
+        }
+        sourceRegistry.retainGraph(sources);
     }
 
     /** Seeds root-scope bindings and borrowed application dependency exports. */
@@ -640,7 +664,7 @@ public final class ApplicationAttachment implements AutoCloseable {
         storage.reset();
         storageBindings.clear();
         registerBorrowedLinks();
-        sourceRegistry.clear();
+        sourceRegistry.clearRecords();
         workspace.reset();
         Map<String, ExternalBinding> bindings = new LinkedHashMap<>();
         context.rootBindings().forEach(binding -> bindings.put(binding.name(), binding));
@@ -677,7 +701,7 @@ public final class ApplicationAttachment implements AutoCloseable {
             storageBindings.clear();
             lifecycle = SessionLifecycleState.CLOSED;
             workspace.close();
-            sourceRegistry.clear();
+            sourceRegistry.clearRecords();
             registration.close();
         }
     }

@@ -341,6 +341,12 @@ final class JvmBytecodeEmitter {
             }
             for (IrNode node : io.mindspice.lyra.compiler.ir.IrTraversal.preOrder(ir)) {
                 requireSupportedType(node.type(), node.span());
+                if (node instanceof IrNode.Constant constant
+                        && constant.value() instanceof IrConstantValue.StringValue string
+                        && modifiedUtf8Length(string.value()) > 65_535) {
+                    throw unsupported(node.span(),
+                            "string literal exceeds the JVM CONSTANT_Utf8 limit of 65535 modified-UTF-8 bytes");
+                }
                 if (node instanceof IrNode.Access access
                         && access.accessKind() == AccessKind.MEMBER_VALUE
                         && access.memberName().filter(value -> !value.equals("length"))
@@ -357,6 +363,20 @@ final class JvmBytecodeEmitter {
                 declaration.contract().ifPresent(contract ->
                         requireSupportedType(contract.valueType(), declaration.span()));
             }
+        }
+
+        private static int modifiedUtf8Length(String value) {
+            int length = 0;
+            for (int index = 0; index < value.length(); index++) {
+                char codeUnit = value.charAt(index);
+                int encoded = codeUnit >= 0x0001 && codeUnit <= 0x007f
+                        ? 1 : codeUnit <= 0x07ff ? 2 : 3;
+                if (length > 65_535 - encoded) {
+                    return 65_536;
+                }
+                length += encoded;
+            }
+            return length;
         }
 
         private void requireSupportedType(LyraType type, SourceSpan span) {

@@ -222,8 +222,11 @@ public final class RemoteServer implements AutoCloseable {
         }
         drainOutbound(liveConnections);
         for (Connection connection : liveConnections) {
-            connection.closeTransport();
-            connection.closed.set(true);
+            if (connection.closed.compareAndSet(false, true)) {
+                connection.closeTransport();
+                connections.remove(connection);
+                connectionSlots.release();
+            }
         }
         controller.set(null);
     }
@@ -355,7 +358,13 @@ public final class RemoteServer implements AutoCloseable {
         } catch (IOException ignored) {
             // Connection teardown is handled below; no sensitive detail is sent.
         } finally {
-            closeConnection(connection);
+            // Graceful server shutdown owns terminal-frame draining and the
+            // final transport close. A handler that observes the server's
+            // closed flag must not clear its writer queue underneath that
+            // drain; ordinary peer disconnects still use the full cleanup.
+            if (!closed.get()) {
+                closeConnection(connection);
+            }
         }
     }
 

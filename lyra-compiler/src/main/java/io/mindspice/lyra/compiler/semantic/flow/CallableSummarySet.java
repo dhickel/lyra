@@ -230,11 +230,32 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
                 intrinsics.put(declaration, module);
             }
         });
-        List<CallableScc> selectedComponents = components.stream()
-                .filter(component -> component.members().stream()
-                        .allMatch(selectedLambdas::contains))
-                .toList();
-        return new CallableSummarySet(selected, declarations, intrinsics, selectedComponents);
+        List<CallableScc> selectedComponents = new ArrayList<>();
+        int nextOrdinal = components.stream()
+                .mapToInt(CallableScc::ordinal).max().orElse(-1) + 1;
+        for (CallableScc component : components) {
+            if (component.members().stream().allMatch(selectedLambdas::contains)) {
+                selectedComponents.add(component);
+                continue;
+            }
+            // A solved component may mix current-graph lambdas with
+            // certificate-only partners (for example, one module of a pinned
+            // import cycle is reused while the other stays certificate-only).
+            // The whole component cannot be published, but every selected
+            // member summary must still be covered, so each selected member
+            // becomes a singleton component of its already-solved summary.
+            // The solver recomputes components from scratch each generation,
+            // so this published topology never drives a later fixed point.
+            for (LambdaId member : component.members().stream().sorted().toList()) {
+                if (selectedLambdas.contains(member)) {
+                    selectedComponents.add(new CallableScc(
+                            nextOrdinal++, List.of(member), List.of(), false));
+                }
+            }
+        }
+        List<CallableScc> orderedComponents = new ArrayList<>(selectedComponents);
+        orderedComponents.sort(Comparator.comparingInt(CallableScc::ordinal));
+        return new CallableSummarySet(selected, declarations, intrinsics, orderedComponents);
     }
 
     public Map<DeclarationId, LambdaId> lambdaByDeclaration() {

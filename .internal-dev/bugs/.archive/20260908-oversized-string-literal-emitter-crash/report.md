@@ -36,8 +36,8 @@ A reachable user input (a long string literal) crashes the compiler with an infr
 
 ## Status
 
-Open.
+Resolved by Phase 13 on baseline `9ee3f02acda2988752b737ee8aac057f09e633ae`. The emitter now preflights each string literal's exact JVM modified-UTF-8 length and returns `LYC-EMIT-001` at the literal span before class emission. The session regression proves an earlier mutable value remains unchanged. Mirrored and closed as https://github.com/dhickel/lyra/issues/3 after Java 25 `mvn -q clean verify` passed on 2026-09-08.
 
 ## Next Action
 
-Add an emit-phase preflight or sealed-IR validation for `CONSTANT_Utf8` length (65535 bytes modified UTF-8 per literal, accounting for UTF-16 to modified-UTF-8 expansion) and return the structured diagnostic before class emission. Route through a dedicated phase gate if the compiler model requires it; do not silently split or intern literals.
+None. Preserve the 65,535-byte boundary and astral-character regression; do not split literals or convert this expected source limit into an infrastructure failure.

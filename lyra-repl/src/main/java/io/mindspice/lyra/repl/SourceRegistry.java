@@ -20,6 +20,8 @@ final class SourceRegistry {
     private final ArrayList<SourceRecord> records = new ArrayList<>();
     /** Account the same caller text at preflight and append, even when decoding strips a BOM. */
     private final Map<SourceId, EvaluationSource> reservedSubmissions = new HashMap<>();
+    /** Passive caller origins retained independently of the visible history records. */
+    private final Map<SourceId, EvaluationSource> sourceOrigins = new HashMap<>();
     /** Every source snapshot needed by a live producer, including imports. */
     private final Map<SourceKey, Integer> retainedSources = new HashMap<>();
     private final Map<SourceId, SourceSnapshot> graphSources = new HashMap<>();
@@ -78,7 +80,8 @@ final class SourceRegistry {
         if (!canRetain(request.source().utf16Length(), sourceId)) {
             throw new IllegalStateException("source registry capacity was not reserved");
         }
-        if (reservedSubmissions.putIfAbsent(sourceId, request.source()) != null) {
+        if (reservedSubmissions.putIfAbsent(sourceId, request.source()) != null
+                || sourceOrigins.putIfAbsent(sourceId, request.source()) != null) {
             throw new IllegalStateException("duplicate compiler source identity");
         }
         return sourceId;
@@ -119,9 +122,8 @@ final class SourceRegistry {
     }
 
     java.util.Optional<EvaluationSource> source(SourceId sourceId) {
-        var submitted = records.stream().filter(record -> record.compilerSourceId().equals(sourceId))
-                .map(SourceRecord::source).findFirst();
-        if (submitted.isPresent()) return submitted;
+        EvaluationSource submitted = sourceOrigins.get(sourceId);
+        if (submitted != null) return java.util.Optional.of(submitted);
         return java.util.Optional.ofNullable(graphSources.get(sourceId)).map(snapshot -> {
             var original = snapshot.originSourceId();
             var uri = original.isUri() ? java.util.Optional.of(original.asUri())
@@ -133,10 +135,23 @@ final class SourceRegistry {
         });
     }
 
+    /** Whether this retained archive fits another service's configured limits. */
+    boolean fitsWithin(SourceRegistry limits) {
+        Objects.requireNonNull(limits, "limits");
+        return retainedSources.size() <= limits.maxRecords
+                && retainedCharacters <= limits.maxCharacters;
+    }
+
+    /** Clears the user-visible history view while retaining live producer source data. */
+    void clearRecords() {
+        records.clear();
+    }
+
     void clear() {
         records.clear();
         graphSources.clear();
         reservedSubmissions.clear();
+        sourceOrigins.clear();
         retainedSources.clear();
         retainedCharacters = 0;
     }

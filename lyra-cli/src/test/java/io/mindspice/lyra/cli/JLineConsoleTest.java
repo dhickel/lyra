@@ -1,11 +1,17 @@
 package io.mindspice.lyra.cli;
 
+import io.mindspice.lyra.compiler.api.SourceResolver;
+import io.mindspice.lyra.compiler.source.LogicalModuleId;
+import io.mindspice.lyra.compiler.source.ResolvedSource;
 import io.mindspice.lyra.repl.ConsoleSession;
 import io.mindspice.lyra.repl.EvaluationId;
 import io.mindspice.lyra.repl.EvaluationSource;
 import io.mindspice.lyra.repl.LyraSession;
+import io.mindspice.lyra.repl.ManagedConsoleSession;
 import io.mindspice.lyra.repl.PlainConsole;
+import io.mindspice.lyra.repl.SessionOptions;
 import io.mindspice.lyra.repl.SessionRevision;
+import io.mindspice.lyra.runtime.RuntimeIoEnvironment;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
 import org.jline.terminal.Attributes;
@@ -21,6 +27,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -380,12 +387,101 @@ final class JLineConsoleTest {
     }
 
     @Test
+    void commonPersistentCorpusExecutesThroughTheRichManagedConsole() throws Exception {
+        String script = "import counter\n"
+                + "counter->::bump[]\n"
+                + "import counter import counter->{bump as oldBump}\n"
+                + "(oldBump)\n"
+                + "let @mut count :I32 = 41\n"
+                + "let reader :Fn<;I32> = (=> || count)\n"
+                + "let count :String = \"replacement\"\n"
+                + "(reader)\n"
+                + "count\n"
+                + "import higher (higher->:.apply (=> |x| (* x 3)) 7)\n"
+                + "import rec rec->::fact[6]\n"
+                + "import values (values->:.callables[0] 7)\n"
+                + "values->:.pair:.1\n"
+                + "values->:.items[0] := 9\n"
+                + "import std->io io->::println[\"rich-output 😀\"]\n"
+                + "import std->io io->::readLine[]\n"
+                + "import errors errors->::late[]\n"
+                + ":reload counter\n"
+                + "counter->:.visible\n"
+                + "(oldBump)\n"
+                + "counter->::bump[]\n"
+                + ":quit\n";
+        ByteArrayOutputStream hostOutput = new ByteArrayOutputStream();
+        RuntimeIoEnvironment environment = new RuntimeIoEnvironment(
+                new ByteArrayInputStream("program 😀\n".getBytes(StandardCharsets.UTF_8)),
+                hostOutput, hostOutput, StandardCharsets.UTF_8);
+        SessionOptions options = SessionOptions.builder()
+                .resolver(new RichCorpusResolver())
+                .ioEnvironment(environment)
+                .build();
+        try (ManagedConsoleSession managed = ManagedConsoleSession.open(options);
+             Fixture fixture = new Fixture(script, "emacs", false)) {
+            fixture.rich.completeWith(managed);
+            assertEquals(0, fixture.run(managed),
+                    fixture.error.toString(StandardCharsets.UTF_8));
+            String output = fixture.output.toString(StandardCharsets.UTF_8);
+            String errors = fixture.error.toString(StandardCharsets.UTF_8);
+            assertTrue(output.contains("I32 1\n"), output);
+            assertTrue(output.contains("I32 2\n"), output);
+            assertTrue(output.contains("I32 41\n"), output);
+            assertTrue(output.contains("String \"replacement\"\n"), output);
+            assertTrue(output.contains("I32 21\n"), output);
+            assertTrue(output.contains("I32 720\n"), output);
+            assertTrue(output.contains("I32 8\n"), output);
+            assertTrue(output.contains("String \"one\"\n"), output);
+            assertTrue(output.contains("@nilString \"program \\uD83D\\uDE00\"\n"), output);
+            assertTrue(output.contains("I32 20\n"), output);
+            assertTrue(output.contains("I32 3\n"), output);
+            assertTrue(output.contains("I32 110\n"), output);
+            assertTrue(errors.contains("LYC-RESOLVE-022"), errors);
+            assertTrue(errors.contains("LYR-ARITH"), errors);
+            assertTrue(hostOutput.toString(StandardCharsets.UTF_8)
+                    .contains("rich-output 😀\n"));
+        }
+    }
+
+    @Test
     void completionNeverBreaksEditingWhenTheTargetIsUnavailable() throws Exception {
         try (Fixture fixture = new Fixture(":load any\t\n:quit\n", "emacs")) {
             // No session wired: completion stays static and harmless.
             assertEquals(2, fixture.run());
             assertTrue(fixture.error.toString(StandardCharsets.UTF_8)
                     .contains("LYR-REPL-INFRA"));
+        }
+    }
+
+    private static final class RichCorpusResolver implements SourceResolver {
+        private final AtomicInteger counterResolutions = new AtomicInteger();
+
+        @Override
+        public Optional<ResolvedSource> resolve(LogicalModuleId logical) {
+            String source = switch (logical.value()) {
+                case "counter" -> counterResolutions.incrementAndGet() == 1
+                        ? "import std->io io->::println[\"counter-init\"]\n"
+                            + "let @mut hidden :I32 = 0\n"
+                            + "let @pub @mut visible :I32 = 10\n"
+                            + "let @pub bump :Fn<;I32> = (=> || { hidden := (+ hidden 1) hidden })"
+                        : "import std->io io->::println[\"counter-init-2\"]\n"
+                            + "let @mut hidden :I32 = 100\n"
+                            + "let @pub @mut visible :I32 = 20\n"
+                            + "let @pub bump :Fn<;I32> = (=> || { hidden := (+ hidden 10) hidden })";
+                case "higher" -> "let @pub apply :Fn<Fn<I32;I32>,I32;I32> = (=> |f x| (f x))";
+                case "rec" -> "let @pub fact :Fn<I32;I32> = "
+                        + "(=> |n| ((== n 0) -> 1 : { let rest :I32 = ::fact[(- n 1)] (* n rest) }))";
+                case "values" -> "let @pub pair :Tuple<I32,String> = Tuple[1 \"one\"]\n"
+                        + "let @pub items :Array<I32> = Array<I32>[1 2 3]\n"
+                        + "let @pub callables :Array<Fn<I32;I32>> = "
+                        + "Array<Fn<I32;I32>>[(=> :I32 |x| (+ x 1))]";
+                case "errors" -> "let @pub fail :Fn<I32;I32> = (=> |x| (% 11 x))\n"
+                        + "let @pub late :Fn<;I32> = (=> || ::fail[0])";
+                default -> null;
+            };
+            return source == null ? Optional.empty() : Optional.of(ResolvedSource.memory(
+                    logical, URI.create("memory://rich-corpus/" + logical.value() + ".lyra"), source));
         }
     }
 

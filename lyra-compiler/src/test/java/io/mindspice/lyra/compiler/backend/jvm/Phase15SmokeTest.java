@@ -84,6 +84,19 @@ final class Phase15SmokeTest {
     }
 
     @Test
+    void rejectsOversizedModifiedUtf8StringConstantsAsStructuredSourceFailures() {
+        String literal = "\"" + "😀".repeat(10_923) + "\"";
+        TypedIr ir = lower(literal);
+        PhaseResult<JvmBytecodeArtifact> result = JvmBytecodeEmitter.emitPhase(
+                ir, GeneratedTypePlanner.plan(ir));
+        assertTrue(result.isFailure());
+        assertEquals("LYC-EMIT-001", result.diagnostics().getFirst().code().value());
+        assertTrue(result.diagnostics().getFirst().summary().contains("CONSTANT_Utf8"));
+        assertEquals(ir.rootModule().body().forms().getFirst().span(),
+                result.diagnostics().getFirst().primarySpan());
+    }
+
+    @Test
     void rejectsAPlanForDifferentValidatedIrAsStructuredInvalidPlan() {
         TypedIr ir = lower("let @pub answer :I32 = 42");
         GeneratedTypePlan wrong = GeneratedTypePlanner.plan(
