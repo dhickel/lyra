@@ -1,0 +1,7 @@
+// Attachable application root. `run --repl` or `-Dlyra.repl.enabled=true`
+// exposes the public @mut root state through the trusted loopback listener.
+// main spins at generated safe points until an attached client assigns count;
+// each safe point services at most one request and main resumes.
+let @pub @mut count :I32 = 0
+let @pub spin :Fn<;I32> = (=> || ((== count 0) -> ::spin[] : count))
+let @pub main :Fn<Array<String>;I32> = (=> |args| ::spin[])

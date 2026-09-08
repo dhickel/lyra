@@ -1,0 +1,3 @@
+// Ordinary AOT root: runnable main that imports the counter module.
+import counter
+let @pub main :Fn<Array<String>;I32> = (=> |args| counter->::next[])

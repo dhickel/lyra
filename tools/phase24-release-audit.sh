@@ -3,8 +3,10 @@
 #
 # The requirement matrix is intentionally conservative: a BLOCKED row is an
 # evidence gap, not a claim that the implementation is incorrect.  The audit
-# exits 0 only when every non-deferred row is PASS and the fresh Phase 23 gate
-# passes.  It never deletes tracked/untracked user files or changes source/
+# exits 0 only when every non-deferred row is PASS, the fresh Phase 23 gate
+# passes, and the Phase 14 exact-method REPL coverage inventory verifies
+# against the clean reactor reports and living-specification classifications.
+# It never deletes tracked/untracked user files or changes source/
 # internal records; generated evidence is confined to target/phase24-audit by
 # default.  Ignored target trees are snapshotted, restored, and compared.
 set -Eeuo pipefail
@@ -12,6 +14,7 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 MATRIX="$ROOT/tools/phase24-requirement-matrix.tsv"
 COVERAGE="$ROOT/tools/phase24-conformance-coverage.tsv"
+REPL_COVERAGE="$ROOT/tools/phase24-repl-coverage.tsv"
 OUT=${PHASE24_OUTPUT_DIR:-"$ROOT/target/phase24-audit"}
 if [[ "$OUT" != /* ]]; then
     OUT="$ROOT/$OUT"
@@ -266,7 +269,8 @@ from pathlib import Path
 root, matrix_path, coverage_path = map(Path, sys.argv[1:])
 header = ["id", "source", "category", "status", "requirement", "evidence", "check"]
 reported_test_methods = set()
-for report in sorted(root.glob("lyra-*/target/surefire-reports/TEST-*.xml")):
+for report in sorted(root.glob("lyra-*/target/surefire-reports/TEST-*.xml")) \
+        + sorted(root.glob("lyra-*/target/failsafe-reports/TEST-*.xml")):
     suite = ET.parse(report).getroot()
     reported_test_methods.update(test.attrib.get("name") for test in suite.findall("testcase"))
 
@@ -306,7 +310,7 @@ def verify_reference(reference):
 expected_base = set()
 for prefix, count in (("P24-RB", 20), ("P24-TGT", 22), ("P24-CON", 17),
                       ("P24-PLAN-VAL", 25), ("P24-LANG-VAL", 13),
-                      ("P24-BACK-VAL", 14), ("P24-DEF", 8), ("P24-AUD", 13)):
+                      ("P24-BACK-VAL", 14), ("P24-DEF", 10), ("P24-AUD", 13)):
     expected_base.update({f"{prefix}-{index:03d}" for index in range(1, count + 1)})
 
 base = rows(matrix_path)
@@ -364,6 +368,126 @@ PY
     fi
 else
     set_check coverage BLOCKED coverage.log "coverage check could not start Python"
+fi
+
+# The REPL coverage inventory is the Phase 14 exact-method gate: every retained
+# row must cite annotated test methods that executed in the clean reactor, and
+# every superseded/deferred row must cite a living specification heading that
+# classifies the removal.  Status declarations alone never pass this check.
+if [[ -x "$PYTHON_BIN" ]]; then
+    if "$PYTHON_BIN" - "$ROOT" "$REPL_COVERAGE" >"$OUT/repl-coverage.log" 2>&1 <<'PY'
+import csv
+import re
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+root, repl_coverage_path = map(Path, sys.argv[1:])
+header = ["id", "status", "requirement", "evidence", "notes"]
+
+reported_test_methods = set()
+for report in sorted(root.glob("lyra-*/target/surefire-reports/TEST-*.xml")) \
+        + sorted(root.glob("lyra-*/target/failsafe-reports/TEST-*.xml")):
+    suite = ET.parse(report).getroot()
+    reported_test_methods.update(test.attrib.get("name") for test in suite.findall("testcase"))
+
+def slugify(text):
+    return re.sub(r"[^0-9a-z]+", "-", text.lower()).strip("-")
+
+def heading_slugs(path):
+    slugs = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            heading = stripped.lstrip("#").strip()
+            if heading:
+                slugs.add(slugify(heading))
+    return slugs
+
+def verify_reference(reference, row_id):
+    if "#" not in reference:
+        path = root / reference
+        if not path.exists():
+            raise SystemExit(f"{row_id}: missing evidence path: {reference}")
+        return
+    file_name, symbol = reference.split("#", 1)
+    path = root / file_name
+    if not path.is_file():
+        raise SystemExit(f"{row_id}: missing evidence source: {reference}")
+    if path.suffix == ".java":
+        text = path.read_text(encoding="utf-8")
+        declaration = rf"(?m)(?:^\s*@[^\n]+\n)+\s*(?:public\s+|private\s+|protected\s+)?(?:static\s+|final\s+|synchronized\s+)*[\w<>?,\[\] ]+\s+{re.escape(symbol)}\s*\("
+        if not re.search(declaration, text):
+            raise SystemExit(f"{row_id}: evidence method is not an annotated test method {symbol} in {file_name}")
+        if symbol not in reported_test_methods:
+            raise SystemExit(f"{row_id}: evidence test method did not execute in the clean reactor: {symbol}")
+    elif path.suffix == ".tsv":
+        with path.open(encoding="utf-8", newline="") as handle:
+            referenced = csv.DictReader(handle, delimiter="\t")
+            if not any(row.get("id") == symbol for row in referenced):
+                raise SystemExit(f"{row_id}: missing coverage row {symbol} in {file_name}")
+    elif path.suffix == ".md":
+        if slugify(symbol) not in heading_slugs(path):
+            raise SystemExit(f"{row_id}: classification heading missing in {file_name}: {symbol}")
+    else:
+        text = path.read_text(encoding="utf-8")
+        if not re.search(rf"\b{re.escape(symbol)}\s*\(", text):
+            raise SystemExit(f"{row_id}: missing assertion tool/function {symbol} in {file_name}")
+
+with repl_coverage_path.open(encoding="utf-8", newline="") as handle:
+    reader = csv.DictReader(handle, delimiter="\t")
+    if reader.fieldnames != header:
+        raise SystemExit(f"unexpected header {reader.fieldnames!r}")
+    rows = list(reader)
+
+expected_ids = {
+    *[f"P24-REPL-R{index:02d}" for index in range(1, 19)],
+    "P24-REPL-R07-SEC", "P24-REPL-R14-SEC", "P24-REPL-R15-SEC",
+    "P24-REPL-DEF-001", "P24-REPL-DEF-002", "P24-REPL-DEF-003",
+}
+ids = [row["id"] for row in rows]
+if len(ids) != len(set(ids)) or any(not value for value in ids):
+    raise SystemExit("REPL coverage IDs must be non-empty and unique")
+missing = sorted(expected_ids - set(ids))
+extra = sorted(set(ids) - expected_ids)
+if missing or extra:
+    raise SystemExit(f"REPL coverage IDs do not exactly match the retained/superseded/deferred contract; missing={missing}, extra={extra}")
+
+retained = 0
+classified = 0
+for row in rows:
+    row_id = row["id"]
+    status = row["status"]
+    if status == "PASS":
+        retained += 1
+    elif status in {"SUPERSEDED", "DEFERRED"}:
+        classified += 1
+        if not (row_id.endswith("-SEC") or row_id.startswith("P24-REPL-DEF-")):
+            raise SystemExit(f"classified row has a non-classification ID: {row_id}")
+    else:
+        raise SystemExit(f"REPL coverage row has an invalid status: {row_id} -> {status}")
+    refs = [item for item in row["evidence"].split(";") if item]
+    if not refs:
+        raise SystemExit(f"REPL coverage row has no evidence references: {row_id}")
+    for reference in refs:
+        if status == "PASS":
+            verify_reference(reference, row_id)
+        else:
+            file_name, _, symbol = reference.partition("#")
+            path = root / file_name
+            if not path.is_file() or path.suffix != ".md":
+                raise SystemExit(f"classified row must cite a living specification: {row_id} -> {reference}")
+            if symbol and slugify(symbol) not in heading_slugs(path):
+                raise SystemExit(f"classification heading missing in {file_name}: {symbol}")
+print(f"repl-coverage: PASS ({retained} retained rows with exact executed methods; {classified} explicitly classified superseded/deferred rows)")
+PY
+    then
+        set_check repl-coverage PASS repl-coverage.log "every retained REPL requirement cites exact annotated methods executed in the clean reactor and every removal is explicitly classified by a living specification"
+    else
+        set_check repl-coverage BLOCKED repl-coverage.log "REPL coverage inventory did not verify against the clean reactor reports and living specifications"
+    fi
+else
+    set_check repl-coverage BLOCKED repl-coverage.log "REPL coverage check could not start Python"
 fi
 
 if [[ -x "$PYTHON_BIN" ]]; then
@@ -681,6 +805,16 @@ expected = {
     "RemoteWireRobustnessTest", "RemoteSessionExecutionTest", "NoAuthAttachmentTest",
     "RemoteFileModuleTest", "Phase21CliTest", "Phase22CliConformanceTest",
     "AttachCliTest", "JLineConsoleTest", "JLinePtyTest",
+    "PersistentImportTest", "SessionModuleRuntimeTest", "ModuleReloadTest",
+    "SessionGenerationLifecycleTest", "ReloadSequenceReproTest",
+    "ApplicationAttachmentTest", "AttachedValueLifetimeTest", "ApplicationSafePointTest",
+    "AttachmentCancellationTest", "ApplicationAttachmentJavaConsumerTest", "ManagedConsoleSessionTest",
+    "CrossSurfaceLocalApiTest", "CrossSurfacePlainConsoleTest", "CrossSurfaceManagedConsoleTest",
+    "CrossSurfaceAttachedAppTest", "CrossSurfaceRemoteStandaloneTest", "ReplActivationJavaHostTest",
+    "SessionImportedFlowTest", "SessionPinnedModuleCompilerTest", "PreparedSubmissionTest",
+    "RetainedCaptureFlowTest", "ReplProfileEmissionTest", "RootTypeRegistrationTest",
+    "ReplPackagingCompatibilityTest", "LegacySchema1EncodingTest",
+    "DebugArtifactMetadataTest", "RuntimeControlTest", "ReplRunCliTest",
 }
 short = {name.rsplit(".", 1)[-1] for name in names}
 missing = sorted(expected - short)
@@ -735,6 +869,46 @@ PY
     fi
 }
 
+# Failsafe integration suites (JLine distribution, artifact deployment, launcher
+# activation) run only under verify, so they are checked against failsafe reports.
+integration_group() {
+    local check=$1
+    shift
+    local log="$OUT/test-$check.log"
+    if [[ "${CHECK_STATUS[tests]:-BLOCKED}" != PASS || ! -x "$PYTHON_BIN" ]]; then
+        set_check "$check" BLOCKED "test-reports.log" "the full reactor verify evidence is unavailable"
+        return
+    fi
+    if "$PYTHON_BIN" - "$ROOT" "$@" >"$log" 2>&1 <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+root = Path(sys.argv[1])
+expected = sys.argv[2:]
+reports = sorted(path for module in ("lyra-runtime", "lyra-compiler", "lyra-repl", "lyra-cli")
+                 for path in (root / module / "target/failsafe-reports").glob("TEST-*.xml"))
+names = {}
+for report in reports:
+    suite = ET.parse(report).getroot()
+    names[suite.attrib.get("name", "")] = report
+for wanted in expected:
+    matches = [name for name in names if name == wanted or name.rsplit(".", 1)[-1] == wanted]
+    if not matches:
+        raise SystemExit(f"missing integration suite: {wanted}")
+    for name in matches:
+        suite = ET.parse(names[name]).getroot()
+        if any(int(suite.attrib.get(field, "0")) for field in ("failures", "errors", "skipped")):
+            raise SystemExit(f"non-passing integration suite: {name}")
+print("PASS: " + ", ".join(expected))
+PY
+    then
+        set_check "$check" PASS "test-$check.log" "focused integration suites passed in the clean reactor verify"
+    else
+        set_check "$check" BLOCKED "test-$check.log" "one or more focused integration suites are missing or failed"
+    fi
+}
+
 test_group frontend LexerTest SourceFoundationTest ParserTest
 test_group grammar GrammarMatcherTest ParserTest
 test_group sealing Domain11SealingTest TypedIrTest
@@ -759,6 +933,22 @@ test_group repl-session LyraSessionTest ReplContractsTest PersistentScalarTest P
 test_group repl-results ExecutedSnapshotTest SessionCompilerTest
 test_group repl-remote RemoteConsoleSessionTest RemoteProtocolV2Test RemoteServerTest RemoteWireRobustnessTest RemoteSessionExecutionTest NoAuthAttachmentTest RemoteFileModuleTest
 test_group repl-console PlainConsoleTest ConsoleParsingTest AttachCliTest JLineConsoleTest JLinePtyTest
+# Phase 14 executable linkage/lifecycle/attachment/integration and module/root/
+# debug/I/O/PTY/reopen/flow/limit groups.  Every retained REPL matrix row uses
+# one of these groups as its check, so the clean reactor must really run them.
+test_group repl-linkage SessionStorageLinkTest SessionAggregateLinkTest SessionCallableRuntimeTest SessionCapturedInstanceFlowTest SessionDeclarationWriteFlowTest PersistentScalarTest PersistentAggregateTest PersistentCallableTest PersistentImportTest
+test_group repl-module SessionPinnedModuleCompilerTest SessionImportedFlowTest PreparedSubmissionTest PersistentImportTest SessionModuleRuntimeTest
+test_group repl-lifecycle ModuleReloadTest SessionGenerationLifecycleTest ReloadSequenceReproTest SessionFailureFlowTest SessionRepairCompatibilityTest SessionTypeAdmissionTest
+test_group repl-root RootTypeRegistrationTest ReplProfileEmissionTest RetainedCaptureFlowTest
+test_group repl-attachment ApplicationAttachmentTest AttachedValueLifetimeTest ApplicationSafePointTest AttachmentCancellationTest ApplicationAttachmentJavaConsumerTest ManagedConsoleSessionTest
+test_group repl-integration RemoteSessionExecutionTest CrossSurfaceLocalApiTest CrossSurfacePlainConsoleTest CrossSurfaceManagedConsoleTest CrossSurfaceAttachedAppTest CrossSurfaceRemoteStandaloneTest ReplActivationJavaHostTest SessionJavaConsumerTest ReplRunCliTest
+test_group repl-debug DebugArtifactMetadataTest ReplPackagingCompatibilityTest LegacySchema1EncodingTest RuntimeControlTest
+test_group repl-flow Domain11FlowStateTest SemanticFlowAlgebraTest CallableSummaryTest Domain11AggregateOwnershipTest Domain11InitializationFlowTest
+test_group repl-io Phase20IoTest
+test_group repl-pty JLinePtyTest JLineConsoleTest AttachCliTest PlainConsoleTest ConsoleParsingTest
+test_group repl-reopen AttachedValueLifetimeTest ApplicationAttachmentTest RootTypeRegistrationTest
+test_group repl-limit ExecutedSnapshotTest LyraSessionTest SessionModuleRuntimeTest ModuleReloadTest
+integration_group repl-deployment ReplArtifactIT ReplLauncherIT JLineDistributionIT
 
 if [[ -x "$PYTHON_BIN" ]]; then
     if "$PYTHON_BIN" - "$ROOT" >"$OUT/abi-scan.log" 2>&1 <<'PY'
@@ -1232,7 +1422,8 @@ for row in rows:
 blocked = [row for row in rendered if row["status"] == "BLOCKED"]
 non_deferred = [row for row in rendered if row["status"] != "DEFERRED"]
 phase23 = checks.get("phase23", {}).get("status") == "PASS"
-status = "PASS" if not blocked and phase23 else "BLOCKED"
+repl_coverage = checks.get("repl-coverage", {}).get("status") == "PASS"
+status = "PASS" if not blocked and phase23 and repl_coverage else "BLOCKED"
 counts = {value: sum(row["status"] == value for row in rendered) for value in allowed}
 if any(row["status"] == "N/A" and row["declared_status"] != "PASS" for row in rendered):
     raise SystemExit("N/A is reserved for an environment-derived result, not a declared matrix status")
@@ -1258,6 +1449,7 @@ result = {
     "deferredRequirements": [row["id"] for row in rendered if row["status"] == "DEFERRED"],
     "notApplicableRequirements": [row["id"] for row in rendered if row["status"] == "N/A"],
     "phase23GatePass": phase23,
+    "replCoverageGatePass": repl_coverage,
 }
 json_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -1267,7 +1459,8 @@ with text_path.open("w", encoding="utf-8", newline="\n") as handle:
     handle.write(f"Status: {status}\n")
     handle.write(f"Matrix rows: {len(rendered)}; non-deferred: {len(non_deferred)}; "
                  f"PASS={counts['PASS']} BLOCKED={counts['BLOCKED']} DEFERRED={counts['DEFERRED']} N/A={counts['N/A']}\n")
-    handle.write(f"Fresh Phase 23 gate: {'PASS' if phase23 else 'BLOCKED'}\n\n")
+    handle.write(f"Fresh Phase 23 gate: {'PASS' if phase23 else 'BLOCKED'}\n")
+    handle.write(f"Exact REPL coverage gate: {'PASS' if repl_coverage else 'BLOCKED'}\n\n")
     handle.write("Blocked requirements\n")
     handle.write("--------------------\n")
     if blocked:

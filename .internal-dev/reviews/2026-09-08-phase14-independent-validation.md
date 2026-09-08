@@ -1,0 +1,33 @@
+# Phase 14 Independent Validation
+
+## Scope
+
+Independent release review of the Phase 14 worktree (audit tooling, requirement/coverage inventories, documentation, runnable examples) and the full Phase 13 implementation diff (`ae793e7..7aa5356`, 218 files) against the accepted R01-R18 contract. Reviewed every phase exit for normal/local API compatibility, leftover credentials or unnecessary anti-forgery, replay/stubs, ownership/import violations, stale mutable flow, wrong-thread state, premature producer/type/source retirement, double leases, terminal-result loss, dependency/thread leaks, and deterministic packaging. Validation executed on Java 25.0.4, Maven 3.9.11, Linux; no commit was created.
+
+## Findings
+
+- **Exact-method audit gate.** The completed `tools/phase24-repl-coverage.tsv` carries 18 retained PASS rows, 3 explicitly SUPERSEDED rows (token auth/hostile-campaign/anti-forgery removal, optional-console security filesystem policy, legacy authenticated v1 mode) and 3 explicitly DEFERRED rows (automatic local-root initialization, hostile-code isolation/TLS/LAN, precise collection/forced deadlines). Every retained row cites exact annotated test methods; the audit script's new `repl-coverage` check re-verifies each method's annotation and its execution in the clean reactor's Surefire/Failsafe reports, and verifies each classified row against a living-specification heading. Status declarations alone cannot pass.
+- **Matrix reconciliation.** All eight `P24-REPL-*` matrix rows now carry exact executed method evidence; the mixed original rows were split into retained behavior versus `P24-DEF-009` (REPL security hardening) and `P24-DEF-010` (automatic local-root initialization) deferred rows. The audit script's expected ID set was updated to match (P24-DEF 8 -> 10) without deleting checks. Normal conformance, four-module layout, dependency/jdeps, target/worktree restoration and the unchanged Phase 23 methodology/thresholds are preserved.
+- **Executable groups.** The audit now runs linkage, module, lifecycle, root, attachment, integration, debug, flow, I/O, PTY, reopen, limit and deployment groups (including `RemoteSessionExecutionTest`, cross-surface, `ReplRunCliTest`, and Failsafe `ReplArtifactIT`/`ReplLauncherIT`/`JLineDistributionIT` groups). All groups passed in the clean reactor.
+- **No leftover credential or anti-forgery surface.** `TokenCredential` and credential-file operations are gone from the diff history; no challenge, token state, or constant-time comparison remains in production sources. The CLI attach parser rejects any option with an explicit credential-free diagnostic. Remaining "authenticated" wording in `LyraSession` javadoc refers to retained ordinary typed-storage authority, which is correct scope.
+- **No replay or stubs.** All "replay" hits are the accepted two-phase grammar-matcher/parser-replay architecture; no transcript replay exists (pinned-reuse tests prove initializers never rerun for an unchanged revision). No `UnsupportedOperationException` or placeholder production path was found; unsupported linkage is represented by stable structured diagnostics.
+- **Ownership, flow and thread safety.** Imported-mutation ownership (`LYC-RESOLVE-022`) is retained and was verified live through the examples; attachable safe-point compilation models dispatch as an explicit effect boundary with conservative `AttachableBoundary` identities; `SessionStorageDomain` and session/attachment admission enforce owner-thread checks on every live access.
+- **Lifetime ordering.** Standalone reset/close retire owned generations before clearing source records; attachment reset/close clear only the history-view records, preserving root-held producers, source and the structural domain for reopen. No premature retirement path was found.
+- **Single lease.** `LyraOwnerController` admits exactly one CAS-guarded lease, rejects foreign/ended leases, and owner-dispatched transport work reuses the poll's admitted lease; reentrant submit/reset/close is rejected under admission. Cancellation is identity- and generation-bound so late/stale requests cannot cancel later work.
+- **Terminal results and leaks.** Server-wide close exclusively owns bounded terminal drain and transport retirement; retained terminal results survive reconnect without resubmission. All transport/console threads are daemon and the managed console owner is torn down on close; the forked shutdown tests assert no remote thread leaks.
+- **Determinism and isolation.** Normal artifacts remain byte-identical schema-1 output with no polling hooks, compiler/REPL/JLine dependencies, or activation state; repeat debug builds are byte-identical and exclude CLI/JLine/tests/credential material.
+- **Examples and documentation.** `docs/repl.md` documents the no-auth warning, v1 upgrade migration, debug source/resolution context, host paths/I/O, nontransactional effects, lifetime/reopen rules and source-versus-display/transport limits. `examples/repl/` sources were executed through the real CLI (`run main-counter.lyra`, console import/pin/reload flow, ownership diagnostic, compiled `-Dlyra.repl.enabled=true` activation with a real printed listener endpoint) and `HostExample.java` passed under `-Xverify:all` via `run-java-host.sh`. Two example defects found during this review (non-callable parenthesized namespace call; wrong-thread artifact close) were repaired and re-verified.
+
+## Risk Assessment
+
+Low within current scope. The retained/classified split is enforced by the audit's exact-method and spec-heading verification, so a future test rename or an unclassified removal fails the gate instead of silently drifting. The no-auth loopback listener remains a deliberate trusted-localhost product decision recorded in `repl.md` and `deferred-features.md`. Native Windows/macOS terminal behavior stays N/A on this Linux host and is never reported as PASS.
+
+## Recommendations
+
+Keep the repl-coverage inventory and its expected ID set in one audit-checked contract; when a retained row changes evidence, update both the TSV and the executing test. Preserve the `mvn -pl <module> -am -Dtest=...` reactor pattern with a real compiler test (compiler POM sets `failIfNoTests=true`) for any future focused run. Do not weaken the pre-effect capacity preflights, the single-lease CAS, or the root-lifetime retention to obtain a green audit.
+
+## Follow-ups
+
+- Re-run `tools/phase24-release-audit.sh` after any production change; it is the mandatory release gate.
+- Run native Windows launcher validation when a supported Windows environment is available.
+- Future editor/LSP, hostile-code isolation, or engine interop work requires separate specifications.

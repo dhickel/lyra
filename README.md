@@ -31,25 +31,36 @@ java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar run program.lyra -- arg1 arg
 
 A runnable bundled artifact requires a public `main :Fn<Array<String>;I32>` export. Use `--help` and `--version` for the exact command surface. Thin artifacts require a compatible `lyra-runtime` on the class path; bundled artifacts include the launcher and runtime. Java 25 preview support is explicit in artifact metadata and launch options.
 
+The interactive and attachment surfaces are:
+
+```sh
+java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar repl [DIR] [--source-root DIR]...
+java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar attach HOST:PORT
+java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar run ROOT --repl [--repl-port PORT] [--repl-wait] [-- ARGS...]
+java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar compile ROOT --repl --format bundled-jar --output app.jar
+```
+
+`run --repl` starts an unauthenticated loopback-only listener before `main` and gates live work until the root initializes and registers. `compile --repl` records the same capability without ever listening; compiled artifacts activate only through `-Dlyra.repl.enabled=true` (plus optional `-Dlyra.repl.port` and `-Dlyra.repl.wait`). The full REPL workflow, security warning, and limits are documented in [docs/repl.md](docs/repl.md) with runnable sources under [examples/repl](examples/repl).
+
 ## Java API
 
 `io.mindspice.lyra.compiler.api.LyraCompiler` compiles immutable source requests to validated `CompiledArtifact` values. `io.mindspice.lyra.runtime.LyraRuntime` loads artifacts, and exact typed `ExportHandle` method handles are available from an instantiated `ModuleHandle`. Generated facades expose typed methods, getters, permitted setters, function-value getters, metadata, and lifecycle operations. The optional `io.mindspice.lyra.repl` module currently exposes owner-confined session contracts and credential-free loopback v2 transport boundaries.
 
 ## REPL status
 
-The plain/JLine consoles, non-executing `:type`, and credential-free loopback protocol v2 are tested. Sessions now retain exact typed scalar storage across submissions, including private bindings and captured scalar cells, and return bounded snapshots of executed final expressions. Generated session form/function/tail-loop boundaries support cooperative API cancellation. For example, three inputs `let @mut count :I32 = 1`, `count := 2`, and `count` return `I32` value `2` without rerunning earlier source.
+The plain/JLine consoles, non-executing `:type`, credential-free loopback protocol v2, persistent imported modules, explicit `:reload`, actual application attachment, and deterministic debug-capable packaging are implemented and tested end to end.
 
-Arrays and tuples containing scalars or further data aggregates also persist through exact typed storage and shared structural JVM classes. For example, submit `let @mut items :Array<I32> = Array<I32>[1]`, then `let alias = items`, then `items[0] := 42`; reading `alias[0]` returns `I32 42`. Rebinding selects a new value without changing earlier aliases. Completed data mutations survive a later failure or cancellation without publishing failed declarations.
+Sessions retain exact typed scalar, aggregate and compiler-certified callable storage across submissions. For example, three inputs `let @mut count :I32 = 1`, `count := 2`, and `count` return `I32` value `2` without rerunning earlier source. Arrays and tuples containing scalars or further data aggregates persist through exact typed storage and shared structural JVM classes; rebinding selects a new value without changing earlier aliases, and completed data mutations survive a later failure or cancellation without publishing failed declarations.
 
-Compiler-certified named callable persistence now works for source-local session generations. Callable summaries retain call targets, captured cells, writes, allocation provenance and source operation sites across submissions, so higher-order calls, returned closures, recursion, callable-bearing arrays/tuples, lexical replacement, failure recovery and cooperative cancellation use the original generated code and storage. Exact signatures, producer certificates and generation authority are checked before a retained callable is admitted. Imported callable/module linkage remains a structured `LYC-SESSION-001` boundary.
+Imported modules initialize exactly once per pinned source revision, execute real `std->io` through the session, and stay live across later submissions, diamonds, aliases and re-exports. Explicit `:reload MODULE` rebuilds only the REPL-owned reachable closure from fresh source and publishes new defaults atomically, while old captured values, selective imports and compiled references keep their original producers. Local startup is an empty scratch workspace: `repl [DIR]` and `--source-root` configure module discovery only and never run `main`.
 
-A separate runtime bridge permits exact callable values between successfully initialized source-local generations in one authenticated session domain. It preserves original closures/cells and rejects foreign sessions/SAMs and retired generations. This is tested through generated Java export signatures and complements, rather than replaces, compiler-side named persistence.
+`run ROOT --repl` and explicit `-Dlyra.repl.enabled=true` attach a genuinely running REPL-capable application over an unauthenticated loopback-only listener (ephemeral port by default). Public `@mut` root exports are live bindings, owner-thread safe points service at most one request, cancellation targets only its evaluation, and root-held values/type domains survive reset, disconnect and service reopening until root close. Debug-capable classes/thin/bundled artifacts embed original sources, the canonical resolution topology and reproducible options, and exclude CLI/JLine/tests and credential material.
 
-This is partial REPL implementation. Imported-module persistence, reload, configured roots, coordinated program input, asynchronous owner execution and application/debug attachment remain incomplete. Aggregate and callable linkage currently requires source-local generations in the same authenticated session domain. Unsupported linkage returns diagnostics rather than replaying source or simulating values. Local execution remains confined to the thread that opens the session.
+This is a trusted development interface, not a sandbox: any process able to reach an enabled listener can execute with the application's authority, and no token, credential file or authentication exists. Authentication/hostile-client hardening and automatic local-root initialization are explicitly deferred; details, warnings, migration from the removed v1 transport, and operational limits are documented in [docs/repl.md](docs/repl.md).
 
 ## Scope
 
-The implementation preserves strict source order, typed primitive JVM descriptors, deterministic metadata/debug maps, source-mapped failures, owner-thread lifecycle checks, live trusted-Java array escape behavior, and the pinned `std->io` intrinsic. User classes/member types, pattern matching, loops/ranges, generics/macros, dynamic values, bitwise operators, Lyra-to-Java/engine interop, sandboxing, reload, serialized IR, additional backends, and optimization levels remain explicitly deferred.
+The implementation preserves strict source order, typed primitive JVM descriptors, deterministic metadata/debug maps, source-mapped failures, owner-thread lifecycle checks, live trusted-Java array escape behavior, and the pinned `std->io` intrinsic. User classes/member types, pattern matching, loops/ranges, generics/macros, dynamic values, bitwise operators, Lyra-to-Java/engine interop, sandboxing, automatic local-root initialization, REPL authentication/hostile-client hardening, serialized IR, additional backends, and optimization levels remain explicitly deferred.
 
 ## Validation
 

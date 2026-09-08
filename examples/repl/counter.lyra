@@ -1,0 +1,7 @@
+// Counter module: pinned reuse example. The initializer effect runs exactly
+// once per pinned source revision, no matter how many sessions import it.
+import std->io as io
+io->::println["counter-init"]
+let @pub @mut hidden :I32 = 0
+let @pub next :Fn<;I32> = (=> || { hidden := (+ hidden 1) hidden })
+let @pub read :Fn<;I32> = (=> || hidden)

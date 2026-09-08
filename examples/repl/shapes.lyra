@@ -1,0 +1,6 @@
+// Aggregate and callable exports: arrays, tuples and a callable factory.
+// Imported aggregates keep live identity; element mutation from the importing
+// module remains an ordinary ownership diagnostic.
+let @pub points :Array<I32> = Array<I32>[1 2 3]
+let @pub point :Tuple<I32,String> = Tuple[1 "one"]
+let @pub maker :Fn<;Fn<I32;I32>> = (=> || (=> :I32 |side| (* side side)))
