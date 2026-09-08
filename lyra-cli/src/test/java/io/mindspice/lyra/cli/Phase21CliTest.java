@@ -104,7 +104,33 @@ final class Phase21CliTest {
         Path notDirectory = source("not-a-directory.lyra", "");
         Invocation invalidRoot = invoke("repl", notDirectory.toString());
         assertEquals(2, invalidRoot.status());
-        assertTrue(invalidRoot.stderr().contains("non-symbolic-link directory"));
+        assertTrue(invalidRoot.stderr().contains("existing directory"));
+    }
+
+    @Test
+    void replAcceptsRepeatableSourceRootsAndExecutesThroughTheManagedOwner()
+            throws IOException {
+        Path firstRoot = Files.createDirectory(temp.resolve("first root"));
+        Path secondRoot = Files.createDirectory(temp.resolve("second root"));
+        Invocation result = invoke(new String[] {
+                        "repl", "--source-root", firstRoot.toString(),
+                        "--source-root", secondRoot.toString(), "--plain"},
+                new ByteArrayInputStream(
+                        ("let @pub answer :I32 = (+ 40 2)\n"
+                                + ":bindings\n:quit\n").getBytes(StandardCharsets.UTF_8)),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(0, result.status(), result.stderr());
+        assertTrue(result.stdout().contains("answer :I32\n"), result.stdout());
+        assertEquals("", result.stderr());
+
+        Path notDirectory = source("not-a-dir.lyra", "");
+        Invocation invalid = invoke("repl", "--source-root", notDirectory.toString());
+        assertEquals(2, invalid.status());
+        assertTrue(invalid.stderr().contains("existing directory"), invalid.stderr());
+
+        Invocation missingValue = invoke("repl", "--source-root");
+        assertEquals(2, missingValue.status());
+        assertTrue(missingValue.stderr().contains(LyraCli.USAGE_TEXT), missingValue.stderr());
     }
 
     @Test

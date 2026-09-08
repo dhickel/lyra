@@ -1,5 +1,6 @@
 package io.mindspice.lyra.cli;
 
+import io.mindspice.lyra.repl.ConsoleSession;
 import io.mindspice.lyra.repl.LexicalCompleteness;
 import io.mindspice.lyra.repl.PlainConsole;
 import org.jline.keymap.KeyMap;
@@ -33,6 +34,8 @@ import java.nio.charset.CharsetEncoder;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 
 import static org.jline.reader.LineReader.*;
 
@@ -64,6 +67,8 @@ final class JLineConsole implements PlainConsole.SourceReader {
     private final LineReader reader;
     private final DefaultHistory history = new DefaultHistory();
     private final ProgramInput programInput;
+    private volatile ConsoleSession session;
+    private volatile Runnable onReadComplete;
     private List<String> submitted = List.of();
     private boolean eof;
 
@@ -93,7 +98,7 @@ final class JLineConsole implements PlainConsole.SourceReader {
                     }
                 })
                 .highlighter(highlighter)
-                .completer(JLineConsole::complete)
+                .completer(this::complete)
                 .history(history)
                 .variable(SECONDARY_PROMPT_PATTERN, CONTINUATION_PROMPT)
                 .variable(INDENTATION, 2)
@@ -167,25 +172,167 @@ final class JLineConsole implements PlainConsole.SourceReader {
         reader.getWidgets().put(ACCEPT_AND_INFER_NEXT_HISTORY, reader.getBuiltinWidgets().get(ACCEPT_LINE));
     }
 
-    private static void complete(LineReader lineReader, ParsedLine parsedLine,
-                                 List<Candidate> candidates) {
+    /**
+     * Wires the selected execution-host console target for bounded
+     * completion. Semantic completion reads committed binding metadata and
+     * file/module completion performs read-only lookup on the execution
+     * host; neither path compiles, pins, initializes or executes source.
+     * Completion queries never break editing: any failure yields no
+     * candidates.
+     */
+    void completeWith(ConsoleSession session) {
+        this.session = Objects.requireNonNull(session, "session");
+    }
+
+    /**
+     * Invoked in {@link #readSource}'s finally block on every path after the
+     * terminal is paused. JLine's own interrupt handling replaces the
+     * process SIGINT handler while a line is being edited and restores the
+     * JVM default afterwards, so the CLI re-installs its active-evaluation
+     * cancellation handler here.
+     */
+    void onReadComplete(Runnable callback) {
+        onReadComplete = Objects.requireNonNull(callback, "callback");
+    }
+
+    private void complete(LineReader lineReader, ParsedLine parsedLine,
+                          List<Candidate> candidates) {
         String line = parsedLine.line();
         int cursor = Math.max(0, Math.min(parsedLine.cursor(), line.length()));
         int start = wordStart(line, cursor);
         String word = line.substring(start, cursor);
-        List<String> choices;
         if (isCommandPosition(line, start, cursor)) {
-            choices = COMMANDS;
+            addCandidates(candidates, word, COMMANDS);
+        } else if (isFileTargetPosition(line, start)) {
+            completeFiles(candidates, word, reloadPosition(line, start));
         } else if (isTypePosition(line, start)) {
-            choices = TYPE_NAMES;
+            addCandidates(candidates, word, TYPE_NAMES);
+        } else if (isMemberPosition(line, start)) {
+            completeMembers(candidates, word, ownerBinding(line, start));
         } else {
+            completeBindings(candidates, word);
+        }
+    }
+
+    private void completeFiles(List<Candidate> candidates, String word, boolean reload) {
+        ConsoleSession target = session;
+        if (target == null) {
             return;
         }
+        try {
+            ConsoleSession.Completion result = target.complete(
+                    ConsoleSession.CompletionRequest.moduleFiles(Optional.of(word)));
+            if (result.status() != ConsoleSession.QueryStatus.OK) {
+                return;
+            }
+            for (ConsoleSession.CompletionItem item : result.items()) {
+                if (reload && item.kind() == ConsoleSession.ItemKind.MODULE) {
+                    candidates.add(new Candidate(item.name()));
+                } else if (!reload && item.kind() == ConsoleSession.ItemKind.FILE) {
+                    candidates.add(new Candidate(item.name()));
+                } else if (item.kind() == ConsoleSession.ItemKind.DIRECTORY) {
+                    candidates.add(new Candidate(item.name()));
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // Completion is advisory; a failed lookup yields no candidates.
+        }
+    }
+
+    private void completeMembers(List<Candidate> candidates, String word,
+                                 String bindingName) {
+        ConsoleSession target = session;
+        if (target == null) {
+            return;
+        }
+        try {
+            ConsoleSession.Completion result = target.complete(
+                    ConsoleSession.CompletionRequest.bindingMembers(bindingName));
+            if (result.status() != ConsoleSession.QueryStatus.OK) {
+                return;
+            }
+            for (ConsoleSession.CompletionItem item : result.items()) {
+                if (item.name().startsWith(word)) {
+                    candidates.add(new Candidate(item.name()));
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // Completion is advisory; a failed lookup yields no candidates.
+        }
+    }
+
+    private void completeBindings(List<Candidate> candidates, String word) {
+        ConsoleSession target = session;
+        if (target == null) {
+            return;
+        }
+        try {
+            ConsoleSession.Query result = target.query(ConsoleSession.QueryRequest.bindings());
+            if (result.status() != ConsoleSession.QueryStatus.OK) {
+                return;
+            }
+            for (ConsoleSession.Binding binding : result.bindings()) {
+                if (binding.name().startsWith(word)) {
+                    candidates.add(new Candidate(binding.name()));
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // Completion is advisory; a failed lookup yields no candidates.
+        }
+    }
+
+    private static void addCandidates(List<Candidate> candidates, String word,
+                                      List<String> choices) {
         for (String choice : choices) {
             if (choice.startsWith(word)) {
                 candidates.add(new Candidate(choice));
             }
         }
+    }
+
+    /** {@code :load} or {@code :reload} argument position; nothing else precedes it. */
+    private static boolean isFileTargetPosition(String line, int start) {
+        int previous = start - 1;
+        while (previous >= 0 && Character.isWhitespace(line.charAt(previous))) {
+            previous--;
+        }
+        int commandEnd = previous;
+        while (commandEnd >= 0 && !Character.isWhitespace(line.charAt(commandEnd))) {
+            commandEnd--;
+        }
+        String command = line.substring(commandEnd + 1, previous + 1);
+        return (command.equals(":load") || command.equals(":reload"))
+                && line.substring(0, commandEnd + 1).isBlank();
+    }
+
+    private static boolean reloadPosition(String line, int start) {
+        int previous = start - 1;
+        while (previous >= 0 && Character.isWhitespace(line.charAt(previous))) {
+            previous--;
+        }
+        int commandEnd = previous;
+        while (commandEnd >= 0 && !Character.isWhitespace(line.charAt(commandEnd))) {
+            commandEnd--;
+        }
+        return line.substring(commandEnd + 1, previous + 1).equals(":reload");
+    }
+
+    /** {@code name:.member} position: the word follows a member-access dot. */
+    private static boolean isMemberPosition(String line, int start) {
+        int previous = start - 1;
+        return previous >= 2 && line.charAt(previous) == '.'
+                && line.charAt(previous - 1) == ':'
+                && isIdentifierPart(line.charAt(previous - 2));
+    }
+
+    /** The committed binding name before {@code :.}, or the empty string. */
+    private static String ownerBinding(String line, int start) {
+        int end = start - 2;
+        int begin = end;
+        while (begin > 0 && isIdentifierPart(line.charAt(begin - 1))) {
+            begin--;
+        }
+        return line.substring(begin, end);
     }
 
     private static boolean isCommandPosition(String line, int start, int cursor) {
@@ -216,6 +363,10 @@ final class JLineConsole implements PlainConsole.SourceReader {
     }
 
     private static int wordStart(String line, int cursor) {
+        int commandArgument = commandArgumentStart(line, cursor);
+        if (commandArgument >= 0) {
+            return commandArgument;
+        }
         int start = cursor;
         while (start > 0 && isIdentifierPart(line.charAt(start - 1))) {
             start--;
@@ -225,6 +376,35 @@ final class JLineConsole implements PlainConsole.SourceReader {
             start--;
         }
         return start;
+    }
+
+    /** Returns the first :load/:reload argument offset while editing that sole argument. */
+    private static int commandArgumentStart(String line, int cursor) {
+        int begin = 0;
+        while (begin < cursor && Character.isWhitespace(line.charAt(begin))) {
+            begin++;
+        }
+        int commandEnd = begin;
+        while (commandEnd < cursor && !Character.isWhitespace(line.charAt(commandEnd))) {
+            commandEnd++;
+        }
+        String command = line.substring(begin, commandEnd);
+        if (!command.equals(":load") && !command.equals(":reload")) {
+            return -1;
+        }
+        int argument = commandEnd;
+        while (argument < cursor && Character.isWhitespace(line.charAt(argument))) {
+            argument++;
+        }
+        if (argument == commandEnd || argument >= cursor) {
+            return -1;
+        }
+        for (int index = argument; index < cursor; index++) {
+            if (Character.isWhitespace(line.charAt(index))) {
+                return -1;
+            }
+        }
+        return argument;
     }
 
     private static int wordEnd(String line, int cursor) {
@@ -315,17 +495,30 @@ final class JLineConsole implements PlainConsole.SourceReader {
         // Its built-in exec provider preserves the native state via stty. Keep
         // the Java-25 FFM stream probe, but never apply that lossy conversion.
         String terminalProvider = org.jline.utils.OSUtils.IS_WINDOWS ? "ffm" : "exec";
-        Terminal terminal = TerminalBuilder.builder().name("Lyra").system(true)
-                .provider(terminalProvider).dumb(false).encoding(StandardCharsets.UTF_8)
-                // Avoid a startup probe that reads ahead before source entry owns input.
-                .graphemeCluster(false)
-                .systemOutput(TerminalBuilder.SystemOutput.SysOut).build();
-        if (Terminal.TYPE_DUMB.equals(terminal.getType())
-                || Terminal.TYPE_DUMB_COLOR.equals(terminal.getType())) {
-            terminal.close();
-            return null;
+        Terminal terminal = null;
+        try {
+            terminal = TerminalBuilder.builder().name("Lyra").system(true)
+                    .provider(terminalProvider).dumb(false).encoding(StandardCharsets.UTF_8)
+                    // Avoid a startup probe that reads ahead before source entry owns input.
+                    .graphemeCluster(false)
+                    .systemOutput(TerminalBuilder.SystemOutput.SysOut).build();
+            if (Terminal.TYPE_DUMB.equals(terminal.getType())
+                    || Terminal.TYPE_DUMB_COLOR.equals(terminal.getType())) {
+                terminal.close();
+                terminal = null;
+                return null;
+            }
+            return terminal;
+        } catch (IOException | RuntimeException | LinkageError failure) {
+            if (terminal != null) {
+                try {
+                    terminal.close();
+                } catch (IOException cleanup) {
+                    failure.addSuppressed(cleanup);
+                }
+            }
+            throw failure;
         }
-        return terminal;
     }
 
     /**
@@ -358,6 +551,12 @@ final class JLineConsole implements PlainConsole.SourceReader {
             try {
                 terminal.resume();
                 String source = reader.readLine(PROMPT, null, SOURCE_HISTORY_ONLY, null);
+                // Some terminal providers expose the cooked line ending to
+                // the reader while others do not. Normalize that transport
+                // framing before adding the single source-unit terminator;
+                // PlainConsole removes this terminator for commands, so a
+                // :type payload cannot acquire an editor newline.
+                source = stripLineEnding(source);
                 return source + "\n";
             } catch (UserInterruptException interrupted) {
                 // Ctrl-C abandons only the input being edited. No evaluation is active.
@@ -379,12 +578,31 @@ final class JLineConsole implements PlainConsole.SourceReader {
                 // readLine restores attributes, signal handlers, keypad and paste
                 // mode before evaluation. Suspend providers with background input
                 // pumps; ProgramInput resumes only while generated readLine owns
-                // the terminal reader.
-                if (terminal.canPauseResume()) {
-                    terminal.pause();
+                // the terminal reader. Reinstall the active-evaluation handler
+                // even if pausing the terminal itself reports a failure.
+                try {
+                    if (terminal.canPauseResume()) {
+                        terminal.pause();
+                    }
+                } finally {
+                    Runnable afterRead = onReadComplete;
+                    if (afterRead != null) {
+                        afterRead.run();
+                    }
                 }
             }
         }
+    }
+
+    private static String stripLineEnding(String source) {
+        Objects.requireNonNull(source, "source");
+        if (source.endsWith("\r\n")) {
+            return source.substring(0, source.length() - 2);
+        }
+        if (source.endsWith("\n") || source.endsWith("\r")) {
+            return source.substring(0, source.length() - 1);
+        }
+        return source;
     }
 
     /** Bridges JLine's buffered terminal reader to the runtime's byte decoder. */

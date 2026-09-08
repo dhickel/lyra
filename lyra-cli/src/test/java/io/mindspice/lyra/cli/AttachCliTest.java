@@ -1,8 +1,10 @@
 package io.mindspice.lyra.cli;
 
 import io.mindspice.lyra.repl.ConsoleSession;
+import io.mindspice.lyra.repl.EvaluationId;
 import io.mindspice.lyra.repl.EvaluationRequest;
 import io.mindspice.lyra.repl.EvaluationResult;
+import io.mindspice.lyra.repl.EvaluationSource;
 import io.mindspice.lyra.repl.SessionRevision;
 import io.mindspice.lyra.repl.remote.OwnerDispatcher;
 import io.mindspice.lyra.repl.remote.RemoteCancellation;
@@ -20,8 +22,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -103,12 +107,50 @@ class AttachCliTest {
         try (RemoteServer server = server(adapter, owner)) {
             Invocation result = invokeWhilePumping(server, owner,
                     new String[] {"attach", server.endpoint().address().toString()},
-                    ":type let @pub notExecuted :I32 = 1\n:reload\n:quit\n");
+                    ":type let @pub notExecuted :I32 = 1\n:reload missing\n:quit\n");
             assertEquals(2, result.status());
             assertTrue(result.stderr().contains("LYR-REPL-TYPE-UNSUPPORTED"), result.stderr());
             assertTrue(result.stderr().contains("status=UNAVAILABLE"), result.stderr());
-            assertTrue(result.stderr().contains("LYR-REPL-RELOAD-UNSUPPORTED"), result.stderr());
+            assertTrue(result.stderr().contains("reload is unavailable on the attached session"),
+                    result.stderr());
             assertEquals(0, adapter.evaluations.get());
+        }
+    }
+
+    @Test
+    void reloadWithoutATargetIsAUsageErrorOnEveryConsoleSurface() throws Exception {
+        PumpOwner owner = new PumpOwner();
+        TestAdapter adapter = new TestAdapter(owner.ownerThread);
+        try (RemoteServer server = server(adapter, owner)) {
+            Invocation result = invokeWhilePumping(server, owner,
+                    new String[] {"attach", server.endpoint().address().toString()},
+                    ":reload\n:quit\n");
+            assertEquals(2, result.status());
+            assertTrue(result.stderr().contains("LYR-REPL-USAGE"), result.stderr());
+            assertTrue(result.stderr().contains(":reload expects 1 argument"), result.stderr());
+            assertEquals(0, adapter.evaluations.get());
+        }
+    }
+
+    @Test
+    void attachedLoadReadsQuotedServerPathsOnceWithoutClientFileAccess()
+            throws Exception {
+        Path serverFile = temporaryDirectory.resolve("server module.lyra");
+        Files.writeString(serverFile, "/* server */ let @pub fromServer :I32 = 9\n",
+                StandardCharsets.UTF_8);
+        PumpOwner owner = new PumpOwner();
+        LoadAdapter adapter = new LoadAdapter(owner.ownerThread, serverFile);
+        try (RemoteServer server = server(adapter, owner)) {
+            Invocation result = invokeWhilePumping(server, owner,
+                    new String[] {"attach", server.endpoint().address().toString()},
+                    ":load \"" + serverFile + "\"\n:bindings\n:quit\n");
+            assertEquals(0, result.status(), result.stderr());
+            assertEquals(1, adapter.loadedPaths.size(), adapter.loadedPaths.toString());
+            assertEquals(serverFile.toString(), adapter.loadedPaths.getFirst());
+            assertEquals("/* server */ let @pub fromServer :I32 = 9\n",
+                    adapter.loadedSource.get());
+            assertEquals(0, adapter.evaluations.get());
+            assertTrue(result.stdout().contains("fromServer :I32"), result.stdout());
         }
     }
 
@@ -227,6 +269,70 @@ class AttachCliTest {
                     : new RemoteQuery.Result(RemoteQuery.Status.OK,
                     List.of(new io.mindspice.lyra.repl.remote.RemoteBinding(
                             "answer", "I32", "PUBLIC", true)),
+                    Optional.empty(), Optional.empty());
+        }
+    }
+
+    /** An adapter whose LOAD reads the server-side file exactly once. */
+    private static final class LoadAdapter implements RemoteSessionAdapter {
+        private final UUID sessionId = UUID.randomUUID();
+        private final Thread ownerThread;
+        final ArrayList<String> loadedPaths = new ArrayList<>();
+        final AtomicReference<String> loadedSource = new AtomicReference<>();
+        final AtomicInteger evaluations = new AtomicInteger();
+        private final Path serverFile;
+        private SessionRevision revision = SessionRevision.initial();
+
+        LoadAdapter(Thread ownerThread, Path serverFile) {
+            this.ownerThread = ownerThread;
+            this.serverFile = serverFile;
+        }
+
+        @Override
+        public UUID sessionId() {
+            return sessionId;
+        }
+
+        @Override
+        public SessionRevision revision() {
+            return revision;
+        }
+
+        @Override
+        public EvaluationResult evaluate(EvaluationRequest request,
+                                         RemoteCancellation cancellation) {
+            evaluations.incrementAndGet();
+            return new EvaluationResult.Success(request, revision, Optional.empty(), List.of());
+        }
+
+        @Override
+        public EvaluationResult load(io.mindspice.lyra.repl.remote.ProtocolMessage.LoadRequest request,
+                                     RemoteCancellation cancellation) {
+            assertEquals(ownerThread, Thread.currentThread());
+            loadedPaths.add(request.path());
+            try {
+                loadedSource.set(Files.readString(serverFile, StandardCharsets.UTF_8));
+            } catch (IOException failure) {
+                throw new AssertionError(failure);
+            }
+            return new EvaluationResult.Success(new EvaluationRequest(
+                    EvaluationId.of(request.requestId()), request.revision(),
+                    EvaluationSource.of(request.path(), loadedSource.get())),
+                    revision, Optional.empty(), List.of());
+        }
+
+        @Override
+        public void reset() {
+        }
+
+        @Override
+        public RemoteQuery.Result query(RemoteQuery query) {
+            if (query.kind() == RemoteQuery.Kind.TYPE) {
+                return RemoteQuery.Result.unavailable("type query unavailable");
+            }
+            return new RemoteQuery.Result(RemoteQuery.Status.OK,
+                    List.of(new io.mindspice.lyra.repl.remote.RemoteBinding(
+                            "fromServer", "I32", "PUBLIC", false)),
                     Optional.empty(), Optional.empty());
         }
     }

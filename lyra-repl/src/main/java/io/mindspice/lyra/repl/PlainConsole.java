@@ -6,23 +6,16 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.channels.WritableByteChannel;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.FileAttribute;
-import java.nio.file.attribute.PosixFilePermission;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 
 /**
  * Dependency-free, non-TTY console loop. It owns no streams or session and
@@ -34,8 +27,8 @@ public final class PlainConsole {
             + "  :help                 Show this help.\n"
             + "  :bindings             List committed binding metadata.\n"
             + "  :type SOURCE          Show SOURCE's type without executing or recording it.\n"
-            + "  :load PATH            Submit UTF-8 source from PATH.\n"
-            + "  :reload               Reload is unavailable without live linkage.\n"
+            + "  :load PATH            Submit UTF-8 source from PATH on the execution host.\n"
+            + "  :reload MODULE        Rebuild one retained REPL-owned module.\n"
             + "  :reset                Clear scratch bindings and in-memory history.\n"
             + "  :history              List in-memory submitted source; never replays.\n"
             + "  :quit                 Exit the console.\n";
@@ -144,7 +137,11 @@ public final class PlainConsole {
                     continue;
                 }
                 if (source.stripLeading().startsWith(":")) {
-                    if (handleCommand(source.stripLeading(), evaluationFailuresAffectStatus)) {
+                    // Source readers may return a line terminator for an
+                    // accepted editor line. It is transport framing, not
+                    // part of the command argument; remove only that one
+                    // terminator so :type receives its source verbatim.
+                    if (handleCommand(commandLine(source), evaluationFailuresAffectStatus)) {
                         break;
                     }
                 } else if (LexicalCompleteness.inspect(source).incomplete()) {
@@ -171,6 +168,17 @@ public final class PlainConsole {
          * Return an unfinished unit only at EOF so the shared loop can diagnose it.
          */
         String readSource(List<String> history) throws IOException;
+    }
+
+    private static String commandLine(String source) {
+        String line = source.stripLeading();
+        if (line.endsWith("\r\n")) {
+            return line.substring(0, line.length() - 2);
+        }
+        if (line.endsWith("\n") || line.endsWith("\r")) {
+            return line.substring(0, line.length() - 1);
+        }
+        return line;
     }
 
     private boolean handleCommand(String line, boolean evaluationFailuresAffectStatus) {
@@ -202,7 +210,7 @@ public final class PlainConsole {
                     yield false;
                 }
                 case RELOAD -> {
-                    reload();
+                    reload(command.arguments().getFirst(), evaluationFailuresAffectStatus);
                     yield false;
                 }
                 case RESET -> {
@@ -215,52 +223,33 @@ public final class PlainConsole {
                 }
                 case QUIT -> true;
             };
-        } catch (IOException | RuntimeException failure) {
+        } catch (RuntimeException failure) {
             diagnostic("LYR-REPL-INFRA", message(failure));
             commandFailed = true;
             return false;
         }
     }
 
-    private void load(String spelling, boolean evaluationFailuresAffectStatus) throws IOException {
-        final Path path;
-        try {
-            path = Path.of(spelling);
-        } catch (InvalidPathException failure) {
-            throw new IllegalArgumentException("invalid load path: " + spelling, failure);
-        }
-        Path normalized = path.toAbsolutePath().normalize();
-        if (Files.isSymbolicLink(normalized)
-                || !Files.isRegularFile(normalized, LinkOption.NOFOLLOW_LINKS)) {
-            throw new IOException("load path is not a regular non-symbolic-link file: " + spelling);
-        }
-        String source = readUtf8(normalized);
-        submit(source, normalized.toString(), evaluationFailuresAffectStatus);
+    /**
+     * Routes the load to the selected execution host: the local session for
+     * a local console, the attached server for a remote one. The client
+     * never reads attached load paths. The loaded source text contributes to
+     * visible history only when the execution host returned it.
+     */
+    private void load(String path, boolean evaluationFailuresAffectStatus) {
+        ConsoleSession.Loaded loaded = session.load(path);
+        loaded.sourceText().ifPresent(this::recordHistory);
+        reportEvaluation(loaded.evaluation(), evaluationFailuresAffectStatus);
     }
 
-    private static String readUtf8(Path path) throws IOException {
-        byte[] bytes;
-        // Open with NOFOLLOW_LINKS as well as checking the path first. The
-        // open-time check avoids following a final symlink if the path changes
-        // between validation and reading.
-        try (InputStream source = Files.newInputStream(
-                path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
-            bytes = source.readAllBytes();
-        }
-        try {
-            return StandardCharsets.UTF_8.newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(bytes))
-                    .toString();
-        } catch (CharacterCodingException failure) {
-            throw new IOException("load path is not valid UTF-8: " + path, failure);
-        }
+    /** Routes the rebuild to the execution host and reports its terminal outcome. */
+    private void reload(String moduleOrAlias, boolean evaluationFailuresAffectStatus) {
+        reportEvaluation(session.reload(moduleOrAlias), evaluationFailuresAffectStatus);
     }
 
     private void submit(String source, String label, boolean evaluationFailuresAffectStatus) {
         recordHistory(source);
-        ConsoleSession.Evaluation result;
+        final ConsoleSession.Evaluation result;
         try {
             result = session.evaluate(EvaluationSource.of(label, source));
         } catch (RuntimeException failure) {
@@ -268,6 +257,11 @@ public final class PlainConsole {
             commandFailed = true;
             return;
         }
+        reportEvaluation(result, evaluationFailuresAffectStatus);
+    }
+
+    private void reportEvaluation(ConsoleSession.Evaluation result,
+                                  boolean evaluationFailuresAffectStatus) {
         for (ConsoleSession.DiagnosticInfo diagnostic : result.diagnostics()) {
             diagnostic(diagnostic.render());
         }
@@ -341,14 +335,6 @@ public final class PlainConsole {
             return;
         }
         history.clear();
-    }
-
-    private void reload() {
-        ConsoleSession.Control result = session.reload();
-        diagnostic("LYR-REPL-RELOAD-UNSUPPORTED", "status=" + result.status() + ": "
-                + controlDetail(result,
-                "reload is unavailable without persistent live linkage; no source was replayed"));
-        commandFailed = true;
     }
 
     private static String queryDetail(ConsoleSession.Query result, String fallback) {
@@ -428,12 +414,15 @@ public final class PlainConsole {
         return value == null || value.isBlank() ? failure.getClass().getSimpleName() : value;
     }
 
-    /** Strict, source-only history persistence used only after an explicit path option. */
+    /**
+     * Strict, source-only history persistence used only after an explicit
+     * path option. Optional-console paths follow normal filesystem
+     * semantics: the target must be a regular file with strict UTF-8
+     * content, but no permission or symbolic-link security policy applies.
+     */
     private static final class ConsoleHistoryFile {
         private static final int MAX_ENTRIES = 256;
         private static final int MAX_BYTES = 1024 * 1024;
-        private static final Set<PosixFilePermission> PRIVATE_PERMISSIONS = Set.of(
-                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
 
         private ConsoleHistoryFile() {
         }
@@ -443,17 +432,12 @@ public final class PlainConsole {
             Path path = value.toAbsolutePath().normalize();
             try {
                 Path parent = path.getParent();
-                if (parent == null || !Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
+                if (parent == null || !Files.isDirectory(parent)) {
                     throw new IOException("history file parent must be an existing directory: " + path);
                 }
-                rejectSymbolicParents(path, parent);
-                if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
-                    if (Files.isSymbolicLink(path)
-                            || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
-                        throw new IOException(
-                                "history path must be a regular non-symbolic-link file: " + path);
-                    }
-                    requirePrivatePermissions(path);
+                if (Files.exists(path) && !Files.isRegularFile(path)) {
+                    throw new IOException(
+                            "history path must be a regular file: " + path);
                 }
                 return path;
             } catch (IOException failure) {
@@ -463,16 +447,10 @@ public final class PlainConsole {
         }
 
         private static List<String> read(Path path) throws IOException {
-            rejectSymbolicParents(path, path.getParent());
-            if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+            if (!Files.exists(path)) {
                 return List.of();
             }
-            requirePrivatePermissions(path);
-            byte[] bytes;
-            try (InputStream source = Files.newInputStream(
-                    path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
-                bytes = source.readNBytes(MAX_BYTES + 1);
-            }
+            byte[] bytes = Files.readAllBytes(path);
             if (bytes.length > MAX_BYTES) {
                 throw new IOException("history file exceeds the 1 MiB limit: " + path);
             }
@@ -511,7 +489,6 @@ public final class PlainConsole {
         private static void write(Path path, List<String> entries) throws IOException {
             Objects.requireNonNull(path, "path");
             Objects.requireNonNull(entries, "entries");
-            rejectSymbolicParents(path, path.getParent());
             if (entries.size() > MAX_ENTRIES) {
                 throw new IOException("too many history entries");
             }
@@ -529,49 +506,14 @@ public final class PlainConsole {
                 }
                 encoded.add(bytes);
             }
-
-            if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
-                if (Files.isSymbolicLink(path)
-                        || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
-                    throw new IOException(
-                            "history path must be a regular non-symbolic-link file: " + path);
-                }
-                requirePrivatePermissions(path);
-                try (OutputStream target = Files.newOutputStream(
-                        path, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING,
-                        LinkOption.NOFOLLOW_LINKS)) {
-                    for (byte[] bytes : encoded) {
-                        target.write(bytes);
-                    }
-                }
-                return;
+            if (Files.exists(path) && !Files.isRegularFile(path)) {
+                throw new IOException("history path must be a regular file: " + path);
             }
-
-            FileAttribute<Set<PosixFilePermission>> permissions =
-                    PosixFilePermissions.asFileAttribute(PRIVATE_PERMISSIONS);
-            try (WritableByteChannel target = Files.newByteChannel(
-                    path,
-                    Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW,
-                            LinkOption.NOFOLLOW_LINKS),
-                    permissions)) {
-                writeAll(target, encoded);
-            } catch (UnsupportedOperationException failure) {
-                try (OutputStream target = Files.newOutputStream(
-                        path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW,
-                        LinkOption.NOFOLLOW_LINKS)) {
-                    for (byte[] bytes : encoded) {
-                        target.write(bytes);
-                    }
-                }
-            }
-        }
-
-        private static void writeAll(WritableByteChannel target, List<byte[]> encoded)
-                throws IOException {
-            for (byte[] bytes : encoded) {
-                ByteBuffer buffer = ByteBuffer.wrap(bytes);
-                while (buffer.hasRemaining()) {
-                    target.write(buffer);
+            try (OutputStream target = Files.newOutputStream(
+                    path, StandardOpenOption.WRITE, StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING)) {
+                for (byte[] bytes : encoded) {
+                    target.write(bytes);
                 }
             }
         }
@@ -621,35 +563,6 @@ public final class PlainConsole {
                 result.append('\\');
             }
             return result.toString();
-        }
-
-        private static void rejectSymbolicParents(Path path, Path parent) throws IOException {
-            Path current = path.getRoot();
-            for (Path part : path) {
-                current = current == null ? part : current.resolve(part);
-                if (Files.isSymbolicLink(current)) {
-                    throw new IOException("history path contains a symbolic-link parent: " + path);
-                }
-                if (current.equals(parent)) {
-                    return;
-                }
-            }
-        }
-
-        private static void requirePrivatePermissions(Path path) throws IOException {
-            try {
-                Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(
-                        path, LinkOption.NOFOLLOW_LINKS);
-                if (!permissions.containsAll(PRIVATE_PERMISSIONS)
-                        || permissions.stream().anyMatch(permission ->
-                        permission.name().startsWith("GROUP_")
-                                || permission.name().startsWith("OTHERS_"))) {
-                    throw new IOException(
-                            "history file must be owner-readable and owner-writable only: " + path);
-                }
-            } catch (UnsupportedOperationException ignored) {
-                // Windows has no POSIX mode bits; final-component no-follow checks still apply.
-            }
         }
     }
 }

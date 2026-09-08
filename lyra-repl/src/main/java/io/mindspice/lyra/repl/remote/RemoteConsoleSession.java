@@ -71,9 +71,14 @@ public final class RemoteConsoleSession implements ConsoleSession {
     /**
      * Server-side file load. The server reads the UTF-8 file exactly once
      * and submits the captured file-URI source; the client never reads the
-     * load path locally.
+     * load path locally and never receives the source text back.
      */
-    public Evaluation load(String path) {
+    @Override
+    public Loaded load(String path) {
+        return new Loaded(loadEvaluation(path), Optional.empty());
+    }
+
+    private Evaluation loadEvaluation(String path) {
         Objects.requireNonNull(path, "path");
         if (!client.isConnected()) {
             return cancelled(EvaluationId.create(),
@@ -99,6 +104,7 @@ public final class RemoteConsoleSession implements ConsoleSession {
      * target is resolved and rebuilt on the execution host exactly once and
      * the result carries the host's real initializer progress.
      */
+    @Override
     public Evaluation reload(String target) {
         Objects.requireNonNull(target, "target");
         if (!client.isConnected()) {
@@ -121,6 +127,7 @@ public final class RemoteConsoleSession implements ConsoleSession {
     }
 
     /** Bounded metadata completion executed on the server, never locally. */
+    @Override
     public Completion complete(CompletionRequest request) {
         Objects.requireNonNull(request, "request");
         try {
@@ -140,59 +147,6 @@ public final class RemoteConsoleSession implements ConsoleSession {
                     ? QueryStatus.UNAVAILABLE : QueryStatus.DISCONNECTED;
             return new Completion(status, List.of(), Optional.of(message(failure)));
         }
-    }
-
-    /** A bounded completion request mirroring the wire schema. */
-    public record CompletionRequest(Kind kind, Optional<String> prefix, Optional<String> binding) {
-        public CompletionRequest {
-            kind = Objects.requireNonNull(kind, "kind");
-            prefix = Objects.requireNonNull(prefix, "prefix");
-            binding = Objects.requireNonNull(binding, "binding");
-            if (kind == Kind.BINDING_MEMBERS && binding.isEmpty()) {
-                throw new IllegalArgumentException("member completion needs a binding name");
-            }
-            if (kind != Kind.BINDING_MEMBERS && binding.isPresent()) {
-                throw new IllegalArgumentException("binding name is only valid for member completion");
-            }
-        }
-
-        public static CompletionRequest moduleFiles(Optional<String> prefix) {
-            return new CompletionRequest(Kind.MODULE_FILES, prefix, Optional.empty());
-        }
-
-        public static CompletionRequest bindingMembers(String binding) {
-            return new CompletionRequest(Kind.BINDING_MEMBERS, Optional.empty(),
-                    Optional.of(binding));
-        }
-
-        public enum Kind {
-            MODULE_FILES,
-            BINDING_MEMBERS
-        }
-    }
-
-    public record Completion(QueryStatus status, List<CompletionItem> items,
-                             Optional<String> detail) {
-        public Completion {
-            status = Objects.requireNonNull(status, "status");
-            items = List.copyOf(Objects.requireNonNull(items, "items"));
-            detail = Objects.requireNonNull(detail, "detail");
-        }
-    }
-
-    public record CompletionItem(String name, ItemKind kind, Optional<String> typeSpelling) {
-        public CompletionItem {
-            name = Objects.requireNonNull(name, "name");
-            kind = Objects.requireNonNull(kind, "kind");
-            typeSpelling = Objects.requireNonNull(typeSpelling, "typeSpelling");
-        }
-    }
-
-    public enum ItemKind {
-        FILE,
-        DIRECTORY,
-        MODULE,
-        MEMBER
     }
 
     private static QueryStatus map(ProtocolMessage.QueryStatus status) {
@@ -321,12 +275,6 @@ public final class RemoteConsoleSession implements ConsoleSession {
             return new Query(status, List.of(), Optional.empty(),
                     Optional.of(message(failure)));
         }
-    }
-
-    @Override
-    public Control reload() {
-        return Control.unavailable(client.revision(),
-                "reload is unavailable over the attached protocol; no source was replayed");
     }
 
     @Override

@@ -25,7 +25,27 @@ final class JLinePtyTest {
 
     @Test
     void realTerminalHandlesPasteMultilineResizeCommandsAndCleanup() throws Exception {
-        pty("rich", true, LyraCli.class.getName(), "repl");
+        Files.writeString(temp.resolve("newmod.lyra"), "let @pub loaded :I32 = 7\n");
+        pty("rich", true, LyraCli.class.getName(), "repl",
+                "--source-root", temp.toString());
+    }
+
+    @Test
+    void activeCtrlCCancelsOnlyTheKnownEvaluationAndLaterSourceSucceeds()
+            throws Exception {
+        pty("rich-cancel", true, LyraCli.class.getName(), "repl");
+    }
+
+    @Test
+    void generatedReadLinePreservesUnicodeFollowingSourceAndHistoryOrdering()
+            throws Exception {
+        pty("readline", true, LyraCli.class.getName(), "repl");
+    }
+
+    @Test
+    void undecoratedTtyCtrlCCancelsTheActiveEvaluationWithoutACompetingReader()
+            throws Exception {
+        pty("plain-cancel", true, LyraCli.class.getName(), "repl", "--plain");
     }
 
     @Test

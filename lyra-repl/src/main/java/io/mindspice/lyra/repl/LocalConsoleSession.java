@@ -24,6 +24,40 @@ final class LocalConsoleSession implements ConsoleSession {
     }
 
     @Override
+    public Loaded load(String path) {
+        EvaluationSource source = ConsoleFileRead.readFile(
+                Objects.requireNonNull(path, "path"));
+        return new Loaded(evaluate(source), Optional.of(source.text()));
+    }
+
+    @Override
+    public Evaluation reload(String moduleOrAlias) {
+        Objects.requireNonNull(moduleOrAlias, "moduleOrAlias");
+        if (session.lifecycleState() == SessionLifecycleState.CLOSED) {
+            return new Evaluation(EvaluationId.create(), EvaluationStatus.CLOSED, revision(),
+                    List.of(), Optional.empty(), Optional.of("session is closed"));
+        }
+        return ConsolePresentation.evaluation(session.reload(moduleOrAlias));
+    }
+
+    @Override
+    public Completion complete(CompletionRequest request) {
+        Objects.requireNonNull(request, "request");
+        if (session.lifecycleState() == SessionLifecycleState.CLOSED) {
+            return new Completion(QueryStatus.CLOSED, List.of(),
+                    Optional.of("session is closed"));
+        }
+        if (session.isBusy()) {
+            return new Completion(QueryStatus.BUSY, List.of(),
+                    Optional.of("the local session is busy"));
+        }
+        return switch (request.kind()) {
+            case MODULE_FILES -> ConsoleCompletion.moduleFiles(session, request);
+            case BINDING_MEMBERS -> ConsoleCompletion.bindingMembers(session, request);
+        };
+    }
+
+    @Override
     public Control cancel(EvaluationId evaluationId) {
         boolean requested = session.cancel(Objects.requireNonNull(evaluationId, "evaluationId"));
         return new Control(requested ? ControlStatus.REQUESTED : ControlStatus.NOT_FOUND,
@@ -38,16 +72,6 @@ final class LocalConsoleSession implements ConsoleSession {
         }
         session.reset();
         return new Control(ControlStatus.OK, revision(), Optional.empty());
-    }
-
-    @Override
-    public Control reload() {
-        if (session.lifecycleState() == SessionLifecycleState.CLOSED) {
-            return new Control(ControlStatus.CLOSED, revision(),
-                    Optional.of("session is closed"));
-        }
-        return Control.unavailable(revision(),
-                "reload is unavailable without persistent live linkage; no source was replayed");
     }
 
     @Override

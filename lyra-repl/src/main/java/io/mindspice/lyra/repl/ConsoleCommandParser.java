@@ -39,7 +39,10 @@ final class ConsoleCommandParser {
             return new ConsoleCommand(kind, List.of(remainder));
         }
         List<String> arguments = tokenize(remainder);
-        int expected = kind == ConsoleCommand.Kind.LOAD ? 1 : 0;
+        int expected = switch (kind) {
+            case LOAD, RELOAD -> 1;
+            default -> 0;
+        };
         if (arguments.size() != expected) {
             throw new ParseFailure(name + " expects " + expected + " argument"
                     + (expected == 1 ? "" : "s"));

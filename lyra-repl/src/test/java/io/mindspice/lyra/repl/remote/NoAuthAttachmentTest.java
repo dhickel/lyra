@@ -125,7 +125,7 @@ class NoAuthAttachmentTest {
             ProtocolMessage.CompletionResult files = filesFuture.get(5, TimeUnit.SECONDS);
             assertEquals(ProtocolMessage.QueryStatus.OK, files.status());
             assertTrue(files.items().stream().anyMatch(item ->
-                    item.name().equals("game/math")
+                    item.name().equals("game->math")
                             && item.kind() == ProtocolMessage.CompletionItemKind.MODULE));
         } finally {
             root.close();

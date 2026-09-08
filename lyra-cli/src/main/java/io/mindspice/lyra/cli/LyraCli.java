@@ -25,7 +25,7 @@ import io.mindspice.lyra.runtime.ModuleHandle;
 import io.mindspice.lyra.runtime.SourceData;
 import io.mindspice.lyra.runtime.SourceFrame;
 import io.mindspice.lyra.runtime.SourceFrameRenderer;
-import io.mindspice.lyra.repl.LyraSession;
+import io.mindspice.lyra.repl.ManagedConsoleSession;
 import io.mindspice.lyra.repl.PlainConsole;
 import io.mindspice.lyra.repl.SessionOptions;
 import io.mindspice.lyra.repl.remote.LoopbackEndpoint;
@@ -55,7 +55,7 @@ public final class LyraCli {
     public static final String HELP_TEXT = USAGE_TEXT + "\n"
             + "\n"
             + "Commands:\n"
-            + "  repl [ROOT] [--history PATH] [--plain] [--keymap emacs|vi]\n"
+            + "  repl [DIR] [--source-root DIR]* [--history PATH] [--plain] [--keymap emacs|vi]\n"
             + "  attach ENDPOINT\n"
             + "  run ROOT [--source-root DIR]* [-- ARGS...]\n"
             + "  compile ROOT [--source-root DIR]* [--output PATH]\n"
@@ -151,18 +151,20 @@ public final class LyraCli {
                             OutputStream output, OutputStream error,
                             boolean processTerminal) throws IOException {
         SessionOptions.Builder options = SessionOptions.builder();
+        // The positional directory and repeatable source roots configure
+        // module discovery only; no local root is initialized and main is
+        // never invoked on startup.
+        for (Path sourceRoot : command.sourceRoots()) {
+            options.sourceRoot(requireDirectory(sourceRoot, "--source-root"));
+        }
         if (command.root().isPresent()) {
-            Path root = command.root().orElseThrow();
-            Path normalized = root.toAbsolutePath().normalize();
-            if (Files.isSymbolicLink(normalized)
-                    || !Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS)) {
-                throw new UsageFailure("REPL ROOT must be an existing non-symbolic-link directory: " + root);
-            }
-            options.sourceRoot(normalized);
+            options.sourceRoot(requireDirectory(command.root().orElseThrow(), "repl DIR"));
         }
 
         org.jline.terminal.Terminal terminal = null;
         JLineConsole rich = null;
+        ManagedConsoleSession console = null;
+        Throwable primary = null;
         try {
             if (processTerminal && !command.plain()) {
                 try {
@@ -180,22 +182,77 @@ public final class LyraCli {
                 }
             }
 
+            // One explicit I/O environment serves source entry and generated
+            // program I/O; the managed console's dedicated owner thread
+            // executes compiled submissions so Ctrl-C can cancel the known
+            // active evaluation without terminating the process.
             InputStream sessionInput = rich == null ? input : rich.programInput();
             RuntimeIoEnvironment environment = new RuntimeIoEnvironment(
                     sessionInput, output, error, StandardCharsets.UTF_8);
             options.ioEnvironment(environment);
-            try (LyraSession session = LyraSession.open(options.build())) {
-                PlainConsole console = new PlainConsole(session, environment,
+            console = ManagedConsoleSession.open(options.build());
+            if (rich != null) {
+                rich.completeWith(console);
+            }
+            ManagedConsoleSession target = console;
+            ConsoleSignals signals = ConsoleSignals.install(() ->
+                    target.activeEvaluationId().ifPresent(target::cancel));
+            try (signals) {
+                if (rich != null) {
+                    rich.onReadComplete(signals::reinstall);
+                }
+                PlainConsole plain = new PlainConsole(console, environment,
                         command.history().orElse(null));
                 return rich == null
-                        ? console.run()
-                        : console.runInteractive(rich);
+                        ? plain.run()
+                        : plain.runInteractive(rich);
             }
+        } catch (IOException failure) {
+            primary = failure;
+            throw failure;
+        } catch (RuntimeException | Error failure) {
+            primary = failure;
+            throw failure;
         } finally {
+            // Attempt both independent cleanups. A terminal/provider failure
+            // must not strand the managed owner, and a cleanup failure must
+            // not hide an earlier console failure.
+            Throwable cleanup = null;
+            if (console != null) {
+                try {
+                    console.close();
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable failure) {
+                    cleanup = failure;
+                }
+            }
             if (terminal != null) {
-                terminal.close();
+                try {
+                    terminal.close();
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable failure) {
+                    cleanup = suppress(cleanup, failure);
+                }
+            }
+            if (cleanup != null) {
+                if (primary != null) {
+                    primary.addSuppressed(cleanup);
+                } else {
+                    throwCleanup(cleanup);
+                }
             }
         }
+    }
+
+    /** Search roots are discovery configuration; they must be existing directories. */
+    private static Path requireDirectory(Path path, String option) {
+        Path normalized = path.toAbsolutePath().normalize();
+        if (!Files.isDirectory(normalized)) {
+            throw new UsageFailure(option + " must be an existing directory: " + path);
+        }
+        return normalized;
     }
 
     private static int attach(AttachCommand command, InputStream input,
@@ -220,14 +277,26 @@ public final class LyraCli {
                             + message(failure) + "\n");
                 }
             }
+            if (rich != null) {
+                rich.completeWith(session);
+            }
             // The environment is local console state only. It is never sent
             // over the attached protocol or used by the host session.
             RuntimeIoEnvironment environment = new RuntimeIoEnvironment(
                     input, output, error, StandardCharsets.UTF_8);
-            PlainConsole console = new PlainConsole(session, environment);
-            return rich == null
-                    ? console.run()
-                    : console.runInteractive(rich);
+            // Ctrl-C cancels only the active attached request; the handler
+            // never reads the terminal or executes source.
+            ConsoleSignals signals = ConsoleSignals.install(
+                    () -> session.cancelActive());
+            try (signals) {
+                if (rich != null) {
+                    rich.onReadComplete(signals::reinstall);
+                }
+                PlainConsole console = new PlainConsole(session, environment);
+                return rich == null
+                        ? console.run()
+                        : console.runInteractive(rich);
+            }
         } catch (RemoteOperationException failure) {
             write(error, "lyra: attach failed: " + failure.code() + ": "
                     + message(failure) + "\n");
@@ -673,6 +742,19 @@ public final class LyraCli {
         return primary;
     }
 
+    private static void throwCleanup(Throwable failure) throws IOException {
+        if (failure instanceof IOException io) {
+            throw io;
+        }
+        if (failure instanceof RuntimeException runtime) {
+            throw runtime;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        throw new IOException("console cleanup failed", failure);
+    }
+
     private static void rethrowFatal(Throwable failure) {
         if (failure instanceof VirtualMachineError error) {
             throw error;
@@ -704,10 +786,12 @@ public final class LyraCli {
             ReplCommand, AttachCommand, RunCommand, CompileCommand {
     }
 
-    private record ReplCommand(Optional<Path> root, Optional<Path> history,
-                                boolean plain, String keymap) implements ParsedCommand {
+    private record ReplCommand(Optional<Path> root, List<Path> sourceRoots,
+                               Optional<Path> history, boolean plain, String keymap)
+            implements ParsedCommand {
         private ReplCommand {
             root = Objects.requireNonNull(root, "root");
+            sourceRoots = List.copyOf(sourceRoots);
             history = Objects.requireNonNull(history, "history");
         }
     }
@@ -823,6 +907,7 @@ public final class LyraCli {
 
         private static ParsedCommand parseRepl(String[] args) {
             Optional<Path> root = Optional.empty();
+            ArrayList<Path> sourceRoots = new ArrayList<>();
             Optional<Path> history = Optional.empty();
             int index = 1;
             if (index < args.length && args[index] != null
@@ -845,6 +930,8 @@ public final class LyraCli {
                         }
                         plain = true;
                     }
+                    case "--source-root" -> sourceRoots.add(
+                            pathValue(args, index++, "--source-root"));
                     case "--history" -> {
                         if (seenHistory) {
                             throw new UsageFailure("duplicate option: --history");
@@ -866,7 +953,7 @@ public final class LyraCli {
                     default -> throw new UsageFailure("unknown repl option: " + token);
                 }
             }
-            return new ReplCommand(root, history, plain, keymap);
+            return new ReplCommand(root, sourceRoots, history, plain, keymap);
         }
 
         private static ParsedCommand parseAttach(String[] args) {
@@ -1000,6 +1087,84 @@ public final class LyraCli {
     private static final class UsageFailure extends RuntimeException {
         private UsageFailure(String message) {
             super(message);
+        }
+    }
+
+    /**
+     * JVM-level SIGINT mapping for interactive consoles. The callback runs
+     * on the JVM signal thread and only touches safely published console
+     * control state: it requests cancellation of the known active
+     * evaluation identity and never reads the terminal or executes source.
+     * The previous handler is restored on every path; JLine's own editing
+     * handler replaces this one only while a line is being edited, so an
+     * idle Ctrl-C still clears the edit buffer through JLine.
+     */
+    private static final class ConsoleSignals implements AutoCloseable {
+        private static final String INT = "INT";
+        private final Runnable onInterrupt;
+        /** The ambient handler captured on the first install; restored on close. */
+        private sun.misc.SignalHandler previous;
+        private boolean installed;
+
+        private ConsoleSignals(Runnable onInterrupt) {
+            this.onInterrupt = onInterrupt;
+        }
+
+        static ConsoleSignals install(Runnable onInterrupt) {
+            Objects.requireNonNull(onInterrupt, "onInterrupt");
+            // A real interactive terminal only; piped or injected consoles
+            // keep the JVM's ordinary SIGINT semantics.
+            if (System.console() == null) {
+                return new ConsoleSignals(onInterrupt);
+            }
+            try {
+                ConsoleSignals guard = new ConsoleSignals(onInterrupt);
+                guard.installHandler();
+                return guard;
+            } catch (IllegalArgumentException | NullPointerException failure) {
+                // No INT signal on this platform; the console still runs.
+                return new ConsoleSignals(onInterrupt);
+            }
+        }
+
+        /**
+         * Re-installs the cancellation handler after JLine's line editor
+         * released the terminal. JLine installs its own interrupt handling
+         * while a line is edited and leaves the JVM default in place
+         * afterwards; the console loop calls this from its per-read finally
+         * so an active evaluation remains cancellable by Ctrl-C.
+         */
+        synchronized void reinstall() {
+            if (!installed) {
+                return;
+            }
+            try {
+                installHandler();
+            } catch (IllegalArgumentException ignored) {
+                // Shutting down; nothing further can be installed.
+            }
+        }
+
+        private synchronized void installHandler() {
+            sun.misc.SignalHandler prior = sun.misc.Signal.handle(
+                    new sun.misc.Signal(INT), signal -> onInterrupt.run());
+            if (!installed) {
+                previous = prior;
+            }
+            installed = true;
+        }
+
+        @Override
+        public synchronized void close() {
+            if (!installed) {
+                return;
+            }
+            try {
+                sun.misc.Signal.handle(new sun.misc.Signal(INT), previous);
+            } catch (IllegalArgumentException ignored) {
+                // The JVM is shutting down; nothing further can be restored.
+            }
+            installed = false;
         }
     }
 }

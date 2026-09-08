@@ -86,6 +86,36 @@ class RemoteFileModuleTest {
     }
 
     @Test
+    void completionUsesLogicalModuleNamesAndNormalSymlinkSemantics() throws Exception {
+        Path nested = Files.createDirectories(serverRoot.resolve("game/math"));
+        Files.writeString(nested.resolve("vector.lyra"), "", StandardCharsets.UTF_8);
+
+        RemoteCompletion.Result logical = RemoteFileCompletion.moduleFiles(
+                List.of(serverRoot), Optional.of("game->math->vec"));
+        assertEquals(RemoteCompletion.Status.OK, logical.status());
+        assertTrue(logical.items().stream().anyMatch(item ->
+                item.kind() == RemoteCompletion.ItemKind.MODULE
+                        && item.name().equals("game->math->vector")), logical.items().toString());
+
+        Path linkedRoot = serverRoot.resolveSibling("linked-modules");
+        Files.createDirectories(linkedRoot);
+        Files.writeString(linkedRoot.resolve("linked.lyra"), "", StandardCharsets.UTF_8);
+        Path link = serverRoot.resolve("linked");
+        try {
+            Files.createSymbolicLink(link, linkedRoot);
+        } catch (UnsupportedOperationException | SecurityException | java.io.IOException failure) {
+            return;
+        }
+        RemoteCompletion.Result throughLink = RemoteFileCompletion.moduleFiles(
+                List.of(serverRoot), Optional.of("linked/lin"));
+        assertEquals(RemoteCompletion.Status.OK, throughLink.status());
+        assertTrue(throughLink.items().stream().anyMatch(item ->
+                item.kind() == RemoteCompletion.ItemKind.FILE
+                        && item.name().equals("linked/linked.lyra")),
+                throughLink.items().toString());
+    }
+
+    @Test
     void loadReadsServerFileExactlyOnceIntoAFileUriSource() throws Exception {
         // A same-named file with different contents exists on the client
         // side; the server must read its own file, never the client's.

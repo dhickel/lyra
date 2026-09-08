@@ -35,6 +35,28 @@ final class ConsoleParsingTest {
     }
 
     @Test
+    void reloadRequiresExactlyOneTargetAndIsNotAnUnavailableNoOp() {
+        // An absent target is an ordinary usage error, never UNAVAILABLE.
+        assertThrows(ConsoleCommandParser.ParseFailure.class,
+                () -> ConsoleCommandParser.parse(":reload"));
+        assertThrows(ConsoleCommandParser.ParseFailure.class,
+                () -> ConsoleCommandParser.parse(":reload  one  two"));
+        assertThrows(ConsoleCommandParser.ParseFailure.class,
+                () -> ConsoleCommandParser.parse(":reload \"unfinished"));
+
+        ConsoleCommand logical = ConsoleCommandParser.parse(":reload game->math->vector");
+        assertEquals(ConsoleCommand.Kind.RELOAD, logical.kind());
+        assertEquals("game->math->vector", logical.arguments().getFirst());
+
+        ConsoleCommand quoted = ConsoleCommandParser.parse(
+                ":reload \"module with spaces\"");
+        assertEquals("module with spaces", quoted.arguments().getFirst());
+
+        ConsoleCommand alias = ConsoleCommandParser.parse(":reload io");
+        assertEquals(List.of("io"), alias.arguments());
+    }
+
+    @Test
     void typeArgumentsAreVerbatimLyraSourceNotShellTokens() {
         for (String source : List.of("\"two words\"", "'\\uD800'", "\"a\\n\\\\b\"",
                 "Tuple[1  \"text\"] /* trailing */", "\"unfinished", "\"trailing\\")) {
@@ -46,7 +68,7 @@ final class ConsoleParsingTest {
     @Test
     void onlyTheEssentialCommandsHaveParseableKinds() {
         List<String> names = List.of(
-                ":help", ":bindings", ":type source", ":load file", ":reload",
+                ":help", ":bindings", ":type source", ":load file", ":reload module",
                 ":reset", ":history", ":quit");
         List<ConsoleCommand.Kind> kinds = List.of(
                 ConsoleCommand.Kind.HELP, ConsoleCommand.Kind.BINDINGS,

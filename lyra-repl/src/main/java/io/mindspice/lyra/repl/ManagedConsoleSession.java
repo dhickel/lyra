@@ -172,14 +172,15 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
      * Publishes the identity of the admitted evaluation before the owner
      * starts executing it. Console control threads read this before
      * requesting Ctrl-C cancellation so the cancel always binds to the exact
-     * active operation.
+     * active operation. Loads and reloads publish their request identity the
+     * same way so a spinning loaded/reloaded graph is cancellable too.
      */
     public Optional<EvaluationId> activeEvaluationId() {
         synchronized (admission) {
-            if (active instanceof EvaluateOperation evaluation) {
-                return Optional.of(evaluation.request.evaluationId());
+            if (active == null) {
+                return Optional.empty();
             }
-            return Optional.empty();
+            return active.evaluationIdentity();
         }
     }
 
@@ -246,6 +247,56 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
         return operation.result;
     }
 
+    /**
+     * Owner-routed execution-host file load. The file is read exactly once
+     * into a captured file-URI source on the owner thread and submitted
+     * under one admitted operation, so Ctrl-C cancels a spinning loaded
+     * graph by the same identity rules as any other evaluation.
+     */
+    @Override
+    public Loaded load(String path) {
+        Objects.requireNonNull(path, "path");
+        LoadOperation operation;
+        synchronized (admission) {
+            if (closed) {
+                return new Loaded(new Evaluation(EvaluationId.create(),
+                        EvaluationStatus.CLOSED, revision(), List.of(), Optional.empty(),
+                        Optional.of("the managed console is closed")), Optional.empty());
+            }
+            if (active != null) {
+                return new Loaded(busyEvaluation(request(EvaluationSource.of(
+                        "load " + path, "")), active), Optional.empty());
+            }
+            operation = new LoadOperation(path);
+            active = operation;
+        }
+        enqueue(operation);
+        operation.awaitTerminal();
+        return operation.result;
+    }
+
+    /** Owner-routed bounded completion; metadata/filesystem lookup only. */
+    @Override
+    public Completion complete(CompletionRequest request) {
+        Objects.requireNonNull(request, "request");
+        CompletionOperation operation;
+        synchronized (admission) {
+            if (closed) {
+                return new Completion(QueryStatus.CLOSED, List.of(),
+                        Optional.of("the managed console is closed"));
+            }
+            if (active != null) {
+                return new Completion(QueryStatus.BUSY, List.of(),
+                        Optional.of("the managed console already has an active operation"));
+            }
+            operation = new CompletionOperation(request);
+            active = operation;
+        }
+        enqueue(operation);
+        operation.awaitTerminal();
+        return operation.result;
+    }
+
     private void enqueue(Operation operation) {
         if (queue.offer(operation)) {
             return;
@@ -284,14 +335,14 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
                 return closedControl();
             }
             operation = active;
-            if (!(operation instanceof EvaluateOperation evaluation)
-                    || !evaluation.request.evaluationId().equals(evaluationId)) {
+            if (operation == null
+                    || operation.evaluationIdentity().filter(evaluationId::equals).isEmpty()) {
                 return new Control(ControlStatus.NOT_FOUND, revision(), Optional.empty());
             }
-            if (evaluation.result != null) {
+            if (operation.terminal.getCount() == 0) {
                 return new Control(ControlStatus.ALREADY_TERMINAL, revision(), Optional.empty());
             }
-            evaluation.cancellationRequested.set(true);
+            operation.requestCancellation();
         }
         // The session is the one cross-thread control target: an already
         // running evaluation observes the token at generated boundaries,
@@ -333,6 +384,7 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
      * reload compiles and initializes on the owner thread and is never
      * queued behind another operation.
      */
+    @Override
     public Evaluation reload(String moduleOrAlias) {
         Objects.requireNonNull(moduleOrAlias, "moduleOrAlias");
         return submitReload(moduleOrAlias, EvaluationId.create(), () -> false);
@@ -349,13 +401,13 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
         Objects.requireNonNull(cancellationRequested, "cancellationRequested");
         ReloadOperation operation;
         synchronized (admission) {
-            EvaluationRequest placeholder = request(
+            EvaluationRequest requestContext = new EvaluationRequest(evaluationId, revision(),
                     EvaluationSource.of("reload " + moduleOrAlias, ""));
             if (closed) {
-                return closedEvaluation(placeholder);
+                return closedEvaluation(requestContext);
             }
             if (active != null) {
-                return busyEvaluation(placeholder, active);
+                return busyEvaluation(requestContext, active);
             }
             operation = new ReloadOperation(moduleOrAlias, evaluationId,
                     cancellationRequested);
@@ -378,13 +430,13 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
         Objects.requireNonNull(cancellationRequested, "cancellationRequested");
         ReloadResultOperation operation;
         synchronized (admission) {
-            EvaluationRequest placeholder = request(
+            EvaluationRequest requestContext = new EvaluationRequest(evaluationId, revision(),
                     EvaluationSource.of("reload " + moduleOrAlias, ""));
             if (closed) {
-                return closedEvaluationResult(placeholder);
+                return closedEvaluationResult(requestContext);
             }
             if (active != null) {
-                return busyEvaluationResult(placeholder);
+                return busyEvaluationResult(requestContext);
             }
             operation = new ReloadResultOperation(moduleOrAlias, evaluationId,
                     cancellationRequested);
@@ -433,9 +485,9 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
                 throw new IllegalStateException("the managed console owner must not close itself");
             }
             if (active != null) {
-                if (active instanceof EvaluateOperation evaluation) {
-                    evaluation.cancellationRequested.set(true);
-                    session().cancel(evaluation.request.evaluationId());
+                active.requestCancellation();
+                if (active.evaluationIdentity().isPresent()) {
+                    session().cancel(active.evaluationIdentity().orElseThrow());
                 }
                 throw new LyraLifecycleException("cannot close while an operation is active");
             }
@@ -489,9 +541,19 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
     private abstract static class Operation {
         final EvaluationId controlId = EvaluationId.create();
         final CountDownLatch terminal = new CountDownLatch(1);
+        final AtomicBoolean cancellationRequested = new AtomicBoolean();
         volatile Throwable failure;
 
         abstract void execute(LyraSession session);
+
+        /** The externally visible evaluation identity, when this operation has one. */
+        Optional<EvaluationId> evaluationIdentity() {
+            return Optional.empty();
+        }
+
+        void requestCancellation() {
+            cancellationRequested.set(true);
+        }
 
         final void fail(Throwable problem) {
             if (failure == null) {
@@ -521,7 +583,6 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
     private static final class EvaluateOperation extends Operation {
         private final EvaluationRequest request;
         private final BooleanSupplier externalProbe;
-        private final AtomicBoolean cancellationRequested = new AtomicBoolean();
         private volatile Evaluation result;
         private volatile EvaluationResult rawResult;
 
@@ -536,11 +597,43 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
         }
 
         @Override
+        Optional<EvaluationId> evaluationIdentity() {
+            return Optional.of(request.evaluationId());
+        }
+
+        @Override
         void execute(LyraSession session) {
             EvaluationResult outcome = session.submit(request,
                     () -> cancellationRequested.get() || externalProbe.getAsBoolean());
             rawResult = outcome;
             result = ConsolePresentation.evaluation(outcome);
+        }
+    }
+
+    /** Reads one execution-host file exactly once on the owner, then submits it. */
+    private static final class LoadOperation extends Operation {
+        private final String path;
+        private Loaded result;
+
+        private LoadOperation(String path) {
+            this.path = Objects.requireNonNull(path, "path");
+        }
+
+        @Override
+        Optional<EvaluationId> evaluationIdentity() {
+            return Optional.of(controlId);
+        }
+
+        @Override
+        void execute(LyraSession session) {
+            // File-level problems surface as ordinary I/O diagnostics on the
+            // console thread, exactly as the local console reports them.
+            EvaluationSource source = ConsoleFileRead.readFile(path);
+            EvaluationResult outcome = session.submit(new EvaluationRequest(
+                    controlId, session.currentRevision(), source),
+                    cancellationRequested::get);
+            result = new Loaded(ConsolePresentation.evaluation(outcome),
+                    Optional.of(source.text()));
         }
     }
 
@@ -557,7 +650,7 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
     private static final class ReloadOperation extends Operation {
         private final String moduleOrAlias;
         private final EvaluationId evaluationId;
-        private final BooleanSupplier cancellationRequested;
+        private final BooleanSupplier externalProbe;
         private Evaluation result;
 
         private ReloadOperation(String moduleOrAlias) {
@@ -565,24 +658,28 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
         }
 
         private ReloadOperation(String moduleOrAlias, EvaluationId evaluationId,
-                                BooleanSupplier cancellationRequested) {
+                                BooleanSupplier externalProbe) {
             this.moduleOrAlias = Objects.requireNonNull(moduleOrAlias, "moduleOrAlias");
             this.evaluationId = Objects.requireNonNull(evaluationId, "evaluationId");
-            this.cancellationRequested = Objects.requireNonNull(
-                    cancellationRequested, "cancellationRequested");
+            this.externalProbe = Objects.requireNonNull(externalProbe, "externalProbe");
+        }
+
+        @Override
+        Optional<EvaluationId> evaluationIdentity() {
+            return Optional.of(evaluationId);
         }
 
         @Override
         void execute(LyraSession session) {
             result = ConsolePresentation.evaluation(session.reload(
-                    moduleOrAlias, evaluationId, cancellationRequested));
+                    moduleOrAlias, evaluationId,
+                    () -> cancellationRequested.get() || externalProbe.getAsBoolean()));
         }
     }
 
     private static final class ReloadResultOperation extends Operation {
         private final String moduleOrAlias;
         private final EvaluationId evaluationId;
-        private final AtomicBoolean cancellationRequested = new AtomicBoolean();
         private final BooleanSupplier externalProbe;
         private EvaluationResult result;
 
@@ -594,9 +691,34 @@ public final class ManagedConsoleSession implements ConsoleSession, AutoCloseabl
         }
 
         @Override
+        Optional<EvaluationId> evaluationIdentity() {
+            return Optional.of(evaluationId);
+        }
+
+        @Override
         void execute(LyraSession session) {
             result = session.reload(moduleOrAlias, evaluationId,
                     () -> cancellationRequested.get() || externalProbe.getAsBoolean());
+        }
+    }
+
+    private static final class CompletionOperation extends Operation {
+        private final CompletionRequest request;
+        private Completion result;
+
+        private CompletionOperation(CompletionRequest request) {
+            this.request = Objects.requireNonNull(request, "request");
+        }
+
+        @Override
+        void execute(LyraSession session) {
+            result = switch (request.kind()) {
+                case MODULE_FILES -> ConsoleCompletion.moduleFiles(
+                        session.sourceRoots(), request);
+                case BINDING_MEMBERS -> ConsoleCompletion.bindingMembers(
+                        ConsolePresentation.bindings(session.workspaceState()),
+                        request.binding().orElseThrow());
+            };
         }
     }
 

@@ -57,6 +57,11 @@ class ManagedConsoleSessionTest {
                 console.query(ConsoleSession.QueryRequest.bindings()).status());
         assertEquals(ConsoleSession.ControlStatus.CLOSED,
                 console.cancel(EvaluationId.create()).status());
+        EvaluationId reloadId = EvaluationId.create();
+        EvaluationResult closedReload = console.submitReloadResult(
+                "module", reloadId, () -> false);
+        assertEquals(reloadId, closedReload.request().evaluationId(),
+                "closed reload must preserve the caller's correlation identity");
         console.close(); // idempotent
 
         // Reopening creates a fresh owner that also terminates cleanly.
@@ -375,6 +380,100 @@ String bigText = "x".repeat(20 * 1024);
         assertFalse(rendered.contains(": hello-program"), rendered);
         // Following source still evaluated after the program read.
         assertTrue(rendered.contains("I32 1"), rendered);
+    }
+
+    @Test
+    void loadReadsTheExecutionHostFileOnceOnTheOwnerAndReturnsItsSourceText()
+            throws Exception {
+        Path file = directory.resolve("loaded module.lyra");
+        Files.writeString(file, "/* café */ let @pub loaded :I32 = 7\n");
+        try (ManagedConsoleSession console = ManagedConsoleSession.open()) {
+            ConsoleSession.Loaded loaded = console.load(file.toString());
+            assertEquals(ConsoleSession.EvaluationStatus.SUCCESS,
+                    loaded.evaluation().status(), loaded.evaluation().toString());
+            assertEquals("/* café */ let @pub loaded :I32 = 7\n",
+                    loaded.sourceText().orElseThrow());
+            ConsoleSession.Query bindings = console.query(
+                    ConsoleSession.QueryRequest.bindings());
+            assertEquals(1, bindings.bindings().size());
+            assertEquals("loaded", bindings.bindings().getFirst().name());
+
+            // The captured file-URI origin maps diagnostics back to the file.
+            ConsoleSession.Evaluation failure = console.evaluate(
+                    EvaluationSource.of("call.lyra", "loaded"));
+            assertEquals(ConsoleSession.EvaluationStatus.SUCCESS, failure.status());
+
+            // File-level problems are ordinary I/O/UTF-8 diagnostics.
+            assertThrows(IllegalArgumentException.class,
+                    () -> console.load(file.resolveSibling("absent.lyra").toString()));
+        }
+    }
+
+    @Test
+    void completionListsExecutionHostFilesAndCommittedMembersWithoutEvaluations()
+            throws Exception {
+        Path moduleFile = directory.resolve("newmod.lyra");
+        Files.writeString(moduleFile, "let @pub inside :I32 = 1\n");
+        try (ManagedConsoleSession console = ManagedConsoleSession.open(
+                SessionOptions.builder().sourceRoot(directory).build())) {
+            success(console, "let @pub text :String = \"hi\"");
+            SessionRevision before = console.revision();
+
+            ConsoleSession.Completion files = console.complete(
+                    ConsoleSession.CompletionRequest.moduleFiles(Optional.of("newm")));
+            assertEquals(ConsoleSession.QueryStatus.OK, files.status(), files.toString());
+            assertTrue(files.items().stream().anyMatch(item ->
+                    item.name().equals("newmod.lyra")
+                            && item.kind() == ConsoleSession.ItemKind.FILE), files.items().toString());
+            assertTrue(files.items().stream().anyMatch(item ->
+                    item.name().equals("newmod")
+                            && item.kind() == ConsoleSession.ItemKind.MODULE), files.items().toString());
+
+            ConsoleSession.Completion members = console.complete(
+                    ConsoleSession.CompletionRequest.bindingMembers("text"));
+            assertEquals(ConsoleSession.QueryStatus.OK, members.status(), members.toString());
+            assertEquals(List.of("length"), members.items().stream()
+                    .map(ConsoleSession.CompletionItem::name).toList());
+            assertEquals(Optional.of("I32"), members.items().getFirst().typeSpelling());
+
+            ConsoleSession.Completion unknown = console.complete(
+                    ConsoleSession.CompletionRequest.bindingMembers("absent"));
+            assertEquals(ConsoleSession.QueryStatus.NOT_FOUND, unknown.status());
+
+            // Listing and metadata lookup never compile, pin or publish.
+            assertEquals(before, console.revision());
+            ConsoleSession.Query bindings = console.query(
+                    ConsoleSession.QueryRequest.bindings());
+            assertEquals(List.of("text"), bindings.bindings().stream()
+                    .map(ConsoleSession.Binding::name).toList());
+        }
+    }
+
+    @Test
+    void spinningLoadedFileIsCancellableByItsPublishedIdentityThenRecovers()
+            throws Exception {
+        Path spin = directory.resolve("spin.lyra");
+        Files.writeString(spin, SPIN);
+        try (ManagedConsoleSession console = ManagedConsoleSession.open()) {
+            AtomicReference<ConsoleSession.Loaded> terminal = new AtomicReference<>();
+            Thread loader = new Thread(() -> terminal.set(console.load(spin.toString())),
+                    "managed-loader");
+            loader.start();
+            waitForActive(console);
+            EvaluationId active = console.activeEvaluationId().orElseThrow();
+            assertEquals(ConsoleSession.ControlStatus.REQUESTED, console.cancel(active).status());
+            loader.join(10_000);
+            assertFalse(loader.isAlive());
+            ConsoleSession.Loaded cancelled = terminal.get();
+            assertEquals(ConsoleSession.EvaluationStatus.CANCELLED,
+                    cancelled.evaluation().status());
+            assertEquals(active, cancelled.evaluation().evaluationId());
+            assertTrue(console.activeEvaluationId().isEmpty());
+
+            // The cancelled load published nothing; later source succeeds.
+            success(console, "let @pub after :I32 = 42");
+            assertEquals("42", value(console, "after"));
+        }
     }
 
     private static void waitForActive(ManagedConsoleSession console) throws InterruptedException {

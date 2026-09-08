@@ -11,7 +11,6 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Optional;
@@ -34,13 +33,12 @@ final class RemoteFileRead {
             throw new RemoteLoadException("invalid load path: " + spelling);
         }
         Path normalized = path.toAbsolutePath().normalize();
-        if (!Files.exists(normalized, LinkOption.NOFOLLOW_LINKS)) {
+        if (!Files.exists(normalized)) {
             throw new RemoteLoadException("cannot read load file: " + normalized);
         }
-        if (Files.isSymbolicLink(normalized)
-                || !Files.isRegularFile(normalized, LinkOption.NOFOLLOW_LINKS)) {
+        if (!Files.isRegularFile(normalized)) {
             throw new RemoteLoadException(
-                    "load path is not a regular non-symbolic-link file: " + spelling);
+                    "load path is not a regular file: " + spelling);
         }
         String label = normalized.toString();
         validateLabel(label);
@@ -57,11 +55,9 @@ final class RemoteFileRead {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream(8192);
         byte[] buffer = new byte[8192];
         long total = 0;
-        // Open with NOFOLLOW_LINKS as well as checking the path first. The
-        // open-time check avoids following a final symlink if the path
-        // changes between validation and reading.
-        try (InputStream source = Files.newInputStream(
-                path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+        // Open normally: optional-console paths follow ordinary filesystem
+        // semantics, so a symlink to a regular file is a valid load target.
+        try (InputStream source = Files.newInputStream(path, StandardOpenOption.READ)) {
             int count;
             while ((count = source.read(buffer)) >= 0) {
                 if (count == 0) {

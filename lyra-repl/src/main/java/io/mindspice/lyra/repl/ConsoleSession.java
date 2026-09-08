@@ -24,17 +24,37 @@ public interface ConsoleSession extends AutoCloseable {
 
     Evaluation evaluate(EvaluationSource source);
 
+    /**
+     * Submits one UTF-8 execution-host file exactly once with file-URI
+     * source mapping. Implementations read the path on the selected
+     * execution host (the local session for {@code ConsoleSession.local};
+     * the attached server for remote consoles) and never read attached
+     * paths on the client. Local file-level problems surface as
+     * {@link IllegalArgumentException}s carrying the ordinary I/O/UTF-8
+     * diagnostic text; remote implementations report transport outcomes.
+     */
+    Loaded load(String path);
+
+    /**
+     * Rebuilds one retained REPL-owned module by logical name or namespace
+     * alias on the execution host. The returned evaluation carries the
+     * host's real initializer progress and terminal diagnostics.
+     */
+    Evaluation reload(String moduleOrAlias);
+
     Control cancel(EvaluationId evaluationId);
 
     Control reset();
 
     Query query(QueryRequest request);
 
-    /** Reload has no wire operation and remains explicitly unavailable here. */
-    default Control reload() {
-        return Control.unavailable(SessionRevision.initial(),
-                "reload is unavailable without persistent live linkage; no source was replayed");
-    }
+    /**
+     * Bounded read-only completion: committed metadata for binding members
+     * and execution-host filesystem lookup beneath the configured source
+     * roots. Completion never compiles, pins, initializes or executes
+     * source.
+     */
+    Completion complete(CompletionRequest request);
 
     /** The console does not own its target. Implementations may override for attached clients. */
     default void close() {
@@ -57,6 +77,19 @@ public interface ConsoleSession extends AutoCloseable {
         }
 
 
+    }
+
+    /**
+     * A terminal evaluation together with the captured submitted source
+     * text when the execution host returned it. Local and managed consoles
+     * return the file text so visible history can list the loaded source;
+     * the attached protocol never ships source back to the client.
+     */
+    record Loaded(Evaluation evaluation, Optional<String> sourceText) {
+        public Loaded {
+            evaluation = Objects.requireNonNull(evaluation, "evaluation");
+            sourceText = Objects.requireNonNull(sourceText, "sourceText");
+        }
     }
 
     enum EvaluationStatus {
@@ -98,6 +131,67 @@ public interface ConsoleSession extends AutoCloseable {
         UNAVAILABLE,
         CLOSED,
         DISCONNECTED
+    }
+
+    /**
+     * A bounded completion request. Module-file completion lists files and
+     * directories beneath the execution host's configured source roots;
+     * member completion reads committed binding metadata only.
+     */
+    record CompletionRequest(Kind kind, Optional<String> prefix, Optional<String> binding) {
+        public CompletionRequest {
+            kind = Objects.requireNonNull(kind, "kind");
+            prefix = Objects.requireNonNull(prefix, "prefix");
+            binding = Objects.requireNonNull(binding, "binding");
+            if (kind == Kind.BINDING_MEMBERS && binding.isEmpty()) {
+                throw new IllegalArgumentException("member completion needs a binding name");
+            }
+            if (kind != Kind.BINDING_MEMBERS && binding.isPresent()) {
+                throw new IllegalArgumentException("binding name is only valid for member completion");
+            }
+        }
+
+        public static CompletionRequest moduleFiles(Optional<String> prefix) {
+            return new CompletionRequest(Kind.MODULE_FILES, prefix, Optional.empty());
+        }
+
+        public static CompletionRequest bindingMembers(String binding) {
+            return new CompletionRequest(Kind.BINDING_MEMBERS, Optional.empty(),
+                    Optional.of(binding));
+        }
+
+        public enum Kind {
+            MODULE_FILES,
+            BINDING_MEMBERS
+        }
+    }
+
+    record Completion(QueryStatus status, List<CompletionItem> items,
+                      Optional<String> detail) {
+        public Completion {
+            status = Objects.requireNonNull(status, "status");
+            items = copyItems(items);
+            detail = copyOptionalText(detail, "detail");
+        }
+    }
+
+    record CompletionItem(String name, ItemKind kind, Optional<String> typeSpelling) {
+        public CompletionItem {
+            name = token(name, "completion item name");
+            kind = Objects.requireNonNull(kind, "kind");
+            typeSpelling = copyOptionalText(typeSpelling, "typeSpelling");
+        }
+
+        public CompletionItem(String name, ItemKind kind) {
+            this(name, kind, Optional.empty());
+        }
+    }
+
+    enum ItemKind {
+        FILE,
+        DIRECTORY,
+        MODULE,
+        MEMBER
     }
 
     record QueryRequest(Kind kind, Optional<EvaluationSource> source) {
@@ -375,6 +469,15 @@ public interface ConsoleSession extends AutoCloseable {
         ArrayList<Binding> copy = new ArrayList<>(values.size());
         for (Binding value : values) {
             copy.add(Objects.requireNonNull(value, "bindings must not contain null"));
+        }
+        return List.copyOf(copy);
+    }
+
+    private static List<CompletionItem> copyItems(List<CompletionItem> values) {
+        Objects.requireNonNull(values, "items");
+        ArrayList<CompletionItem> copy = new ArrayList<>(values.size());
+        for (CompletionItem value : values) {
+            copy.add(Objects.requireNonNull(value, "items must not contain null"));
         }
         return List.copyOf(copy);
     }

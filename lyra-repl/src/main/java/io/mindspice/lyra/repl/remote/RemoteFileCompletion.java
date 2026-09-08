@@ -3,7 +3,6 @@ package io.mindspice.lyra.repl.remote;
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -16,17 +15,19 @@ import java.util.Optional;
  * roots. This is a fixed read-only lookup: it never compiles, pins,
  * initializes or executes source, and it exposes only relative path names.
  */
-final class RemoteFileCompletion {
+public final class RemoteFileCompletion {
     private static final int MAX_LISTED_ENTRIES = RemoteProtocol.MAX_COMPLETION_ITEMS;
     private static final int MAX_WALK_DIRECTORIES = 32;
 
     private RemoteFileCompletion() {
     }
 
-    static RemoteCompletion.Result moduleFiles(List<Path> roots, Optional<String> prefix) {
+    public static RemoteCompletion.Result moduleFiles(List<Path> roots, Optional<String> prefix) {
         Objects.requireNonNull(roots, "roots");
         Objects.requireNonNull(prefix, "prefix");
-        String query = prefix.orElse("").replace('\\', '/');
+        String supplied = prefix.orElse("").replace('\\', '/');
+        String query = supplied.contains("->")
+                ? supplied.replace("->", "/") : supplied;
         if (!isRelativeQuery(query)) {
             return RemoteCompletion.Result.unavailable(
                     "completion prefix must remain beneath the configured source roots");
@@ -38,8 +39,7 @@ final class RemoteFileCompletion {
             }
             Path normalized = root.toAbsolutePath().normalize();
             try {
-                if (Files.isSymbolicLink(normalized)
-                        || !Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS)) {
+                if (!Files.isDirectory(normalized)) {
                     continue;
                 }
             } catch (RuntimeException ignored) {
@@ -76,15 +76,13 @@ final class RemoteFileCompletion {
             return;
         }
         try {
-            if (Files.isSymbolicLink(directory)
-                    || !Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) {
+            if (!Files.isDirectory(directory)) {
                 return;
             }
         } catch (RuntimeException ignored) {
             return;
         }
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(
-                directory, entry -> !Files.isSymbolicLink(entry))) {
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory)) {
             for (Path entry : stream) {
                 if (items.size() >= MAX_LISTED_ENTRIES) {
                     return;
@@ -95,7 +93,7 @@ final class RemoteFileCompletion {
                         ? name : relativeBase + name;
                 boolean directoryEntry;
                 try {
-                    directoryEntry = Files.isDirectory(resolved, LinkOption.NOFOLLOW_LINKS);
+                    directoryEntry = Files.isDirectory(resolved);
                 } catch (RuntimeException ignored) {
                     continue;
                 }
@@ -109,7 +107,8 @@ final class RemoteFileCompletion {
                         listDirectory(items, root, resolved, "", relative + "/", depth + 1);
                     }
                 } else if (name.endsWith(".lyra")) {
-                    String moduleName = relative.substring(0, relative.length() - 5);
+                    String moduleName = relative.substring(0, relative.length() - 5)
+                            .replace("/", "->");
                     items.add(new RemoteCompletion.Item(moduleName,
                             RemoteCompletion.ItemKind.MODULE));
                     items.add(new RemoteCompletion.Item(relative,

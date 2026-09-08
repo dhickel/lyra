@@ -1,7 +1,11 @@
 package io.mindspice.lyra.cli;
 
+import io.mindspice.lyra.repl.ConsoleSession;
+import io.mindspice.lyra.repl.EvaluationId;
+import io.mindspice.lyra.repl.EvaluationSource;
 import io.mindspice.lyra.repl.LyraSession;
 import io.mindspice.lyra.repl.PlainConsole;
+import io.mindspice.lyra.repl.SessionRevision;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
 import org.jline.terminal.Attributes;
@@ -22,6 +26,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -170,7 +175,8 @@ final class JLineConsoleTest {
             assertTrue(output.contains("I64"), output);
             String error = fixture.error.toString(StandardCharsets.UTF_8);
             assertFalse(error.contains("LYR-REPL-TYPE-UNSUPPORTED"), error);
-            assertTrue(error.contains("LYR-REPL-RELOAD-UNSUPPORTED"));
+            assertTrue(error.contains("LYR-REPL-USAGE"), error);
+            assertTrue(error.contains(":reload expects 1 argument"), error);
             assertFalse(error.contains("LYC-"), error);
         }
         try (var files = Files.list(temp)) {
@@ -305,6 +311,188 @@ final class JLineConsoleTest {
         }
     }
 
+    @Test
+    void fileAndModuleCompletionListsExecutionHostFilesWithoutInitializingThem()
+            throws Exception {
+        Path newFile = temp.resolve("newmod.lyra");
+        Files.writeString(newFile, "let @pub inside :I32 = 7\n");
+        RecordingConsole target = new RecordingConsole(
+                List.of(newFile.getParent()));
+        String input = ":load newm\t\n:reload newm\t\n:history\n:quit\n";
+        try (Fixture fixture = new Fixture(input, "emacs")) {
+            fixture.rich.completeWith(target);
+            assertEquals(0, fixture.run(target), fixture.error.toString(StandardCharsets.UTF_8));
+            // Completion only listed files/modules; nothing was evaluated,
+            // compiled, pinned or initialized before Enter.
+            assertEquals(List.of("newm", "newm"), target.modulePrefixes);
+            assertEquals(0, target.evaluations);
+            assertEquals(List.of("newmod.lyra"), target.loadedPaths);
+            assertEquals(List.of("newmod"), target.reloadTargets);
+            String output = fixture.output.toString(StandardCharsets.UTF_8);
+            assertTrue(output.contains("1: let @pub inside :I32 = 7"), output);
+            assertFalse(output.contains(":load"), output);
+            assertFalse(output.contains(":reload"), output);
+        }
+    }
+
+    @Test
+    void nestedModuleCompletionReplacesTheWholeLogicalTarget() throws Exception {
+        RecordingConsole target = new RecordingConsole(List.of());
+        try (Fixture fixture = new Fixture(":reload game->ma\t\n:quit\n", "emacs")) {
+            fixture.rich.completeWith(target);
+            assertEquals(0, fixture.run(target), fixture.error.toString(StandardCharsets.UTF_8));
+            assertEquals(List.of("game->ma"), target.modulePrefixes);
+            assertEquals(List.of("game->math"), target.reloadTargets);
+        }
+    }
+
+    @Test
+    void typeCommandPassesVerbatimSourceWithoutEditorLineFraming() throws Exception {
+        RecordingConsole target = new RecordingConsole(List.of());
+        try (Fixture fixture = new Fixture(":type   1  +  2  \n:quit\n", "emacs")) {
+            assertEquals(0, fixture.run(target), fixture.error.toString(StandardCharsets.UTF_8));
+            assertEquals(List.of("1  +  2  "), target.typeQueries);
+        }
+    }
+
+    @Test
+    void semanticCompletionUsesCommittedBindingsAndMemberMetadata() throws Exception {
+        RecordingConsole target = new RecordingConsole(List.of());
+        String input = "let @pub text :String = \"hi\"\n"
+                + "tex\t\n"
+                + "text:.le\t\n"
+                + ":quit\n";
+        try (Fixture fixture = new Fixture(input, "emacs")) {
+            fixture.rich.completeWith(target);
+            assertEquals(0, fixture.run(target), fixture.error.toString(StandardCharsets.UTF_8));
+            String output = fixture.output.toString(StandardCharsets.UTF_8);
+            // The declared binding name completed from committed metadata and
+            // the member completed from the committed type's member table.
+            assertTrue(output.contains("String \"hi\"\n"), output);
+            assertTrue(target.submitted.stream()
+                            .anyMatch(source -> source.strip().equals("text")),
+                    target.submitted.toString());
+            assertTrue(target.submitted.stream()
+                            .anyMatch(source -> source.strip().equals("text:.length")),
+                    target.submitted.toString());
+            assertEquals(List.of("text"), target.memberRequests);
+        }
+    }
+
+    @Test
+    void completionNeverBreaksEditingWhenTheTargetIsUnavailable() throws Exception {
+        try (Fixture fixture = new Fixture(":load any\t\n:quit\n", "emacs")) {
+            // No session wired: completion stays static and harmless.
+            assertEquals(2, fixture.run());
+            assertTrue(fixture.error.toString(StandardCharsets.UTF_8)
+                    .contains("LYR-REPL-INFRA"));
+        }
+    }
+
+    /** Records every console operation while completing from a fixed table. */
+    private static final class RecordingConsole implements ConsoleSession {
+        private final List<Path> sourceRoots;
+        final ArrayList<String> modulePrefixes = new ArrayList<>();
+        final ArrayList<String> memberRequests = new ArrayList<>();
+        final ArrayList<String> loadedPaths = new ArrayList<>();
+        final ArrayList<String> reloadTargets = new ArrayList<>();
+        final ArrayList<String> typeQueries = new ArrayList<>();
+        final ArrayList<String> submitted = new ArrayList<>();
+        int evaluations;
+
+        RecordingConsole(List<Path> sourceRoots) {
+            this.sourceRoots = sourceRoots;
+        }
+
+        @Override
+        public SessionRevision revision() {
+            return SessionRevision.initial();
+        }
+
+        @Override
+        public Evaluation evaluate(EvaluationSource source) {
+            evaluations++;
+            submitted.add(source.text());
+            if (source.text().strip().equals("text")) {
+                return new Evaluation(EvaluationId.create(), EvaluationStatus.SUCCESS,
+                        revision(), List.of(), Optional.of(new Value("String", "\"hi\"")),
+                        Optional.empty());
+            }
+            return new Evaluation(EvaluationId.create(), EvaluationStatus.SUCCESS,
+                    revision(), List.of(), Optional.empty(), Optional.empty());
+        }
+
+        @Override
+        public Loaded load(String path) {
+            loadedPaths.add(path);
+            return new Loaded(new Evaluation(EvaluationId.create(), EvaluationStatus.SUCCESS,
+                    revision(), List.of(), Optional.empty(), Optional.empty()),
+                    Optional.of("let @pub inside :I32 = 7\n"));
+        }
+
+        @Override
+        public Evaluation reload(String moduleOrAlias) {
+            reloadTargets.add(moduleOrAlias);
+            return new Evaluation(EvaluationId.create(), EvaluationStatus.SUCCESS,
+                    revision(), List.of(), Optional.empty(), Optional.empty());
+        }
+
+        @Override
+        public Control cancel(EvaluationId evaluationId) {
+            return new Control(ControlStatus.NOT_FOUND, revision(), Optional.empty());
+        }
+
+        @Override
+        public Control reset() {
+            return new Control(ControlStatus.OK, revision(), Optional.empty());
+        }
+
+        @Override
+        public Query query(QueryRequest request) {
+            if (request.kind() == QueryRequest.Kind.BINDINGS) {
+                return new Query(QueryStatus.OK,
+                        List.of(new Binding("text", "String", "PUBLIC", false)),
+                        Optional.empty(), Optional.empty());
+            }
+            typeQueries.add(request.source().orElseThrow().text());
+            return new Query(QueryStatus.OK, List.of(), Optional.of("I64"), Optional.empty());
+        }
+
+        @Override
+        public Completion complete(CompletionRequest request) {
+            return switch (request.kind()) {
+                case MODULE_FILES -> {
+                    modulePrefixes.add(request.prefix().orElse(""));
+                    ArrayList<CompletionItem> items = new ArrayList<>();
+                    if (request.prefix().orElse("").equals("game->ma")) {
+                        items.add(new CompletionItem("game->math", ItemKind.MODULE));
+                    }
+                    for (Path root : sourceRoots) {
+                        try (var stream = Files.newDirectoryStream(root,
+                                request.prefix().orElse("") + "*.lyra")) {
+                            for (Path file : stream) {
+                                String name = file.getFileName().toString();
+                                items.add(new CompletionItem(name, ItemKind.FILE));
+                                items.add(new CompletionItem(
+                                        name.substring(0, name.length() - 5), ItemKind.MODULE));
+                            }
+                        } catch (IOException ignored) {
+                            // Completion is read-only and best-effort.
+                        }
+                    }
+                    yield new Completion(QueryStatus.OK, items, Optional.empty());
+                }
+                case BINDING_MEMBERS -> {
+                    memberRequests.add(request.binding().orElseThrow());
+                    yield new Completion(QueryStatus.OK,
+                            List.of(new CompletionItem("length", ItemKind.MEMBER,
+                                    Optional.of("I32"))),
+                            Optional.empty());
+                }
+            };
+        }
+    }
+
     private static int occurrences(String text, String value) {
         return (text.length() - text.replace(value, "").length()) / value.length();
     }
@@ -345,12 +533,19 @@ final class JLineConsoleTest {
         }
 
         private int run() {
-            LyraSession session = LyraSession.open();
+            return run(null);
+        }
+
+        private int run(ConsoleSession target) {
+            LyraSession session = target == null ? LyraSession.open() : null;
             try {
-                return new PlainConsole(session, InputStream.nullInputStream(), output, error)
+                ConsoleSession console = target == null ? ConsoleSession.local(session) : target;
+                return new PlainConsole(console, InputStream.nullInputStream(), output, error)
                         .runInteractive(rich);
             } finally {
-                session.close();
+                if (session != null) {
+                    session.close();
+                }
             }
         }
 

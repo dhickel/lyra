@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -120,7 +121,7 @@ final class PlainConsoleTest {
     }
 
     @Test
-    void typeDoesNotExecuteOrRecordAndUnsupportedReloadContinues() {
+    void typeDoesNotExecuteOrRecordAndReloadWithoutTargetIsAUsageError() {
         Invocation invocation = run(":type 42\n"
                 + ":type let @pub answer :I32 = 1\n"
                 + ":bindings\n:reload\n:history\n:quit\n");
@@ -128,9 +129,20 @@ final class PlainConsoleTest {
         assertEquals(2, invocation.status());
         assertTrue(invocation.output().contains("I64"), invocation.output());
         assertTrue(invocation.output().contains("Unit"), invocation.output());
-        assertTrue(invocation.error().contains("LYR-REPL-RELOAD-UNSUPPORTED"));
+        assertTrue(invocation.error().contains("LYR-REPL-USAGE"), invocation.error());
+        assertTrue(invocation.error().contains(":reload expects 1 argument"), invocation.error());
         assertFalse(invocation.output().contains("answer"));
         assertFalse(invocation.output().contains("let @pub answer"));
+    }
+
+    @Test
+    void reloadTargetRoutesToTheSessionAndReportsItsTerminalOutcome() {
+        Invocation invocation = run(":reload missing\n"
+                + ":bindings\n:quit\n");
+
+        assertEquals(1, invocation.status(), invocation.error());
+        assertTrue(invocation.error().contains("LYC-"), invocation.error());
+        assertTrue(invocation.error().contains("missing"), invocation.error());
     }
 
     @Test
@@ -155,7 +167,7 @@ final class PlainConsoleTest {
     }
 
     @Test
-    void localAdapterSupportsNonExecutingTypeQueriesAndKeepsRevisionOnReload() {
+    void localAdapterSupportsNonExecutingTypeQueriesAndReloadRunsOnTheSession() {
         LyraSession session = LyraSession.open();
         LocalConsoleSession adapter = new LocalConsoleSession(session);
         ConsoleSession.Evaluation evaluation = adapter.evaluate(
@@ -167,15 +179,17 @@ final class PlainConsoleTest {
                 EvaluationSource.of("type.lyra", "42")));
         assertEquals(ConsoleSession.QueryStatus.OK, type.status());
         assertEquals("I64", type.inferredType().orElseThrow());
-        ConsoleSession.Control reload = adapter.reload();
-        assertEquals(ConsoleSession.ControlStatus.UNAVAILABLE, reload.status());
+        ConsoleSession.Evaluation reload = adapter.reload("missing");
+        assertEquals(ConsoleSession.EvaluationStatus.COMPILATION_FAILURE, reload.status());
+        assertTrue(reload.diagnostics().stream()
+                .anyMatch(diagnostic -> diagnostic.render().contains("missing")), reload.diagnostics().toString());
         assertEquals(new SessionRevision(1), reload.revision());
-        assertTrue(reload.detail().orElseThrow().contains("no source was replayed"));
 
         session.close();
         assertEquals(ConsoleSession.QueryStatus.CLOSED,
                 adapter.query(ConsoleSession.QueryRequest.bindings()).status());
         assertEquals(ConsoleSession.ControlStatus.CLOSED, adapter.reset().status());
+        assertEquals(ConsoleSession.EvaluationStatus.CLOSED, adapter.reload("missing").status());
     }
 
     @Test
@@ -235,7 +249,7 @@ final class PlainConsoleTest {
     }
 
     @Test
-    void loadRejectsSymlinksAndMalformedUtf8() throws IOException {
+    void loadFollowsSymlinksButRejectsDirectoriesAndMalformedUtf8() throws IOException {
         Path invalid = temp.resolve("invalid.lyra");
         Files.write(invalid, new byte[] {'l', (byte) 0xC3});
         Invocation malformed = run(":load \"" + invalid + "\"\n:quit\n");
@@ -243,6 +257,17 @@ final class PlainConsoleTest {
         assertTrue(malformed.error().contains("LYR-REPL-INFRA"), malformed.error());
         assertTrue(malformed.error().contains("not valid UTF-8"), malformed.error());
 
+        Invocation directory = run(":load \"" + temp + "\"\n:quit\n");
+        assertEquals(2, directory.status());
+        assertTrue(directory.error().contains("LYR-REPL-INFRA"), directory.error());
+        assertTrue(directory.error().contains("not a regular file"), directory.error());
+
+        Invocation missing = run(":load \"" + temp.resolve("absent.lyra") + "\"\n:quit\n");
+        assertEquals(2, missing.status());
+        assertTrue(missing.error().contains("cannot read load file"), missing.error());
+
+        // Optional-console paths follow normal filesystem semantics: a
+        // symlink to a regular file is a valid load target.
         Path target = temp.resolve("target.lyra");
         Files.writeString(target, "let @pub linked :I32 = 3\n", StandardCharsets.UTF_8);
         Path link = temp.resolve("link.lyra");
@@ -256,9 +281,8 @@ final class PlainConsoleTest {
 
         Invocation symlink = run(":load \"" + link + "\"\n"
                 + ":bindings\n:quit\n");
-        assertEquals(2, symlink.status());
-        assertTrue(symlink.error().contains("non-symbolic-link"), symlink.error());
-        assertFalse(symlink.output().contains("linked"), symlink.output());
+        assertEquals(0, symlink.status(), symlink.error());
+        assertTrue(symlink.output().contains("linked :I32"), symlink.output());
     }
 
     @Test
@@ -297,6 +321,26 @@ final class PlainConsoleTest {
             @Override
             public Control reset() {
                 return new Control(ControlStatus.OK, SessionRevision.initial(), Optional.empty());
+            }
+
+            @Override
+            public Evaluation reload(String moduleOrAlias) {
+                return new Evaluation(EvaluationId.create(), EvaluationStatus.UNAVAILABLE,
+                        SessionRevision.initial(), List.of(), Optional.empty(),
+                        Optional.of("not used by this test"));
+            }
+
+            @Override
+            public Loaded load(String path) {
+                return new Loaded(new Evaluation(EvaluationId.create(),
+                        EvaluationStatus.UNAVAILABLE, SessionRevision.initial(), List.of(),
+                        Optional.empty(), Optional.of("not used by this test")), Optional.empty());
+            }
+
+            @Override
+            public Completion complete(CompletionRequest request) {
+                return new Completion(QueryStatus.UNAVAILABLE, List.of(),
+                        Optional.of("not used by this test"));
             }
 
             @Override
@@ -340,6 +384,18 @@ final class PlainConsoleTest {
                 return new Control(ControlStatus.NOT_FOUND, revision(), Optional.empty());
             }
             @Override public Control reset() { return new Control(ControlStatus.OK, revision(), Optional.empty()); }
+            @Override public Evaluation reload(String moduleOrAlias) {
+                return new Evaluation(EvaluationId.create(), EvaluationStatus.UNAVAILABLE,
+                        revision(), List.of(), Optional.empty(), Optional.of("not used"));
+            }
+            @Override public Loaded load(String path) {
+                return new Loaded(new Evaluation(EvaluationId.create(),
+                        EvaluationStatus.UNAVAILABLE, revision(), List.of(), Optional.empty(),
+                        Optional.of("not used")), Optional.empty());
+            }
+            @Override public Completion complete(CompletionRequest request) {
+                return new Completion(QueryStatus.UNAVAILABLE, List.of(), Optional.of("not used"));
+            }
             @Override public Query query(QueryRequest request) { return Query.unavailable("not used"); }
         };
         assertEquals(2, new PlainConsole(target, environment).run());
@@ -390,39 +446,33 @@ final class PlainConsoleTest {
     }
 
     @Test
-    void historyFileRejectsPermissiveModesAndSymlinks() throws IOException {
+    void historyFileUsesNormalFilesystemSemanticsAndRejectsNonRegularFiles()
+            throws IOException {
+        // Group-readable history files are ordinary filesystem state now.
         Path permissive = temp.resolve("permissive.history");
-        Files.writeString(permissive, "let @pub unsafe :I32 = 1\n");
+        Files.writeString(permissive, "let @pub remembered :I32 = 1\n");
         boolean posix;
         try {
-            Files.getPosixFilePermissions(permissive);
+            Files.setPosixFilePermissions(permissive, Set.of(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.GROUP_READ));
             posix = true;
-        } catch (UnsupportedOperationException failure) {
+        } catch (UnsupportedOperationException | IOException failure) {
             posix = false;
         }
-        assumeTrue(posix, "POSIX permissions are unavailable");
-        Files.setPosixFilePermissions(permissive, Set.of(
-                PosixFilePermission.OWNER_READ,
-                PosixFilePermission.OWNER_WRITE,
-                PosixFilePermission.GROUP_READ));
+        Invocation result = runWithHistory(permissive,
+                ":history\n:quit\n");
+        assertEquals(0, result.status(), result.error());
+        assertTrue(result.output().contains("let @pub remembered :I32 = 1"), result.output());
 
+        // A directory is still rejected as a non-regular history target.
+        Path directory = Files.createDirectory(temp.resolve("history-dir"));
         LyraSession session = LyraSession.open();
         try {
             assertThrows(IllegalArgumentException.class, () -> new PlainConsole(session,
                     new ByteArrayInputStream(new byte[0]), new ByteArrayOutputStream(),
-                    new ByteArrayOutputStream(), permissive));
-
-            Path target = temp.resolve("history-target");
-            Files.writeString(target, "let @pub linked :I32 = 1\n");
-            Path link = temp.resolve("history-link");
-            try {
-                Files.createSymbolicLink(link, target);
-            } catch (UnsupportedOperationException | SecurityException | IOException failure) {
-                return;
-            }
-            assertThrows(IllegalArgumentException.class, () -> new PlainConsole(session,
-                    new ByteArrayInputStream(new byte[0]), new ByteArrayOutputStream(),
-                    new ByteArrayOutputStream(), link));
+                    new ByteArrayOutputStream(), directory));
         } finally {
             session.close();
         }
@@ -450,6 +500,105 @@ final class PlainConsoleTest {
         assertEquals(0, invocation.status());
         assertEquals("", invocation.output());
         assertEquals("", invocation.error());
+    }
+
+    @Test
+    void loadAndReloadRouteToTheSelectedExecutionHostNotTheConsoleProcess() {
+        ArrayList<String> loadedPaths = new ArrayList<>();
+        ArrayList<String> reloadTargets = new ArrayList<>();
+        AtomicInteger evaluations = new AtomicInteger();
+        ConsoleSession target = new ConsoleSession() {
+            @Override
+            public SessionRevision revision() {
+                return SessionRevision.initial();
+            }
+
+            @Override
+            public Evaluation evaluate(EvaluationSource source) {
+                evaluations.incrementAndGet();
+                return new Evaluation(EvaluationId.create(), EvaluationStatus.SUCCESS,
+                        SessionRevision.initial(), List.of(), Optional.empty(), Optional.empty());
+            }
+
+            @Override
+            public Loaded load(String path) {
+                loadedPaths.add(path);
+                return new Loaded(new Evaluation(EvaluationId.create(),
+                        EvaluationStatus.SUCCESS, SessionRevision.initial(), List.of(),
+                        Optional.empty(), Optional.empty()),
+                        Optional.of("let @pub loaded :I32 = 5\n"));
+            }
+
+            @Override
+            public Evaluation reload(String moduleOrAlias) {
+                reloadTargets.add(moduleOrAlias);
+                return new Evaluation(EvaluationId.create(), EvaluationStatus.SUCCESS,
+                        SessionRevision.initial(), List.of(), Optional.empty(), Optional.empty());
+            }
+
+            @Override
+            public Control cancel(EvaluationId evaluationId) {
+                return new Control(ControlStatus.NOT_FOUND, revision(), Optional.empty());
+            }
+
+            @Override
+            public Control reset() {
+                return new Control(ControlStatus.OK, revision(), Optional.empty());
+            }
+
+            @Override
+            public Query query(QueryRequest request) {
+                return Query.unavailable("not used");
+            }
+
+            @Override
+            public Completion complete(CompletionRequest request) {
+                return new Completion(QueryStatus.UNAVAILABLE, List.of(), Optional.of("not used"));
+            }
+        };
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ByteArrayOutputStream error = new ByteArrayOutputStream();
+        int status = new PlainConsole(target, new ByteArrayInputStream(
+                (":load \"path with spaces.lyra\"\n"
+                        + ":reload game->module\n"
+                        + ":history\n:quit\n").getBytes(StandardCharsets.UTF_8)),
+                output, error).run();
+
+        assertEquals(0, status, error.toString(StandardCharsets.UTF_8));
+        assertEquals(List.of("path with spaces.lyra"), loadedPaths);
+        assertEquals(List.of("game->module"), reloadTargets);
+        assertEquals(0, evaluations.get(),
+                "console commands must never submit ordinary evaluations");
+        String history = output.toString(StandardCharsets.UTF_8);
+        assertTrue(history.contains("let @pub loaded :I32 = 5"), history);
+        assertFalse(history.contains(":load"), history);
+        assertFalse(history.contains(":reload"), history);
+        assertEquals("", error.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void largeDynamicResultsTruncateExplicitlyInTheBoundedDisplay() {
+        String big = "x".repeat(40_000);
+        Invocation invocation = run("let @pub big :String = \"" + big + "\" big\n:quit\n");
+
+        assertEquals(0, invocation.status(), invocation.error());
+        assertTrue(invocation.output().contains("<truncated:"), invocation.output());
+        assertTrue(invocation.output().length() < 20_000,
+                String.valueOf(invocation.output().length()));
+        assertFalse(invocation.output().contains(big), invocation.output());
+    }
+
+    @Test
+    void declarationSubmissionShowsNoResultAliasesAndFinalValuesUseCanonicalTypes() {
+        Invocation invocation = run("let @pub answer :I32 = (+ 40 2)\n"
+                + ":bindings\n"
+                + "answer\n:quit\n");
+
+        assertEquals(0, invocation.status(), invocation.error());
+        assertTrue(invocation.output().contains("answer :I32\n"), invocation.output());
+        assertTrue(invocation.output().contains("I32 42\n"), invocation.output());
+        assertFalse(invocation.output().matches("(?s).*\\bresult\\b.*"), invocation.output());
+        assertFalse(invocation.output().contains("answer = 42"), invocation.output());
     }
 
     private Invocation run(String input) {

@@ -117,6 +117,63 @@ try:
         send("still-open\n")
         finish(0)
         assert b"ownership-ok" in transcript, bytes(transcript)
+    elif mode == "readline":
+        until(b"lyra> ")
+        send("import std->io as io io->::readLine[]\n")
+        # Acceptance disables paste/raw editing before generated program input
+        # resumes the one terminal reader.
+        until(b"\x1b[?2004l")
+        send("программа 😀\n")
+        result = plain(until(b"lyra> "))
+        assert "программа".encode("utf-8") in result, (result, bytes(transcript))
+        assert b"\\uD83D\\uDE00" in result, (result, bytes(transcript))
+        send("let @pub afterInput :String = \"次\"\n")
+        until(b"lyra> ")
+        send(":history\n")
+        history = plain(until(b"lyra> "))
+        assert b"1: import std->io as io io->::readLine[]" in history, history
+        assert "2: let @pub afterInput :String = \"次\"".encode("utf-8") in history, history
+        assert b": \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb3\xd1\x80\xd0\xb0\xd0\xbc\xd0\xbc\xd0\xb0" not in history, history
+        send(":quit\n")
+        finish(0)
+    elif mode in ("rich-cancel", "plain-cancel"):
+        # A generated constant-stack self-tail spin: the submission imports
+        # std->io, declares the looping function and enters the loop after
+        # one println. Session safe points observe the Ctrl-C token at the
+        # loop backedge without touching main or the host process.
+        spin = ("import std->io as io let @pub spin :Fn<I32;I32> = "
+                "(=> |n| ((== n n) -> ::spin[(+ n 1)] : 0)) "
+                "{ io->::println[\"started\"] (spin 0) }\n")
+        if mode == "rich-cancel":
+            until(b"lyra> ")
+        send(spin)
+        if mode == "rich-cancel":
+            # The line was accepted (paste mode disabled) before the
+            # generated program printed; the echoed source text is not the
+            # output marker.
+            until(b"\x1b[?2004l")
+        until(b"started\r\n")
+        time.sleep(0.2)
+        send("\x03")
+        if mode == "rich-cancel":
+            until(b"lyra> ")
+        else:
+            time.sleep(0.5)
+        send("let @pub after :I32 = 42\n")
+        if mode == "rich-cancel":
+            until(b"lyra> ")
+        send(":bindings\n")
+        if mode == "rich-cancel":
+            bindings = plain(until(b"lyra> "))
+        else:
+            send(":quit\n")
+            finish(1)
+            bindings = plain(transcript[transcript.rindex(b":bindings") + len(b":bindings"):])
+        assert b"after :I32\n" in bindings, (bindings, bytes(transcript))
+        assert b"spin" not in bindings, ("cancelled staged names published", bindings)
+        if mode == "rich-cancel":
+            send(":quit\n")
+            finish(0)
     else:
         assert mode in ("rich", "rich-ignored"), mode
         until(b"lyra> ")
@@ -148,7 +205,29 @@ try:
         send(":type 99\n")
         assert b"I64" in plain(until(b"lyra> "))
         send(":reload\n")
-        assert b"LYR-REPL-RELOAD-UNSUPPORTED" in plain(until(b"lyra> "))
+        assert b"LYR-REPL-USAGE" in plain(until(b"lyra> ")), bytes(transcript)
+        send(":type let @pub notThere :I32 = 5\n")
+        assert b"Unit" in plain(until(b"lyra> ")), bytes(transcript)
+        send(":bindings\n")
+        bindings = plain(until(b"lyra> "))
+        assert b"notThere" not in bindings, ("type query published a name", bindings)
+        if mode == "rich":
+            # Execution-host file/module completion: listing reads the
+            # configured source root without compiling or pinning, and the
+            # completed path loads after Enter. The module must be imported
+            # before :reload can rebuild its retained graph.
+            send("import newmod\n")
+            until(b"lyra> ")
+            send(":load newm\t\n")
+            until(b"lyra> ")
+            assert b":load newmod.lyra" in plain(transcript), bytes(transcript)
+            send(":bindings\n")
+            bindings = plain(until(b"lyra> "))
+            assert b"loaded :I32\n" in bindings, bindings
+            send(":reload newm\t\n")
+            reloaded = plain(until(b"lyra> "))
+            assert b":reload newmod" in reloaded, reloaded
+            assert b"LYC-" not in reloaded, reloaded
         send(":quit\n")
         finish(2)
         assert transcript.count(b"\x1b[?2004h") == transcript.count(b"\x1b[?2004l"), bytes(transcript)
