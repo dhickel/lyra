@@ -45,6 +45,7 @@ public final class RemoteServer implements AutoCloseable {
     private final ServerSocket serverSocket;
     private final UUID sessionId;
     private final Object stateLock = new Object();
+    private final Object connectionLock = new Object();
     private final Map<UUID, RequestRecord> requests = new LinkedHashMap<>();
     private final Map<UUID, ControlResponse> controlResponses = new LinkedHashMap<>();
     private final Map<UUID, QueryRecord> queries = new LinkedHashMap<>();
@@ -143,7 +144,8 @@ public final class RemoteServer implements AutoCloseable {
     }
 
     public int controllerCount() {
-        return controller.get() == null ? 0 : 1;
+        Connection current = controller.get();
+        return current != null && current.handshakeReady.get() ? 1 : 0;
     }
 
     /** Owner-side pump. It runs at most one queued live operation. */
@@ -166,10 +168,6 @@ public final class RemoteServer implements AutoCloseable {
             serverSocket.close();
         } catch (IOException ignored) {
         }
-        for (Connection connection : connections.keySet()) {
-            connection.closeTransport();
-        }
-        controller.set(null);
         RequestRecord requestToCancel;
         ControlRecord controlToCancel;
         QueryRecord queryToCancel;
@@ -189,7 +187,19 @@ public final class RemoteServer implements AutoCloseable {
             }
         }
         if (requestToCancel != null) {
-            cancelDispatch(requestToCancel);
+            boolean retiredPending = cancelPending(requestToCancel.dispatch);
+            synchronized (stateLock) {
+                if (!requestToCancel.terminal) {
+                    String detail = retiredPending
+                            ? "the service closed before owner execution"
+                            : "the service closed before evaluation completed";
+                    ProtocolMessage.Result cancelled = terminalResult(requestToCancel,
+                            ProtocolMessage.RemoteStatus.CANCELLED, currentRevision,
+                            mutationSequence, Optional.of(detail), Optional.empty(), Optional.empty());
+                    finishLocked(requestToCancel, cancelled);
+                    send(requestToCancel.connection, cancelled);
+                }
+            }
             cancelAdapter(requestToCancel);
             requestToCancel.cancellation.complete();
         }
@@ -201,6 +211,30 @@ public final class RemoteServer implements AutoCloseable {
         }
         if (completionToCancel != null) {
             cancelDispatch(completionToCancel.dispatch);
+        }
+        // Bounded graceful drain: terminal frames already enqueued get a
+        // short window to reach the controller, while a slow or broken peer
+        // can never keep the shutdown alive. Admission uses the same lock so
+        // an accept racing close cannot add a connection after this snapshot.
+        List<Connection> liveConnections;
+        synchronized (connectionLock) {
+            liveConnections = List.copyOf(connections.keySet());
+        }
+        drainOutbound(liveConnections);
+        for (Connection connection : liveConnections) {
+            connection.closeTransport();
+            connection.closed.set(true);
+        }
+        controller.set(null);
+    }
+
+    /** Waits briefly for connection writers to flush their enqueued frames. */
+    private void drainOutbound(List<Connection> liveConnections) {
+        long deadline = System.nanoTime() + 500_000_000L;
+        for (Connection connection : liveConnections) {
+            while (connection.outboundBytes.get() > 0 && System.nanoTime() < deadline) {
+                Thread.yield();
+            }
         }
     }
 
@@ -216,7 +250,15 @@ public final class RemoteServer implements AutoCloseable {
                 }
                 slotAcquired = true;
                 Connection connection = new Connection(socket);
-                connections.put(connection, Boolean.TRUE);
+                synchronized (connectionLock) {
+                    if (closed.get()) {
+                        connection.closeTransport();
+                        connection.closed.set(true);
+                        connectionSlots.release();
+                        return;
+                    }
+                    connections.put(connection, Boolean.TRUE);
+                }
                 Thread handler = new Thread(() -> handleConnection(connection),
                         "lyra-repl-remote-connection-" + connection.id);
                 handler.setDaemon(true);
@@ -265,26 +307,44 @@ public final class RemoteServer implements AutoCloseable {
                         "endpoint belongs to another session", null, null, false));
                 return;
             }
-            if (!controller.compareAndSet(null, connection)) {
-                sendDirect(connection, error(ProtocolMessage.ErrorCode.CONTROLLER_BUSY,
-                        "a controller is already connected", null, null, true));
-                return;
-            }
             long revision;
             long sequence;
             long mutation;
             Optional<UUID> active;
+            boolean claimed;
             synchronized (stateLock) {
-                revision = currentRevision;
-                sequence = lastSequence;
-                mutation = mutationSequence;
-                active = activeRequest == null
-                        ? Optional.empty() : Optional.of(activeRequest.request.requestId());
+                // close() publishes the terminal service state before
+                // taking this lock. Admission and shutdown therefore have a
+                // single ordering point and a late handshake cannot install
+                // a controller after the service has closed.
+                if (closed.get()) {
+                    return;
+                }
+                claimed = controller.compareAndSet(null, connection);
+                if (claimed) {
+                    revision = currentRevision;
+                    sequence = lastSequence;
+                    mutation = mutationSequence;
+                    active = activeRequest == null
+                            ? Optional.empty() : Optional.of(activeRequest.request.requestId());
+                } else {
+                    revision = sequence = mutation = 0L;
+                    active = Optional.empty();
+                }
+            }
+            if (!claimed) {
+                sendDirect(connection, error(ProtocolMessage.ErrorCode.CONTROLLER_BUSY,
+                        "a controller is already connected", null, null, true));
+                return;
             }
             connection.socket.setSoTimeout(0);
             sendDirect(connection, new ProtocolMessage.ServerHello(
                     RemoteProtocol.VERSION, sessionId, revision, mutation, sequence, active));
             connection.startWriter();
+            // Publish readiness only after the complete v2 hello has been
+            // written. A socket that merely sends ClientHello, or stalls
+            // before receiving ServerHello, is not a ready controller.
+            connection.handshakeReady.set(true);
             readLoop(connection);
         } catch (SocketTimeoutException timeout) {
             sendDirectQuietly(connection, error(ProtocolMessage.ErrorCode.HANDSHAKE_TIMEOUT,
@@ -302,7 +362,7 @@ public final class RemoteServer implements AutoCloseable {
     private void readLoop(Connection connection) throws IOException, ProtocolException {
         while (!closed.get() && !connection.closed.get()) {
             ProtocolMessage message = readMessage(connection.input);
-            if (message == null) {
+            if (message == null || closed.get()) {
                 return;
             }
             switch (message) {
@@ -359,6 +419,9 @@ public final class RemoteServer implements AutoCloseable {
         ProtocolMessage replay = null;
         ProtocolMessage immediate = null;
         synchronized (stateLock) {
+            if (closed.get()) {
+                return;
+            }
             RequestRecord existing = requests.get(wire.requestId());
             if (existing != null) {
                 if (!existing.sameRequest(message)) {
@@ -574,6 +637,9 @@ public final class RemoteServer implements AutoCloseable {
         RequestRecord record;
         boolean pendingCancellation = false;
         synchronized (stateLock) {
+            if (closed.get()) {
+                return;
+            }
             ControlResponse prior = cachedControlEntry(request.operationId());
             if (prior != null) {
                 if (prior.kind() != ControlKind.CANCEL
@@ -643,6 +709,9 @@ public final class RemoteServer implements AutoCloseable {
         ProtocolMessage cached;
         ControlRecord control;
         synchronized (stateLock) {
+            if (closed.get()) {
+                return;
+            }
             ControlResponse prior = cachedControlEntry(request.operationId());
             if (prior != null) {
                 if (prior.kind() != ControlKind.RESET
@@ -770,6 +839,9 @@ public final class RemoteServer implements AutoCloseable {
         QueryRecord query;
         ProtocolMessage.QueryResult immediate = null;
         synchronized (stateLock) {
+            if (closed.get()) {
+                return;
+            }
             QueryRecord existing = queries.get(request.queryId());
             if (existing != null) {
                 if (!existing.request.equals(request)) {
@@ -913,6 +985,9 @@ public final class RemoteServer implements AutoCloseable {
         CompletionRecord completion;
         ProtocolMessage.CompletionResult immediate = null;
         synchronized (stateLock) {
+            if (closed.get()) {
+                return;
+            }
             CompletionRecord existing = completions.get(request.completionId());
             if (existing != null) {
                 if (!existing.request.equals(request)) {
@@ -1686,6 +1761,7 @@ public final class RemoteServer implements AutoCloseable {
         private final ArrayBlockingQueue<byte[]> outbound =
                 new ArrayBlockingQueue<>(options.maxOutboundMessages());
         private final AtomicBoolean closed = new AtomicBoolean();
+        private final AtomicBoolean handshakeReady = new AtomicBoolean();
         private final AtomicBoolean cleanupScheduled = new AtomicBoolean();
         private final java.util.concurrent.atomic.AtomicInteger outboundBytes =
                 new java.util.concurrent.atomic.AtomicInteger();
@@ -1730,8 +1806,12 @@ public final class RemoteServer implements AutoCloseable {
                     if (payload == null) {
                         continue;
                     }
-                    outboundBytes.addAndGet(-payload.length);
+                    // The byte counter covers queued and in-flight payloads
+                    // until the frame is actually written, so the shutdown
+                    // drain can never observe a drained queue while a
+                    // terminal frame is still being flushed.
                     frames.writeFrame(output, payload);
+                    outboundBytes.addAndGet(-payload.length);
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();

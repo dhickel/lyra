@@ -295,6 +295,54 @@ public final class ApplicationAttachment implements AutoCloseable {
     }
 
     /**
+     * Whether the owner thread currently holds an admitted lease on this
+     * attachment's shared controller.  Transport compositions dispatch
+     * remote operations on the root controller; those operations execute
+     * inside the poll and must reuse that lease instead of beginning a
+     * second evaluation.
+     */
+    public boolean hasAdmittedLease() {
+        owner.check();
+        return controller.currentEvaluation().isPresent();
+    }
+
+    /**
+     * Executes one already-admitted request synchronously under the lease
+     * the shared controller is currently polling.  This is the remote
+     * transport composition seam: a dispatched operation that runs on this
+     * attachment's own controller observes the poll's admitted lease and
+     * reuses it, exactly like an owner-dispatched evaluation, instead of
+     * being rejected as busy or beginning a nested evaluation.
+     */
+    public EvaluationResult submitAdmitted(EvaluationRequest request,
+                                           BooleanSupplier cancellationRequested) {
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(cancellationRequested, "cancellationRequested");
+        ActiveOperation operation;
+        synchronized (admission) {
+            EvaluationResult rejected = dispatchAdmissionFailure(request);
+            if (rejected != null) return rejected;
+            io.mindspice.lyra.runtime.LyraOwnerController.EvaluationLease admitted =
+                    controller.currentEvaluation().orElseThrow(() ->
+                            new LyraLifecycleException("no admitted controller lease; "
+                                    + "synchronous submission is required"));
+            operation = new ActiveOperation(request);
+            operation.admittedLease = admitted;
+            active = operation;
+            try {
+                if (cancellationRequested.getAsBoolean()) {
+                    operation.requestCancellation();
+                    return completeCancelledLocked(operation);
+                }
+            } catch (RuntimeException | Error failure) {
+                active = null;
+                throw failure;
+            }
+        }
+        return evaluate(operation);
+    }
+
+    /**
      * Publishes one owner-dispatched evaluation against the current committed
      * revision.  The request is admitted immediately and executed on the
      * application owner thread by the next generated safe point or explicit
@@ -565,22 +613,45 @@ public final class ApplicationAttachment implements AutoCloseable {
             if (controller.hasLiveWork()) {
                 throw new LyraLifecycleException("cannot reset while an owner operation is active");
             }
-            storage.reset();
-            storageBindings.clear();
-            registerBorrowedLinks();
-            sourceRegistry.clear();
-            workspace.reset();
-            Map<String, ExternalBinding> bindings = new LinkedHashMap<>();
-            context.rootBindings().forEach(binding -> bindings.put(binding.name(), binding));
-            compilerSnapshot = new SessionSnapshot(
-                    new io.mindspice.lyra.compiler.session.SessionRevision(revision.value()),
-                    bindings,
-                    Map.of(),
-                    context.pinnedModules(),
-                    compilerSnapshot.allocator(),
-                    Optional.of(context.rootCertificate()),
-                    context.moduleEnvironment());
+            resetLocked();
         }
+    }
+
+    /**
+     * Owner-dispatched reset executed under the shared controller's current
+     * dispatch lease.  A remote reset operation dispatched on this
+     * attachment's own controller is itself the admitted owner work, so the
+     * ordinary live-work probe must not reject it.
+     */
+    public void resetAdmitted() {
+        owner.check();
+        synchronized (admission) {
+            requireOpen();
+            if (active != null) {
+                active.requestCancellation();
+                throw new LyraLifecycleException("cannot reset while an evaluation is active");
+            }
+            resetLocked();
+        }
+    }
+
+    /** Called only while holding admission; no source or namespace work occurs here. */
+    private void resetLocked() {
+        storage.reset();
+        storageBindings.clear();
+        registerBorrowedLinks();
+        sourceRegistry.clear();
+        workspace.reset();
+        Map<String, ExternalBinding> bindings = new LinkedHashMap<>();
+        context.rootBindings().forEach(binding -> bindings.put(binding.name(), binding));
+        compilerSnapshot = new SessionSnapshot(
+                new io.mindspice.lyra.compiler.session.SessionRevision(revision.value()),
+                bindings,
+                Map.of(),
+                context.pinnedModules(),
+                compilerSnapshot.allocator(),
+                Optional.of(context.rootCertificate()),
+                context.moduleEnvironment());
     }
 
     /**

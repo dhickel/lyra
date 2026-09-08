@@ -1,5 +1,6 @@
 package io.mindspice.lyra.cli;
 
+import io.mindspice.lyra.compiler.api.AttachableCompileResult;
 import io.mindspice.lyra.compiler.api.CompiledArtifact;
 import io.mindspice.lyra.compiler.api.CompileRequest;
 import io.mindspice.lyra.compiler.api.CompileResult;
@@ -14,6 +15,7 @@ import io.mindspice.lyra.compiler.source.SourceId;
 import io.mindspice.lyra.compiler.source.SourceSnapshot;
 import io.mindspice.lyra.compiler.source.SourceSpan;
 import io.mindspice.lyra.runtime.ArtifactMetadata;
+import io.mindspice.lyra.runtime.LyraCompatibilityException;
 import io.mindspice.lyra.runtime.LyraRuntime;
 import io.mindspice.lyra.runtime.LyraRuntimeConstants;
 import io.mindspice.lyra.runtime.LyraRuntimeException;
@@ -27,6 +29,7 @@ import io.mindspice.lyra.runtime.SourceFrame;
 import io.mindspice.lyra.runtime.SourceFrameRenderer;
 import io.mindspice.lyra.repl.ManagedConsoleSession;
 import io.mindspice.lyra.repl.PlainConsole;
+import io.mindspice.lyra.repl.ReplActivation;
 import io.mindspice.lyra.repl.SessionOptions;
 import io.mindspice.lyra.repl.remote.LoopbackEndpoint;
 import io.mindspice.lyra.repl.remote.RemoteConsoleSession;
@@ -57,10 +60,18 @@ public final class LyraCli {
             + "Commands:\n"
             + "  repl [DIR] [--source-root DIR]* [--history PATH] [--plain] [--keymap emacs|vi]\n"
             + "  attach ENDPOINT\n"
-            + "  run ROOT [--source-root DIR]* [-- ARGS...]\n"
+            + "  run ROOT [--source-root DIR]* [--repl] [--repl-port PORT] [--repl-wait] [-- ARGS...]\n"
             + "  compile ROOT [--source-root DIR]* [--output PATH]\n"
             + "         [--format classes|thin-jar|bundled-jar]\n"
-            + "         [--java-package PACKAGE] [--include-sources] [--force]\n"
+            + "         [--java-package PACKAGE] [--include-sources] [--force] [--repl]\n"
+            + "\n"
+            + "REPL activation:\n"
+            + "  run --repl starts an unauthenticated loopback listener before main; live\n"
+            + "  work is gated until the root initializes and registers. --repl-port\n"
+            + "  defaults to 0 (ephemeral) and --repl-wait pauses before main until a\n"
+            + "  controller handshake. compile --repl records the capability only;\n"
+            + "  compiled artifacts activate via -Dlyra.repl.enabled=true with optional\n"
+            + "  -Dlyra.repl.port and -Dlyra.repl.wait.\n"
             + "\n"
             + "Global options:\n"
             + "  --help       Show this help message.\n"
@@ -366,8 +377,16 @@ public final class LyraCli {
 
     private static int run(RunCommand command, InputStream input,
                            OutputStream output, OutputStream error) {
+        return command.repl()
+                ? runActivated(command, input, output, error)
+                : runOrdinary(command, input, output, error);
+    }
+
+    /** The unchanged ordinary run path: normal compilation, no listener. */
+    private static int runOrdinary(RunCommand command, InputStream input,
+                                   OutputStream output, OutputStream error) {
         CompileRequest request = request(command.root(), command.sourceRoots(),
-                null, false, false);
+                null, false, false, false);
         CompileResult result = LyraCompiler.compile(request);
         renderDiagnostics(result.diagnostics(), command.root(), command.sourceRoots(), error);
         if (result instanceof CompileResult.Failure failure) {
@@ -384,10 +403,115 @@ public final class LyraCli {
                 command.sourceRoots(), input, output, error);
     }
 
+    /**
+     * One activated run: the bounded listener bootstrap starts before the
+     * root is published, live work stays gated until initialization and
+     * actual root registration succeed, the optional wait pauses after
+     * registration and before main, and shutdown retires queued control
+     * requests before closing the listener, service, owned root and
+     * generations in that order.
+     */
+    private static int runActivated(RunCommand command, InputStream input,
+                                    OutputStream output, OutputStream error) {
+        CompileRequest request = request(command.root(), command.sourceRoots(),
+                null, false, false, true);
+        AttachableCompileResult result = LyraCompiler.compileAttachable(request);
+        renderDiagnostics(result.diagnostics(), command.root(), command.sourceRoots(), error);
+        if (result instanceof AttachableCompileResult.Failure failure) {
+            return compilerExitCode(failure.diagnostics());
+        }
+
+        AttachableCompileResult.Success success = (AttachableCompileResult.Success) result;
+        CompiledArtifact artifact = success.artifact();
+        Diagnostic mainDiagnostic = mainDiagnostic(artifact.metadata());
+        if (mainDiagnostic != null) {
+            renderDiagnostic(mainDiagnostic, command.root(), command.sourceRoots(), error);
+            return 1;
+        }
+
+        RuntimeIoEnvironment environment = new RuntimeIoEnvironment(
+                input, output, error, StandardCharsets.UTF_8);
+        SessionOptions sessionOptions = SessionOptions.builder()
+                // Match the compiler's path-root discovery rule so later
+                // attached imports can resolve siblings from an implicit
+                // root parent as well as from explicit --source-root values.
+                .sourceRoots(sourceRootsFor(command.root(), command.sourceRoots()))
+                .ioEnvironment(environment)
+                .build();
+        ReplActivation activation = null;
+        LoadedArtifact loaded = null;
+        ModuleHandle module = null;
+        Throwable primary = null;
+        boolean invocationFailure = false;
+        int status = 0;
+        try {
+            try {
+                activation = ReplActivation.bootstrap(command.replPort(),
+                        command.replWait(), sessionOptions, error);
+            } catch (VirtualMachineError | ThreadDeath failure) {
+                throw failure;
+            } catch (IOException failure) {
+                write(error, "lyra: cannot start the REPL listener: "
+                        + message(failure) + "\n");
+                return 2;
+            }
+            LoadOptions options = LoadOptions.defaults().forStreams(
+                    input, output, error, StandardCharsets.UTF_8);
+            loaded = LyraRuntime.load(artifact, options);
+            module = loaded.instantiate();
+            activation.register(module, success.context());
+            activation.awaitControllerIfConfigured();
+            status = invokeExactMain(module, command.arguments());
+        } catch (Throwable failure) {
+            rethrowFatal(failure);
+            primary = failure;
+            invocationFailure = true;
+        } finally {
+            // Retire queued control requests and close the listener/service
+            // first, then the owned root (which retires root-lifetime
+            // generations), then the loading context. The primary failure
+            // or exit request is preserved and cleanup failures are
+            // suppressed, never substituted.
+            if (activation != null) {
+                try {
+                    activation.close();
+                } catch (Throwable failure) {
+                    rethrowFatal(failure);
+                    primary = suppress(primary, failure);
+                }
+            }
+            if (module != null) {
+                try {
+                    module.close();
+                } catch (Throwable failure) {
+                    rethrowFatal(failure);
+                    primary = suppress(primary, failure);
+                }
+            }
+            if (loaded != null) {
+                try {
+                    loaded.close();
+                } catch (Throwable failure) {
+                    rethrowFatal(failure);
+                    primary = suppress(primary, failure);
+                }
+            }
+        }
+
+        if (primary != null) {
+            write(error, renderFailure(primary, command.root(), command.sourceRoots()));
+            if (primary instanceof LyraCompatibilityException) {
+                return 2;
+            }
+            return primary instanceof LyraRuntimeException || !invocationFailure ? 1 : 2;
+        }
+        return status;
+    }
+
     private static int compile(CompileCommand command, OutputStream error)
             throws IOException {
         CompileRequest request = request(command.root(), command.sourceRoots(),
-                command.javaPackage(), command.includeSources(), false);
+                command.javaPackage(), command.includeSources(), false, command.repl());
         Path output = command.output().orElseGet(() -> defaultOutput(command));
         validateOutput(output, command.format(), command.force());
 
@@ -427,7 +551,7 @@ public final class LyraCli {
 
     private static CompileRequest request(String root, List<Path> sourceRoots,
                                           String javaPackage, boolean includeSources,
-                                          boolean previewEnabled) {
+                                          boolean previewEnabled, boolean repl) {
         try {
             CompileRequest.Builder builder = CompileRequest.builder();
             if (isPathRoot(root)) {
@@ -442,6 +566,12 @@ public final class LyraCli {
                 builder.javaBasePackage(javaPackage);
             }
             builder.includeSources(includeSources).previewEnabled(previewEnabled);
+            if (repl) {
+                // Activation requires the attachable safe-point profile plus
+                // the embedded debug source/closure context. Compilation
+                // records the capability only and never listens.
+                builder.attachable(true).debugCapable(true);
+            }
             return builder.build();
         } catch (IllegalArgumentException failure) {
             throw new UsageFailure("invalid ROOT: " + message(failure));
@@ -462,8 +592,7 @@ public final class LyraCli {
             loaded = LyraRuntime.load(artifact, options);
             module = loaded.instantiate();
             try {
-                status = (int) module.export("main", "Fn<Array<String>;I32>")
-                        .methodHandle().invokeExact(arguments);
+                status = invokeExactMain(module, arguments);
             } catch (IllegalArgumentException failure) {
                 throw new LyraLinkException(
                         "root module does not expose exact main :Fn<Array<String>;I32>",
@@ -497,6 +626,12 @@ public final class LyraCli {
             return primary instanceof LyraRuntimeException || !invocationFailure ? 1 : 2;
         }
         return status;
+    }
+
+    /** Invokes the exact generated main contract on one live root. */
+    private static int invokeExactMain(ModuleHandle module, String[] arguments) throws Throwable {
+        return (int) module.export("main", "Fn<Array<String>;I32>")
+                .methodHandle().invokeExact(arguments);
     }
 
     private static Diagnostic mainDiagnostic(ArtifactMetadata metadata) {
@@ -810,7 +945,8 @@ public final class LyraCli {
     private record VersionCommand() implements ParsedCommand {
     }
 
-    private record RunCommand(String root, List<Path> sourceRoots, String[] arguments)
+    private record RunCommand(String root, List<Path> sourceRoots, String[] arguments,
+                              boolean repl, int replPort, boolean replWait)
             implements ParsedCommand {
         private RunCommand {
             sourceRoots = List.copyOf(sourceRoots);
@@ -825,7 +961,8 @@ public final class LyraCli {
 
     private record CompileCommand(String root, List<Path> sourceRoots,
                                   Optional<Path> output, OutputFormat format,
-                                  String javaPackage, boolean includeSources, boolean force)
+                                  String javaPackage, boolean includeSources, boolean force,
+                                  boolean repl)
             implements ParsedCommand {
         private CompileCommand {
             sourceRoots = List.copyOf(sourceRoots);
@@ -976,6 +1113,10 @@ public final class LyraCli {
             ArrayList<Path> sourceRoots = new ArrayList<>();
             ArrayList<String> programArguments = new ArrayList<>();
             boolean separated = false;
+            boolean repl = false;
+            boolean seenReplPort = false;
+            int replPort = 0;
+            boolean replWait = false;
             for (int index = 2; index < args.length; index++) {
                 String token = args[index];
                 if (token == null) {
@@ -989,13 +1130,53 @@ public final class LyraCli {
                     separated = true;
                     continue;
                 }
-                if (!token.equals("--source-root")) {
-                    throw new UsageFailure("run accepts only --source-root and --: " + token);
+                switch (token) {
+                    case "--source-root" -> sourceRoots.add(
+                            pathValue(args, ++index, "--source-root"));
+                    case "--repl" -> {
+                        if (repl) {
+                            throw new UsageFailure("duplicate option: --repl");
+                        }
+                        repl = true;
+                    }
+                    case "--repl-port" -> {
+                        if (seenReplPort) {
+                            throw new UsageFailure("duplicate option: --repl-port");
+                        }
+                        seenReplPort = true;
+                        replPort = parseReplPort(value(args, ++index, "--repl-port"));
+                    }
+                    case "--repl-wait" -> {
+                        if (replWait) {
+                            throw new UsageFailure("duplicate option: --repl-wait");
+                        }
+                        replWait = true;
+                    }
+                    default -> throw new UsageFailure(
+                            "run accepts only --source-root, --repl, --repl-port, "
+                                    + "--repl-wait and --: " + token);
                 }
-                sourceRoots.add(pathValue(args, ++index, "--source-root"));
+            }
+            if (!repl && (seenReplPort || replWait)) {
+                throw new UsageFailure("--repl-port and --repl-wait require --repl");
             }
             return new RunCommand(root, sourceRoots,
-                    programArguments.toArray(String[]::new));
+                    programArguments.toArray(String[]::new), repl, replPort, replWait);
+        }
+
+        /** Ports are validated at parse time, including the ephemeral port 0. */
+        private static int parseReplPort(String spelling) {
+            final int port;
+            try {
+                port = Integer.parseInt(spelling);
+            } catch (NumberFormatException failure) {
+                throw new UsageFailure("invalid --repl-port value: " + spelling
+                        + " (expected 0..65535)");
+            }
+            if (port < 0 || port > 65535) {
+                throw new UsageFailure("--repl-port must be in 0..65535: " + port);
+            }
+            return port;
         }
 
         private static ParsedCommand parseCompile(String root, String[] args) {
@@ -1005,6 +1186,7 @@ public final class LyraCli {
             String javaPackage = "lyra.generated";
             boolean includeSources = false;
             boolean force = false;
+            boolean repl = false;
             boolean seenOutput = false;
             boolean seenFormat = false;
             boolean seenPackage = false;
@@ -1055,11 +1237,17 @@ public final class LyraCli {
                         seenForce = true;
                         force = true;
                     }
+                    case "--repl" -> {
+                        if (repl) {
+                            throw new UsageFailure("duplicate option: --repl");
+                        }
+                        repl = true;
+                    }
                     default -> throw new UsageFailure("unknown compile option: " + token);
                 }
             }
             return new CompileCommand(root, sourceRoots, output, format,
-                    javaPackage, includeSources, force);
+                    javaPackage, includeSources, force, repl);
         }
 
         private static Path pathValue(String[] args, int index, String option) {

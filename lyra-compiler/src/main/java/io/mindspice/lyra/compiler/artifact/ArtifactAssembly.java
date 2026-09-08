@@ -866,10 +866,12 @@ public final class ArtifactAssembly implements ArtifactSource {
         optionParts.add(Integer.toString(options.profile().javaClassFileTarget()));
         optionParts.add(Integer.toString(options.runtimeAbi().major()));
         optionParts.add(Integer.toString(options.runtimeAbi().minor()));
-        optionParts.add(options.packagingMode().canonicalSpelling());
         optionParts.add(Boolean.toString(previewRequired));
-        optionParts.add(Boolean.toString(options.includeSources()));
         optionParts.add(bytecode.javaBasePackage());
+        // Packaging mode and include-sources are deployment/presentation
+        // options recorded elsewhere in the metadata; they never affect the
+        // analysis, so packaged activation reconstruction (which is always a
+        // classes assembly) must be able to reproduce this revision exactly.
         if (options.replCapable()) {
             optionParts.add("repl-capable");
         }

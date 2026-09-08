@@ -1,9 +1,13 @@
 package io.mindspice.lyra.repl;
 
+import io.mindspice.lyra.compiler.api.AttachableRootContext;
 import io.mindspice.lyra.compiler.api.CompileRequest;
 import io.mindspice.lyra.compiler.api.CompileResult;
+import io.mindspice.lyra.compiler.api.DebugArtifactContext;
 import io.mindspice.lyra.compiler.api.LyraCompiler;
 import io.mindspice.lyra.runtime.ArtifactMetadata;
+import io.mindspice.lyra.runtime.ArtifactProfile;
+import io.mindspice.lyra.runtime.ArtifactSource;
 import io.mindspice.lyra.runtime.ExportHandle;
 import io.mindspice.lyra.runtime.LoadOptions;
 import io.mindspice.lyra.runtime.LoadedArtifact;
@@ -16,13 +20,17 @@ import io.mindspice.lyra.runtime.PackagingMode;
 import io.mindspice.lyra.runtime.RuntimeIoEnvironment;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.CodeSource;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -69,8 +77,30 @@ public final class ReplLauncher {
             return 2;
         }
 
+        // Activation is disabled by default. The listener bootstrap starts
+        // before the root is published so a slow initializer is still
+        // observable; live work stays gated until registration succeeds.
+        ReplActivation activation = null;
+        try {
+            activation = ReplActivation.fromProperties(SessionOptions.builder()
+                    .ioEnvironment(new RuntimeIoEnvironment(
+                            System.in, System.out, System.err, StandardCharsets.UTF_8))
+                    .build(), System.err).orElse(null);
+        } catch (VirtualMachineError | ThreadDeath failure) {
+            throw failure;
+        } catch (IOException failure) {
+            write(System.err, "LYR-INTERNAL: cannot start the REPL listener: "
+                    + message(failure) + "\n");
+            return 2;
+        } catch (RuntimeException failure) {
+            write(System.err, "LYR-INTERNAL: invalid REPL activation controls: "
+                    + message(failure) + "\n");
+            return 2;
+        }
+
         LoadedArtifact loaded = null;
         ModuleHandle module = null;
+        AttachableRootContext attachmentContext = null;
         Throwable primary = null;
         boolean invocationFailure = false;
         int status = 0;
@@ -82,7 +112,18 @@ public final class ReplLauncher {
             loaded = LyraRuntime.load(target.artifactPath(), options);
             preflight(loaded.metadata(), target);
             requireExactMain(loaded.metadata());
+            // Validate the source-independent attachable context before
+            // instantiating the root. A malformed or incompatible debug
+            // inventory must not execute application initializers before the
+            // activation path can reject it.
+            if (activation != null) {
+                attachmentContext = reconstructContext(target, loaded.metadata());
+            }
             module = loaded.instantiate();
+            if (activation != null) {
+                activation.register(module, attachmentContext);
+                activation.awaitControllerIfConfigured();
+            }
             ExportHandle main = exactMain(module);
             status = (int) main.methodHandle().invokeExact(target.programArguments());
         } catch (VirtualMachineError | ThreadDeath failure) {
@@ -98,6 +139,21 @@ public final class ReplLauncher {
             primary = failure;
             invocationFailure = true;
         } finally {
+            // Retire queued control requests and close the listener/service
+            // first, then the owned root (retiring root-lifetime
+            // generations), then the loading context. The primary failure or
+            // exit request is preserved; cleanup failures are suppressed.
+            if (activation != null) {
+                try {
+                    activation.close();
+                } catch (Throwable failure) {
+                    if (failure instanceof VirtualMachineError
+                            || failure instanceof ThreadDeath) {
+                        throw failure;
+                    }
+                    primary = suppress(primary, failure);
+                }
+            }
             if (module != null) {
                 try {
                     module.close();
@@ -124,9 +180,74 @@ public final class ReplLauncher {
 
         if (primary != null) {
             write(System.err, renderFailure(primary));
+            // Artifact compatibility failures are deployment/control
+            // configuration errors, not program failures.
+            if (primary instanceof LyraCompatibilityException) {
+                return 2;
+            }
             return primary instanceof LyraRuntimeException || !invocationFailure ? 1 : 2;
         }
         return status;
+    }
+
+    /**
+     * Rebuilds the source-independent attachable root context from the
+     * embedded snapshots through the ordinary compiler pipeline. No resolver
+     * object, original file, initializer, or serialized IR participates; a
+     * mismatch or non-attachable publication is a structured compatibility
+     * error.
+     */
+    private static AttachableRootContext reconstructContext(LaunchTarget target,
+                                                            ArtifactMetadata metadata) {
+        if (metadata.artifactProfile() != ArtifactProfile.ATTACHABLE) {
+            throw new LyraCompatibilityException("REPL activation requires an artifact "
+                    + "compiled with the attachable profile; rebuild it with compile --repl");
+        }
+        try {
+            Map<String, byte[]> entries = readArtifactEntries(target.artifactPath());
+            ArtifactSource source = ArtifactSource.fromEntries(metadata, entries);
+            return DebugArtifactContext.read(source).attachableContext();
+        } catch (LyraCompatibilityException failure) {
+            throw failure;
+        } catch (VirtualMachineError | ThreadDeath failure) {
+            throw failure;
+        } catch (IOException | RuntimeException failure) {
+            throw new LyraCompatibilityException(
+                    "embedded sources do not reconstruct the attachable root context",
+                    List.of(), List.of(), failure);
+        }
+    }
+
+    /** Reads the packaged artifact entries once for context reconstruction. */
+    private static Map<String, byte[]> readArtifactEntries(Path artifactPath)
+            throws IOException {
+        LinkedHashMap<String, byte[]> entries = new LinkedHashMap<>();
+        if (Files.isDirectory(artifactPath)) {
+            try (var paths = Files.walk(artifactPath)) {
+                for (Path path : paths.filter(Files::isRegularFile).sorted(
+                        Comparator.comparing(value ->
+                                artifactPath.relativize(value).toString())).toList()) {
+                    String name = artifactPath.relativize(path).toString()
+                            .replace('\\', '/');
+                    entries.put(name, Files.readAllBytes(path));
+                }
+            }
+            return entries;
+        }
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(
+                artifactPath.toFile(), StandardCharsets.UTF_8)) {
+            var enumeration = zip.entries();
+            while (enumeration.hasMoreElements()) {
+                java.util.zip.ZipEntry entry = enumeration.nextElement();
+                if (entry.isDirectory()) {
+                    continue;
+                }
+                try (InputStream input = zip.getInputStream(entry)) {
+                    entries.put(entry.getName(), input.readAllBytes());
+                }
+            }
+        }
+        return entries;
     }
 
     /**

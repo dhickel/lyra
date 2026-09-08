@@ -254,7 +254,6 @@
 - **Affected specifications:** `repl.md`, `backend-runtime.md`, session compiler/runtime flow, module reload and application attachment tests.
 
 ### Attachable safe-point effect boundary, 2026-09-07
-
 - **Decision:** attachable compilation models every potential dispatch safe point as an explicit effect boundary on the root module's public `@mut` value bindings. Reads of those bindings carry conservative `AttachableBoundary` aggregate identities (not initializer-allocation facts), and both direct and callable-summary mutation checks treat the current contents as potentially foreign-owned. Element mutation through such a binding is an ordinary `LYC-RESOLVE-022` diagnostic in attachable mode; scalar writes, whole-binding replacement, private-state mutation, callable replacement and higher-order transfers remain allowed. Normal compilation is unchanged.
 - **Justification:** a trusted evaluation may replace a public `@mut` root binding with an externally owned aggregate between safe points. Arrays have no runtime ownership guard, so a precompiled consumer certified against initializer-only ownership would silently mutate foreign state.
 - **Alternatives rejected:** runtime array-ownership guards on the raw-array ABI; blanket rejection of all mutable behavior; treating reads of such bindings as definitely local until Phase 07 dispatch exists.
@@ -303,3 +302,21 @@
 - **Justification:** mutation-sequence freshness is the only reset-safe coordination that preserves the local revision contract; request-identity LOAD/RELOAD keeps duplicate/sequence/cancel correlation uniform; synchronous owner routing avoids nested-dispatch deadlocks while socket threads stay control-only.
 - **Alternatives rejected:** dropping the sequence watermark from the hello (broke reconnect reconciliation), owner-queuing stale rejections (unnecessary owner work), a value-losing managed-console adapter, and generic completion/RPC surfaces.
 - **Caveat:** large dynamic result payloads are truncated to the frame bound while terminal status is preserved; attachment reload remains an explicit structured unavailable outcome until scratch-module reload has a root-lifetime surface.
+
+## 2026-09-09 — Run/Compile/Host Activation and Shutdown (Phase 12)
+
+### Source and review
+
+- **Source:** accepted REPL completion plan phase 12 (run/compile/host activation and shutdown) executed on the Phase-11 baseline `736e29e`.
+- **Affected specifications:** `repl.md` (run/host activation surface), `backend-runtime.md` unchanged in scope.
+- **Review timing:** revisit when a later phase changes the dispatch composition, shutdown ordering, or the attachment-context wire.
+
+### Decision
+
+- **Decision:** `run --repl` compiles an attachable debug-capable root and bootstraps the bounded loopback v2 listener before the root module is published; `compile --repl` records the same capability and never listens. `--repl-port` (0..65535, default 0) and `--repl-wait` are run-only and require `--repl`. Compiled artifacts activate only with `lyra.repl.enabled=true` (plus optional `lyra.repl.port` and `lyra.repl.wait`), default disabled.
+- **Decision:** the bootstrap dispatcher rejects every live dispatch until the attachment registers, so a client during initialization receives a truthful busy/unavailable outcome and never touches a partial root. The optional wait observes only handshake-complete v2 controllers (`controllerCount`), never raw accepted sockets, and ends on readiness, orderly shutdown, or interruption.
+- **Decision:** after registration the remote transport dispatches on the root's shared controller and the adapter reuses the poll's admitted lease (`submitAdmitted`/`resetAdmitted`) instead of beginning a second evaluation or being rejected as busy. A separate pump controller remains a supported composition for synchronous adapters.
+- **Decision:** shutdown order is listener/control retirement first (queued requests get an explicit CANCELLED terminal frame and a bounded writer drain), then the service surface, then the caller-owned root (retiring root-lifetime generations), then the loading context; the primary failure or exit request is preserved and cleanup failures are suppressed. Service close never closes an externally owned root, which may reopen attachment in the retained domain.
+- **Decision:** the attachable `optionsRevision` no longer covers packaging mode or include-sources. Both are deployment/presentation choices recorded elsewhere in metadata, and packaged activation reconstructs the context through the always-classes assembly, so the revision must be reproducible across packaging modes.
+- **Justification:** the listener must be observable during slow initialization without exposing partial state; the shared-controller composition is the only way generated safe points can service remote work with exactly one lease; and terminal results must reach the controller without letting a broken peer keep main alive.
+- **Caveat:** a submit racing the bootstrap gate observes a truthful BUSY and must retry; a wire write racing the service close can only be retired as a disconnect, which the client models as a terminal DISCONNECTED request status without replay.

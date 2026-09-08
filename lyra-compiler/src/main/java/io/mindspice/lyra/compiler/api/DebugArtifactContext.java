@@ -166,7 +166,42 @@ public final class DebugArtifactContext {
             throw compatibility("embedded sources do not reconstruct a compilable graph: "
                     + failure.diagnostics(), null);
         }
-        ArtifactMetadata rebuilt = ((CompileResult.Success) result).artifact().metadata();
+        verifyRebuilt(((CompileResult.Success) result).artifact().metadata());
+        return result;
+    }
+
+    /**
+     * Rebuilds the source-independent attachable root context from the
+     * embedded snapshots through the ordinary attachable compiler pipeline.
+     * This is the activation reconstruction seam for packaged artifacts:
+     * no resolver object, original file, initializer, or serialized IR
+     * participates, and a rebuilt mismatch is a structured compatibility
+     * error.
+     */
+    public AttachableRootContext attachableContext() {
+        if (metadata.artifactProfile() != ArtifactProfile.ATTACHABLE) {
+            throw compatibility(
+                    "REPL activation requires an artifact compiled with the attachable "
+                            + "profile; rebuild it with compile --repl", null);
+        }
+        AttachableCompileResult result;
+        try {
+            result = LyraCompiler.compileAttachable(compileRequest());
+        } catch (VirtualMachineError | ThreadDeath failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw compatibility("embedded sources cannot be recompiled for attachment", failure);
+        }
+        if (result instanceof AttachableCompileResult.Failure failure) {
+            throw compatibility("embedded sources do not reconstruct an attachable "
+                    + "compilation: " + failure.diagnostics(), null);
+        }
+        AttachableCompileResult.Success success = (AttachableCompileResult.Success) result;
+        verifyRebuilt(success.artifact().metadata());
+        return success.context();
+    }
+
+    private void verifyRebuilt(ArtifactMetadata rebuilt) {
         List<io.mindspice.lyra.runtime.ModuleMetadata> originalModules = metadata.modules();
         List<io.mindspice.lyra.runtime.ModuleMetadata> rebuiltModules = rebuilt.modules();
         if (!originalModules.equals(rebuiltModules)) {
@@ -186,20 +221,12 @@ public final class DebugArtifactContext {
             io.mindspice.lyra.runtime.AttachmentContext derived = rebuilt.attachmentContext().orElseThrow(() ->
                     compatibility("rebuilt attachable context is missing", null));
             if (!original.graphRevision().equals(derived.graphRevision())
-                    || !original.sourceInventoryRevision().equals(derived.sourceInventoryRevision())) {
+                    || !original.sourceInventoryRevision().equals(derived.sourceInventoryRevision())
+                    || !original.optionsRevision().equals(derived.optionsRevision())) {
                 throw compatibility(
-                        "embedded sources do not reconstruct the recorded graph/source inventory", null);
-            }
-            // The options revision covers packaging options; the original
-            // classes publication is the one comparable form because the
-            // rebuilt analysis is always the classes assembly.
-            if (metadata.packagingMode() == io.mindspice.lyra.runtime.PackagingMode.CLASSES
-                    && !original.optionsRevision().equals(derived.optionsRevision())) {
-                throw compatibility(
-                        "embedded sources do not reconstruct the recorded options context", null);
+                        "embedded sources do not reconstruct the recorded graph/source/options context", null);
             }
         }
-        return result;
     }
 
     private SourceSnapshot snapshotFor(ModuleId module) {

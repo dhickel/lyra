@@ -61,7 +61,13 @@ public final class ApplicationAttachmentAdapter implements RemoteSessionAdapter 
                     Cancellation.observed(request.evaluationId()));
         }
         try {
-            return attachment.submit(request, cancellation::isRequested);
+            // Transport composition: when this operation is dispatched on the
+            // attachment's own shared controller, the poll's lease is the
+            // admitted evaluation context and must be reused; otherwise the
+            // synchronous submission owns its lease.
+            return attachment.hasAdmittedLease()
+                    ? attachment.submitAdmitted(request, cancellation::isRequested)
+                    : attachment.submit(request, cancellation::isRequested);
         } catch (IllegalArgumentException | IllegalStateException failure) {
             // Stale revision or closed/busy admission inside the attachment
             // must surface as an explicit remote outcome, never a wire hang.
@@ -103,7 +109,9 @@ public final class ApplicationAttachmentAdapter implements RemoteSessionAdapter 
                     Cancellation.observed(evaluation.evaluationId()));
         }
         try {
-            return attachment.submit(evaluation, cancellation::isRequested);
+            return attachment.hasAdmittedLease()
+                    ? attachment.submitAdmitted(evaluation, cancellation::isRequested)
+                    : attachment.submit(evaluation, cancellation::isRequested);
         } catch (IllegalArgumentException | IllegalStateException failure) {
             throw new RemoteSessionUnavailableException(failure.getMessage());
         }
@@ -130,7 +138,11 @@ public final class ApplicationAttachmentAdapter implements RemoteSessionAdapter 
     @Override
     public void reset() {
         try {
-            attachment.reset();
+            if (attachment.hasAdmittedLease()) {
+                attachment.resetAdmitted();
+            } else {
+                attachment.reset();
+            }
         } catch (RuntimeException failure) {
             throw new RemoteSessionUnavailableException(
                     "attachment reset is unavailable: " + failure.getMessage());
