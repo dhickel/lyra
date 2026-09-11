@@ -125,7 +125,7 @@ public final class LanguageService {
             token.leadingTrivia().stream().filter(Trivia::isComment).forEach(trivia ->
                     styles.add(new Style(trivia.span().startOffset(), trivia.span().endOffset(), "syntax-comment")));
             String css = switch (token.kind()) {
-                case LET, IMPORT, AS, MATCH, ITER, WHEN, LAMBDA_ARROW -> "syntax-keyword";
+                case LET, IMPORT, AS, MATCH, ITER, WHILE, WHEN, LAMBDA_ARROW -> "syntax-keyword";
                 case MODIFIER -> "syntax-modifier";
                 case TYPE_NAME -> "syntax-type";
                 case STRING_LITERAL, CHAR_LITERAL -> "syntax-string";

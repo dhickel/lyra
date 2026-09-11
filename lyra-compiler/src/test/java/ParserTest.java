@@ -30,6 +30,33 @@ import java.util.List;
 /** Assertion-grade syntax AST and grammar replay tests. */
 public final class ParserTest {
     @Test
+    public void testGeneratedReservedWhileBoundaries() {
+        var random = new java.util.Random(24301);
+        var separators = List.of(" ", "\n", "\t", "\n// boundary\n");
+        int cases = Integer.getInteger("lyra.fuzz.cases", 180);
+        for (int i = 0; i < cases; i++) {
+            String predicate = random.nextBoolean() ? "|| #F" : "(=> :Bool || #F)";
+            String action = random.nextBoolean() ? "|| ()" : "(=> :Unit || ())";
+            boolean bracket = random.nextBoolean();
+            String call = bracket ? "::while[" + predicate + " " + action + "]"
+                    : "(while " + predicate + " " + action + ")";
+            Parsed parsed = parse("let before = 0" + separators.get(random.nextInt(separators.size())) + call);
+            check(let(parsed.syntax(), "before").initializer() instanceof SyntaxNode.IntegerLiteral,
+                    "while must not attach as a receiver suffix; seed 24301 case " + i);
+            check(parsed.syntax().forms().size() == 2, "declaration and loop remain separate forms");
+            Object loop = parsed.syntax().forms().getLast();
+            if (bracket) {
+                var direct = (SyntaxNode.DirectCall) loop;
+                check(direct.receiver().isEmpty(), "while has no implicit receiver");
+                check(direct.name().name().equals("while"), "reserved call head retained");
+                check(direct.argumentExpressions().size() == 2, "both callbacks retained");
+            } else {
+                check(loop instanceof SyntaxNode.CallableCall, "parenthesized callback call retained");
+            }
+        }
+    }
+
+    @Test
     public void testGeneratedReservedIterBoundaries() {
         var random = new java.util.Random(8675309);
         var separators = List.of(" ", "\n", "\t", "\n// boundary\n");

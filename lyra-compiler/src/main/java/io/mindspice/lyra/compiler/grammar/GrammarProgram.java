@@ -201,12 +201,12 @@ public record GrammarProgram(
         validateSequence(descriptor, source);
         for (GrammarDescriptor child : descriptor.children()) {
             if (child.kind() == ProductionKind.IDENTIFIER
-                    && source.tokens().get(child.startTokenIndex()).kind() == TokenKind.ITER
+                    && source.tokens().get(child.startTokenIndex()).kind().isCallbackLoopKeyword()
                     && !(descriptor.kind() == ProductionKind.CALL_TARGET
                     || descriptor.kind() == ProductionKind.DIRECT_CALL
                     && descriptor.children().size() == 2
                     && descriptor.children().getFirst() == child)) {
-                throw new IllegalArgumentException("reserved iter is only an unqualified call target");
+                throw new IllegalArgumentException("reserved callback loop is only an unqualified call target");
             }
             validateDescriptor(child, source);
         }
@@ -974,7 +974,7 @@ public record GrammarProgram(
         switch (descriptor.kind()) {
             case EOF -> requireToken(token, TokenKind.EOF, descriptor.kind());
             case IDENTIFIER -> {
-                if (token.kind() != TokenKind.ITER) {
+                if (!token.kind().isCallbackLoopKeyword()) {
                     requireToken(token, TokenKind.IDENTIFIER, descriptor.kind());
                 }
             }

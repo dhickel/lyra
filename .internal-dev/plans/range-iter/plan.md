@@ -1,4 +1,4 @@
-# First-class ranges and iter
+# First-class ranges, iter and while
 
 ## Context
 
@@ -6,6 +6,8 @@ The owner authorized first-class `(start..end:step)` / `(start...end:step)`
 ranges and a built-in higher-order function, subsequently named `iter`.
 `iter` accepts a range plus an ordinary one-parameter or zero-parameter lambda.
 Both direct-bracket and parenthesized calls must work.
+The owner also authorized the matching while design: a reserved callback loop
+with a zero-argument Bool predicate and zero-argument Unit action.
 
 ## Goal
 
@@ -46,6 +48,9 @@ Implementation of iter is not complete.
 
 ## Progress
 
+- While keyword/grammar boundaries, parser replay and editor highlighting are
+  implemented. Exact callbacks, predicate effects and execution remain pending;
+  see phase-03-while.md. Both loops need the shared repeated-effect machinery.
 - Reserved iter lexical/grammar boundaries, parser replay and editor keyword
   highlighting are implemented, with generated whitespace/endpoint/callback
   boundary regressions. Semantic callback specialization is still unfinished.

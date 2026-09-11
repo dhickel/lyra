@@ -24,6 +24,24 @@ import java.util.stream.Collectors;
 /** Assertion-grade, dependency-free tests for grammar matching and replay data. */
 public final class GrammarMatcherTest {
     @Test
+    public void testReservedWhileGrammar() {
+        for (String source : List.of("::while[|| #F || ()]",
+                "(while || #T || ())", "::while[test action]",
+                "::while[(=> :Bool || #F) (=> :Unit || ())]",
+                "(#T -> ::while[|| #F || ()] : ())",
+                "::iter[(0..10:1) |x| ::while[|| (< x 0) || ()]]")) {
+            success(source);
+        }
+        for (String source : List.of("let while = 1", "let f = (=> |while :I32| ())",
+                "let f = while", "while", "::while", "(while -> ())",
+                "ns->::while[|| #F || ()]", "::while[|| #F || ()",
+                "(while || #F || ()", "::while[|| #F, || (),]")) {
+            check(GrammarMatcher.match(lex(source)) instanceof PhaseResult.Failure<?>,
+                    "reserved while must reject: " + source);
+        }
+    }
+
+    @Test
     public void testReservedIterCallBoundaries() {
         for (String separator : List.of(" ", "\n", "\n// boundary\n")) {
             success("let r = (0..10:1)" + separator + "::iter[r || ()]");

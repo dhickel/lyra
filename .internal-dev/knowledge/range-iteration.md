@@ -2,6 +2,9 @@
 
 First-class range implementation and pending iter integration.
 
+While now shares the reserved callback-loop syntax infrastructure. Its semantic
+and execution integration is still pending alongside iter.
+
 ## Source References
 
 - Owner conversation accepting enclosed range values and a built-in higher-order
@@ -29,6 +32,12 @@ First-class range implementation and pending iter integration.
   one call is unsound for captured cells, aggregate aliases and callable values.
   The existing callable-summary transfer and canonical flow machinery must retain
   these effects and ownership facts before bytecode emission is claimed complete.
+- While's zero-action path still invokes the predicate. Its effects, including
+  those of the final false test, must reach the continuation. Callback values are
+  constructed once, but their shared captures stay live across tests/actions.
+- The existing backend optimizes direct self-tail calls, but simply adding a
+  recursive source rewrite would require explicit source/provenance certification;
+  it is not a free substitute for the shared callback-loop integration.
 
 ## Project Relevance
 

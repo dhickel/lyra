@@ -16,6 +16,7 @@ public enum TokenKind {
     AS,
     MATCH,
     ITER,
+    WHILE,
     WHEN,
     TYPE_NAME,
     MODIFIER,
@@ -76,6 +77,11 @@ public enum TokenKind {
                     STRING_LITERAL, CHAR_LITERAL -> true;
             default -> false;
         };
+    }
+
+    /** Reserved call heads using ordinary callback argument syntax. */
+    public boolean isCallbackLoopKeyword() {
+        return this == ITER || this == WHILE;
     }
 
     public boolean isOperator() {

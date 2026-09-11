@@ -22,7 +22,7 @@ Outside current scope are user-declared classes/records/variants, destructuring 
 
 - Identifiers are case-sensitive ASCII names matching `[A-Za-z_][A-Za-z0-9_]*`.
 - Punctuation is never part of an identifier.
-- `iter`, `match` and `when` are reserved keywords. `_` remains an ordinary identifier except in the explicit match wildcard positions below; it is not a value or an `Any` type in those positions.
+- `iter`, `while`, `match` and `when` are reserved keywords. `_` remains an ordinary identifier except in the explicit match wildcard positions below; it is not a value or an `Any` type in those positions.
 - Whitespace separates tokens and is otherwise insignificant except for type annotations.
 - Commas are optional separators only inside delimited parameter, argument, type-argument, tuple, and array lists. They are not globally ignored.
 - `//` begins a line comment.
@@ -345,6 +345,46 @@ parameter is an ordinary immutable parameter and each invocation has its own
 binding, including when captured by a returned/stored closure. Nested iteration
 uses existing lexical captures. Runtime failure aborts traversal immediately.
 Generated traversal backedges honor existing application/session safe points.
+
+### Condition-controlled iteration
+
+`while` follows the same reserved, unqualified callback-call model as `iter`:
+
+```lyra
+let @mut count :I32 = 0
+::while[
+  || (< count 10)
+  || { count := (+ count 1) }
+]
+
+(while || (< count 20) || { count := (+ count 1) })
+```
+
+Its exact arguments are a predicate `Fn<;Bool>` and an action `Fn<;Unit>`.
+It returns `Unit`. Compact/full lambdas and stored or computed function values
+are accepted under these contextual contracts. The predicate must return
+non-nilable `Bool`; general truthiness and implicit action-result dropping are
+not part of this contract. Neither callback receives an implicit index or state
+argument. Ordinary captures provide shared mutable state when needed.
+
+The predicate expression and action expression evaluate once, left-to-right,
+before the first predicate invocation. The selected callback values are retained
+for that traversal. The predicate is then invoked before every action invocation,
+including the first: false completes the loop; true invokes the action and then
+repeats the test. Even a zero-action traversal invokes the predicate once, and
+its side effects remain observable. Reassigning a binding that originally held
+a selected callback does not replace that selected callback; shared captured
+bindings remain live as usual. Failure in either callback aborts the loop.
+
+Loop backedges honor existing application/session safe points and execution must
+use constant JVM stack for repetition. An enclosing block still returns its final
+expression. Callback completion does not mean break or return from an enclosing
+function. No `return`, `break`, `continue`, or separate `do while` form is added.
+`::while[...]` has the same fresh-expression boundary as `::iter[...]`; `while`
+cannot be shadowed, referenced as a bare value or used as a qualified member.
+
+Implementation status: reserved call syntax is implemented; callback-loop
+semantic certification and execution for both `iter` and `while` remain in progress.
 
 ### Tuples
 

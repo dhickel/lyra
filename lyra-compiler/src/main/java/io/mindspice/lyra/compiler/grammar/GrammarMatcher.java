@@ -459,7 +459,7 @@ public final class GrammarMatcher {
             }
 
             // The reserved built-in is a call target, never an ordinary value name.
-            boolean iteration = at(TokenKind.ITER);
+            boolean iteration = token(current).kind().isCallbackLoopKeyword();
             GrammarDescriptor predicate = iteration
                     ? leaf(ProductionKind.IDENTIFIER, advance()) : parseExpression();
             if (predicate == null) {
@@ -1503,7 +1503,7 @@ public final class GrammarMatcher {
                 int opening = advance();
                 return parseMatch(start, opening, keyword, TokenKind.RIGHT_BRACKET);
             }
-            if (!at(TokenKind.IDENTIFIER) && !at(TokenKind.ITER)) {
+            if (!at(TokenKind.IDENTIFIER) && !token(current).kind().isCallbackLoopKeyword()) {
                 fail(
                         CompilerDiagnosticCodes.PARSE_INVALID_ACCESSOR,
                         current,
@@ -1576,7 +1576,7 @@ public final class GrammarMatcher {
                 }
                 if (at(TokenKind.DOUBLE_COLON)) {
                     // Reserved built-ins begin the next expression, never a receiver method call.
-                    if (peekKind(1) == TokenKind.MATCH || peekKind(1) == TokenKind.ITER) {
+                    if (peekKind(1) == TokenKind.MATCH || peekKind(1).isCallbackLoopKeyword()) {
                         return base;
                     }
                     int accessor = advance();
@@ -1629,7 +1629,7 @@ public final class GrammarMatcher {
             }
             // In (predicate -> ::match[...]), the arrow starts a branch, not a namespace suffix.
             if (peekKind(1) == TokenKind.DOUBLE_COLON
-                    && (peekKind(2) == TokenKind.MATCH || peekKind(2) == TokenKind.ITER)) {
+                    && (peekKind(2) == TokenKind.MATCH || peekKind(2).isCallbackLoopKeyword())) {
                 return false;
             }
             index++;

@@ -11,8 +11,8 @@ These capabilities are accepted as future work but are not valid current languag
 ## Advanced patterns and iteration
 
 - Basic value and conditional `match` expressions are defined in `language-core.md`.
-- Destructuring patterns, type patterns, match-arm bindings, automatic match narrowing, and dedicated iteration forms remain deferred.
-- First-class signed-integer ranges and callback-based `iter` are specified in
+- Destructuring patterns, type patterns, match-arm bindings and automatic match narrowing remain deferred.
+- First-class signed-integer ranges and callback-based `iter` and `while` are specified in
   `language-core.md`. General iterator protocols, dedicated loop statements,
   unsigned/floating ranges, exhaustiveness analysis and binding patterns remain deferred.
 

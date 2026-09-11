@@ -1,5 +1,24 @@
 # Durable Decisions
 
+## 2026-09-11 — While as a reserved callback loop (implementation in progress)
+
+- **Source:** owner requested the design most consistent with iter after discussing
+  predicates, Unit actions, mutable captures and final-expression returns.
+- **Decision:** `while` is reserved like iter, with both unqualified call spellings.
+  Arguments have exact contracts `Fn<;Bool>` and `Fn<;Unit>`; result is Unit.
+  Evaluate both callback values once in source order, then invoke the predicate
+  before each action, stopping at false. Preserve the final false predicate's
+  effects, shared captures, failure propagation and cooperative safe points.
+- **Rationale:** no hidden state source, implicit argument, result dropping or
+  new return syntax is required. Existing callback signatures provide context
+  for compact lambdas and ordinary function values.
+- **Tradeoffs:** strict Bool rather than general truthiness keeps this predicate
+  contract exact. A flag can govern while termination, but this does not provide
+  early exit from iter or nonlocal callback returns.
+- **Affected specifications:** language-core.md, deferred-features.md and readable
+  grammar; shared callback-effect implementation is tracked in range-iter.
+- **Review timing:** before claiming executable loop integration complete.
+
 ## 2026-09-10 — First-class range values and callback iteration (implementation in progress)
 
 - **Source:** owner accepted enclosed range syntax and ordinary compact/full
@@ -15,10 +34,8 @@
 - **Initial scope assumption:** signed integer widths I8–I64, as announced while
   asking the owner about unsigned support. Unsigned descending ranges need a
   separate signed-step contract.
-- **Pending decision:** whether iter is a reserved built-in name or an ordinary
-  shadowable name. Ordinary postfix grammar consumes `::iter` following another
-  expression as a receiver call, including across a newline. The owner was asked
-  to settle that public grammar/namespace choice; no silent reservation is made.
+- **Name decision resolved:** the owner subsequently confirmed iter is reserved;
+  see the 2026-09-10 reserved-iter decision below.
 - **Affected specifications:** language-core.md, backend-runtime.md,
   deferred-features.md and the human-readable grammar resource.
 - **Validation status:** range construction has Java execution tests. Full iter

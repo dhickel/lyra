@@ -95,6 +95,7 @@ atom              ::= literal
                      | '::' identifier argument-list
                      | match-bracket
                      | iter-bracket
+                     | while-bracket
                      | operator-bracket
                      | typed-expression ;
 
@@ -103,6 +104,7 @@ parenthesized-expression
                      ( ')'
                      | 'match' match-content ')'
                      | 'iter' expression-list ')'
+                     | 'while' expression-list ')'
                      | '=>' return-modifier* [return-annotation]
                        parameter-list expression ')'
                      | ':=' expression expression ')'
@@ -143,6 +145,7 @@ have exactly one.  Their operand types and all member legality are semantic.
 ```ebnf
 match-bracket      ::= '::' 'match' '[' match-content ']' ;
 iter-bracket       ::= '::' 'iter' '[' expression-list ']' ;
+while-bracket      ::= '::' 'while' '[' expression-list ']' ;
 match-content      ::= value-match | conditional-match ;
 value-match        ::= expression value-arm* fallback-arm ;
 conditional-match  ::= '_' condition-arm* fallback-arm ;
@@ -152,10 +155,12 @@ condition-arm      ::= '??' expression '->' expression ;
 fallback-arm       ::= '??' '_' '->' expression ;
 ```
 
-`iter`, `match` and `when` are reserved words, not user identifiers. `iter` is
-accepted only as an unqualified call target, with exactly a range and a callback
-(arity and types are checked semantically). `::iter` begins a fresh expression,
-never a receiver suffix. Iter execution remains under implementation.
+`iter`, `while`, `match` and `when` are reserved words, not user identifiers.
+`iter` and `while` are accepted only as unqualified call targets. Iter requires
+a range and a callback; while requires a `Fn<;Bool>` predicate and a `Fn<;Unit>`
+action. Arity and types belong to semantic checking. `::iter` and `::while` begin
+fresh expressions, never receiver suffixes. Callback-loop execution remains
+under implementation.
 The exact `_` in the
 subject position selects conditional mode; the exact `_` in a pattern/condition
 position selects the wildcard alternative rather than an identifier expression.

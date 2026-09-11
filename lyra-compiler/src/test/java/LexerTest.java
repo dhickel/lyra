@@ -76,14 +76,14 @@ public final class LexerTest {
     }
 
     private static void currentVocabularyAndDeferredWords() {
-        String source = "let import as match iter when ?? I32 Array Tuple Fn Bool Char String Unit "
+        String source = "let import as match iter while when ?? I32 Array Tuple Fn Bool Char String Unit "
                 + "@pub @mut @nil #T #F #NIL + - * / ^ % < <= > >= == != eq? !eq? "
                 + "and or xor not ++ -- := -> :. :: => = ( ) { } [ ] : ; | , .";
         LexedSource lexed = success(source);
         List<TokenKind> actual = lexed.tokens().stream().map(Token::kind).toList();
         List<TokenKind> expected = List.of(
                 TokenKind.LET, TokenKind.IMPORT, TokenKind.AS,
-                TokenKind.MATCH, TokenKind.ITER, TokenKind.WHEN, TokenKind.DOUBLE_QUESTION,
+                TokenKind.MATCH, TokenKind.ITER, TokenKind.WHILE, TokenKind.WHEN, TokenKind.DOUBLE_QUESTION,
                 TokenKind.TYPE_NAME, TokenKind.TYPE_NAME, TokenKind.TYPE_NAME, TokenKind.TYPE_NAME,
                 TokenKind.TYPE_NAME, TokenKind.TYPE_NAME, TokenKind.TYPE_NAME,
                 TokenKind.TYPE_NAME,
@@ -103,16 +103,18 @@ public final class LexerTest {
                 TokenKind.EOF);
         check(actual.equals(expected), "every current token spelling is classified exactly");
 
-        check(lexed.tokens().get(15).modifier().orElseThrow() == ModifierKind.PUBLIC,
+        List<ModifierKind> modifiers = lexed.tokens().stream()
+                .flatMap(token -> token.modifier().stream()).toList();
+        check(modifiers.get(0) == ModifierKind.PUBLIC,
                 "@pub carries decoded modifier metadata");
-        check(lexed.tokens().get(16).modifier().orElseThrow() == ModifierKind.MUTABLE,
+        check(modifiers.get(1) == ModifierKind.MUTABLE,
                 "@mut carries decoded modifier metadata");
-        check(lexed.tokens().get(17).modifier().orElseThrow() == ModifierKind.NILABLE,
+        check(modifiers.get(2) == ModifierKind.NILABLE,
                 "@nil carries decoded modifier metadata");
         check(lexed.tokens().stream().noneMatch(token -> token.kind().name().contains("UNIT")),
                 "Unit is not invented as an empty-collection token");
 
-        LexedSource deferredWords = success("class struct func nor nand xnor Match Iter");
+        LexedSource deferredWords = success("class struct func nor nand xnor Match Iter While meanwhile whileLoop");
         check(deferredWords.tokens().stream()
                         .filter(token -> token.kind() != TokenKind.EOF)
                         .allMatch(token -> token.kind() == TokenKind.IDENTIFIER),
