@@ -30,10 +30,27 @@ import java.util.List;
 /** Assertion-grade syntax AST and grammar replay tests. */
 public final class ParserTest {
     @Test
+    public void testGeneratedReservedIterBoundaries() {
+        var random = new java.util.Random(8675309);
+        var separators = List.of(" ", "\n", "\t", "\n// boundary\n");
+        int cases = Integer.getInteger("lyra.fuzz.cases", 180);
+        for (int i = 0; i < cases; i++) {
+            String separator = separators.get(random.nextInt(separators.size()));
+            String callback = random.nextBoolean() ? "|| ()" : "|x| ()";
+            String range = "(0" + (random.nextBoolean() ? ".." : "...")
+                    + random.nextInt(100) + ":1)";
+            Parsed parsed = parse("let r = " + range + separator
+                    + "::iter[r " + callback + "]");
+            check(let(parsed.syntax(), "r").initializer() instanceof SyntaxNode.Range,
+                    "reserved built-in must never become a receiver suffix; seed 8675309 case " + i);
+        }
+    }
+
+    @Test
     public void testFirstClassRangeSyntaxRetainsBoundsStepAndEndpointKind() {
         Parsed parsed = parse("let values :Range<I32> = (0..100:1) "
                 + "let reverse = (100...0:(- 1)) "
-                + "let result = ::iter[values |x| ::iter[reverse || ()]]");
+                + "\n::iter[values |x| ::iter[reverse || ()]]");
         SyntaxNode.LetBinding values = let(parsed.syntax(), "values");
         SyntaxNode.RangeType type = (SyntaxNode.RangeType) values.annotation().orElseThrow().type();
         check(((SyntaxNode.PrimitiveType) type.elementType()).name().equals("I32"),

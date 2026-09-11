@@ -18,7 +18,7 @@ First-class range implementation and pending iter integration.
   specialization therefore cannot be implemented only in bytecode emission.
 - Ordinary `::name[...]` after another expression is a receiver method suffix,
   even across whitespace/newlines. `::match[...]` has an explicit reserved-word
-  exception. The owner has been asked to settle the corresponding iter policy.
+  exception. The owner confirmed the same reserved-word policy for iter.
 - Numeric lexing must stop before both `..` and `...`, at both decimal-point
   checks. Range type arguments must also preserve existing close-before-equals
   tokenization and canonical compiler/runtime type parity.
@@ -38,6 +38,6 @@ passing range construction tests for completion of the owner request.
 
 ## Open Questions
 
-Reserved iter versus ordinary shadowable binding syntax is awaiting owner input.
+The iter reserved-name decision is settled; execution integration remains open.
 Initial signed domains are the announced default; unsigned descending ranges
 would require a separate signed-step contract.

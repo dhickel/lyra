@@ -568,6 +568,10 @@ public final class Parser {
 
         private Object replayIdentifier(GrammarDescriptor descriptor) {
             Token token = cursor.currentToken(descriptor);
+            if (token.kind() == TokenKind.ITER) {
+                cursor.consume(TokenKind.ITER, descriptor);
+                return new SyntaxNode.Identifier("iter", token.lexeme(), token.span());
+            }
             cursor.consume(TokenKind.IDENTIFIER, descriptor);
             String name = token.identifier().orElseThrow(() ->
                     invariant("identifier token lacks its decoded name", descriptor));

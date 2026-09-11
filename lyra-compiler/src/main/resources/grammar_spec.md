@@ -94,6 +94,7 @@ atom              ::= literal
                      | compact-lambda
                      | '::' identifier argument-list
                      | match-bracket
+                     | iter-bracket
                      | operator-bracket
                      | typed-expression ;
 
@@ -101,6 +102,7 @@ parenthesized-expression
                    ::= '('
                      ( ')'
                      | 'match' match-content ')'
+                     | 'iter' expression-list ')'
                      | '=>' return-modifier* [return-annotation]
                        parameter-list expression ')'
                      | ':=' expression expression ')'
@@ -140,6 +142,7 @@ have exactly one.  Their operand types and all member legality are semantic.
 
 ```ebnf
 match-bracket      ::= '::' 'match' '[' match-content ']' ;
+iter-bracket       ::= '::' 'iter' '[' expression-list ']' ;
 match-content      ::= value-match | conditional-match ;
 value-match        ::= expression value-arm* fallback-arm ;
 conditional-match  ::= '_' condition-arm* fallback-arm ;
@@ -149,7 +152,11 @@ condition-arm      ::= '??' expression '->' expression ;
 fallback-arm       ::= '??' '_' '->' expression ;
 ```
 
-`match` and `when` are reserved words, not identifiers. The exact `_` in the
+`iter`, `match` and `when` are reserved words, not user identifiers. `iter` is
+accepted only as an unqualified call target, with exactly a range and a callback
+(arity and types are checked semantically). `::iter` begins a fresh expression,
+never a receiver suffix. Iter execution remains under implementation.
+The exact `_` in the
 subject position selects conditional mode; the exact `_` in a pattern/condition
 position selects the wildcard alternative rather than an identifier expression.
 Other occurrences of `_` remain ordinary identifiers. These contextual exclusions

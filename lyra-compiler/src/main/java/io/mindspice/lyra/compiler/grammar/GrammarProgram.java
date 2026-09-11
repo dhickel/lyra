@@ -200,6 +200,14 @@ public record GrammarProgram(
         validateLeaf(descriptor, source);
         validateSequence(descriptor, source);
         for (GrammarDescriptor child : descriptor.children()) {
+            if (child.kind() == ProductionKind.IDENTIFIER
+                    && source.tokens().get(child.startTokenIndex()).kind() == TokenKind.ITER
+                    && !(descriptor.kind() == ProductionKind.CALL_TARGET
+                    || descriptor.kind() == ProductionKind.DIRECT_CALL
+                    && descriptor.children().size() == 2
+                    && descriptor.children().getFirst() == child)) {
+                throw new IllegalArgumentException("reserved iter is only an unqualified call target");
+            }
             validateDescriptor(child, source);
         }
     }
@@ -965,7 +973,11 @@ public record GrammarProgram(
         Token token = source.tokens().get(descriptor.startTokenIndex());
         switch (descriptor.kind()) {
             case EOF -> requireToken(token, TokenKind.EOF, descriptor.kind());
-            case IDENTIFIER -> requireToken(token, TokenKind.IDENTIFIER, descriptor.kind());
+            case IDENTIFIER -> {
+                if (token.kind() != TokenKind.ITER) {
+                    requireToken(token, TokenKind.IDENTIFIER, descriptor.kind());
+                }
+            }
             case LITERAL -> {
                 if (!token.kind().isLiteral()) {
                     throw new IllegalArgumentException("literal descriptor points to a non-literal token");

@@ -22,7 +22,7 @@ Outside current scope are user-declared classes/records/variants, destructuring 
 
 - Identifiers are case-sensitive ASCII names matching `[A-Za-z_][A-Za-z0-9_]*`.
 - Punctuation is never part of an identifier.
-- `match` and `when` are reserved keywords. `_` remains an ordinary identifier except in the explicit match wildcard positions below; it is not a value or an `Any` type in those positions.
+- `iter`, `match` and `when` are reserved keywords. `_` remains an ordinary identifier except in the explicit match wildcard positions below; it is not a value or an `Any` type in those positions.
 - Whitespace separates tokens and is otherwise insignificant except for type annotations.
 - Commas are optional separators only inside delimited parameter, argument, type-argument, tuple, and array lists. They are not globally ignored.
 - `//` begins a line comment.
@@ -322,6 +322,10 @@ Exclusive equal-endpoint ranges are empty; inclusive equal-endpoint ranges have
 one element. Completion must not attempt an overflowing terminal increment.
 Negative steps use existing unary expressions, such as `(- 1)` or `-[1]`.
 
+`iter` is a reserved built-in, like `match`, not a shadowable binding or a bare
+first-class function value. Its callback is an ordinary function value.
+`::iter[...]` starts a new expression rather than attaching as a receiver method
+to the preceding expression, regardless of whitespace or newlines.
 `iter` takes a range and a Unit-returning callback, and returns Unit:
 
 ```lyra

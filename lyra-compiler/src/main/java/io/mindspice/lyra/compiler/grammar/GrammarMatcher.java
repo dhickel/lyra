@@ -458,13 +458,16 @@ public final class GrammarMatcher {
                 return parseOperatorSExpression(open);
             }
 
-            GrammarDescriptor predicate = parseExpression();
+            // The reserved built-in is a call target, never an ordinary value name.
+            boolean iteration = at(TokenKind.ITER);
+            GrammarDescriptor predicate = iteration
+                    ? leaf(ProductionKind.IDENTIFIER, advance()) : parseExpression();
             if (predicate == null) {
                 return null;
             }
 
             GrammarDescriptor predicateBinding = null;
-            if (at(TokenKind.RANGE_EXCLUSIVE) || at(TokenKind.RANGE_INCLUSIVE)) {
+            if (!iteration && (at(TokenKind.RANGE_EXCLUSIVE) || at(TokenKind.RANGE_INCLUSIVE))) {
                 int rangeOperator = advance();
                 GrammarDescriptor end = parseExpression();
                 if (end == null) {
@@ -488,7 +491,7 @@ public final class GrammarMatcher {
                         List.of(predicate, end, step),
                         metadata(open, close, rangeOperator, List.of(), List.of(), List.of()));
             }
-            if (at(TokenKind.IDENTIFIER) && peekKind(1) == TokenKind.ARROW) {
+            if (!iteration && at(TokenKind.IDENTIFIER) && peekKind(1) == TokenKind.ARROW) {
                 GrammarDescriptor bindingName = leaf(ProductionKind.IDENTIFIER, advance());
                 predicateBinding = descriptor(
                         ProductionKind.PREDICATE_BINDING,
@@ -497,7 +500,7 @@ public final class GrammarMatcher {
                         List.of(bindingName),
                         DescriptorMetadata.NONE);
             }
-            if (at(TokenKind.ARROW)) {
+            if (!iteration && at(TokenKind.ARROW)) {
                 int arrow = advance();
                 GrammarDescriptor thenBranch = parseExpression();
                 if (thenBranch == null) {
@@ -532,7 +535,7 @@ public final class GrammarMatcher {
                         children,
                         metadata(open, close, arrow, List.of(), List.of(), List.of()));
             }
-            if (at(TokenKind.COLON_EQUAL)) {
+            if (!iteration && at(TokenKind.COLON_EQUAL)) {
                 int assignment = advance();
                 GrammarDescriptor value = parseExpression();
                 if (value == null) {
@@ -550,7 +553,7 @@ public final class GrammarMatcher {
                         List.of(predicate, value),
                         metadata(open, close, assignment, List.of(), List.of(), List.of()));
             }
-            if (at(TokenKind.COLON)) {
+            if (!iteration && at(TokenKind.COLON)) {
                 int colon = advance();
                 GrammarDescriptor fallback = parseExpression();
                 if (fallback == null) {
@@ -1500,7 +1503,7 @@ public final class GrammarMatcher {
                 int opening = advance();
                 return parseMatch(start, opening, keyword, TokenKind.RIGHT_BRACKET);
             }
-            if (!at(TokenKind.IDENTIFIER)) {
+            if (!at(TokenKind.IDENTIFIER) && !at(TokenKind.ITER)) {
                 fail(
                         CompilerDiagnosticCodes.PARSE_INVALID_ACCESSOR,
                         current,
@@ -1572,8 +1575,8 @@ public final class GrammarMatcher {
                     continue;
                 }
                 if (at(TokenKind.DOUBLE_COLON)) {
-                    // Reserved ::match begins the next expression, never a receiver method call.
-                    if (peekKind(1) == TokenKind.MATCH) {
+                    // Reserved built-ins begin the next expression, never a receiver method call.
+                    if (peekKind(1) == TokenKind.MATCH || peekKind(1) == TokenKind.ITER) {
                         return base;
                     }
                     int accessor = advance();
@@ -1625,7 +1628,8 @@ public final class GrammarMatcher {
                 return false;
             }
             // In (predicate -> ::match[...]), the arrow starts a branch, not a namespace suffix.
-            if (peekKind(1) == TokenKind.DOUBLE_COLON && peekKind(2) == TokenKind.MATCH) {
+            if (peekKind(1) == TokenKind.DOUBLE_COLON
+                    && (peekKind(2) == TokenKind.MATCH || peekKind(2) == TokenKind.ITER)) {
                 return false;
             }
             index++;

@@ -39,15 +39,16 @@ Initial signed-only versus signed-and-unsigned range domains was asked
 asynchronously. Unsigned descent needs a separate signed-step contract.
 The current implementation uses signed domains as the announced default.
 
-An additional grammar decision is pending: ordinary postfix parsing consumes
-`let r = (0..10:1) ::iter[r || ()]` as a method call on the range initializer,
-including across a newline. The owner was asked whether `iter` should be reserved
-(like `match`, permitting a direct-call boundary exception) or remain shadowable
-with explicit form boundaries. Do not decide this public spelling/namespace rule
-silently. Implementation of iter is not complete.
+The owner confirmed that `iter` is reserved like `match` on 2026-09-10.
+`::iter[...]` begins a new expression, including after a range initializer and
+across a newline. It cannot be a user binding, bare value or namespace member.
+Implementation of iter is not complete.
 
 ## Progress
 
+- Reserved iter lexical/grammar boundaries, parser replay and editor keyword
+  highlighting are implemented, with generated whitespace/endpoint/callback
+  boundary regressions. Semantic callback specialization is still unfinished.
 - Range tokens, grammar/AST, signed type contracts, typed IR and concrete runtime
   representation are implemented in the worktree.
 - Focused grammar/parser tests and RangeIntegrationTest pass, including Java
@@ -60,7 +61,7 @@ silently. Implementation of iter is not complete.
 - Extended LanguageFuzzTest passed four seeds at 1,800 cases each. The corrected
   range property campaign also passed at 1,800 samples per signed width (7,200
   range cases), including the latest nested-bound test.
-- Remaining: iter name policy, complete callback specialization and repeated
+- Remaining: complete callback specialization and repeated
   effect/capture analysis, bytecode loop and safe points, persistence/snapshots,
   broader range nesting/provenance and source failure checks, source fuzz
   integration, extended campaign, documentation review and final completion.

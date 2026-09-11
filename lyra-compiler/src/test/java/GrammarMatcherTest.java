@@ -24,6 +24,21 @@ import java.util.stream.Collectors;
 /** Assertion-grade, dependency-free tests for grammar matching and replay data. */
 public final class GrammarMatcherTest {
     @Test
+    public void testReservedIterCallBoundaries() {
+        for (String separator : List.of(" ", "\n", "\n// boundary\n")) {
+            success("let r = (0..10:1)" + separator + "::iter[r || ()]");
+            success("(#T -> ::iter[(0..10:1) || ()] : ())");
+        }
+        for (String source : List.of("let iter = 1", "let f = (=> |iter :I32| ())",
+                "let f = iter", "iter", "::iter", "(iter -> ())",
+                "ns->::iter[(0..10:1) || ()]")) {
+            check(GrammarMatcher.match(lex(source)) instanceof PhaseResult.Failure<?>,
+                    "reserved iter must reject: " + source);
+        }
+        success("let iterator = 1 let iterate = iterator");
+    }
+
+    @Test
     public void testRangeExpressionGrammarAndMalformedBounds() {
         for (String source : List.of("(0..100:1)", "(100...0:(- 1))",
                 "(::start[]..::end[]:stride)", "(0.0..1.0:0.1)",

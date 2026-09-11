@@ -2,7 +2,7 @@
 
 Range values now have a source-to-JVM foundation. Iteration must preserve the
 existing complete lambda-contract, callback identity and ownership semantics.
-The owner has not yet answered the iter name/grammar question in plan.md.
+The owner confirmed that iter is a reserved built-in like match.
 
 ## Goal
 
@@ -23,8 +23,8 @@ callback return-value dropping.
 
 ## Implementation Steps
 
-1. Resolve the iter name policy with the owner before changing keyword or postfix
-   boundaries. Preserve the decision in language-core.md and decisions.md.
+1. Implement the confirmed reserved iter keyword and postfix boundary exception.
+   Preserve the decision in language-core.md and decisions.md.
 2. Give resolution and typing an exact selected callback contract. Compact
    lambdas cannot be typed only after resolution: SemanticResolver currently
    publishes complete signatures for every lambda. Range inference must also

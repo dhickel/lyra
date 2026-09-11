@@ -385,3 +385,17 @@
 - **Justification:** these boundaries keep the JavaFX event thread responsive, preserve initialized session state and existing compiler contracts, make blocked programs stoppable, and allow the original compiler/runtime/CLI artifacts to remain free of desktop dependencies.
 - **Alternatives/tradeoffs:** in-process execution complicates UI responsiveness and owner lifecycle; source replay changes observable initialization; debugger simulation would not prove emitted bytecode behavior. Separate workers add startup cost, while JDI uses real line metadata and retains the compiler's optimization behavior.
 - **Caveats:** arbitrary body-local inspection awaits compiler local-variable tables. Linux validation does not qualify macOS/Windows installers or signing. Loopback development transport retains the project's existing trusted-local, unauthenticated boundary.
+
+## 2026-09-10 — Reserved iter built-in
+
+- **Source:** owner confirmation: "yes it is a reserved built in like match".
+- **Decision:** reserve `iter` and accept it only as an unqualified call head in
+  `(iter range callback)` or `::iter[range callback]`. The bracket form begins
+  a fresh expression, never a receiver suffix on a preceding value.
+- **Justification:** preserves the requested whitespace-insensitive range/loop
+  examples without changing ordinary method-call parsing.
+- **Tradeoff:** user declarations, bare function-value references and qualified
+  member names cannot use `iter`. Callback values remain ordinary functions.
+- **Affected specifications:** language-core.md and the readable grammar.
+- **Caveat:** keyword/grammar support is a checkpoint, not executable iteration.
+- **Review timing:** before closing the active range-iter implementation plan.
