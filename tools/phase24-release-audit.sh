@@ -70,6 +70,7 @@ TARGET_DIRS=(
     "$ROOT/lyra-compiler/target"
     "$ROOT/lyra-repl/target"
     "$ROOT/lyra-cli/target"
+    "$ROOT/lyra-editor/target"
 )
 declare -A TARGET_PRESENT=()
 for target_dir in "${TARGET_DIRS[@]}"; do
@@ -148,7 +149,7 @@ def compare(name, excluded=None):
     if snapshot(expected, excluded) != snapshot(actual, excluded):
         raise SystemExit(f"pre-existing ignored output changed: {name}")
 
-for name in ("lyra-runtime/target", "lyra-compiler/target", "lyra-repl/target", "lyra-cli/target"):
+for name in ("lyra-runtime/target", "lyra-compiler/target", "lyra-repl/target", "lyra-cli/target", "lyra-editor/target"):
     compare(name)
 if (preserved / "target").exists():
     compare("target", output_relative)
@@ -539,7 +540,7 @@ def fail(message):
 
 pom = ET.parse(root / "pom.xml").getroot()
 modules = [child.text.strip() for child in pom.find(ns + "modules")]
-if modules != ["lyra-runtime", "lyra-compiler", "lyra-repl", "lyra-cli"]:
+if modules != ["lyra-runtime", "lyra-compiler", "lyra-repl", "lyra-cli", "lyra-editor"]:
     fail(f"unexpected reactor modules: {modules!r}")
 properties = pom.find(ns + "properties")
 if properties is None or text(properties, "java.version") != "25":
@@ -547,7 +548,8 @@ if properties is None or text(properties, "java.version") != "25":
 for name, artifact in (("lyra-runtime", "lyra-runtime"),
                       ("lyra-compiler", "lyra-compiler"),
                       ("lyra-repl", "lyra-repl"),
-                      ("lyra-cli", "lyra-cli")):
+                      ("lyra-cli", "lyra-cli"),
+                      ("lyra-editor", "lyra-editor")):
     path = root / name / "pom.xml"
     if not path.is_file():
         fail(f"missing module POM: {path}")
@@ -575,10 +577,16 @@ if "<artifactId>lyra-compiler</artifactId>" not in repl_pom or "<artifactId>lyra
     fail("REPL does not declare compiler and runtime")
 if "<artifactId>lyra-repl</artifactId>" not in cli_pom:
     fail("CLI does not declare REPL")
+editor_pom = (root / "lyra-editor" / "pom.xml").read_text(encoding="utf-8")
+if "<artifactId>lyra-repl</artifactId>" not in editor_pom or "<artifactId>javafx-controls</artifactId>" not in editor_pom:
+    fail("editor does not declare REPL and JavaFX")
+for name in ("lyra-runtime", "lyra-compiler", "lyra-repl", "lyra-cli"):
+    if "org.openjfx" in (root / name / "pom.xml").read_text(encoding="utf-8"):
+        fail(f"JavaFX dependency leaked into {name}")
 print("layout: PASS")
 PY
     then
-        set_check layout PASS layout.log "four-module Java 25 classpath layout is valid"
+        set_check layout PASS layout.log "five-module Java 25 classpath layout is valid; JavaFX remains editor-only"
     else
         set_check layout BLOCKED layout.log "reactor/layout contract failed"
     fi
@@ -632,7 +640,7 @@ import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
-main_roots = [root / "lyra-runtime/src/main", root / "lyra-compiler/src/main", root / "lyra-repl/src/main", root / "lyra-cli/src/main"]
+main_roots = [root / "lyra-runtime/src/main", root / "lyra-compiler/src/main", root / "lyra-repl/src/main", root / "lyra-cli/src/main", root / "lyra-editor/src/main"]
 java_files = sorted(path for base in main_roots for path in base.rglob("*.java"))
 
 def strip_java_comments(text):

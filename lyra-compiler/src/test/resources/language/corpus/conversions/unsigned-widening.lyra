@@ -1,0 +1,2 @@
+// conversions	value	I32	65536	unsigned widening
+let @pub run :Fn<;I32> = (=> | | (+ 65535U16 1I16))

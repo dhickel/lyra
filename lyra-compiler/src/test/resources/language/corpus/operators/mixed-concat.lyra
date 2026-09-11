@@ -1,0 +1,2 @@
+// operators	reject	-	LYC-TYPE-008	mixed concat
+let x = (+ "x" 1)

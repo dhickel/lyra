@@ -1,0 +1,3 @@
+// functions	value	I32	5	inline contract
+let f = (=> :I32 |x :I32| (+ x 1))
+let @pub run :Fn<;I32> = (=> | | (f 4))

@@ -1,0 +1,2 @@
+// nilability	reject	-	LYC-TYPE-005	non nil coalesce
+let x = (1 : 2)

@@ -1,0 +1,2 @@
+// bindings	reject	-	LYC-RESOLVE-009	public replacement
+let @pub x :I32 = 1 let x = 2

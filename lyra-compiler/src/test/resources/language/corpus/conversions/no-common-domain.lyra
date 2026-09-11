@@ -1,0 +1,2 @@
+// conversions	reject	-	LYC-TYPE-018	no common domain
+let a :I64 = 1 let b :U64 = 1 let x = (+ a b)

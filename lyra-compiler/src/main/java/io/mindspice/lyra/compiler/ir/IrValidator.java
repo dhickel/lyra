@@ -13,6 +13,7 @@ import io.mindspice.lyra.compiler.semantic.ResolvedModule;
 import io.mindspice.lyra.compiler.semantic.ScopeKind;
 import io.mindspice.lyra.compiler.semantic.TypedExpression;
 import io.mindspice.lyra.compiler.semantic.TypedExpressionKind;
+import io.mindspice.lyra.compiler.semantic.TypedMatch;
 import io.mindspice.lyra.compiler.semantic.TypedReference;
 import io.mindspice.lyra.compiler.semantic.TypedModule;
 import io.mindspice.lyra.compiler.semantic.TypedSemanticGraph;
@@ -598,6 +599,7 @@ public final class IrValidator {
                     case SHORT_CIRCUIT -> IrEvaluationOrder.Kind.SHORT_CIRCUIT;
                     case CONDITIONAL -> IrEvaluationOrder.Kind.BRANCH;
                     case COALESCE -> IrEvaluationOrder.Kind.COALESCE;
+                    case MATCH -> IrEvaluationOrder.Kind.MATCH;
                     default -> IrEvaluationOrder.Kind.STRICT;
                 };
                 List<IrEvaluationOrder.Edge> edges = new ArrayList<>();
@@ -611,6 +613,7 @@ public final class IrValidator {
                                 : IrEvaluationOrder.EdgeKind.ELSE_BRANCH;
                         case COALESCE -> index == 0 ? IrEvaluationOrder.EdgeKind.NON_NIL_VALUE
                                 : IrEvaluationOrder.EdgeKind.FALLBACK;
+                        case MATCH -> matchEdgeKind(expression.match().orElseThrow(), index);
                         default -> IrEvaluationOrder.EdgeKind.STRICT;
                     };
                     edges.add(new IrEvaluationOrder.Edge(index,
@@ -675,6 +678,7 @@ public final class IrValidator {
                 case IrNode.Narrowing narrowing -> validateNarrowing(narrowing);
                 case IrNode.Branch branch -> validateBranch(branch);
                 case IrNode.Coalesce coalesce -> validateCoalesce(coalesce);
+                case IrNode.Match match -> validateMatch(match);
                 case IrNode.DirectCall call -> validateDirectCall(call);
                 case IrNode.CallableCall call -> validateCallableCall(call);
                 case IrNode.Lambda lambda -> validateLambda(lambda);
@@ -1669,6 +1673,89 @@ public final class IrValidator {
             return outer.sourceId().equals(inner.sourceId())
                     && inner.startOffset() >= outer.startOffset()
                     && inner.endOffset() <= outer.endOffset();
+        }
+
+        private void validateMatch(IrNode.Match node) {
+            node.subject().ifPresent(value -> validateNode(value, node.span(), false));
+            List<IrNode> ordered = new ArrayList<>();
+            node.subject().ifPresent(ordered::add);
+            for (IrNode.MatchArm arm : node.arms()) {
+                if (!spanContains(node.span(), arm.span())) {
+                    add(CompilerDiagnosticCodes.IR_EVALUATION_ORDER, arm.span(),
+                            "match arm span escapes its match expression");
+                }
+                ArrayList<IrNode> tests = new ArrayList<>();
+                arm.pattern().ifPresent(tests::add);
+                arm.guard().ifPresent(tests::add);
+                for (IrNode child : tests) {
+                    if (!spanContains(arm.span(), child.span())) {
+                        add(CompilerDiagnosticCodes.IR_EVALUATION_ORDER, child.span(),
+                                "match arm span does not enclose its test child");
+                    }
+                }
+                if (!spanContains(arm.span(), arm.result().span())) {
+                    add(CompilerDiagnosticCodes.IR_EVALUATION_ORDER, arm.result().span(),
+                            "match arm span does not enclose its result");
+                }
+                arm.pattern().ifPresent(value -> {
+                    validateNode(value, node.span(), false);
+                    ordered.add(value);
+                });
+                arm.guard().ifPresent(value -> {
+                    validateNode(value, node.span(), false);
+                    ordered.add(value);
+                    if (!truthTestable(value.type())) {
+                        add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, value.span(),
+                                "match guard is not truth-testable");
+                    }
+                });
+                validateNode(arm.result(), node.span(), false);
+                ordered.add(arm.result());
+                if (!assignable(arm.result(), node.type())) {
+                    add(CompilerDiagnosticCodes.IR_UNRECORDED_CONVERSION, arm.result().span(),
+                            "match result conversion is missing");
+                }
+                if (node.mode() == IrNode.MatchMode.CONDITIONAL
+                        && arm.pattern().isPresent()
+                        && !truthTestable(arm.pattern().orElseThrow().type())) {
+                    add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, arm.pattern().orElseThrow().span(),
+                            "conditional match condition is not truth-testable");
+                }
+                if (node.mode() == IrNode.MatchMode.TRADITIONAL
+                        && arm.pattern().isPresent()) {
+                    LyraType comparison = arm.comparisonType().orElse(null);
+                    if (comparison == null
+                            || !arm.pattern().orElseThrow().type().equals(comparison)
+                            || !TypeRules.canImplicitlyConvert(
+                            node.subject().orElseThrow().type(), comparison)) {
+                        add(CompilerDiagnosticCodes.IR_UNRECORDED_CONVERSION, arm.span(),
+                                "match equality conversion is missing or inconsistent");
+                    }
+                }
+            }
+            validateOrdered(ordered, node.span());
+        }
+
+        private static IrEvaluationOrder.EdgeKind matchEdgeKind(
+                TypedMatch match, int childIndex) {
+            if (match.subjectChild().isPresent()
+                    && match.subjectChild().getAsInt() == childIndex) {
+                return IrEvaluationOrder.EdgeKind.MATCH_SUBJECT;
+            }
+            for (TypedMatch.Arm arm : match.arms()) {
+                if (arm.patternChild().isPresent()
+                        && arm.patternChild().getAsInt() == childIndex) {
+                    return IrEvaluationOrder.EdgeKind.MATCH_PATTERN;
+                }
+                if (arm.guardChild().isPresent()
+                        && arm.guardChild().getAsInt() == childIndex) {
+                    return IrEvaluationOrder.EdgeKind.MATCH_GUARD;
+                }
+                if (arm.resultChild() == childIndex) {
+                    return IrEvaluationOrder.EdgeKind.MATCH_RESULT;
+                }
+            }
+            throw new IllegalArgumentException("typed match has an unclassified child");
         }
 
         private void validateCoalesce(IrNode.Coalesce node) {

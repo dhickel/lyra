@@ -113,6 +113,118 @@ public final class ParserTest {
     }
 
     @Test
+    public void testMatchSurfacesRetainModesArmsAndExactSourceRoles() {
+        SyntaxProgram program = parse(
+                "let first = (match value ?? 1 when guard -> one ?? _ -> other) "
+                        + "let second = ::match[_ ?? condition -> yes ?? _ -> no] "
+                        + "let third = (match _ ?? condition -> yes ?? _ -> no) "
+                        + "let fourth = (match value ?? game->:.value when game->::ready[] "
+                        + "-> yes ?? _ -> no)").syntax();
+        SyntaxNode.Match traditional = (SyntaxNode.Match) let(program, "first").initializer();
+        check(traditional.mode() == SyntaxNode.MatchMode.TRADITIONAL
+                        && traditional.subject().isPresent()
+                        && traditional.directAccessorSpan().isEmpty(),
+                "parenthesized match retains its traditional surface and subject");
+        check(traditional.arms().size() == 2
+                        && traditional.arms().getFirst().guard().isPresent()
+                        && traditional.arms().getLast().wildcard(),
+                "traditional match retains guarded and final fallback arm roles");
+        check(traditional.arms().getFirst().arrowSpan().startOffset()
+                        < traditional.arms().getFirst().result().span().startOffset(),
+                "match arm source punctuation and result spans remain exact");
+
+        SyntaxNode.Match conditional = (SyntaxNode.Match) let(program, "second").initializer();
+        check(conditional.mode() == SyntaxNode.MatchMode.CONDITIONAL
+                        && conditional.subject().isEmpty()
+                        && conditional.directAccessorSpan().isPresent(),
+                "bracket match retains conditional mode and direct accessor metadata");
+        check(conditional.arms().getFirst().pattern().isPresent()
+                        && conditional.arms().getLast().wildcard(),
+                "conditional match retains ordered condition and fallback arms");
+        SyntaxNode.Match parenthesizedConditional =
+                (SyntaxNode.Match) let(program, "third").initializer();
+        check(parenthesizedConditional.mode() == SyntaxNode.MatchMode.CONDITIONAL
+                        && parenthesizedConditional.directAccessorSpan().isEmpty(),
+                "parenthesized conditional match retains its distinct surface");
+        SyntaxNode.Match qualified = (SyntaxNode.Match) let(program, "fourth").initializer();
+        check(qualified.arms().getFirst().pattern().orElseThrow()
+                        instanceof SyntaxNode.NamespaceMemberAccess
+                        && qualified.arms().getFirst().guard().orElseThrow()
+                        instanceof SyntaxNode.NamespaceDirectCall,
+                "namespace-qualified pattern and guard expressions remain valid match heads");
+    }
+
+    @Test
+    public void testBracketMatchArgumentsAndFormsPreserveOrdinaryPostfixCalls() {
+        SyntaxProgram program = parse("""
+                let lambda = ((=> :I32 |value :I32| value) ::match[1 ?? _ -> 2])
+                let arguments = (callee 1 ::match[_ ?? #T -> 2 ?? _ -> 0]
+                  ::match[3 ?? _ -> 4])
+                let direct = ::callee[1 ::match[2 ?? _ -> 3]]
+                let method = (receiver ::method[1] ::match[2 ?? _ -> 3])
+                let member = ::match[1 ?? _ -> Tuple[2]]:.0
+                let forms = { 1 ::match[2 ?? _ -> 3] ::match[_ ?? _ -> 4] }
+                let branch = (enabled -> ::match[_ ?? #T -> 42 ?? _ -> 0] : 7)
+                """).syntax();
+        SyntaxNode.CallableCall lambda = (SyntaxNode.CallableCall) let(program, "lambda").initializer();
+        check(lambda.target() instanceof SyntaxNode.Lambda
+                        && lambda.arguments().getFirst() instanceof SyntaxNode.Match,
+                "bracket match is an ordinary expression argument to a lambda");
+        SyntaxNode.CallableCall arguments = (SyntaxNode.CallableCall) let(program, "arguments").initializer();
+        check(arguments.arguments().size() == 3
+                        && arguments.arguments().get(1) instanceof SyntaxNode.Match
+                        && arguments.arguments().get(2) instanceof SyntaxNode.Match,
+                "adjacent bracket matches remain separate ordered arguments");
+        SyntaxNode.DirectCall direct = (SyntaxNode.DirectCall) let(program, "direct").initializer();
+        check(direct.receiver().isEmpty() && direct.argumentExpressions().size() == 2
+                        && direct.argumentExpressions().getLast() instanceof SyntaxNode.Match,
+                "unqualified direct calls retain bracket match arguments after ordinary values");
+        SyntaxNode.CallableCall method = (SyntaxNode.CallableCall) let(program, "method").initializer();
+        check(method.target() instanceof SyntaxNode.DirectCall call && call.isQualifiedByReceiver()
+                        && call.name().name().equals("method")
+                        && method.arguments().getFirst() instanceof SyntaxNode.Match,
+                "ordinary method postfix still binds to the preceding receiver across whitespace");
+        check(let(program, "member").initializer() instanceof SyntaxNode.MemberAccess member
+                        && member.receiver() instanceof SyntaxNode.Match,
+                "a match result may still have ordinary postfix accessors");
+        SyntaxNode.Block forms = (SyntaxNode.Block) let(program, "forms").initializer();
+        check(forms.forms().size() == 3 && forms.forms().get(1) instanceof SyntaxNode.Match
+                        && forms.forms().getLast() instanceof SyntaxNode.Match,
+                "bracket matches also start independent sequential block forms");
+        SyntaxNode.Conditional branch = (SyntaxNode.Conditional) let(program, "branch").initializer();
+        check(branch.predicate() instanceof SyntaxNode.Identifier
+                        && branch.thenBranch() instanceof SyntaxNode.Match,
+                "an identifier conditional predicate must not absorb the reserved bracket match result");
+    }
+
+    @Test
+    public void testFullNamespaceMatchHeadsRetainOnlyRealTerminalArrowSpans() {
+        for (String terminal : List.of("", "->")) {
+            String qualifier = "game->constants" + terminal;
+            Parsed parsed = parse("let result = (match value ?? " + qualifier + ":.value when "
+                    + qualifier + "::ready[] -> 42 ?? _ -> 0)");
+            SyntaxNode.Match match = (SyntaxNode.Match) let(parsed.syntax(), "result").initializer();
+            SyntaxNode.NamespaceMemberAccess member = (SyntaxNode.NamespaceMemberAccess)
+                    match.arms().getFirst().pattern().orElseThrow();
+            SyntaxNode.NamespaceDirectCall guard = (SyntaxNode.NamespaceDirectCall)
+                    match.arms().getFirst().guard().orElseThrow();
+            check(member.path().segments().size() == 2 && guard.path().segments().size() == 2,
+                    "a complete logical module path survives match-head replay");
+            check(member.terminalArrowSpan().isPresent() == !terminal.isEmpty()
+                            && guard.terminalArrowSpan().isPresent() == !terminal.isEmpty(),
+                    "omitted terminal arrows have no invented source span");
+            String source = parsed.lexed().snapshot().text();
+            check(source.substring(member.accessorSpan().startOffset(), member.accessorSpan().endOffset()).equals(":.")
+                            && source.substring(guard.accessorSpan().startOffset(), guard.accessorSpan().endOffset()).equals("::"),
+                    "namespace accessors preserve their exact source punctuation");
+            for (var arrow : List.of(member.terminalArrowSpan(), guard.terminalArrowSpan())) {
+                arrow.ifPresent(span -> check(source.substring(span.startOffset(), span.endOffset()).equals("->"),
+                        "present terminal arrows describe only their own source tokens"));
+            }
+        }
+    }
+
+    @Test
     public void testLiteralsAndTokenDerivedSpansRemainExact() {
         String source = "let truth = #T let nil = #NIL let integer = 42U16 "
                 + "let decimal = 1.250F32 let text = \"a\\n\\u0042\" let character = '\\u0041'";
@@ -185,6 +297,12 @@ public final class ParserTest {
         expectGrammarFailure("let value : I32 = 1",
                 CompilerDiagnosticCodes.PARSE_INVALID_ANNOTATION_SPACING);
         expectGrammarFailure("let value = (not 1 2)", CompilerDiagnosticCodes.PARSE_INVALID_OPERATOR_ARITY);
+        expectGrammarFailure("let bad = (match 1 ?? 1 -> 2)",
+                CompilerDiagnosticCodes.PARSE_INVALID_FORM);
+        expectGrammarFailure("let bad = ::match[_ ?? #T when #T -> 1 ?? _ -> 2]",
+                CompilerDiagnosticCodes.PARSE_INVALID_FORM);
+        expectGrammarFailure("let match :I32 = 1", CompilerDiagnosticCodes.PARSE_UNEXPECTED_TOKEN);
+        expectGrammarFailure("let when :I32 = 1", CompilerDiagnosticCodes.PARSE_UNEXPECTED_TOKEN);
 
         SyntaxProgram program = parse("let value = (consume |x :I32| x)").syntax();
         SyntaxNode.CallableCall call = (SyntaxNode.CallableCall) let(program, "value").initializer();
@@ -403,6 +521,8 @@ public final class ParserTest {
         @Override public Void visitUnitLiteral(SyntaxNode.UnitLiteral node) { return hit(); }
         @Override public Void visitBlock(SyntaxNode.Block node) { return hit(); }
         @Override public Void visitConditional(SyntaxNode.Conditional node) { return hit(); }
+        @Override public Void visitMatchArm(SyntaxNode.MatchArm node) { return hit(); }
+        @Override public Void visitMatch(SyntaxNode.Match node) { return hit(); }
         @Override public Void visitCoalesce(SyntaxNode.Coalesce node) { return hit(); }
         @Override public Void visitPrefixAssignment(SyntaxNode.PrefixAssignment node) { return hit(); }
         @Override public Void visitLambda(SyntaxNode.Lambda node) { return hit(); }

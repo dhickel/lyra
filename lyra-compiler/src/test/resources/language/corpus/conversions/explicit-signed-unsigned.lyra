@@ -1,0 +1,2 @@
+// conversions	value	U8	127	explicit signed unsigned
+let @pub run :Fn<;U8> = (=> | | U8[127I64])

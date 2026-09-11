@@ -1,0 +1,5 @@
+// bindings	value	I32	12	shared cell
+let @mut count :I32 = 1
+let inc :Fn<;Unit> = (=> | | (count := (++ count)))
+let add :Fn<;Unit> = (=> | | (:= count (+ count 10)))
+let @pub run :Fn<;I32> = (=> | | { (inc) (add) count })

@@ -8,10 +8,11 @@ These capabilities are accepted as future work but are not valid current languag
 - Direction already accepted for later refinement: fields use the same `let` declaration model; `@mut` marks mutable fields; types may eventually contain instance methods and shared bindings; `@static` is the preferred future spelling for shared type-level storage and may combine with `@mut`.
 - No current behavior, grammar, inheritance, construction, equality, layout, visibility, or `@static` legality is implied. The later specification must resolve those contracts before implementation.
 
-## Pattern matching and iteration
+## Advanced patterns and iteration
 
-- Dedicated `Match` and `Iter` forms are deferred.
-- Current arrays/tuples do not imply a dedicated loop, range, iterator, exhaustiveness, or binding-pattern protocol.
+- Basic value and conditional `match` expressions are defined in `language-core.md`.
+- Destructuring patterns, type patterns, match-arm bindings, automatic match narrowing, and dedicated iteration forms remain deferred.
+- Current arrays/tuples do not imply a dedicated loop, range, iterator, exhaustiveness-analysis, or binding-pattern protocol.
 
 ## Generics and macros
 

@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 
 /**
@@ -327,6 +328,8 @@ public final class TypeChecker {
                 result = checkConditional(conditional, expected, moduleId);
             } else if (syntax instanceof SyntaxNode.Coalesce coalesce) {
                 result = checkCoalesce(coalesce, expected, moduleId);
+            } else if (syntax instanceof SyntaxNode.Match match) {
+                result = checkMatch(match, expected, moduleId);
             } else if (syntax instanceof SyntaxNode.PrefixAssignment assignment) {
                 result = checkRebinding(assignment.target(), assignment.value(), assignment.span(), moduleId);
             } else if (syntax instanceof SyntaxNode.Reassignment assignment) {
@@ -721,9 +724,7 @@ public final class TypeChecker {
                         elements,
                         element -> synthesizeAtomicTypeWithoutContext(element, moduleId),
                         type -> Optional.ofNullable(typeFromSyntax(type, TypePosition.BINDING)),
-                        expression -> expression instanceof SyntaxNode.Conditional conditional
-                                ? synthesizeStructuralConditional(conditional, moduleId)
-                                : Optional.empty());
+                        expression -> synthesizeControlResult(expression, moduleId));
                 if (folded.isPresent()) {
                     return folded.orElseThrow();
                 }
@@ -857,13 +858,17 @@ public final class TypeChecker {
                     return conditionalShape;
                 }
             }
+            if (syntax instanceof SyntaxNode.Match match) {
+                Optional<LyraType> matchShape = synthesizeStructuralMatch(match, moduleId);
+                if (matchShape.isPresent()) {
+                    return matchShape;
+                }
+            }
             return StructuralContextPlan.synthesize(
                     syntax,
                     atomicType -> synthesizeAtomicTypeWithoutContext(atomicType, moduleId),
                     type -> Optional.ofNullable(typeFromSyntax(type, TypePosition.BINDING)),
-                    expression -> expression instanceof SyntaxNode.Conditional conditional
-                            ? synthesizeStructuralConditional(conditional, moduleId)
-                            : Optional.empty());
+                    expression -> synthesizeControlResult(expression, moduleId));
         }
 
         private Optional<LyraType> synthesizeAtomicTypeWithoutContext(
@@ -995,6 +1000,9 @@ public final class TypeChecker {
                 }
                 return commonSourceShape(thenType.orElseThrow(), elseType.orElseThrow());
             }
+            if (syntax instanceof SyntaxNode.Match match) {
+                return synthesizeStructuralMatch(match, moduleId);
+            }
             if (syntax instanceof SyntaxNode.Coalesce coalesce) {
                 // A value-side #NIL still needs an expected @nil context.  An
                 // inferred coalesce therefore cannot manufacture that context
@@ -1047,6 +1055,48 @@ public final class TypeChecker {
             return StructuralContextPlan.foldHomogeneous(List.of(
                     removeMutableQualifier(thenType.orElseThrow()),
                     removeMutableQualifier(elseType.orElseThrow())));
+        }
+
+        private Optional<LyraType> synthesizeStructuralMatch(
+                SyntaxNode.Match match,
+                ModuleId moduleId) {
+            List<SyntaxNode.Expression> results = match.arms().stream()
+                    .map(SyntaxNode.MatchArm::result).toList();
+            List<Optional<LyraType>> shapes = results.stream()
+                    .map(result -> synthesizeTypeWithoutContext(result, moduleId)).toList();
+            List<LyraType> known = shapes.stream().flatMap(Optional::stream)
+                    .map(State::removeMutableQualifier).toList();
+            if (known.isEmpty()) {
+                return StructuralContextPlan.synthesizePeers(
+                        results,
+                        expression -> synthesizeAtomicTypeWithoutContext(expression, moduleId),
+                        type -> Optional.ofNullable(typeFromSyntax(type, TypePosition.BINDING)),
+                        expression -> synthesizeControlResult(expression, moduleId));
+            }
+            LyraType common;
+            if (known.size() == results.size() && known.stream().allMatch(State::isNumericType)
+                    && known.stream().noneMatch(LyraType::isNilable)) {
+                List<ExprResult> values = known.stream()
+                        .map(type -> new ExprResult(type, null)).toList();
+                common = numericCommon(results, values).orElse(null);
+            } else {
+                common = StructuralContextPlan.foldHomogeneous(known).orElse(null);
+            }
+            if (common == null) {
+                return Optional.empty();
+            }
+            for (int index = 0; index < results.size(); index++) {
+                if (shapes.get(index).isEmpty()
+                        || StructuralContextPlan.containsContextFreeNil(results.get(index))) {
+                    Optional<LyraType> shaped = StructuralContextPlan.expectedFromPeer(
+                            results.get(index), common);
+                    if (shaped.isEmpty()) {
+                        return Optional.empty();
+                    }
+                    common = StructuralContextPlan.mergeNilShape(common, shaped.orElseThrow());
+                }
+            }
+            return Optional.of(common);
         }
 
         private Optional<LyraType> synthesizeNumericConditional(
@@ -1475,6 +1525,310 @@ public final class TypeChecker {
                     }
                 }
             }
+        }
+
+        private ExprResult checkMatch(
+                SyntaxNode.Match match,
+                Optional<LyraType> expected,
+                ModuleId moduleId) {
+            ExprResult subject = null;
+            if (match.mode() == SyntaxNode.MatchMode.TRADITIONAL) {
+                subject = checkExpression(match.subject().orElseThrow(), Optional.empty(), moduleId);
+                if (subject == null) {
+                    return null;
+                }
+            }
+
+            List<ExprResult> patterns = new ArrayList<>();
+            List<ExprResult> guards = new ArrayList<>();
+            List<Optional<LyraType>> comparisonTypes = new ArrayList<>();
+            for (SyntaxNode.MatchArm arm : match.arms()) {
+                ExprResult pattern = null;
+                Optional<LyraType> comparisonType = Optional.empty();
+                if (arm.pattern().isPresent()) {
+                    if (match.mode() == SyntaxNode.MatchMode.CONDITIONAL) {
+                        pattern = checkExpression(arm.pattern().orElseThrow(), Optional.empty(), moduleId);
+                        if (pattern == null) {
+                            return null;
+                        }
+                        if (!truthTestable(pattern.type())) {
+                            fail(CompilerDiagnosticCodes.TYPE_INVALID_TRUTH_TEST,
+                                    arm.pattern().orElseThrow().span(),
+                                    "conditional match condition is not truth-testable");
+                            return null;
+                        }
+                    } else {
+                        PatternTyping typed = checkMatchPattern(
+                                match.subject().orElseThrow(), subject,
+                                arm.pattern().orElseThrow(), moduleId);
+                        if (typed == null) {
+                            return null;
+                        }
+                        pattern = typed.pattern();
+                        comparisonType = Optional.of(typed.comparisonType());
+                    }
+                }
+                ExprResult guard = null;
+                if (arm.guard().isPresent()) {
+                    guard = checkExpression(arm.guard().orElseThrow(), Optional.empty(), moduleId);
+                    if (guard == null) {
+                        return null;
+                    }
+                    if (!truthTestable(guard.type())) {
+                        fail(CompilerDiagnosticCodes.TYPE_INVALID_TRUTH_TEST,
+                                arm.guard().orElseThrow().span(),
+                                "match guard is not truth-testable");
+                        return null;
+                    }
+                }
+                patterns.add(pattern);
+                guards.add(guard);
+                comparisonTypes.add(comparisonType);
+            }
+
+            MatchResults results = checkMatchResults(match, expected, moduleId);
+            if (results == null) {
+                return null;
+            }
+            List<TypedExpression> children = new ArrayList<>();
+            OptionalInt subjectIndex = OptionalInt.empty();
+            if (subject != null) {
+                subjectIndex = OptionalInt.of(children.size());
+                children.add(subject.expression());
+            }
+            List<TypedMatch.Arm> arms = new ArrayList<>();
+            for (int index = 0; index < match.arms().size(); index++) {
+                SyntaxNode.MatchArm arm = match.arms().get(index);
+                OptionalInt patternIndex = OptionalInt.empty();
+                if (patterns.get(index) != null) {
+                    patternIndex = OptionalInt.of(children.size());
+                    children.add(patterns.get(index).expression());
+                }
+                OptionalInt guardIndex = OptionalInt.empty();
+                if (guards.get(index) != null) {
+                    guardIndex = OptionalInt.of(children.size());
+                    children.add(guards.get(index).expression());
+                }
+                int resultIndex = children.size();
+                children.add(results.values().get(index).expression());
+                arms.add(new TypedMatch.Arm(
+                        arm.span(), arm.wildcard(), patternIndex, guardIndex,
+                        resultIndex, comparisonTypes.get(index)));
+            }
+            TypedMatch metadata = new TypedMatch(
+                    match.mode() == SyntaxNode.MatchMode.TRADITIONAL
+                            ? TypedMatch.MatchMode.TRADITIONAL
+                            : TypedMatch.MatchMode.CONDITIONAL,
+                    subjectIndex, arms);
+            return result(matchNode(match.span(), results.type(), children, metadata));
+        }
+
+        private PatternTyping checkMatchPattern(
+                SyntaxNode.Expression subjectSyntax,
+                ExprResult subject,
+                SyntaxNode.Expression patternSyntax,
+                ModuleId moduleId) {
+            Optional<LyraType> shape = synthesizeTypeWithoutContext(patternSyntax, moduleId);
+            if (failed()) {
+                return null;
+            }
+            ExprResult pattern;
+            if (shape.isEmpty()) {
+                if (!subject.type().isNilable()
+                        || !StructuralContextPlan.isContextFreeNil(patternSyntax)) {
+                    fail(CompilerDiagnosticCodes.TYPE_NIL_CONTEXT, patternSyntax.span(),
+                            "match #NIL pattern needs a nilable subject contract");
+                    return null;
+                }
+                pattern = checkExpression(patternSyntax,
+                        Optional.of(removeMutableQualifier(subject.type())), moduleId);
+            } else {
+                pattern = checkExpression(patternSyntax, Optional.empty(), moduleId);
+            }
+            if (pattern == null) {
+                return null;
+            }
+            boolean nilPattern = StructuralContextPlan.isContextFreeNil(patternSyntax);
+            if (subject.type().isNilable() || pattern.type().isNilable()) {
+                if (!subject.type().isNilable() || !nilPattern) {
+                    fail(CompilerDiagnosticCodes.TYPE_NIL_CONTEXT, patternSyntax.span(),
+                            "nilable match subjects may only use #NIL equality before narrowing");
+                    return null;
+                }
+                LyraType comparison = removeMutableQualifier(subject.type());
+                ExprResult converted = contextualBranch(
+                        patternSyntax, pattern, comparison, moduleId);
+                return converted == null ? null : new PatternTyping(converted, comparison);
+            }
+            if (subject.type().withoutQualifiers() instanceof FunctionType
+                    || pattern.type().withoutQualifiers() instanceof FunctionType) {
+                fail(CompilerDiagnosticCodes.TYPE_INVALID_OPERATOR, patternSyntax.span(),
+                        "function values require identity equality rather than match value equality");
+                return null;
+            }
+            LyraType common;
+            if (isNumericType(subject.type()) && isNumericType(pattern.type())) {
+                common = matchNumericCommon(subject, patternSyntax, pattern).orElse(null);
+                if (common == null) {
+                    fail(CompilerDiagnosticCodes.TYPE_NO_COMMON_NUMERIC_TYPE, patternSyntax.span(),
+                            "match subject and pattern have no losslessly common numeric type");
+                    return null;
+                }
+            } else if (isNumericType(subject.type()) || isNumericType(pattern.type())) {
+                fail(CompilerDiagnosticCodes.TYPE_MISMATCH, patternSyntax.span(),
+                        "match subject and pattern do not have compatible equality types");
+                return null;
+            } else {
+                common = StructuralContextPlan.foldHomogeneous(List.of(
+                        removeMutableQualifier(subject.type()),
+                        removeMutableQualifier(pattern.type()))).orElse(null);
+                if (common == null) {
+                    fail(CompilerDiagnosticCodes.TYPE_INVALID_OPERATOR, patternSyntax.span(),
+                            "match subject and pattern do not have compatible equality types");
+                    return null;
+                }
+            }
+            common = removeMutableQualifier(common);
+            if (!TypeRules.canImplicitlyConvert(subject.type(), common)) {
+                fail(CompilerDiagnosticCodes.TYPE_INVALID_OPERATOR, patternSyntax.span(),
+                        "match equality would require converting the subject unsafely");
+                return null;
+            }
+            ExprResult converted = contextualBranch(patternSyntax, pattern, common, moduleId);
+            return converted == null ? null : new PatternTyping(converted, common);
+        }
+
+        private Optional<LyraType> matchNumericCommon(
+                ExprResult subject,
+                SyntaxNode.Expression patternSyntax,
+                ExprResult pattern) {
+            PrimitiveType subjectType = (PrimitiveType) subject.type().withoutQualifiers();
+            ExactNumericLiteral literal = exactNumericLiteral(patternSyntax);
+            if (literal == null) {
+                return TypeRules.commonNumericType(subjectType, pattern.type().withoutQualifiers());
+            }
+            for (PrimitiveType candidate : NUMERIC_CANDIDATES) {
+                boolean subjectFits = TypeRules.canImplicitlyWiden(subjectType, candidate);
+                boolean patternFits = literal.forcedType().isPresent()
+                        ? LiteralTyping.representableAs(literal, literal.forcedType().orElseThrow())
+                        && TypeRules.canImplicitlyWiden(
+                                literal.forcedType().orElseThrow(), candidate)
+                        : LiteralTyping.representableAs(literal, candidate);
+                if (subjectFits && patternFits) {
+                    return Optional.of(candidate);
+                }
+            }
+            return Optional.empty();
+        }
+
+        private MatchResults checkMatchResults(
+                SyntaxNode.Match match,
+                Optional<LyraType> expected,
+                ModuleId moduleId) {
+            List<SyntaxNode.Expression> syntax = match.arms().stream()
+                    .map(SyntaxNode.MatchArm::result).toList();
+            if (expected.isPresent()) {
+                List<ExprResult> values = new ArrayList<>();
+                for (int index = 0; index < syntax.size(); index++) {
+                    Optional<LyraType> resultExpected = StructuralContextPlan.expectedFor(
+                            StructuralContextPlan.ChildPosition.matchResult(index),
+                            syntax.get(index), expected, Optional.empty());
+                    ExprResult value = checkExpression(syntax.get(index),
+                            resultExpected.or(() -> expected), moduleId);
+                    if (value == null) {
+                        return null;
+                    }
+                    values.add(value);
+                }
+                return new MatchResults(expected.orElseThrow(), List.copyOf(values));
+            }
+
+            List<Optional<LyraType>> shapes = new ArrayList<>();
+            List<ExprResult> initial = new ArrayList<>();
+            for (SyntaxNode.Expression result : syntax) {
+                Optional<LyraType> shape = synthesizeTypeWithoutContext(result, moduleId);
+                if (failed()) {
+                    return null;
+                }
+                shapes.add(shape.map(State::removeMutableQualifier));
+                ExprResult value = shape.isPresent()
+                        ? checkExpression(result, Optional.empty(), moduleId) : null;
+                if (failed()) {
+                    return null;
+                }
+                initial.add(value);
+            }
+            List<LyraType> known = shapes.stream().flatMap(Optional::stream).toList();
+            LyraType resultType;
+            if (known.isEmpty()) {
+                resultType = StructuralContextPlan.synthesizePeers(
+                        syntax,
+                        expression -> synthesizeAtomicTypeWithoutContext(expression, moduleId),
+                        type -> Optional.ofNullable(typeFromSyntax(type, TypePosition.BINDING)),
+                        expression -> synthesizeControlResult(expression, moduleId))
+                        .orElse(null);
+            } else if (known.stream().allMatch(State::isNumericType)
+                    && shapes.stream().allMatch(Optional::isPresent)
+                    && syntax.stream().noneMatch(StructuralContextPlan::containsContextFreeNil)) {
+                resultType = numericCommon(syntax, initial).orElse(null);
+            } else {
+                resultType = StructuralContextPlan.foldHomogeneous(known).orElse(null);
+            }
+            if (resultType != null) {
+                for (int index = 0; index < syntax.size(); index++) {
+                    SyntaxNode.Expression result = syntax.get(index);
+                    if (shapes.get(index).isEmpty()
+                            || StructuralContextPlan.containsContextFreeNil(result)) {
+                        Optional<LyraType> shaped = StructuralContextPlan.expectedFromPeer(
+                                result, resultType);
+                        if (shaped.isEmpty()) {
+                            resultType = null;
+                            break;
+                        }
+                        resultType = StructuralContextPlan.mergeNilShape(
+                                resultType, shaped.orElseThrow());
+                    }
+                }
+            }
+            if (resultType == null) {
+                SourceSpan span = syntax.stream()
+                        .map(StructuralContextPlan::firstContextFreeNilSpan)
+                        .flatMap(Optional::stream).findFirst().orElse(syntax.getFirst().span());
+                fail(known.isEmpty() ? CompilerDiagnosticCodes.TYPE_NIL_CONTEXT
+                                : CompilerDiagnosticCodes.TYPE_INVALID_BRANCH,
+                        span, "match results have no exact or losslessly widened common type");
+                return null;
+            }
+            List<ExprResult> values = new ArrayList<>();
+            for (int index = 0; index < syntax.size(); index++) {
+                ExprResult value = initial.get(index);
+                value = value == null
+                        ? checkExpression(syntax.get(index), Optional.of(resultType), moduleId)
+                        : contextualBranch(syntax.get(index), value, resultType, moduleId);
+                if (value == null) {
+                    return null;
+                }
+                values.add(value);
+            }
+            return new MatchResults(resultType, List.copyOf(values));
+        }
+
+        private Optional<LyraType> synthesizeControlResult(
+                SyntaxNode.Expression expression,
+                ModuleId moduleId) {
+            if (expression instanceof SyntaxNode.Conditional conditional) {
+                return synthesizeStructuralConditional(conditional, moduleId);
+            }
+            if (expression instanceof SyntaxNode.Match match) {
+                return synthesizeStructuralMatch(match, moduleId);
+            }
+            return Optional.empty();
+        }
+
+        private record PatternTyping(ExprResult pattern, LyraType comparisonType) {
+        }
+
+        private record MatchResults(LyraType type, List<ExprResult> values) {
         }
 
         private ExprResult contextualBranch(
@@ -2803,9 +3157,7 @@ public final class TypeChecker {
                         operands,
                         expression -> synthesizeAtomicTypeWithoutContext(expression, moduleId),
                         type -> Optional.ofNullable(typeFromSyntax(type, TypePosition.BINDING)),
-                        expression -> expression instanceof SyntaxNode.Conditional conditional
-                                ? synthesizeStructuralConditional(conditional, moduleId)
-                                : Optional.empty());
+                        expression -> synthesizeControlResult(expression, moduleId));
                 if (folded.isPresent()) {
                     List<ExprResult> values = new ArrayList<>();
                     for (int index = 0; index < operands.size(); index++) {
@@ -3227,7 +3579,19 @@ public final class TypeChecker {
             return new TypedExpression(
                     kind, span, type, children, literal, link, conversion, operator,
                     memberName, tupleIndex, declarationId, lambdaId, scopeId, signature,
-                    captureIds, predicateBinding);
+                    captureIds, predicateBinding, Optional.empty());
+        }
+
+        private TypedExpression matchNode(
+                SourceSpan span,
+                LyraType type,
+                List<TypedExpression> children,
+                TypedMatch match) {
+            return new TypedExpression(
+                    TypedExpressionKind.MATCH, span, type, children,
+                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                    Optional.empty(), Optional.empty(), List.of(), Optional.empty(), Optional.of(match));
         }
 
         private ExprResult result(TypedExpression expression) {

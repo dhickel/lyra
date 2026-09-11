@@ -1,0 +1,3 @@
+// functions	value	Bool	true	fresh closure identity
+let maker :Fn<I32;Fn<;I32>> = (=> |n| (=> | | n))
+let @pub run :Fn<;Bool> = (=> | | { let a = ::maker[1] let b = ::maker[1] (and (eq? a a) (!eq? a b) (== (a) (b))) })

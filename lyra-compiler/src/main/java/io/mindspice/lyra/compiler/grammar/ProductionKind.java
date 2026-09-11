@@ -25,6 +25,8 @@ public enum ProductionKind {
     CONDITIONAL,
     PREDICATE_BINDING,
     COALESCE,
+    MATCH,
+    MATCH_ARM,
 
     IDENTIFIER,
     LITERAL,

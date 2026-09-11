@@ -1,0 +1,2 @@
+// operator-arity	reject	-	LYC-PARSE-007	identity prefix
+let bad = (eq? arr)

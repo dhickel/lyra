@@ -1,0 +1,2 @@
+// aggregates	value	I32	9	array alias mutation
+let @pub run :Fn<;I32> = (=> | | { let original :Array<I32> = Array[1 2] let @mut alias = original alias[0] := 9 original[0] })

@@ -1,6 +1,6 @@
 # Lyra
 
-Lyra is an experimental standalone functional JVM scripting language. The current product builds Lyra source into deterministic Java 25 class files, class directories, thin JARs, or bundled runnable JARs. It also provides a dependency-free runtime, typed generated Java facades, exact runtime export handles, a small `run`/`compile` CLI, and an optional REPL foundation.
+Lyra is an experimental standalone functional JVM scripting language. The current product builds Lyra source into deterministic Java 25 class files, class directories, thin JARs, or bundled runnable JARs. It also provides a dependency-free runtime, typed generated Java facades, exact runtime export handles, a `run`/`compile` CLI, a persistent REPL, and a JavaFX development editor.
 
 ## Requirements
 
@@ -13,12 +13,24 @@ Lyra is an experimental standalone functional JVM scripting language. The curren
 mvn clean verify
 ```
 
-The reactor contains four classpath modules:
+The reactor contains five classpath modules:
 
 - `lyra-runtime`: runtime values, metadata, lifecycle, I/O, loading, and launcher support;
 - `lyra-compiler`: source resolution, lexer/parser, semantic analysis, validated typed IR, direct Class-File API emission, and artifact assembly;
 - `lyra-repl`: owner-confined session contracts, bounded credential-free loopback v2 transport, and plain-console session behavior;
-- `lyra-cli`: command parsing, compilation/execution commands, REPL/attachment adapters, and launch scripts.
+- `lyra-cli`: command parsing, compilation/execution commands, REPL/attachment adapters, and launch scripts;
+- `lyra-editor`: JavaFX workspace, compiler-backed editing, function/entry execution, persistent REPL, and JDI debugging. JavaFX is confined to this module.
+
+## Editor
+
+```sh
+mvn -pl lyra-editor -am package
+./tools/lyra-editor.sh examples/editor
+```
+
+Open a directory to browse files on the left, edit tabbed source in the center, browse definitions and live bindings on the right, and evaluate in the bottom REPL. Select a function to run or debug it, or save it as the project's entry point. The editor includes import/type checking against unsaved buffers, syntax highlighting, search/replace, project search, completion, definition navigation, breakpoints, stepping, recovery copies, and external-change protection.
+
+See [docs/editor.md](docs/editor.md) for shortcuts, the live-development workflow, ZIP/native packaging, and validation boundaries. A runnable walkthrough is in [examples/editor](examples/editor).
 
 ## CLI
 
@@ -60,9 +72,13 @@ This is a trusted development interface, not a sandbox: any process able to reac
 
 ## Scope
 
-The implementation preserves strict source order, typed primitive JVM descriptors, deterministic metadata/debug maps, source-mapped failures, owner-thread lifecycle checks, live trusted-Java array escape behavior, and the pinned `std->io` intrinsic. User classes/member types, pattern matching, loops/ranges, generics/macros, dynamic values, bitwise operators, Lyra-to-Java/engine interop, sandboxing, automatic local-root initialization, REPL authentication/hostile-client hardening, serialized IR, additional backends, and optimization levels remain explicitly deferred.
+The implementation preserves strict source order, typed primitive JVM descriptors, deterministic metadata/debug maps, source-mapped failures, owner-thread lifecycle checks, live trusted-Java array escape behavior, and the pinned `std->io` intrinsic. Value matching and conditional chains use `(match subject ?? pattern -> result ... ?? _ -> fallback)` or `::match[subject ...]`; use `_` as the subject for truth-tested condition arms. Traditional arms may include `when` guards. Both modes require a final wildcard, evaluate lazily in source order, and introduce no pattern bindings. `match` and `when` are reserved words.
+
+User classes/member types, destructuring/type patterns, loops/ranges, generics/macros, dynamic values, bitwise operators, Lyra-to-Java/engine interop, sandboxing, automatic local-root initialization, REPL authentication/hostile-client hardening, serialized IR, additional backends, and optimization levels remain explicitly deferred.
 
 ## Validation
+
+`mvn test` includes the readable language conformance corpus, numeric/ABI boundary matrices, reproducible compiler/runtime fuzz campaigns, and persistent-session state model. These are required core tests and must grow with every language feature. See [the testing guide](docs/language-testing.md) for the full coverage matrix, larger campaigns (`./tools/fuzz-language.sh`), saved-case replay, failure reduction and runtime security boundaries.
 
 The normal release check is `mvn clean verify`. The Phase 23 performance/allocation evidence gate is explicit and separate from ordinary tests:
 

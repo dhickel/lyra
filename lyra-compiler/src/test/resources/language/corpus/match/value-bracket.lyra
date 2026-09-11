@@ -1,0 +1,10 @@
+// match	value	I32	138	value match bracket spelling preserves source order and first match
+let @mut probes :I32 = 0
+let subject :Fn<;I32> = (=> | | { probes := (++ probes) 5 })
+let first :Fn<;I32> = (=> | | { probes := (+ probes 10) 4 })
+let second :Fn<;I32> = (=> | | { probes := (+ probes 20) 5 })
+let guard :Fn<;Bool> = (=> | | { probes := (+ probes 100) #T })
+let @pub run :Fn<;I32> = (=> | | {
+    let chosen :I32 = ::match[(subject) ?? (first) -> 1 ?? (second) when (guard) -> 7 ?? _ -> 99]
+    (+ chosen probes)
+})

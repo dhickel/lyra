@@ -10,13 +10,14 @@
     <packaging>pom</packaging>
 
     <name>Lyra</name>
-    <description>Lyra compiler, runtime, and command-line modules</description>
+    <description>Lyra compiler, runtime, REPL, command-line and JavaFX editor modules</description>
 
     <modules>
         <module>lyra-runtime</module>
         <module>lyra-compiler</module>
         <module>lyra-repl</module>
         <module>lyra-cli</module>
+        <module>lyra-editor</module>
     </modules>
 
     <properties>

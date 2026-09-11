@@ -15,6 +15,7 @@ import io.mindspice.lyra.compiler.types.ArrayType;
 import io.mindspice.lyra.compiler.types.BindingContract;
 import io.mindspice.lyra.compiler.types.TupleType;
 import io.mindspice.lyra.compiler.types.TypeQualifier;
+import io.mindspice.lyra.compiler.types.TypeRules;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -460,6 +461,9 @@ public final class TypedSemanticGraph implements ImmutablePhaseArtifact, TypedSe
             }
         });
         expression.predicateBinding().ifPresent(this::requireDeclaration);
+        if ((expression.kind() == TypedExpressionKind.MATCH) != expression.match().isPresent()) {
+            throw new IllegalArgumentException("typed match metadata is missing or foreign");
+        }
         for (CaptureId capture : expression.captureIds()) {
             requireCapture(capture);
         }
@@ -503,6 +507,39 @@ public final class TypedSemanticGraph implements ImmutablePhaseArtifact, TypedSe
             case COALESCE -> {
                 if (expression.children().size() != 2) {
                     throw new IllegalArgumentException("typed coalesce has an invalid child count");
+                }
+            }
+            case MATCH -> {
+                TypedMatch match = expression.match().orElseThrow();
+                if (match.childCount() != expression.children().size()) {
+                    throw new IllegalArgumentException("typed match child roles are incomplete");
+                }
+                if (match.subjectChild().isPresent()) {
+                    TypedExpression subject = expression.children().get(match.subjectChild().getAsInt());
+                    for (TypedMatch.Arm arm : match.arms()) {
+                        if (arm.patternChild().isPresent()) {
+                            TypedExpression pattern = expression.children().get(
+                                    arm.patternChild().getAsInt());
+                            if (!pattern.type().equals(arm.comparisonType().orElseThrow())
+                                    || !TypeRules.canImplicitlyConvert(
+                                    subject.type(), arm.comparisonType().orElseThrow())) {
+                                throw new IllegalArgumentException("typed match equality contract is inconsistent");
+                            }
+                        }
+                    }
+                }
+                for (TypedMatch.Arm arm : match.arms()) {
+                    if (!containsSpan(expression.span(), arm.span())) {
+                        throw new IllegalArgumentException("typed match arm span escapes its match expression");
+                    }
+                    for (Integer childIndex : arm.childIndexes()) {
+                        if (!containsSpan(arm.span(), expression.children().get(childIndex).span())) {
+                            throw new IllegalArgumentException("typed match arm span does not enclose its child");
+                        }
+                    }
+                    if (!expression.children().get(arm.resultChild()).type().equals(expression.type())) {
+                        throw new IllegalArgumentException("typed match result does not end at its result type");
+                    }
                 }
             }
             case LAMBDA -> {
@@ -569,6 +606,12 @@ public final class TypedSemanticGraph implements ImmutablePhaseArtifact, TypedSe
                 }
             }
         }
+    }
+
+    private static boolean containsSpan(SourceSpan outer, SourceSpan inner) {
+        return outer.sourceId().equals(inner.sourceId())
+                && inner.startOffset() >= outer.startOffset()
+                && inner.endOffset() <= outer.endOffset();
     }
 
     private boolean retainedProducerContains(DeclarationId declaration, ModuleId referringModule) {

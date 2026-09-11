@@ -1,0 +1,11 @@
+<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0 https://maven.apache.org/xsd/assembly-2.2.0.xsd">
+    <id>distribution</id><formats><format>zip</format><format>dir</format></formats>
+    <includeBaseDirectory>true</includeBaseDirectory>
+    <fileSets>
+        <fileSet><directory>${project.build.directory}</directory><outputDirectory>/</outputDirectory><includes><include>${project.build.finalName}.jar</include><include>lib/*.jar</include></includes></fileSet>
+        <fileSet><directory>src/main/scripts</directory><outputDirectory>/</outputDirectory><fileMode>0755</fileMode></fileSet>
+        <fileSet><directory>src/assembly</directory><outputDirectory>/</outputDirectory><includes><include>README.md</include></includes></fileSet>
+        <fileSet><directory>..</directory><outputDirectory>/</outputDirectory><includes><include>docs/*.md</include><include>examples/editor/*.lyra</include><include>examples/editor/README.md</include></includes></fileSet>
+    </fileSets>
+</assembly>

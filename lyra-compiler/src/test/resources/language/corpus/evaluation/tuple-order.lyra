@@ -1,0 +1,4 @@
+// evaluation	value	I32	12	tuple order
+let @mut count :I32 = 0
+let tick :Fn<;I32> = (=> | | { count := (++ count) count })
+let @pub run :Fn<;I32> = (=> | | { let values = Tuple[(tick) (tick)] (+ (* values:.0 10) values:.1) })

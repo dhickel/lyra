@@ -1,0 +1,2 @@
+// operators	value	I32	1	decrement bracket
+let @pub run :Fn<;I32> = (=> | | --[2])

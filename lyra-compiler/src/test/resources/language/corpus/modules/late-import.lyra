@@ -1,0 +1,2 @@
+// modules	reject	-	LYC-PARSE-009	late import
+let x = 1 import std->io

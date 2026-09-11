@@ -1,0 +1,3 @@
+// nilability	value	I32	7	nested array
+let values :Array<@nil I32> = Array[#NIL 7]
+let @pub run :Fn<;I32> = (=> | | (values[0] : (values[1] : 9)))

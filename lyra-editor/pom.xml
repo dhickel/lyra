@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>io.mindspice</groupId><artifactId>lyra-parent</artifactId><version>1.0-SNAPSHOT</version>
+    </parent>
+    <artifactId>lyra-editor</artifactId>
+    <name>Lyra Editor</name>
+    <properties>
+        <javafx.version>25.0.2</javafx.version>
+        <richtextfx.version>0.11.7</richtextfx.version>
+    </properties>
+    <dependencies>
+        <dependency><groupId>io.mindspice</groupId><artifactId>lyra-runtime</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>io.mindspice</groupId><artifactId>lyra-compiler</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>io.mindspice</groupId><artifactId>lyra-repl</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>org.openjfx</groupId><artifactId>javafx-base</artifactId><version>${javafx.version}</version></dependency>
+        <dependency><groupId>org.openjfx</groupId><artifactId>javafx-graphics</artifactId><version>${javafx.version}</version></dependency>
+        <dependency><groupId>org.openjfx</groupId><artifactId>javafx-controls</artifactId><version>${javafx.version}</version></dependency>
+        <dependency><groupId>org.fxmisc.richtext</groupId><artifactId>richtextfx</artifactId><version>${richtextfx.version}</version></dependency>
+        <dependency><groupId>org.fxmisc.flowless</groupId><artifactId>flowless</artifactId><version>0.7.4</version></dependency>
+        <dependency><groupId>org.fxmisc.undo</groupId><artifactId>undofx</artifactId><version>2.1.1</version></dependency>
+        <dependency><groupId>org.reactfx</groupId><artifactId>reactfx</artifactId><version>2.0-M5</version></dependency>
+        <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
+    </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.openjfx</groupId><artifactId>javafx-maven-plugin</artifactId><version>0.0.8</version>
+                <configuration>
+                    <mainClass>io.mindspice.lyra.editor.EditorLauncher</mainClass>
+                    <options><option>--enable-preview</option><option>--add-modules=jdk.jdi</option><option>--enable-native-access=ALL-UNNAMED,javafx.graphics</option></options>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId>
+                <configuration><argLine>${lyra.preview.jvm.args} --add-modules=jdk.jdi --enable-native-access=ALL-UNNAMED</argLine></configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId><artifactId>maven-dependency-plugin</artifactId>
+                <configuration>
+                    <!-- OpenJFX's portable declarations select OS-classified bytecode JARs.
+                         Analyze sees each declared facade and classified implementation as
+                         different artifacts. Scope this exception to these three pinned APIs;
+                         the GUI and packaged-worker tests validate the actual native closure. -->
+                    <ignoredDependencies>
+                        <ignoredDependency>org.openjfx:javafx-base:jar:${javafx.version}</ignoredDependency>
+                        <ignoredDependency>org.openjfx:javafx-graphics:jar:${javafx.version}</ignoredDependency>
+                        <ignoredDependency>org.openjfx:javafx-controls:jar:${javafx.version}</ignoredDependency>
+                    </ignoredDependencies>
+                </configuration>
+                <executions><execution><id>editor-libraries</id><phase>prepare-package</phase><goals><goal>copy-dependencies</goal></goals>
+                    <configuration><includeScope>runtime</includeScope><outputDirectory>${project.build.directory}/lib</outputDirectory></configuration>
+                </execution></executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId><artifactId>maven-jar-plugin</artifactId>
+                <configuration><archive><manifest><mainClass>io.mindspice.lyra.editor.EditorLauncher</mainClass><addClasspath>true</addClasspath><classpathPrefix>lib/</classpathPrefix></manifest></archive></configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId><artifactId>maven-assembly-plugin</artifactId><version>3.7.1</version>
+                <configuration><descriptors><descriptor>src/assembly/distribution.xml</descriptor></descriptors></configuration>
+                <executions><execution><id>editor-distribution</id><phase>package</phase><goals><goal>single</goal></goals></execution></executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

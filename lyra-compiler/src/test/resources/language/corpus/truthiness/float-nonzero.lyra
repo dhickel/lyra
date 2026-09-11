@@ -1,0 +1,2 @@
+// truthiness	value	Bool	true	float nonzero
+let @pub run :Fn<;Bool> = (=> | | (0.25F32 -> #T : #F))

@@ -1,0 +1,4 @@
+// evaluation	value	I32	0	and short circuit
+let @mut count :I32 = 0
+let tick :Fn<;Bool> = (=> | | { count := (++ count) #T })
+let @pub run :Fn<;I32> = (=> | | { (and #F (tick)) count })

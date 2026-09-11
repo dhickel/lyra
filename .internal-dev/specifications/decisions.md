@@ -1,5 +1,26 @@
 # Durable Decisions
 
+## 2026-09-11 — Commit every repository work unit
+
+- **Source:** owner request to commit the match implementation and all pending work, and to require commits for every subsequent phase/unit of repository work.
+- **Decision:** completed code, tests, documentation, and development-record work must be validated, reviewed, and committed before proceeding or reporting completion. Explicit unfinished checkpoints are committed with accurate WIP/checkpoint status rather than represented as completed work.
+- **Scope:** stage the current work unit; unrelated changes require explicit inclusion authority. Secrets and generated build output remain excluded. Committing does not authorize pushing.
+- **Justification:** make completed progress durable and avoid accumulated uncommitted phases.
+- **Affected contract:** repository `AGENTS.md`, Git Commit Policy. Language semantics and generated runtime ABI are unchanged.
+- **Review timing:** revisit only on an explicit owner workflow change.
+
+## 2026-09-10 — Value and conditional match expressions
+
+- **Source:** project-owner match design and implementation request, with interactive decisions on pattern expressions, fallback, bindings, and reserved keywords.
+- **Decision:** support `(match subject ?? pattern [when guard] -> result ... ?? _ -> fallback)` and equivalent `::match[...]`. `match _` selects condition-only arms using existing truthiness and no `when`. Subject evaluates once; first successful arm wins; unreached patterns/guards/results do not execute. Traditional patterns are arbitrary expressions using typed `==`. Every form requires a final unguarded wildcard.
+- **Justification:** one expression form supports both value dispatch and if/else-if chains without introducing runtime polymorphism, an `Any` value, or another conditional keyword.
+- **Alternatives rejected:** literals-only matching, Bool-specific exhaustiveness inference, subjectless conditional syntax, bare fallback expressions, and replacing the direct-call-style spelling with `match[...]`.
+- **Binding scope:** the owner considered a non-nil binding then explicitly deferred it. No new bindings, destructuring/type patterns, or implicit narrowing are included.
+- **Compatibility:** `match` and `when` become reserved keywords by explicit owner choice; `_` remains contextual. Existing code using the newly reserved words as identifiers must be renamed.
+- **Performance:** separate typed conditional/value paths may use proven safe specialized dispatch, but may not change effects, equality, laziness, source maps, or tail-call behavior. No optimizer configuration or runtime match framework.
+- **Affected specifications:** `language-core.md`, `backend-runtime.md`, `deferred-features.md`.
+- **Review timing:** revisit advanced bindings/patterns only in a separately authorized language-design change; validate present behavior through syntax, JVM, flow/provenance, and fuzz tests.
+
 ## 2026-08-30 — Current Language Contract
 
 ### Source and review
@@ -320,3 +341,22 @@
 - **Decision:** the attachable `optionsRevision` no longer covers packaging mode or include-sources. Both are deployment/presentation choices recorded elsewhere in metadata, and packaged activation reconstructs the context through the always-classes assembly, so the revision must be reproducible across packaging modes.
 - **Justification:** the listener must be observable during slow initialization without exposing partial state; the shared-controller composition is the only way generated safe points can service remote work with exactly one lease; and terminal results must reach the controller without letting a broken peer keep main alive.
 - **Caveat:** a submit racing the bootstrap gate observes a truthful BUSY and must retry; a wire write racing the service close can only be retired as a disconnect, which the client models as a terminal DISCONNECTED request status without replay.
+
+## 2026-09-08 — JavaFX Development Editor
+
+### Source and review
+
+- **Source:** owner request for a complete JavaFX language editor with project files, function navigation, entry targets, compiler checks, a persistent REPL and source stepping.
+- **Affected specifications:** `editor.md` owns the new desktop boundary; `language-core.md`, `backend-runtime.md`, and `repl.md` retain their existing semantics and ABI ownership.
+- **Review timing:** revisit for compiler local-variable metadata, a new protocol capability, or target-platform desktop release qualification.
+
+### Decision
+
+- **Decision:** add an optional `lyra-editor` module using OpenJFX and RichTextFX. Highlighting, definitions, diagnostics and reference navigation consume existing compiler phases and immutable source snapshots, including unsaved imported buffers. The editor does not create another grammar, interpreter, language server or execution ABI.
+- **Decision:** editor-owned runs use a disposable child JVM with the actual owner-confined session and loopback protocol v2. Explicit load initializes a file once; later evaluations use initialized storage. Run is fresh, evaluation is persistent, and configured editor targets do not replace the standalone public main signature. Program stdin is independent of REPL source.
+- **Decision:** use JDI and emitted source/line metadata for actual breakpoints and stepping. Read-only running buffers preserve source correspondence; argument/field inspection never invokes target methods. Existing external REPL attachment remains a single-controller connection and does not implicitly attach a JVM debugger.
+- **Decision:** source saves are atomic and external conflicts require explicit resolution. Renames refuse existing destinations. Separate recovery copies preserve unsaved text, and completion of a save must not discard edits made while that save was in progress. Generation checks and synchronized runtime publication prevent Stop/disposal from leaking a newly started worker.
+- **Decision:** package a platform-specific launcher ZIP and provide a jpackage application-image build that retains the Java executable and JDI/JDWP modules needed by child workers. Add graphical and packaged-worker checks alongside the existing backend release audit; extend that audit's module layout and target preservation without weakening its backend coverage requirements.
+- **Justification:** these boundaries keep the JavaFX event thread responsive, preserve initialized session state and existing compiler contracts, make blocked programs stoppable, and allow the original compiler/runtime/CLI artifacts to remain free of desktop dependencies.
+- **Alternatives/tradeoffs:** in-process execution complicates UI responsiveness and owner lifecycle; source replay changes observable initialization; debugger simulation would not prove emitted bytecode behavior. Separate workers add startup cost, while JDI uses real line metadata and retains the compiler's optimization behavior.
+- **Caveats:** arbitrary body-local inspection awaits compiler local-variable tables. Linux validation does not qualify macOS/Windows installers or signing. Loopback development transport retains the project's existing trusted-local, unauthenticated boundary.

@@ -1,0 +1,2 @@
+// operators	value	Bool	true	or bracket
+let @pub run :Fn<;Bool> = (=> | | or[(), 0, "x"])

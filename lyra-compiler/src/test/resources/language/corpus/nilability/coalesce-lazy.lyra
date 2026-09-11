@@ -1,0 +1,5 @@
+// nilability	value	I32	0	coalesce lazy
+let @nil value :I32 = 0
+let @mut count :I32 = 0
+let tick :Fn<;I32> = (=> | | { count := 1 count })
+let @pub run :Fn<;I32> = (=> | | { (value : ::tick[]) count })

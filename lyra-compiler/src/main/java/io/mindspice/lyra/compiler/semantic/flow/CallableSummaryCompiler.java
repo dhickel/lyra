@@ -12,6 +12,7 @@ import io.mindspice.lyra.compiler.semantic.TypedExpression;
 import io.mindspice.lyra.compiler.semantic.TypedExpressionKind;
 import io.mindspice.lyra.compiler.semantic.TypedLambda;
 import io.mindspice.lyra.compiler.semantic.TypedLink;
+import io.mindspice.lyra.compiler.semantic.TypedMatch;
 import io.mindspice.lyra.compiler.semantic.TypedSemanticGraph;
 import io.mindspice.lyra.compiler.semantic.TypedSemanticInput;
 import io.mindspice.lyra.compiler.source.ModuleId;
@@ -403,6 +404,11 @@ public final class CallableSummaryCompiler {
                         expression.children().stream()
                                 .map(child -> collectCallableIdentity(child, active))
                                 .toList()).requiringCanonicalValue();
+                case MATCH -> combineCallableIdentities(
+                        expression.match().orElseThrow().arms().stream()
+                                .map(arm -> collectCallableIdentity(
+                                        expression.children().get(arm.resultChild()), active))
+                                .toList()).requiringCanonicalValue();
                 default -> CallableDeclarationIdentity.computedValue();
             };
         }
@@ -640,6 +646,7 @@ public final class CallableSummaryCompiler {
                 case BLOCK -> block(expression, state);
                 case CONDITIONAL -> conditional(expression, state);
                 case COALESCE -> coalesce(expression, state);
+                case MATCH -> match(expression, state);
                 case LAMBDA -> lambdaValue(expression, state);
                 case CALLABLE_CALL -> callableCall(expression, state);
                 case DIRECT_CALL -> directCall(expression, state, CallableCallReference.Kind.DIRECT);
@@ -837,6 +844,79 @@ public final class CallableSummaryCompiler {
                     .join(elseBranch.value().asType(expression.type()));
             return new Eval(result,
                     joinStates(thenBranch.state(), elseBranch.state()), writes, calls, effects);
+        }
+
+        private Eval match(
+                TypedExpression expression,
+                Map<DeclarationId, FormulaAlternatives> state) {
+            TypedMatch match = expression.match().orElseThrow(() ->
+                    failure("match operation has no typed arm metadata", expression.span()));
+            Eval subject = match.subjectChild().isPresent()
+                    ? evaluate(expression.children().get(match.subjectChild().getAsInt()), state)
+                    : new Eval(scalar(PrimitiveType.UNIT).value(), state,
+                            List.of(), List.of(), List.of());
+            Map<DeclarationId, FormulaAlternatives> continuation = subject.state();
+            ArrayList<CapturedCellWrite> prefixWrites = new ArrayList<>();
+            ArrayList<CapturedCellWrite> definiteWrites = new ArrayList<>(subject.writes());
+            ArrayList<CallableCallReference> calls = new ArrayList<>(subject.calls());
+            ArrayList<EagerEffectWitness> effects = new ArrayList<>(subject.effects());
+            ArrayList<List<CapturedCellWrite>> branchWrites = new ArrayList<>();
+            ArrayList<Map<DeclarationId, FormulaAlternatives>> resultStates = new ArrayList<>();
+            FormulaAlternatives resultValue = FormulaAlternatives.empty(expression.type());
+            for (TypedMatch.Arm arm : match.arms()) {
+                Map<DeclarationId, FormulaAlternatives> tested = continuation;
+                ArrayList<CapturedCellWrite> selectedWrites = new ArrayList<>(prefixWrites);
+                if (arm.patternChild().isPresent()) {
+                    Eval pattern = evaluate(expression.children().get(
+                            arm.patternChild().getAsInt()), continuation);
+                    tested = pattern.state();
+                    selectedWrites.addAll(pattern.writes());
+                    calls.addAll(pattern.calls());
+                    effects.addAll(pattern.effects());
+                }
+                Map<DeclarationId, FormulaAlternatives> selected = tested;
+                if (arm.guardChild().isPresent()) {
+                    Eval guard = evaluate(expression.children().get(
+                            arm.guardChild().getAsInt()), tested);
+                    selected = guard.state();
+                    selectedWrites.addAll(guard.writes());
+                    calls.addAll(guard.calls());
+                    effects.addAll(guard.effects());
+                    if (arm.wildcard()) {
+                        continuation = guard.state();
+                        prefixWrites = new ArrayList<>(selectedWrites);
+                    } else {
+                        continuation = joinStates(tested, guard.state());
+                        ArrayList<CapturedCellWrite> continued = new ArrayList<>(prefixWrites);
+                        if (arm.patternChild().isPresent()) {
+                            // Pattern evaluation occurs on both equality outcomes.
+                            int prior = prefixWrites.size();
+                            continued.addAll(selectedWrites.subList(
+                                    prior, selectedWrites.size() - guard.writes().size()));
+                        }
+                        continued.addAll(joinBranchWrites(
+                                guard.writes(), List.of(), tested));
+                        prefixWrites = continued;
+                    }
+                } else {
+                    continuation = tested;
+                    prefixWrites = new ArrayList<>(selectedWrites);
+                }
+                Eval result = evaluate(expression.children().get(arm.resultChild()), selected);
+                ArrayList<CapturedCellWrite> pathWrites = new ArrayList<>(selectedWrites);
+                pathWrites.addAll(result.writes());
+                branchWrites.add(List.copyOf(pathWrites));
+                resultStates.add(result.state());
+                resultValue = resultValue.join(result.value().asType(expression.type()));
+                calls.addAll(result.calls());
+                effects.addAll(result.effects());
+            }
+            definiteWrites.addAll(joinMatchWrites(branchWrites, subject.state()));
+            Map<DeclarationId, FormulaAlternatives> joined = resultStates.getFirst();
+            for (int index = 1; index < resultStates.size(); index++) {
+                joined = joinStates(joined, resultStates.get(index));
+            }
+            return new Eval(resultValue, joined, definiteWrites, calls, effects);
         }
 
         private Eval coalesce(
@@ -1602,6 +1682,42 @@ public final class CallableSummaryCompiler {
                     FormulaAlternatives original = writeTargetValue(
                             representative, baseline);
                     value = representative.value().join(original);
+                }
+                result.add(withWriteValue(representative, value));
+            }
+            result.sort(CapturedCellWrite::compareTo);
+            return List.copyOf(result);
+        }
+
+        private List<CapturedCellWrite> joinMatchWrites(
+                List<List<CapturedCellWrite>> branches,
+                Map<DeclarationId, FormulaAlternatives> baseline) {
+            TreeSet<String> targets = new TreeSet<>();
+            List<TreeMap<String, List<CapturedCellWrite>>> indexed = branches.stream()
+                    .map(this::writesByTarget).toList();
+            indexed.forEach(values -> targets.addAll(values.keySet()));
+            ArrayList<CapturedCellWrite> result = new ArrayList<>();
+            for (String target : targets) {
+                CapturedCellWrite representative = null;
+                FormulaAlternatives value = null;
+                for (TreeMap<String, List<CapturedCellWrite>> branch : indexed) {
+                    List<CapturedCellWrite> writes = branch.getOrDefault(target, List.of());
+                    if (!writes.isEmpty()) {
+                        CapturedCellWrite current = writes.getLast();
+                        representative = representative == null ? current : representative;
+                        value = value == null ? current.value() : value.join(current.value());
+                    } else if (representative != null) {
+                        FormulaAlternatives original = writeTargetValue(representative, baseline);
+                        value = value == null ? original : value.join(original);
+                    }
+                }
+                if (representative == null) {
+                    continue;
+                }
+                // Branches preceding the first occurrence also retain the baseline.
+                if (indexed.stream().takeWhile(branch ->
+                        branch.getOrDefault(target, List.of()).isEmpty()).findAny().isPresent()) {
+                    value = value.join(writeTargetValue(representative, baseline));
                 }
                 result.add(withWriteValue(representative, value));
             }

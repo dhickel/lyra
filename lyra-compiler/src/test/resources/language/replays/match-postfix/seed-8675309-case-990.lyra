@@ -1,0 +1,4 @@
+let @pub run :Fn<F64,F64;F64> = (=> |a b| (match a ?? ((< a b) -> a : b) -> ((< a b) -> (match a ?? ((< a b) -> a : b) -> Tuple<F64,Bool>[a, #T]:.0 ?? _ -> (+ b b)) : ((=> :F64 |value :F64| value) (match a ?? ((< a b) -> a : b) -> a ?? _ -> b))) ?? _ -> Tuple<F64,Bool>[Array<F64>[{ let temporary :F64 = a temporary }, a][0], #T]:.0))
+/* Equivalent operator spelling, optional commas, and nested /* trivia */. */
+let @pub alternate :Fn<F64,F64;F64> = (=> |a b| ::match[a ?? ((< a b) -> a : b) -> ((< a b) -> ::match[a ?? ((< a b) -> a : b) -> Tuple<F64,Bool>[a, #T]:.0 ?? _ -> +[b, b]] : ((=> :F64 |value :F64| value) ::match[a ?? ((< a b) -> a : b) -> a ?? _ -> b])) ?? _ -> Tuple<F64,Bool>[Array<F64>[{ let temporary :F64 = a temporary }, a][0], #T]:.0])
+let @pub convert :Fn<F64;U64> = (=> |value| U64[value])

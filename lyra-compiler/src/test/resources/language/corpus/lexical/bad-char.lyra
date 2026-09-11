@@ -1,0 +1,2 @@
+// lexical	reject	-	LYC-LEX-008	bad char
+let x = 'ab'

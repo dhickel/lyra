@@ -1,0 +1,2 @@
+// operators	reject	-	LYC-TYPE-018	float remainder
+let x = (% 1.0 2.0)

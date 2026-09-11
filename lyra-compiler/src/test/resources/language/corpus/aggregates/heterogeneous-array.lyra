@@ -1,0 +1,2 @@
+// aggregates	reject	-	LYC-TYPE-001	heterogeneous array
+let x :Array<I32> = Array[1 "x"]

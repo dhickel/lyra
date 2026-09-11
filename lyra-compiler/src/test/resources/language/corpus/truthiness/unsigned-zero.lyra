@@ -1,0 +1,2 @@
+// truthiness	value	Bool	false	unsigned zero
+let @pub run :Fn<;Bool> = (=> | | (0U64 -> #T : #F))

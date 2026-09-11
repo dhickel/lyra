@@ -1,0 +1,2 @@
+// truthiness	value	Bool	false	array unit
+let @pub run :Fn<;Bool> = (=> | | (Array[] -> #T : #F))

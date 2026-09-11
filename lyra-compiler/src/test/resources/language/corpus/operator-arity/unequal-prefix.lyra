@@ -1,0 +1,2 @@
+// operator-arity	reject	-	LYC-PARSE-007	unequal prefix
+let bad = (!= 1)

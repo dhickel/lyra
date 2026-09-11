@@ -1,0 +1,3 @@
+// runtime	throws	Char	LYR-BOUNDS	bounds end
+let text :String = "x"
+let @pub run :Fn<;Char> = (=> | | text[1])

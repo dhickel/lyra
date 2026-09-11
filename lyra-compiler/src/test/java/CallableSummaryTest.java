@@ -865,6 +865,25 @@ public final class CallableSummaryTest {
     }
 
     @Test
+    public void matchSummariesJoinLazyArmValuesAndCapturedWrites() {
+        TypedSemanticGraph graph = typed(
+                "let @mut trace :I32 = 0 "
+                        + "let choose :Fn<I32;I32> = (=> |value| "
+                        + "(match { trace := 1 value } "
+                        + "?? { trace := 2 0I32 } -> { trace := 3 10I32 } "
+                        + "?? _ -> { trace := 4 20I32 }))");
+        CallableSummary summary = summaryFor(graph, summaries(graph), "choose");
+        assertTrue(summary.isFixedPoint());
+        assertTrue(summary.returnFormula().formulas().size() >= 2,
+                "match result arms must remain joined alternatives in the callable summary");
+        assertFalse(summary.capturedCellWrites().isEmpty(),
+                "match subject, patterns, and selected results must retain captured writes");
+        assertTrue(summary.capturedCellWrites().stream().allMatch(write ->
+                        write.route().equals(ProjectionPath.root())),
+                "match branch-write joins must retain exact root routes");
+    }
+
+    @Test
     public void recursiveCapturedCellWritesWidenByOperationWithoutGrowingTheDomain() {
         TypedSemanticGraph graph = typed(
                 "let @mut count :I32 = 0 "

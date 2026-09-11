@@ -1,0 +1,2 @@
+// operators	value	I32	4	minus prefix
+let @pub run :Fn<;I32> = (=> | | (- 9 3 2))

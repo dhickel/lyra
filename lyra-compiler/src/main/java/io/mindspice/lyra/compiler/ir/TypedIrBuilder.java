@@ -19,6 +19,7 @@ import io.mindspice.lyra.compiler.semantic.TypedExpression;
 import io.mindspice.lyra.compiler.semantic.TypedExpressionKind;
 import io.mindspice.lyra.compiler.semantic.TypedLink;
 import io.mindspice.lyra.compiler.semantic.TypedLiteralValue;
+import io.mindspice.lyra.compiler.semantic.TypedMatch;
 import io.mindspice.lyra.compiler.semantic.TypedModule;
 import io.mindspice.lyra.compiler.semantic.TypedReference;
 import io.mindspice.lyra.compiler.semantic.TypedSemanticGraph;
@@ -193,6 +194,7 @@ public final class TypedIrBuilder {
                 case INDEX_ACCESS -> lowerIndexAccess(expression, site);
                 case CONDITIONAL -> lowerConditional(expression, site);
                 case COALESCE -> lowerCoalesce(expression, site);
+                case MATCH -> lowerMatch(expression, site);
                 case LAMBDA -> lowerLambda(expression, site);
                 case CALLABLE_CALL -> lowerCallableCall(expression, site);
                 case DIRECT_CALL, NAMESPACE_DIRECT_CALL -> lowerDirectCall(expression, site);
@@ -331,6 +333,30 @@ public final class TypedIrBuilder {
                 ? Optional.of(lowerExpression(children.get(2))) : Optional.empty();
         return new IrNode.Branch(expression.span(), expression.type(), predicate, thenBranch,
                 elseBranch, expression.predicateBinding(), Optional.of(site));
+    }
+
+    private IrNode lowerMatch(TypedExpression expression, FlowSiteId site) {
+        TypedMatch match = expression.match().orElseThrow(() ->
+                new LoweringFailure(expression.span(), "match has no typed arm metadata"));
+        Optional<IrNode> subject = match.subjectChild().isPresent()
+                ? Optional.of(child(expression, match.subjectChild().getAsInt()))
+                : Optional.empty();
+        List<IrNode.MatchArm> arms = new ArrayList<>();
+        for (TypedMatch.Arm arm : match.arms()) {
+            arms.add(new IrNode.MatchArm(
+                    arm.span(), arm.wildcard(),
+                    arm.patternChild().isPresent()
+                            ? Optional.of(child(expression, arm.patternChild().getAsInt()))
+                            : Optional.empty(),
+                    arm.guardChild().isPresent()
+                            ? Optional.of(child(expression, arm.guardChild().getAsInt()))
+                            : Optional.empty(),
+                    child(expression, arm.resultChild()), arm.comparisonType()));
+        }
+        IrNode.MatchMode mode = match.mode() == TypedMatch.MatchMode.TRADITIONAL
+                ? IrNode.MatchMode.TRADITIONAL : IrNode.MatchMode.CONDITIONAL;
+        return new IrNode.Match(expression.span(), expression.type(), mode,
+                subject, arms, Optional.of(site));
     }
 
     private IrNode lowerCoalesce(TypedExpression expression, FlowSiteId site) {
@@ -531,6 +557,7 @@ public final class TypedIrBuilder {
             case SHORT_CIRCUIT -> IrEvaluationOrder.Kind.SHORT_CIRCUIT;
             case CONDITIONAL -> IrEvaluationOrder.Kind.BRANCH;
             case COALESCE -> IrEvaluationOrder.Kind.COALESCE;
+            case MATCH -> IrEvaluationOrder.Kind.MATCH;
             default -> IrEvaluationOrder.Kind.STRICT;
         };
         List<IrEvaluationOrder.Edge> edges = new ArrayList<>();
@@ -545,12 +572,35 @@ public final class TypedIrBuilder {
                         : IrEvaluationOrder.EdgeKind.ELSE_BRANCH;
                 case COALESCE -> index == 0 ? IrEvaluationOrder.EdgeKind.NON_NIL_VALUE
                         : IrEvaluationOrder.EdgeKind.FALLBACK;
+                case MATCH -> matchEdgeKind(expression.match().orElseThrow(), index);
                 default -> IrEvaluationOrder.EdgeKind.STRICT;
             };
             edges.add(new IrEvaluationOrder.Edge(index, childSite, edgeKind));
         }
         return new IrEvaluationOrder(Optional.of(site),
                 ModuleId.fromSourceId(expression.span().sourceId()), expression.span(), kind, edges);
+    }
+
+    private IrEvaluationOrder.EdgeKind matchEdgeKind(TypedMatch match, int childIndex) {
+        if (match.subjectChild().isPresent()
+                && match.subjectChild().getAsInt() == childIndex) {
+            return IrEvaluationOrder.EdgeKind.MATCH_SUBJECT;
+        }
+        for (TypedMatch.Arm arm : match.arms()) {
+            if (arm.patternChild().isPresent()
+                    && arm.patternChild().getAsInt() == childIndex) {
+                return IrEvaluationOrder.EdgeKind.MATCH_PATTERN;
+            }
+            if (arm.guardChild().isPresent()
+                    && arm.guardChild().getAsInt() == childIndex) {
+                return IrEvaluationOrder.EdgeKind.MATCH_GUARD;
+            }
+            if (arm.resultChild() == childIndex) {
+                return IrEvaluationOrder.EdgeKind.MATCH_RESULT;
+            }
+        }
+        throw new LoweringFailure(typedGraph.modules().getFirst().span(),
+                "typed match has an unclassified child");
     }
 
     private List<IrEvaluationOrder.Edge> edgesFor(

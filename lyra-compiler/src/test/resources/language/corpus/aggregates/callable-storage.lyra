@@ -1,0 +1,2 @@
+// aggregates	value	I32	7	callable storage
+let @pub run :Fn<;I32> = (=> | | { let values :Array<Fn<I32;I32>> = Array[(=> |x| (+ x 2))] (values[0] 5) })

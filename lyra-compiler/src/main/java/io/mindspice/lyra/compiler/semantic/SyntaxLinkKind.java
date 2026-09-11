@@ -14,6 +14,7 @@ public enum SyntaxLinkKind {
     LAMBDA,
     BLOCK,
     CONDITIONAL,
+    MATCH,
     ACCESS,
     CALL,
     LITERAL,

@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+set -eu
+LYRA_EDITOR_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -n "${JAVA_HOME:-}" ]; then
+    LYRA_EDITOR_JAVA="$JAVA_HOME/bin/java"
+else
+    LYRA_EDITOR_JAVA=java
+fi
+exec "$LYRA_EDITOR_JAVA" --enable-preview --add-modules=jdk.jdi --enable-native-access=ALL-UNNAMED -cp "$LYRA_EDITOR_DIR/*:$LYRA_EDITOR_DIR/lib/*" io.mindspice.lyra.editor.EditorLauncher "$@"

@@ -1,0 +1,2 @@
+// aggregates	value	Bool	true	array structural
+let @pub run :Fn<;Bool> = (=> | | (and (== Array<I32>[1 2] Array<I32>[1 2]) (!eq? Array<I32>[1] Array<I32>[1])))

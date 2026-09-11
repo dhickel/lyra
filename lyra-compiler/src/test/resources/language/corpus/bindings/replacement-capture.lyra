@@ -1,0 +1,5 @@
+// bindings	value	I32	7	replacement capture
+let value :I32 = 7
+let old :Fn<;I32> = (=> | | value)
+let value :String = "new"
+let @pub run :Fn<;I32> = (=> | | (old))

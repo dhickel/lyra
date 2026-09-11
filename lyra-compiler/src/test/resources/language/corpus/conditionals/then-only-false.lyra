@@ -1,0 +1,2 @@
+// conditionals	value	String	()	then only false
+let @pub run :Fn<;String> = (=> | | String[(#F -> 17)])

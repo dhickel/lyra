@@ -1,0 +1,2 @@
+// operators	value	Bool	true	xor bracket
+let @pub run :Fn<;Bool> = (=> | | xor[#T, #T, #T])

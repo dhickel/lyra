@@ -1,0 +1,5 @@
+// evaluation	value	I32	123	argument order
+let @mut count :I32 = 0
+let tick :Fn<;I32> = (=> | | { count := (++ count) count })
+let join :Fn<I32,I32,I32;I32> = (=> |a b c| (+ (* a 100) (* b 10) c))
+let @pub run :Fn<;I32> = (=> | | ::join[(tick) (tick) (tick)])

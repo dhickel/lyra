@@ -1,0 +1,2 @@
+// nilability	reject	-	LYC-TYPE-008	nil arithmetic
+let @nil x :I32 = 1 let y = (+ x 1)

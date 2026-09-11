@@ -1,0 +1,2 @@
+// primitives	value	String	2147483647	i32 text
+let @pub run :Fn<;String> = (=> | | String[2147483647I32])

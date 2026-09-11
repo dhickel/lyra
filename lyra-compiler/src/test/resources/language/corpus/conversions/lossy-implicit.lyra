@@ -1,0 +1,2 @@
+// conversions	reject	-	LYC-TYPE-001	lossy implicit
+let x :I32 = 1 let y :F32 = x

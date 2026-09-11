@@ -14,14 +14,15 @@ Define Lyra's source syntax, static semantics, evaluation behavior, modules, and
 
 ### Current scope
 
-The current language includes static typing with local inference; immutable-by-default lexical bindings; `@pub`, `@mut`, and `@nil`; first-class typed lambdas; primitives, arrays, tuples, strings, and characters; blocks, conditionals, operators, assignment, modules, imports, exports, and the `->`, `:.`, and `::` accessors.
+The current language includes static typing with local inference; immutable-by-default lexical bindings; `@pub`, `@mut`, and `@nil`; first-class typed lambdas; primitives, arrays, tuples, strings, and characters; blocks, conditionals, value and conditional matching, operators, assignment, modules, imports, exports, and the `->`, `:.`, and `::` accessors.
 
-Outside current scope are user-declared classes/records/variants, pattern matching, dedicated iteration syntax, generics, macros/quoting, catchable exceptions, omitted/default arguments, dynamic typing, and bitwise operators. See `deferred-features.md`.
+Outside current scope are user-declared classes/records/variants, destructuring and type patterns, dedicated iteration syntax, generics, macros/quoting, catchable exceptions, omitted/default arguments, dynamic typing, and bitwise operators. See `deferred-features.md`.
 
 ### Lexical rules
 
 - Identifiers are case-sensitive ASCII names matching `[A-Za-z_][A-Za-z0-9_]*`.
 - Punctuation is never part of an identifier.
+- `match` and `when` are reserved keywords. `_` remains an ordinary identifier except in the explicit match wildcard positions below; it is not a value or an `Any` type in those positions.
 - Whitespace separates tokens and is otherwise insignificant except for type annotations.
 - Commas are optional separators only inside delimited parameter, argument, type-argument, tuple, and array lists. They are not globally ignored.
 - `//` begins a line comment.
@@ -169,7 +170,7 @@ The current built-in value members are tuple numeric fields plus the read-only `
 
 ### Evaluation and blocks
 
-Evaluation is strict, eager, and left-to-right for call targets, arguments, operators, collection elements, declarations, and blocks. `and`, `or`, conditionals, and coalescing short-circuit.
+Evaluation is strict, eager, and left-to-right for call targets, arguments, operators, collection elements, declarations, and blocks. `and`, `or`, conditionals, match arms, and coalescing short-circuit.
 
 `{ ... }` creates a lexical scope, evaluates forms in order, and returns its final expression. An empty block returns Unit.
 
@@ -208,6 +209,48 @@ Nil-only coalescing:
 ```
 
 It accepts only `@nil T`, returns the original non-nil `T` even when otherwise falsey, and evaluates fallback only for `#NIL`.
+
+### Match expressions
+
+Match is a compiler-recognized expression with equivalent parenthesized and direct-bracket spellings:
+
+```lyra
+(match value
+  ?? 10 -> "ten"
+  ?? _ when (> value 20) -> "greater than twenty"
+  ?? _ -> "other")
+
+::match[value
+  ?? 10 -> "ten"
+  ?? _ when (> value 20) -> "greater than twenty"
+  ?? _ -> "other"
+]
+```
+
+Traditional value matching evaluates the subject exactly once. Each arm begins with `??`, followed by a value expression or the exact wildcard `_`, an optional `when` guard expression, `->`, and a result expression. Value patterns use the same compatible static typing and value equality as `==`, including lossless numeric widening and structural aggregate equality. Patterns may be arbitrary expressions, not just literals; they introduce no names or destructuring. A `#NIL` pattern is checked under the subject's nilable contract. Match does not itself narrow a nilable subject.
+
+Arms are attempted in source order. Only reached pattern expressions are evaluated. A guard is evaluated only after its pattern matches; a wildcard always passes the pattern test. Guards use ordinary Lyra truthiness. The first arm whose pattern matches and whose guard (if present) is truthy selects its result; no later patterns, guards, or results execute. Pattern equality is performed separately for each arm, so no all-pattern common numeric type or eager pattern computation is implied.
+
+The exact wildcard subject selects conditional mode:
+
+```lyra
+(match _
+  ?? isAdmin -> "full access"
+  ?? isOwner -> "owner access"
+  ?? _ -> "no access")
+
+::match[_
+  ?? (< value 0) -> "negative"
+  ?? (== value 0) -> "zero"
+  ?? _ -> "positive"
+]
+```
+
+Conditional mode has no evaluated subject. Each non-wildcard arm contains one condition expression, tested using ordinary truthiness. Conditions are evaluated once each, in source order, until one is truthy. `when` is invalid in this mode. The wildcard arm is unconditional.
+
+Both modes require a final unguarded `?? _ -> fallback` arm, even when preceding arms appear exhaustive. A fallback-only match is legal; traditional mode still evaluates its subject. No arms may follow an unguarded wildcard. Bare fallback expressions and comma-separated arms are not accepted. Results must unify under the same contextual typing, nilability, and permitted lossless numeric widening rules as full conditionals. Match always has the resulting value type; there is no implicit Unit result for an unmatched input. Blocks can supply multi-form results, and Unit-valued branches are supported.
+
+There are no match-specific binding, type-test, destructuring, or automatic narrowing forms. `_` is syntax, not a dynamically typed value. `match` is not a first-class callable; `::match[...]` is a special-form spelling and preserves lazy arm evaluation rather than ordinary eager argument evaluation.
 
 ### Operators
 
@@ -324,6 +367,7 @@ A conforming implementation must add assertion-grade tests for at least:
 - complete lambda typing, exact arity, both call forms, and accessor distinctions;
 - left-to-right side effects and every short-circuit path;
 - truthiness, predicate binding, then-only Unit, and nil-only coalescing;
+- both match spellings/modes, expression patterns and guards, subject-once and lazy arm order, fallback requirements, branch typing, nil/equality boundaries, reserved keywords, and malformed arms;
 - operator arity, checked/trapping arithmetic, equality, and identity;
 - array/tuple construction, access, mutation, aliases, equality, length, and bounds failures;
 - explicit primitive/Unit string conversion and UTF-16 string length;
@@ -331,6 +375,8 @@ A conforming implementation must add assertion-grade tests for at least:
 - structured compile diagnostics and invocation-aborting runtime failures.
 
 Tests must assert produced structures, types, values, diagnostics, and runtime outcomes rather than merely print output or check that no exception escaped.
+
+The maintained language conformance corpus, numeric/ABI matrices and bounded seeded fuzz campaigns are mandatory parts of the core `mvn test` suite. Every new or changed language feature updates accepted/rejected source fixtures, boundary and runtime-failure assertions, the relevant generator and independent oracle/model, and the coverage documentation in `docs/language-testing.md` in the same change. Primitive, operator, intrinsic-export and sealed-IR inventories must not silently outgrow their tests. Fuzz counterexamples become permanent regressions; compiler invariant failures and unsupported emission of valid source are failures, never accepted outcomes.
 
 ## Open Questions
 

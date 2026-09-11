@@ -1,0 +1,2 @@
+// functions	reject	-	LYC-TYPE-007	non callable
+let x = 1 let y = (x 2)

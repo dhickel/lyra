@@ -1,0 +1,2 @@
+// match	value	I32	7	fallback-only conditional match is legal and evaluates no subject
+let @pub run :Fn<;I32> = (=> | | ::match[_ ?? _ -> 7])

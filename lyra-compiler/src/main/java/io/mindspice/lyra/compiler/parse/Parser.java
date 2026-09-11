@@ -105,6 +105,8 @@ public final class Parser {
                 case CONDITIONAL -> replayConditional(descriptor);
                 case PREDICATE_BINDING -> replayPredicateBinding(descriptor);
                 case COALESCE -> replayCoalesce(descriptor);
+                case MATCH -> replayMatch(descriptor);
+                case MATCH_ARM -> replayMatchArm(descriptor);
 
                 case IDENTIFIER -> replayIdentifier(descriptor);
                 case LITERAL -> replayLiteral(descriptor);
@@ -444,6 +446,90 @@ public final class Parser {
             GrammarDescriptor child = descriptor.children().getFirst();
             SyntaxNode.Identifier name = asIdentifier(replay(child), child);
             return new SyntaxNode.PredicateBinding(name, sourceView.span(descriptor));
+        }
+
+        private Object replayMatch(GrammarDescriptor descriptor) {
+            SourceSpan directAccessor = null;
+            boolean direct = descriptor.startTokenIndex()
+                    != descriptor.metadata().openingTokenIndex();
+            if (direct) {
+                directAccessor = cursor.consume(TokenKind.DOUBLE_COLON, descriptor);
+            }
+            SourceSpan opening;
+            SourceSpan keyword;
+            if (direct) {
+                keyword = cursor.consume(TokenKind.MATCH, descriptor);
+                opening = cursor.consume(TokenKind.LEFT_BRACKET, descriptor);
+            } else {
+                opening = cursor.consume(TokenKind.LEFT_PAREN, descriptor);
+                keyword = cursor.consume(TokenKind.MATCH, descriptor);
+            }
+            List<GrammarDescriptor> children = descriptor.children();
+            int childIndex = 0;
+            SyntaxNode.MatchMode mode;
+            SyntaxNode.Expression subject = null;
+            if (!children.isEmpty() && children.getFirst().kind() != ProductionKind.MATCH_ARM) {
+                mode = SyntaxNode.MatchMode.TRADITIONAL;
+                GrammarDescriptor subjectDescriptor = children.get(childIndex++);
+                subject = asExpression(replay(subjectDescriptor), subjectDescriptor);
+            } else {
+                mode = SyntaxNode.MatchMode.CONDITIONAL;
+                Token wildcard = cursor.currentToken(descriptor);
+                if (wildcard.kind() != TokenKind.IDENTIFIER || !wildcard.lexeme().equals("_")) {
+                    throw invariant("conditional match subject is not the exact '_' token", descriptor);
+                }
+                cursor.consume(TokenKind.IDENTIFIER, descriptor);
+            }
+            List<SyntaxNode.MatchArm> arms = new ArrayList<>();
+            while (childIndex < children.size()) {
+                GrammarDescriptor armDescriptor = children.get(childIndex++);
+                if (armDescriptor.kind() != ProductionKind.MATCH_ARM) {
+                    throw invariant("match contains a non-arm child after its subject", armDescriptor);
+                }
+                arms.add(asMatchArm(replay(armDescriptor), armDescriptor));
+            }
+            SourceSpan closing = cursor.consume(
+                    direct ? TokenKind.RIGHT_BRACKET : TokenKind.RIGHT_PAREN, descriptor);
+            return new SyntaxNode.Match(
+                    mode, Optional.ofNullable(subject), arms, keyword,
+                    Optional.ofNullable(directAccessor), opening, closing,
+                    sourceView.span(descriptor));
+        }
+
+        private Object replayMatchArm(GrammarDescriptor descriptor) {
+            SourceSpan separator = cursor.consume(TokenKind.DOUBLE_QUESTION, descriptor);
+            Token token = cursor.currentToken(descriptor);
+            boolean wildcard = descriptor.children().getFirst().startTokenIndex()
+                    != descriptor.startTokenIndex() + 1;
+            SourceSpan wildcardSpan = wildcard
+                    ? cursor.consume(TokenKind.IDENTIFIER, descriptor) : null;
+            List<GrammarDescriptor> children = descriptor.children();
+            int childIndex = 0;
+            SyntaxNode.Expression pattern = null;
+            if (!wildcard) {
+                GrammarDescriptor patternDescriptor = children.get(childIndex++);
+                pattern = asExpression(replay(patternDescriptor), patternDescriptor);
+            }
+            SourceSpan when = null;
+            SyntaxNode.Expression guard = null;
+            if (cursor.currentToken(descriptor).kind() == TokenKind.WHEN) {
+                when = cursor.consume(TokenKind.WHEN, descriptor);
+                GrammarDescriptor guardDescriptor = children.get(childIndex++);
+                guard = asExpression(replay(guardDescriptor), guardDescriptor);
+            }
+            SourceSpan arrow = cursor.consume(TokenKind.ARROW, descriptor);
+            if (childIndex >= children.size()) {
+                throw invariant("match arm lacks its result child", descriptor);
+            }
+            GrammarDescriptor resultDescriptor = children.get(childIndex++);
+            SyntaxNode.Expression result = asExpression(replay(resultDescriptor), resultDescriptor);
+            if (childIndex != children.size()) {
+                throw invariant("match arm has unconsumed children", descriptor);
+            }
+            return new SyntaxNode.MatchArm(
+                    Optional.ofNullable(pattern), Optional.ofNullable(guard), result,
+                    separator, Optional.ofNullable(wildcardSpan), Optional.ofNullable(when),
+                    arrow, sourceView.span(descriptor));
         }
 
         private Object replayCoalesce(GrammarDescriptor descriptor) {
@@ -846,7 +932,8 @@ public final class Parser {
             GrammarDescriptor pathDescriptor = descriptor.children().getFirst();
             SyntaxNode.NamespacePath path = asNamespacePath(
                     replay(pathDescriptor), pathDescriptor);
-            SourceSpan terminalArrow = cursor.consume(TokenKind.ARROW, descriptor);
+            Optional<SourceSpan> terminalArrow = descriptor.metadata().operatorTokenIndices().isEmpty()
+                    ? Optional.empty() : Optional.of(cursor.consume(TokenKind.ARROW, descriptor));
             SourceSpan accessor = cursor.consume(TokenKind.COLON_DOT, descriptor);
             GrammarDescriptor memberDescriptor = descriptor.children().get(1);
             SyntaxNode.MemberName member = asMemberName(replay(memberDescriptor), memberDescriptor);
@@ -861,7 +948,8 @@ public final class Parser {
             GrammarDescriptor pathDescriptor = descriptor.children().getFirst();
             SyntaxNode.NamespacePath path = asNamespacePath(
                     replay(pathDescriptor), pathDescriptor);
-            SourceSpan terminalArrow = cursor.consume(TokenKind.ARROW, descriptor);
+            Optional<SourceSpan> terminalArrow = descriptor.metadata().operatorTokenIndices().isEmpty()
+                    ? Optional.empty() : Optional.of(cursor.consume(TokenKind.ARROW, descriptor));
             SourceSpan accessor = cursor.consume(TokenKind.DOUBLE_COLON, descriptor);
             GrammarDescriptor nameDescriptor = descriptor.children().get(1);
             SyntaxNode.Identifier name = asIdentifier(replay(nameDescriptor), nameDescriptor);
@@ -1228,6 +1316,11 @@ public final class Parser {
         private static SyntaxNode.PredicateBinding asPredicateBinding(
                 Object value, GrammarDescriptor descriptor) {
             return cast(value, SyntaxNode.PredicateBinding.class, descriptor, "predicate binding");
+        }
+
+        private static SyntaxNode.MatchArm asMatchArm(
+                Object value, GrammarDescriptor descriptor) {
+            return cast(value, SyntaxNode.MatchArm.class, descriptor, "match arm");
         }
 
         private static SyntaxNode.NamespacePath asNamespacePath(

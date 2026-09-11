@@ -1,0 +1,3 @@
+// match	value	I32	9	value patterns use lossless numeric widening independently per arm
+let subject :I16 = 7I16
+let @pub run :Fn<;I32> = (=> | | (match subject ?? 7I8 -> 9 ?? _ -> 0))

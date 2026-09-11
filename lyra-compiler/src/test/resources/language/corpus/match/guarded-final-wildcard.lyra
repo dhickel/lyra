@@ -1,0 +1,2 @@
+// match	reject	-	LYC-PARSE-003	match final wildcard cannot have a guard
+let @pub run :Fn<;I32> = (=> | | (match 1 ?? 1 -> 2 ?? _ when #T -> 3))

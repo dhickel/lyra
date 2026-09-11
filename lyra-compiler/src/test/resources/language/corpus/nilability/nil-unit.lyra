@@ -1,0 +1,3 @@
+// nilability	value	String	()	nil unit
+let @nil value :Unit = #NIL
+let @pub run :Fn<;String> = (=> | | String[(value : ())])

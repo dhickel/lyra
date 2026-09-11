@@ -34,6 +34,7 @@ final class StructuralContextPlan {
         TUPLE_MEMBER,
         CONDITIONAL_THEN,
         CONDITIONAL_ELSE,
+        MATCH_RESULT,
         COALESCE_VALUE,
         COALESCE_FALLBACK,
         EQUALITY_OPERAND
@@ -74,6 +75,10 @@ final class StructuralContextPlan {
             return new ChildPosition(Role.CONDITIONAL_ELSE, -1);
         }
 
+        static ChildPosition matchResult(int index) {
+            return new ChildPosition(Role.MATCH_RESULT, index);
+        }
+
         static ChildPosition coalesceValue() {
             return new ChildPosition(Role.COALESCE_VALUE, -1);
         }
@@ -89,6 +94,7 @@ final class StructuralContextPlan {
         private static boolean requiresIndex(Role role) {
             return role == Role.ARRAY_ELEMENT
                     || role == Role.TUPLE_MEMBER
+                    || role == Role.MATCH_RESULT
                     || role == Role.EQUALITY_OPERAND;
         }
     }
@@ -109,7 +115,7 @@ final class StructuralContextPlan {
         Objects.requireNonNull(peerType, "peerType");
 
         return switch (position.role()) {
-            case BLOCK_FINAL, CONDITIONAL_THEN, CONDITIONAL_ELSE -> {
+            case BLOCK_FINAL, CONDITIONAL_THEN, CONDITIONAL_ELSE, MATCH_RESULT -> {
                 if (expectedParent.isPresent()) {
                     yield expectedParent;
                 }
@@ -163,6 +169,11 @@ final class StructuralContextPlan {
                     .map(StructuralContextPlan::containsContextFreeNil)
                     .orElse(false);
         }
+        if (expression instanceof SyntaxNode.Match match) {
+            return match.arms().stream()
+                    .map(SyntaxNode.MatchArm::result)
+                    .anyMatch(StructuralContextPlan::containsContextFreeNil);
+        }
         if (expression instanceof SyntaxNode.Coalesce coalesce) {
             return containsContextFreeNil(coalesce.value())
                     || containsContextFreeNil(coalesce.fallback());
@@ -211,6 +222,11 @@ final class StructuralContextPlan {
             return isBaseLessNil(conditional.thenExpression())
                     && isBaseLessNil(conditional.elseExpression().orElseThrow());
         }
+        if (expression instanceof SyntaxNode.Match match) {
+            return match.arms().stream()
+                    .map(SyntaxNode.MatchArm::result)
+                    .allMatch(StructuralContextPlan::isBaseLessNil);
+        }
         if (expression instanceof SyntaxNode.Coalesce coalesce) {
             // Coalescing does not make a bare value-side #NIL inferable.  Its
             // value role still needs an expected @nil contract.
@@ -246,6 +262,11 @@ final class StructuralContextPlan {
                     .or(() -> conditional.elseExpression()
                             .flatMap(StructuralContextPlan::firstContextFreeNilSpan));
         }
+        if (expression instanceof SyntaxNode.Match match) {
+            return match.arms().stream().map(SyntaxNode.MatchArm::result)
+                    .map(StructuralContextPlan::firstContextFreeNilSpan)
+                    .flatMap(Optional::stream).findFirst();
+        }
         if (expression instanceof SyntaxNode.Coalesce coalesce) {
             return firstContextFreeNilSpan(coalesce.value())
                     .or(() -> firstContextFreeNilSpan(coalesce.fallback()));
@@ -259,6 +280,7 @@ final class StructuralContextPlan {
         if (expression instanceof SyntaxNode.ArrayLiteral
                 || expression instanceof SyntaxNode.TupleLiteral
                 || expression instanceof SyntaxNode.Conditional
+                || expression instanceof SyntaxNode.Match
                 || expression instanceof SyntaxNode.Coalesce) {
             return true;
         }
@@ -442,6 +464,7 @@ final class StructuralContextPlan {
         TUPLE,
         BLOCK,
         CONDITIONAL,
+        MATCH,
         COALESCE
     }
 
@@ -521,6 +544,19 @@ final class StructuralContextPlan {
                             sourceShape(conditional.elseExpression().orElseThrow(), atomicType,
                                     explicitType, conditionalType)));
         }
+        if (source instanceof SyntaxNode.Match match) {
+            Optional<LyraType> synthesized = conditionalType.apply(source);
+            if (synthesized.isPresent()) {
+                return SourceShape.value(synthesized.orElseThrow());
+            }
+            return new SourceShape(
+                    ShapeKind.MATCH,
+                    Optional.empty(),
+                    match.arms().stream()
+                            .map(SyntaxNode.MatchArm::result)
+                            .map(value -> sourceShape(value, atomicType, explicitType, conditionalType))
+                            .toList());
+        }
         if (source instanceof SyntaxNode.Coalesce coalesce) {
             return new SourceShape(
                     ShapeKind.COALESCE,
@@ -578,7 +614,7 @@ final class StructuralContextPlan {
             SourceShape shape,
             List<SourceShape> destination) {
         switch (shape.kind()) {
-            case BLOCK, CONDITIONAL -> {
+            case BLOCK, CONDITIONAL, MATCH -> {
                 for (SourceShape child : shape.children()) {
                     if (!appendPeerShapes(child, destination)) {
                         return false;
@@ -789,6 +825,20 @@ final class StructuralContextPlan {
                     continue;
                 }
                 Optional<LyraType> shaped = derive(branch, peerType);
+                if (shaped.isEmpty()) {
+                    return Optional.empty();
+                }
+                result = mergeNilShape(result, shaped.orElseThrow());
+            }
+            return Optional.of(result);
+        }
+        if (source instanceof SyntaxNode.Match match) {
+            LyraType result = peerType;
+            for (SyntaxNode.MatchArm arm : match.arms()) {
+                if (!containsContextFreeNil(arm.result())) {
+                    continue;
+                }
+                Optional<LyraType> shaped = derive(arm.result(), peerType);
                 if (shaped.isEmpty()) {
                     return Optional.empty();
                 }

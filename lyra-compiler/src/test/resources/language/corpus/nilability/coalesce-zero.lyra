@@ -1,0 +1,3 @@
+// nilability	value	I32	0	coalesce zero
+let @nil value :I32 = 0
+let @pub run :Fn<;I32> = (=> | | (value : 9))

@@ -1,0 +1,7 @@
+// match	value	I32	3	fallback-only match still evaluates a traditional subject once
+let @mut reads :I32 = 0
+let subject :Fn<;I32> = (=> | | { reads := (++ reads) 4 })
+let @pub run :Fn<;I32> = (=> | | {
+    let selected :I32 = (match (subject) ?? _ -> 2)
+    (+ selected reads)
+})

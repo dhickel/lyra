@@ -1,0 +1,2 @@
+// lexical	reject	-	LYC-LEX-001	non ascii name
+let café = 1

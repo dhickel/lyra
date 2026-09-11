@@ -93,6 +93,114 @@ public final class GrammarMatcherTest {
         modifierAndOperatorRoleValidation();
     }
 
+    @Test
+    public void testBracketMatchStartsANewExpressionRatherThanAReceiverCall() {
+        for (String separator : List.of("", " ", "\n", "/* boundary */")) {
+            LexedSource lexed = lex("((=> :I32 |value :I32| value)" + separator
+                    + "::match[1 ?? 1 -> 2 ?? _ -> 0])");
+            GrammarProgram program = success(lexed);
+            GrammarDescriptor lambda = findFirst(program.root(), ProductionKind.LAMBDA);
+            GrammarDescriptor match = findFirst(program.root(), ProductionKind.MATCH);
+            check(program.forms().getFirst().kind() == ProductionKind.CALLABLE_CALL,
+                    "bracket match is the lambda call's argument, independent of trivia");
+            check(lambda.endTokenIndex() == match.startTokenIndex(),
+                    "the callable target ends before the bracket match accessor");
+            check(match.metadata().openingTokenIndex() == match.startTokenIndex() + 2
+                            && match.metadata().primaryTokenIndex() == match.startTokenIndex() + 1,
+                    "bracket match retains its exact accessor/keyword/opening roles");
+            check(!collectKinds(program.root()).contains(ProductionKind.DIRECT_CALL),
+                    "a bracket match argument is not a receiver method call");
+            assertNoIllegalSiblingOverlap(program.root());
+            program.validateAgainst(lexed);
+            program.assertReplayConsumed(0, lexed.tokens().size());
+
+            DescriptorMetadata metadata = match.metadata();
+            GrammarDescriptor invalid = withMetadata(match, new DescriptorMetadata(
+                    metadata.openingTokenIndex(), metadata.closingTokenIndex(),
+                    match.startTokenIndex(), metadata.commaTokenIndices(),
+                    metadata.modifierTokenIndices(), metadata.operatorTokenIndices()));
+            expectThrows(IllegalArgumentException.class,
+                    () -> replaceDescriptor(program, match, invalid).validateAgainst(lexed));
+        }
+        expectFailure("(callee ::match)", CompilerDiagnosticCodes.PARSE_INVALID_ACCESSOR);
+        expectFailure("(callee ::when[])", CompilerDiagnosticCodes.PARSE_INVALID_ACCESSOR);
+        expectFailure("ns->::match[1 ?? _ -> 0]", CompilerDiagnosticCodes.PARSE_UNEXPECTED_TOKEN);
+        expectFailure("ns->inner->::match[1 ?? _ -> 0]", CompilerDiagnosticCodes.PARSE_INVALID_ACCESSOR);
+    }
+
+    @Test
+    public void testConditionalArrowBeforeBracketMatchIsNotNamespaceQualification() {
+        for (String source : List.of(
+                "(enabled -> ::match[_ ?? #T -> 42 ?? _ -> 0] : 7)",
+                "(enabled -> ::match[1 ?? _ -> 42])",
+                "(candidate value -> ::match[value ?? _ -> 42] : 7)")) {
+            LexedSource lexed = lex(source);
+            GrammarProgram program = success(lexed);
+            GrammarDescriptor conditional = program.forms().getFirst();
+            check(conditional.kind() == ProductionKind.CONDITIONAL
+                            && conditional.children().getFirst().kind() == ProductionKind.IDENTIFIER,
+                    "an identifier before an arrow and bracket match remains a conditional predicate");
+            check(findFirst(conditional, ProductionKind.MATCH).startTokenIndex()
+                            == conditional.metadata().primaryTokenIndex() + 1,
+                    "the bracket match starts immediately after the conditional arrow");
+            check(!collectKinds(conditional).contains(ProductionKind.NAMESPACE_DIRECT_CALL),
+                    "a reserved match result cannot be mistaken for a qualified callable");
+            assertNoIllegalSiblingOverlap(program.root());
+            program.validateAgainst(lexed);
+        }
+    }
+
+    @Test
+    public void testMatchHeadsAcceptBothNamespaceTerminalAccessorSpellings() {
+        for (String path : List.of("game->constants", "game->math->constants")) {
+            for (String terminal : List.of("", "->")) {
+                String qualifier = path + terminal;
+                LexedSource lexed = lex("(match value ?? " + qualifier + ":.values[0] -> 7"
+                        + " ?? " + qualifier + "::pair[]:.0 when " + qualifier + "::pair[]:.1 -> 8"
+                        + " ?? _ -> 0)");
+                GrammarProgram program = success(lexed);
+                GrammarDescriptor match = program.forms().getFirst();
+                check(match.kind() == ProductionKind.MATCH && match.children().size() == 4,
+                        "qualified pattern and guard accessors do not consume the arm arrow");
+                GrammarDescriptor member = findFirst(match, ProductionKind.NAMESPACE_MEMBER_ACCESS);
+                GrammarDescriptor call = findFirst(match, ProductionKind.NAMESPACE_DIRECT_CALL);
+                check(member.metadata().operatorTokenIndices().size() == (terminal.isEmpty() ? 0 : 1)
+                                && call.metadata().operatorTokenIndices().size() == (terminal.isEmpty() ? 0 : 1),
+                        "only a real terminal namespace arrow is recorded in accessor metadata");
+                assertNoIllegalSiblingOverlap(program.root());
+                program.validateAgainst(lexed);
+                for (GrammarDescriptor access : List.of(member, call)) {
+                    DescriptorMetadata metadata = access.metadata();
+                    List<Integer> wrongArrows = terminal.isEmpty()
+                            ? List.of(access.children().getFirst().endTokenIndex()) : List.of();
+                    GrammarDescriptor invalid = withMetadata(access, new DescriptorMetadata(
+                            metadata.openingTokenIndex(), metadata.closingTokenIndex(), metadata.primaryTokenIndex(),
+                            metadata.commaTokenIndices(), metadata.modifierTokenIndices(), wrongArrows));
+                    expectThrows(IllegalArgumentException.class,
+                            () -> replaceDescriptor(program, access, invalid).validateAgainst(lexed));
+                }
+            }
+        }
+        assertNestedPrimaryRejected("let value = game->constants::outer[::inner[]]",
+                ProductionKind.NAMESPACE_DIRECT_CALL, ProductionKind.DIRECT_CALL);
+        for (String source : List.of("receiver:.member", "receiver::method[]")) {
+            LexedSource lexed = lex(source);
+            GrammarProgram program = success(lexed);
+            GrammarDescriptor access = program.forms().getFirst();
+            GrammarDescriptor receiver = access.children().getFirst();
+            GrammarDescriptor path = new GrammarDescriptor(ProductionKind.NAMESPACE_PATH,
+                    receiver.startTokenIndex(), receiver.endTokenIndex(), List.of(receiver), DescriptorMetadata.NONE);
+            var children = new java.util.ArrayList<>(access.children());
+            children.set(0, path);
+            GrammarDescriptor invalid = new GrammarDescriptor(
+                    access.kind() == ProductionKind.MEMBER_ACCESS
+                            ? ProductionKind.NAMESPACE_MEMBER_ACCESS : ProductionKind.NAMESPACE_DIRECT_CALL,
+                    access.startTokenIndex(), access.endTokenIndex(), children, access.metadata());
+            expectThrows(IllegalArgumentException.class,
+                    () -> replaceDescriptor(program, access, invalid).validateAgainst(lexed));
+        }
+    }
+
     private static void normativeFormsProduceReplayDescriptors() {
         String source = "import game->math->vector "
                 + "import game->math->vector as vec "

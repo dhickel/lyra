@@ -1,0 +1,2 @@
+// operator-arity	reject	-	LYC-PARSE-007	multiply prefix
+let bad = (* 2)

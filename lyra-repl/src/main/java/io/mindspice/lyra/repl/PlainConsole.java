@@ -136,7 +136,7 @@ public final class PlainConsole {
                 if (source.isBlank()) {
                     continue;
                 }
-                if (source.stripLeading().startsWith(":")) {
+                if (isCommandLine(source)) {
                     // Source readers may return a line terminator for an
                     // accepted editor line. It is transport framing, not
                     // part of the command argument; remove only that one
@@ -168,6 +168,12 @@ public final class PlainConsole {
          * Return an unfinished unit only at EOF so the shared loop can diagnose it.
          */
         String readSource(List<String> history) throws IOException;
+    }
+
+    /** A single leading colon is reserved for console commands; {@code ::} is Lyra source. */
+    static boolean isCommandLine(String source) {
+        String line = source.stripLeading();
+        return line.startsWith(":") && !line.startsWith("::");
     }
 
     private static String commandLine(String source) {
@@ -479,7 +485,7 @@ public final class PlainConsole {
                     line = line.substring(0, line.length() - 1);
                 }
                 String decoded = decode(line);
-                if (!decoded.stripLeading().startsWith(":")) {
+                if (!PlainConsole.isCommandLine(decoded)) {
                     result.add(decoded);
                 }
             }

@@ -1,0 +1,2 @@
+// lexical	reject	-	LYC-PARSE-005	annotation no space
+let x:I32 = 1

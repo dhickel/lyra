@@ -1,0 +1,2 @@
+// strings	value	Bool	true	utf16 index
+let @pub run :Fn<;Bool> = (=> | | (== "😀"[0] '\uD83D'))

@@ -927,6 +927,15 @@ final class ResolvedTopologyValidator {
             collectMutationSites(coalesce.fallback(), moduleId, destination);
             return;
         }
+        if (expression instanceof SyntaxNode.Match match) {
+            match.subject().ifPresent(value -> collectMutationSites(value, moduleId, destination));
+            for (SyntaxNode.MatchArm arm : match.arms()) {
+                arm.pattern().ifPresent(value -> collectMutationSites(value, moduleId, destination));
+                arm.guard().ifPresent(value -> collectMutationSites(value, moduleId, destination));
+                collectMutationSites(arm.result(), moduleId, destination);
+            }
+            return;
+        }
         if (expression instanceof SyntaxNode.PrefixAssignment assignment) {
             destination.add(mutationSite(moduleId, assignment.target()));
             collectMutationSites(assignment.target(), moduleId, destination);

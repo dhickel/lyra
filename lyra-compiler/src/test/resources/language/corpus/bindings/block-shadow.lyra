@@ -1,0 +1,2 @@
+// bindings	value	I32	5	block shadow
+let @pub run :Fn<;I32> = (=> | | { let n :I32 = 5 { let n :String = "shadow" n } n })

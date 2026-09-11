@@ -1,0 +1,3 @@
+// functions	value	I32	100000	self tail call
+let loop :Fn<I32,I32;I32> = (=> |n sum| ((== n 0) -> sum : ::loop[(- n 1) (+ sum 1)]))
+let @pub run :Fn<;I32> = (=> | | ::loop[100000 0])

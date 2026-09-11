@@ -1,0 +1,3 @@
+// lexical	value	I32	7	nested comments
+let @pub run :Fn<;I32> = (=> | | { /* outer /* inner */ end */ let _v7 :I32 = 7 // line
+ _v7 })

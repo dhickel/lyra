@@ -1,0 +1,2 @@
+// operator-arity	reject	-	LYC-PARSE-007	identity bracket
+let bad = eq?[arr]

@@ -1,0 +1,2 @@
+// truthiness	value	Bool	false	empty string
+let @pub run :Fn<;Bool> = (=> | | ("" -> #T : #F))

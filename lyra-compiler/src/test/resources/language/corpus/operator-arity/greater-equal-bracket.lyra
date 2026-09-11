@@ -1,0 +1,2 @@
+// operator-arity	reject	-	LYC-PARSE-007	greater equal bracket
+let bad = >=[3]

@@ -1,0 +1,2 @@
+// operators	value	I32	1	remainder prefix
+let @pub run :Fn<;I32> = (=> | | (% 7 3))

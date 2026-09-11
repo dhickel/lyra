@@ -1,0 +1,2 @@
+// bindings	reject	-	LYC-PARSE-006	duplicate modifier
+let @mut @mut x = 1

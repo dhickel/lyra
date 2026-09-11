@@ -1,0 +1,3 @@
+// functions	value	I32	6	compact argument
+let apply :Fn<Fn<I32;I32>,I32;I32> = (=> |f x| (f x))
+let @pub run :Fn<;I32> = (=> | | ::apply[|x| (+ x 2) 4])

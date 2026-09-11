@@ -1,0 +1,4 @@
+// conditionals	value	I32	1	predicate once
+let @mut count :I32 = 0
+let tick :Fn<;I32> = (=> | | { count := (++ count) count })
+let @pub run :Fn<;I32> = (=> | | (::tick[] value -> value : 9))

@@ -1,0 +1,2 @@
+// match	reject	-	LYC-TYPE-001	match result arms must have compatible types
+let @pub run :Fn<;I32> = (=> | | (match 1 ?? 1 -> "wrong" ?? _ -> 3))

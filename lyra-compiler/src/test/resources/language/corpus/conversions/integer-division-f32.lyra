@@ -1,0 +1,2 @@
+// conversions	value	F32	2.5	integer division f32
+let @pub run :Fn<;F32> = (=> | | (/ 5I64 2I64))

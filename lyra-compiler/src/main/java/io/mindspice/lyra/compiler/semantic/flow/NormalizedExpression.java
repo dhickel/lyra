@@ -8,6 +8,7 @@ import io.mindspice.lyra.compiler.semantic.TypedConversion;
 import io.mindspice.lyra.compiler.semantic.TypedExpressionKind;
 import io.mindspice.lyra.compiler.semantic.TypedLink;
 import io.mindspice.lyra.compiler.semantic.TypedLiteralValue;
+import io.mindspice.lyra.compiler.semantic.TypedMatch;
 import io.mindspice.lyra.compiler.source.SourceSpan;
 import io.mindspice.lyra.compiler.types.LyraSignature;
 import io.mindspice.lyra.compiler.types.LyraType;
@@ -44,7 +45,8 @@ public record NormalizedExpression(
         Optional<String> memberName,
         Optional<BigInteger> tupleIndex,
         Optional<LyraSignature> signature,
-        Optional<DeclarationId> predicateBinding) implements Comparable<NormalizedExpression> {
+        Optional<DeclarationId> predicateBinding,
+        Optional<TypedMatch> match) implements Comparable<NormalizedExpression> {
     public enum CallKind {
         DIRECT,
         NAMESPACE,
@@ -70,6 +72,23 @@ public record NormalizedExpression(
         Objects.requireNonNull(tupleIndex, "tupleIndex");
         Objects.requireNonNull(signature, "signature");
         Objects.requireNonNull(predicateBinding, "predicateBinding");
+        Objects.requireNonNull(match, "match");
+    }
+
+    /** Compatibility constructor for non-match normalized fixtures and adapters. */
+    public NormalizedExpression(
+            TypedExpressionKind kind, SourceSpan span, LyraType type,
+            List<NormalizedExpression> children, Optional<TypedLink> link,
+            Optional<DeclarationId> declarationId, Optional<LambdaId> lambdaId,
+            Optional<ScopeId> scopeId, Optional<ProjectionStep> projectionStep,
+            Optional<CallKind> callKind, List<CaptureId> captureIds,
+            Optional<TypedLiteralValue> literal, Optional<TypedConversion> conversion,
+            Optional<String> operator, Optional<String> memberName,
+            Optional<BigInteger> tupleIndex, Optional<LyraSignature> signature,
+            Optional<DeclarationId> predicateBinding) {
+        this(kind, span, type, children, link, declarationId, lambdaId, scopeId,
+                projectionStep, callKind, captureIds, literal, conversion, operator,
+                memberName, tupleIndex, signature, predicateBinding, Optional.empty());
     }
 
     /** Compatibility constructor for callers interested only in flow fields. */
@@ -87,7 +106,8 @@ public record NormalizedExpression(
             List<CaptureId> captureIds) {
         this(kind, span, type, children, link, declarationId, lambdaId, scopeId,
                 projectionStep, callKind, captureIds, Optional.empty(), Optional.empty(),
-                Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
+                Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                Optional.empty());
     }
 
     public List<NormalizedExpression> operands() {
@@ -120,6 +140,7 @@ public record NormalizedExpression(
         tupleIndex.ifPresent(value -> result.append("/tuple=").append(value));
         signature.ifPresent(value -> result.append("/signature=").append(value));
         predicateBinding.ifPresent(value -> result.append("/predicate=").append(value));
+        match.ifPresent(value -> result.append("/match=").append(value));
         for (CaptureId capture : captureIds) {
             result.append("/capture=").append(capture);
         }

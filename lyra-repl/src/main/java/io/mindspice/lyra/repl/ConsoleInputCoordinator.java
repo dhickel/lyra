@@ -45,7 +45,7 @@ final class ConsoleInputCoordinator implements PlainConsole.SourceReader {
                 buffer.setLength(0);
                 return source;
             }
-            if (buffer.toString().isBlank() && line.stripLeading().startsWith(":")) {
+            if (buffer.toString().isBlank() && PlainConsole.isCommandLine(line)) {
                 return line.stripLeading();
             }
             if (buffer.isEmpty() && line.isBlank()) {

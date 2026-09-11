@@ -1,0 +1,2 @@
+// match	value	I32	8	match expressions nest in selected result positions
+let @pub run :Fn<;I32> = (=> | | (match 2 ?? 1 -> 0 ?? _ -> ::match[_ ?? #F -> 7 ?? _ -> 8]))

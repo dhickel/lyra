@@ -1,0 +1,2 @@
+// functions	reject	-	LYC-RESOLVE-017	incomplete lambda
+let f = (=> |x| x)

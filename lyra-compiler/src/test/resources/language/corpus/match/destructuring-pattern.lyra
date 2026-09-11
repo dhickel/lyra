@@ -1,0 +1,2 @@
+// match	reject	-	LYC-PARSE-003	destructuring and type patterns remain outside match scope
+let @pub run :Fn<;I32> = (=> | | (match Array[1 2] ?? Array<I32> -> 1 ?? _ -> 0))

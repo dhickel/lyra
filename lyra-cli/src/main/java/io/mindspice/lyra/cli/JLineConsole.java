@@ -85,7 +85,7 @@ final class JLineConsole implements PlainConsole.SourceReader {
                     @Override
                     public ParsedLine parse(String line, int cursor, ParseContext context) {
                         if (context == ParseContext.ACCEPT_LINE
-                                && !line.stripLeading().startsWith(":")) {
+                                && !isCommandLine(line)) {
                             // Enter adds a newline, just as it does in PlainConsole.
                             // Literal newlines are errors, not continuations.
                             var state = LexicalCompleteness.inspect(line + "\n");
@@ -335,8 +335,14 @@ final class JLineConsole implements PlainConsole.SourceReader {
         return line.substring(begin, end);
     }
 
+    private static boolean isCommandLine(String source) {
+        String line = source.stripLeading();
+        return line.startsWith(":") && !line.startsWith("::");
+    }
+
     private static boolean isCommandPosition(String line, int start, int cursor) {
-        if (start >= cursor || line.charAt(start) != ':') {
+        if (start >= cursor || line.charAt(start) != ':'
+                || (start + 1 < line.length() && line.charAt(start + 1) == ':')) {
             return false;
         }
         String prefix = line.substring(0, start);

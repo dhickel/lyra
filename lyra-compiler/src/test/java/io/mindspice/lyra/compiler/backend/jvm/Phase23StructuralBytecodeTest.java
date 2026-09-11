@@ -16,7 +16,9 @@ import java.lang.classfile.ClassModel;
 import java.lang.classfile.Instruction;
 import java.lang.classfile.MethodModel;
 import java.lang.classfile.Opcode;
+import java.lang.classfile.Attributes;
 import java.lang.classfile.attribute.CodeAttribute;
+import java.lang.classfile.attribute.LineNumberTableAttribute;
 import java.lang.classfile.instruction.InvokeInstruction;
 import java.lang.classfile.instruction.NewObjectInstruction;
 import java.lang.reflect.AccessFlag;
@@ -59,6 +61,18 @@ public final class Phase23StructuralBytecodeTest {
                         "let @pub wide :Fn<F64,F64;F64> = (=> |left right| (+ left right))"),
                 new Fixture("branch", "Fn<I32;I32>", "(I)I", Set.of(Opcode.IF_ICMPGT, Opcode.IRETURN),
                         "let @pub branch :Fn<I32;I32> = (=> |value| ((<= value 0) -> 1 : 2))"),
+                new Fixture("valueMatch", "Fn<I32;I32>", "(I)I", Set.of(Opcode.LOOKUPSWITCH, Opcode.IRETURN),
+                        "let @pub valueMatch :Fn<I32;I32> = (=> |value| { let selected :I32 = "
+                                + "(match value ?? 1 -> 11 ?? 2 -> 22 ?? _ -> 33) selected })"),
+                new Fixture("conditionalMatch", "Fn<I32;I32>", "(I)I", Set.of(Opcode.IRETURN),
+                        "let @pub conditionalMatch :Fn<I32;I32> = (=> |value| "
+                                + "::match[_ ?? (< value 0) -> 1 ?? value -> 2 ?? _ -> 3])"),
+                new Fixture("guardedMatch", "Fn<I32,I32;I32>", "(II)I", Set.of(Opcode.IRETURN),
+                        "let @pub guardedMatch :Fn<I32,I32;I32> = (=> |value pattern| "
+                                + "(match value ?? pattern when (> value 0) -> 1 ?? _ -> 2))"),
+                new Fixture("unsignedMatch", "Fn<U32;I32>", "(I)I", Set.of(Opcode.IRETURN),
+                        "let @pub unsignedMatch :Fn<U32;I32> = (=> |value| "
+                                + "(match value ?? 4294967295I64 -> 1 ?? _ -> 2))"),
                 new Fixture("arrayAt", "Fn<Array<I32>,I32;I32>", "([II)I", Set.of(Opcode.IALOAD, Opcode.IRETURN),
                         "let @pub arrayAt :Fn<Array<I32>,I32;I32> = (=> |values index| values[index])"),
                 new Fixture("stringLength", "Fn<String;I32>", "(Ljava/lang/String;)I", Set.of(Opcode.INVOKEVIRTUAL, Opcode.IRETURN),
@@ -154,6 +168,104 @@ public final class Phase23StructuralBytecodeTest {
                 int result = (int) handle.invokeExact(50_000, 0);
                 assertEquals(1_250_025_000, result,
                         "the lowered tail loop must preserve the accumulator result");
+            } finally {
+                module.close();
+            }
+        }
+    }
+
+    @Test
+    public void integralMatchUsesLookupSwitchAndRetainsArmSourceLines() throws Throwable {
+        String source = """
+                let @pub choose :Fn<I32;I32> = (=> |value| {
+                  let selected :I32 = (match value
+                    ?? 1 -> 11
+                    ?? 2 -> 22
+                    ?? 3 -> 33
+                    ?? _ -> 44)
+                  selected })
+                """;
+        CompiledArtifact artifact = compile(source);
+        ClassModel closure = soleClosure(artifact);
+        MethodModel invoke = closure.methods().stream()
+                .filter(method -> method.methodName().stringValue().equals("invoke"))
+                .filter(method -> method.methodType().stringValue().equals("(I)I"))
+                .findFirst().orElseThrow();
+        CodeAttribute code = (CodeAttribute) invoke.code().orElseThrow();
+        assertTrue(instructions(code).stream().anyMatch(
+                        instruction -> instruction.opcode() == Opcode.LOOKUPSWITCH),
+                "constant integral match arms must lower to one JVM lookup switch");
+        LineNumberTableAttribute lines = code.findAttribute(Attributes.lineNumberTable()).orElseThrow();
+        Set<Integer> lineNumbers = lines.lineNumbers().stream()
+                .map(java.lang.classfile.attribute.LineNumberInfo::lineNumber)
+                .collect(java.util.stream.Collectors.toSet());
+        assertTrue(lineNumbers.containsAll(Set.of(3, 4, 5, 6)),
+                "match arm result source lines must survive direct lowering");
+
+        try (LoadedArtifact loaded = LyraRuntime.load(artifact)) {
+            ModuleHandle module = loaded.instantiate();
+            try {
+                MethodHandle handle = module.export("choose", "Fn<I32;I32>").methodHandle();
+                assertEquals(11, (int) handle.invokeExact(1));
+                assertEquals(22, (int) handle.invokeExact(2));
+                assertEquals(44, (int) handle.invokeExact(9));
+            } finally {
+                module.close();
+            }
+        }
+    }
+
+    @Test
+    public void unsignedNarrowMatchSwitchUsesMathematicalValues() throws Throwable {
+        CompiledArtifact artifact = compile("""
+                let @pub choose :Fn<U8;I32> = (=> |value| {
+                  let selected :I32 = (match value
+                    ?? 0U8 -> 10
+                    ?? 255U8 -> 20
+                    ?? _ -> 30)
+                  selected })
+                """);
+        MethodModel invoke = soleClosure(artifact).methods().stream()
+                .filter(method -> method.methodName().stringValue().equals("invoke"))
+                .filter(method -> method.methodType().stringValue().equals("(B)I"))
+                .findFirst().orElseThrow();
+        assertTrue(instructions((CodeAttribute) invoke.code().orElseThrow()).stream()
+                .anyMatch(instruction -> instruction.opcode() == Opcode.LOOKUPSWITCH));
+        try (LoadedArtifact loaded = LyraRuntime.load(artifact)) {
+            ModuleHandle module = loaded.instantiate();
+            try {
+                MethodHandle handle = module.export("choose", "Fn<U8;I32>").methodHandle();
+                assertEquals(20, (int) handle.invokeExact((byte) -1));
+            } finally {
+                module.close();
+            }
+        }
+    }
+
+    @Test
+    public void matchResultsPreserveDirectSelfTailLowering() throws Throwable {
+        CompiledArtifact artifact = compile(
+                "let @pub countdown :Fn<I32;I32> = (=> |n| "
+                        + "(match n ?? 0 -> 7 ?? _ -> ::countdown[(- n 1)]))");
+        ClassModel closure = soleClosure(artifact);
+        MethodModel invoke = closure.methods().stream()
+                .filter(method -> method.methodName().stringValue().equals("invoke"))
+                .filter(method -> method.methodType().stringValue().equals("(I)I"))
+                .findFirst().orElseThrow();
+        List<Instruction> code = instructions((CodeAttribute) invoke.code().orElseThrow());
+        assertTrue(code.stream().anyMatch(instruction ->
+                        instruction.opcode() == Opcode.GOTO || instruction.opcode() == Opcode.GOTO_W),
+                "tail match fallback must jump back to the closure loop");
+        assertTrue(code.stream().filter(InvokeInstruction.class::isInstance)
+                        .map(InvokeInstruction.class::cast)
+                        .noneMatch(call -> call.name().stringValue().equals("invoke")
+                                && call.owner().name().stringValue().contains("$lyra$closure$")),
+                "tail match result must not recursively invoke its generated closure");
+        try (LoadedArtifact loaded = LyraRuntime.load(artifact)) {
+            ModuleHandle module = loaded.instantiate();
+            try {
+                MethodHandle handle = module.export("countdown", "Fn<I32;I32>").methodHandle();
+                assertEquals(7, (int) handle.invokeExact(50_000));
             } finally {
                 module.close();
             }

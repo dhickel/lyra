@@ -1,0 +1,2 @@
+// lexical	reject	-	LYC-LEX-011	integer range
+let x = 256U8

@@ -1,0 +1,3 @@
+// match	reject	-	LYC-TYPE-008	match fallback does not narrow a nilable subject
+let @nil subject :I32 = 1
+let @pub run :Fn<;I32> = (=> | | (match subject ?? #NIL -> 0 ?? _ -> (+ subject 1)))

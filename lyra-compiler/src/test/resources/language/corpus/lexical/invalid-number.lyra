@@ -1,0 +1,2 @@
+// lexical	reject	-	LYC-LEX-010	invalid number
+let x = 1.2e+

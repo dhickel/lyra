@@ -9,6 +9,7 @@ public enum TypedExpressionKind {
     BLOCK,
     CONDITIONAL,
     COALESCE,
+    MATCH,
     LAMBDA,
     CALLABLE_CALL,
     DIRECT_CALL,

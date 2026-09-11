@@ -1,0 +1,2 @@
+// match	reject	-	LYC-PARSE-003	match arm marker must be followed by a pattern
+let @pub run :Fn<;I32> = (=> | | (match 1 ?? -> 2 ?? _ -> 3))

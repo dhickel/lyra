@@ -388,6 +388,14 @@ public final class GrammarMatcher {
         }
 
         private GrammarDescriptor parseExpression() {
+            return parseExpression(false);
+        }
+
+        private GrammarDescriptor parseMatchHeadExpression() {
+            return parseExpression(true);
+        }
+
+        private GrammarDescriptor parseExpression(boolean stopBeforeArmArrow) {
             if (failure != null) {
                 return null;
             }
@@ -421,7 +429,7 @@ public final class GrammarMatcher {
             if (result == null) {
                 return null;
             }
-            return parsePostfix(result);
+            return parsePostfix(result, stopBeforeArmArrow);
         }
 
         private GrammarDescriptor parseParenthesized() {
@@ -437,6 +445,10 @@ public final class GrammarMatcher {
             }
             if (at(TokenKind.LAMBDA_ARROW)) {
                 return parseLambda(open);
+            }
+            if (at(TokenKind.MATCH)) {
+                int keyword = advance();
+                return parseMatch(open, open, keyword, TokenKind.RIGHT_PAREN);
             }
             if (at(TokenKind.COLON_EQUAL)) {
                 return parsePrefixAssignment(open);
@@ -592,6 +604,174 @@ public final class GrammarMatcher {
                     close + 1,
                     List.of(content),
                     metadata(open, close, -1, commas, List.of(), List.of()));
+        }
+
+        private GrammarDescriptor parseMatch(
+                int start,
+                int opening,
+                int keyword,
+                TokenKind closingKind) {
+            boolean conditionalMode = at(TokenKind.IDENTIFIER)
+                    && token(current).lexeme().equals("_")
+                    && peekKind(1) == TokenKind.DOUBLE_QUESTION;
+            List<GrammarDescriptor> children = new ArrayList<>();
+            if (conditionalMode) {
+                advance();
+            } else {
+                if (at(TokenKind.DOUBLE_QUESTION) || at(closingKind) || at(TokenKind.EOF)) {
+                    fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, current,
+                            "match requires a traditional value or conditional '_' subject");
+                    return null;
+                }
+                GrammarDescriptor subject = parseExpression();
+                if (subject == null) {
+                    return null;
+                }
+                children.add(subject);
+            }
+
+            boolean finalFallback = false;
+            int armCount = 0;
+            while (at(TokenKind.DOUBLE_QUESTION)) {
+                if (finalFallback) {
+                    fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, current,
+                            "a match arm cannot follow an unconditional wildcard fallback");
+                    return null;
+                }
+                int armStart = current;
+                int separator = advance();
+                boolean wildcard = at(TokenKind.IDENTIFIER)
+                        && token(current).lexeme().equals("_")
+                        && (peekKind(1) == TokenKind.WHEN
+                        || peekKind(1) == TokenKind.ARROW);
+                List<GrammarDescriptor> armChildren = new ArrayList<>();
+                if (wildcard) {
+                    advance();
+                } else {
+                    if (matchArmExpressionMissing(closingKind)) {
+                        fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, current,
+                                "match arm marker must be followed by a pattern or condition");
+                        return null;
+                    }
+                    if (bareTypePattern()) {
+                        fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, current,
+                                "match supports value equality, not type or destructuring patterns");
+                        return null;
+                    }
+                    GrammarDescriptor pattern = parseMatchHeadExpression();
+                    if (pattern == null) {
+                        return null;
+                    }
+                    armChildren.add(pattern);
+                }
+                boolean guarded = false;
+                if (at(TokenKind.WHEN)) {
+                    if (conditionalMode) {
+                        fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, current,
+                                "conditional match arms do not use 'when'");
+                        return null;
+                    }
+                    guarded = true;
+                    advance();
+                    if (matchArmExpressionMissing(closingKind)) {
+                        fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, current,
+                                "'when' must be followed by a guard expression");
+                        return null;
+                    }
+                    GrammarDescriptor guard = parseMatchHeadExpression();
+                    if (guard == null) {
+                        return null;
+                    }
+                    armChildren.add(guard);
+                }
+                if (at(TokenKind.COMMA)) {
+                    fail(CompilerDiagnosticCodes.PARSE_INVALID_COMMA, current,
+                            "match arms do not use comma separators");
+                    return null;
+                }
+                if (!at(TokenKind.ARROW)) {
+                    fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, current,
+                            "expected '->' after a match pattern or condition");
+                    return null;
+                }
+                int arrow = advance();
+                if (matchArmExpressionMissing(closingKind)) {
+                    fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, current,
+                            "match arm arrow must be followed by a result expression");
+                    return null;
+                }
+                GrammarDescriptor result = parseExpression();
+                if (result == null) {
+                    return null;
+                }
+                if (at(TokenKind.COMMA)) {
+                    fail(CompilerDiagnosticCodes.PARSE_INVALID_COMMA, current,
+                            "match arms do not use comma separators");
+                    return null;
+                }
+                armChildren.add(result);
+                children.add(descriptor(
+                        ProductionKind.MATCH_ARM,
+                        armStart,
+                        result.endTokenIndex(),
+                        armChildren,
+                        metadata(-1, -1, separator, List.of(), List.of(), List.of(arrow))));
+                armCount++;
+                finalFallback = wildcard && !guarded;
+            }
+            if (armCount == 0) {
+                fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, current,
+                        "a match requires at least one '??' arm");
+                return null;
+            }
+            if (!finalFallback) {
+                fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, current,
+                        "a match requires a final unguarded '?? _ ->' fallback");
+                return null;
+            }
+            if (!at(closingKind)) {
+                failMissingDelimiter(closingKind == TokenKind.RIGHT_PAREN
+                        ? "')' to close match" : "']' to close match");
+                return null;
+            }
+            int close = advance();
+            return descriptor(
+                    ProductionKind.MATCH,
+                    start,
+                    close + 1,
+                    children,
+                    metadata(opening, close, keyword, List.of(), List.of(), List.of()));
+        }
+
+        private boolean matchArmExpressionMissing(TokenKind closingKind) {
+            return at(TokenKind.ARROW) || at(TokenKind.WHEN)
+                    || at(TokenKind.DOUBLE_QUESTION) || at(TokenKind.COMMA)
+                    || at(closingKind) || at(TokenKind.EOF);
+        }
+
+        private boolean bareTypePattern() {
+            if (!at(TokenKind.TYPE_NAME)) {
+                return false;
+            }
+            if (peekKind(1) == TokenKind.LEFT_BRACKET) {
+                return false;
+            }
+            if (peekKind(1) != TokenKind.LESS) {
+                return true;
+            }
+            int depth = 0;
+            for (int index = current + 1; index < source.tokens().size(); index++) {
+                TokenKind kind = token(index).kind();
+                if (kind == TokenKind.LESS) {
+                    depth++;
+                } else if (kind == TokenKind.GREATER && --depth == 0) {
+                    return index + 1 >= source.tokens().size()
+                            || token(index + 1).kind() != TokenKind.LEFT_BRACKET;
+                } else if (kind == TokenKind.EOF) {
+                    return true;
+                }
+            }
+            return true;
         }
 
         private GrammarDescriptor parsePrefixAssignment(int open) {
@@ -1285,6 +1465,16 @@ public final class GrammarMatcher {
         private GrammarDescriptor parseUnqualifiedDirectCall() {
             int start = current;
             int accessor = advance();
+            if (at(TokenKind.MATCH)) {
+                int keyword = advance();
+                if (!at(TokenKind.LEFT_BRACKET)) {
+                    fail(CompilerDiagnosticCodes.PARSE_INVALID_ACCESSOR, current,
+                            "'::match' must be followed by bracket match contents");
+                    return null;
+                }
+                int opening = advance();
+                return parseMatch(start, opening, keyword, TokenKind.RIGHT_BRACKET);
+            }
             if (!at(TokenKind.IDENTIFIER)) {
                 fail(
                         CompilerDiagnosticCodes.PARSE_INVALID_ACCESSOR,
@@ -1312,8 +1502,16 @@ public final class GrammarMatcher {
                     metadata(-1, -1, accessor, List.of(), List.of(), List.of()));
         }
 
-        private GrammarDescriptor parsePostfix(GrammarDescriptor base) {
+        private GrammarDescriptor parsePostfix(
+                GrammarDescriptor base,
+                boolean stopBeforeArmArrow) {
             while (true) {
+                if (stopBeforeArmArrow && at(TokenKind.ARROW)
+                        && !(base.kind() == ProductionKind.IDENTIFIER
+                        && looksLikeNamespaceAccess()
+                        && namespaceSuffixIsCompleteMatchHead())) {
+                    return base;
+                }
                 if (at(TokenKind.LEFT_BRACKET)) {
                     GrammarDescriptor arguments = parseArgumentList();
                     if (arguments == null) {
@@ -1349,6 +1547,10 @@ public final class GrammarMatcher {
                     continue;
                 }
                 if (at(TokenKind.DOUBLE_COLON)) {
+                    // Reserved ::match begins the next expression, never a receiver method call.
+                    if (peekKind(1) == TokenKind.MATCH) {
+                        return base;
+                    }
                     int accessor = advance();
                     if (!at(TokenKind.IDENTIFIER)) {
                         fail(
@@ -1397,6 +1599,10 @@ public final class GrammarMatcher {
             if (index >= tokens.size() || tokens.get(index).kind() != TokenKind.ARROW) {
                 return false;
             }
+            // In (predicate -> ::match[...]), the arrow starts a branch, not a namespace suffix.
+            if (peekKind(1) == TokenKind.DOUBLE_COLON && peekKind(2) == TokenKind.MATCH) {
+                return false;
+            }
             index++;
             while (index < tokens.size()) {
                 TokenKind kind = tokens.get(index).kind();
@@ -1413,6 +1619,97 @@ public final class GrammarMatcher {
                 return kind == TokenKind.COLON_DOT || kind == TokenKind.DOUBLE_COLON;
             }
             return false;
+        }
+
+        private boolean namespaceSuffixIsCompleteMatchHead() {
+            int index = current + 1;
+            while (index + 1 < tokens.size()
+                    && tokens.get(index).kind() == TokenKind.IDENTIFIER
+                    && tokens.get(index + 1).kind() == TokenKind.ARROW) {
+                index += 2;
+            }
+            // The final path segment may adjoin the accessor: game->constants::value[].
+            if (index < tokens.size() && tokens.get(index).kind() == TokenKind.IDENTIFIER) {
+                index++;
+            }
+            if (index >= tokens.size()) {
+                return false;
+            }
+            if (tokens.get(index).kind() == TokenKind.COLON_DOT) {
+                return matchHeadEndsAtArmBoundary(matchHeadPostfixEnd(index + 2));
+            }
+            if (tokens.get(index).kind() != TokenKind.DOUBLE_COLON
+                    || index + 2 >= tokens.size()
+                    || tokens.get(index + 1).kind() != TokenKind.IDENTIFIER
+                    || tokens.get(index + 2).kind() != TokenKind.LEFT_BRACKET) {
+                return false;
+            }
+            int depth = 0;
+            for (int cursor = index + 2; cursor < tokens.size(); cursor++) {
+                TokenKind kind = tokens.get(cursor).kind();
+                if (kind == TokenKind.LEFT_BRACKET) {
+                    depth++;
+                } else if (kind == TokenKind.RIGHT_BRACKET && --depth == 0) {
+                    return matchHeadEndsAtArmBoundary(matchHeadPostfixEnd(cursor + 1));
+                } else if (kind == TokenKind.EOF) {
+                    return false;
+                }
+            }
+            return false;
+        }
+
+        private int matchHeadPostfixEnd(int index) {
+            int cursor = index;
+            while (cursor < tokens.size()) {
+                TokenKind kind = tokens.get(cursor).kind();
+                if (kind == TokenKind.LEFT_BRACKET) {
+                    cursor = bracketEnd(cursor);
+                    if (cursor < 0) {
+                        return -1;
+                    }
+                } else if (kind == TokenKind.COLON_DOT) {
+                    if (cursor + 1 >= tokens.size()
+                            || (tokens.get(cursor + 1).kind() != TokenKind.IDENTIFIER
+                            && tokens.get(cursor + 1).kind() != TokenKind.INTEGER_LITERAL)) {
+                        return -1;
+                    }
+                    cursor += 2;
+                } else if (kind == TokenKind.DOUBLE_COLON) {
+                    if (cursor + 2 >= tokens.size()
+                            || tokens.get(cursor + 1).kind() != TokenKind.IDENTIFIER
+                            || tokens.get(cursor + 2).kind() != TokenKind.LEFT_BRACKET) {
+                        return -1;
+                    }
+                    cursor = bracketEnd(cursor + 2);
+                    if (cursor < 0) {
+                        return -1;
+                    }
+                } else {
+                    return cursor;
+                }
+            }
+            return cursor;
+        }
+
+        private int bracketEnd(int opening) {
+            int depth = 0;
+            for (int cursor = opening; cursor < tokens.size(); cursor++) {
+                TokenKind kind = tokens.get(cursor).kind();
+                if (kind == TokenKind.LEFT_BRACKET) {
+                    depth++;
+                } else if (kind == TokenKind.RIGHT_BRACKET && --depth == 0) {
+                    return cursor + 1;
+                } else if (kind == TokenKind.EOF) {
+                    return -1;
+                }
+            }
+            return -1;
+        }
+
+        private boolean matchHeadEndsAtArmBoundary(int index) {
+            return index >= 0 && index < tokens.size()
+                    && (tokens.get(index).kind() == TokenKind.WHEN
+                    || tokens.get(index).kind() == TokenKind.ARROW);
         }
 
         private GrammarDescriptor parseNamespaceSuffix(GrammarDescriptor base) {

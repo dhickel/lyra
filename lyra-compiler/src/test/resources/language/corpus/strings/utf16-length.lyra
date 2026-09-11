@@ -1,0 +1,2 @@
+// strings	value	I32	3	utf16 length
+let @pub run :Fn<;I32> = (=> | | "😀x":.length)

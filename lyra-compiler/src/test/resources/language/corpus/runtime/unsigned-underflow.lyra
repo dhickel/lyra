@@ -1,0 +1,3 @@
+// runtime	throws	U64	LYR-ARITH	unsigned underflow
+let zero :U64 = 0
+let @pub run :Fn<;U64> = (=> | | (-- zero))

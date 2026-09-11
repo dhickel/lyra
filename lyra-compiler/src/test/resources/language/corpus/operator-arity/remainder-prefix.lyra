@@ -1,0 +1,2 @@
+// operator-arity	reject	-	LYC-PARSE-007	remainder prefix
+let bad = (% 7)

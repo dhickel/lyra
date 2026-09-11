@@ -1,0 +1,4 @@
+// runtime	throws	I32	LYR-BOUNDS	bounds negative
+let index :I32 = (- 1)
+let values :Array<I32> = Array[1]
+let @pub run :Fn<;I32> = (=> | | values[index])

@@ -1,0 +1,8 @@
+// match	value	I32	38	conditional match prefix spelling uses lazy truthiness
+let @mut probes :I32 = 0
+let conditionOne :Fn<;I32> = (=> | | { probes := (+ probes 10) 0 })
+let conditionTwo :Fn<;I32> = (=> | | { probes := (+ probes 20) 2 })
+let @pub run :Fn<;I32> = (=> | | {
+    let chosen :I32 = (match _ ?? (conditionOne) -> 7 ?? (conditionTwo) -> 8 ?? _ -> 9)
+    (+ chosen probes)
+})

@@ -1,0 +1,2 @@
+// primitives	value	String	#T	bool text
+let @pub run :Fn<;String> = (=> | | String[#T])

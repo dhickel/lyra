@@ -1,0 +1,4 @@
+// functions	value	Bool	true	mutual recursion
+let even :Fn<I32;Bool> = (=> |n| ((== n 0) -> #T : ::odd[(- n 1)]))
+let odd :Fn<I32;Bool> = (=> |n| ((== n 0) -> #F : ::even[(- n 1)]))
+let @pub run :Fn<;Bool> = (=> | | ::even[24])

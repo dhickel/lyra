@@ -1,0 +1,3 @@
+// runtime	throws	F64	LYR-ARITH	float nonfinite
+let value :F64 = 1.0e200
+let @pub run :Fn<;F64> = (=> | | (* value value))

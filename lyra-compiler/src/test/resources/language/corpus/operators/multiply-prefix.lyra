@@ -1,0 +1,2 @@
+// operators	value	I32	24	multiply prefix
+let @pub run :Fn<;I32> = (=> | | (* 2 3 4))

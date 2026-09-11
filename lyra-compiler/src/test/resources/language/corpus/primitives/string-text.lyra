@@ -1,0 +1,2 @@
+// primitives	value	String	text	string text
+let @pub run :Fn<;String> = (=> | | String["text"])

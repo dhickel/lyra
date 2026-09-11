@@ -70,7 +70,7 @@ A separate closed immutable typed IR isolates semantics from parser records and 
 - resolved symbol, export, and module IDs;
 - declared and inferred types;
 - legal inserted conversions and nil narrowing;
-- strict left-to-right evaluation and short-circuit control flow;
+- strict left-to-right evaluation and short-circuit control flow, including subject-once value matching and ordered conditional-match arms;
 - direct calls, callable-value calls, namespace/value/direct-call access distinctions, and module accesses;
 - immutable captures, specialized shared cells for captured `@mut` bindings, and recursive closure initialization;
 - checked integer operations, non-finite float checks, bounds checks, invalid conversions, and all runtime-failure sites;
@@ -122,7 +122,7 @@ Java receives live arrays, not defensive copies. It can therefore mutate a retur
 - Public function-valued signatures receive deterministic generated `@FunctionalInterface` types with exact descriptors.
 - Capturing lambdas become deterministic final closure classes with typed capture fields. Immutable captures store their selected value/reference; captured `@mut` bindings share one specialized cell.
 - Every exported/returned closure retains its module instance. Invocation checks OPEN state and owner thread; closing the module invalidates later closure invocation.
-- Direct self-tail calls lower to loops and use constant JVM stack. Mutual/non-tail recursion uses JVM calls. `StackOverflowError` crossing a generated Lyra invocation boundary is the sole `VirtualMachineError` translated to `LYR-STACK`; all other `VirtualMachineError` instances escape unchanged.
+- Direct self-tail calls, including calls in match-arm result positions, lower to loops and use constant JVM stack. Mutual/non-tail recursion uses JVM calls. `StackOverflowError` crossing a generated Lyra invocation boundary is the sole `VirtualMachineError` translated to `LYR-STACK`; all other `VirtualMachineError` instances escape unchanged.
 - MethodHandles support exact dynamic export lookup, not whole-program control flow.
 
 ### Generated classes and Java facade
@@ -270,6 +270,8 @@ Compiler progress, malformed-input handling, and reliable diagnostics remain cor
 
 Primitive hot paths remain unboxed, direct Java exports are ordinary typed JVM calls, closure/cell allocation occurs only when semantics require it, and dynamic names resolve once.
 
+Match lowers to direct typed control flow, not a runtime matcher or generic dispatch ABI. Value mode stores the subject once; conditional mode emits ordered truth tests without a subject value. Specialized dispatch is permitted only when it preserves first-match behavior, exact typed equality, guard/pattern effects, lazy evaluation, source-mapped failures, and tail positions. No public optimization setting is introduced.
+
 Absolute thresholds come from an evidence spike rather than guesses. Before broad backend expansion, JMH benchmarks compare generated Lyra with equivalent direct Java for typed calls, arithmetic/branches, self-tail recursion, closures, arrays/tuples/strings, failures, construction/loading, cold/warm calls, facade versus exact handles, allocations, class count, and metaspace. Results record JDK build, JVM flags, GC, OS/CPU, forks, warmup, measurement iterations, and confidence intervals. The owner ratifies numerical release gates from those results.
 
 Zero avoidable boxing/allocation in primitive steady-state paths is proven by Class-File API descriptor/instruction inspection plus JMH GC-profiler/JFR allocation evidence. Escape-analysis-dependent elimination alone does not satisfy the structural gate.
@@ -311,6 +313,8 @@ A conforming implementation proves:
 - benchmark evidence against direct Java.
 
 Tests assert results, types, descriptors, diagnostics, exceptions, metadata, and lifecycle states. Debug prints or absence of crashes are not evidence.
+
+The core `mvn test` suite includes bounded reproducible compiler/runtime fuzzing and a persistent-session state model, as documented in `docs/language-testing.md`. Runtime/ABI changes must update independent value/state expectations and applicable corrupted-artifact, authentication, owner-thread, lifetime, failure-recovery and source-frame assertions. Saved failing inputs must be replayable and retained as regression tests; extended seeded campaigns supplement the default gate. Fuzz worker process deadlines and memory limits contain test failures and do not alter the production trust boundary or establish hostile-code isolation.
 
 ## Deferred Backend and Integration Work
 

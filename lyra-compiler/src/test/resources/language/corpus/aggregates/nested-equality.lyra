@@ -1,0 +1,2 @@
+// aggregates	value	Bool	true	nested equality
+let @pub run :Fn<;Bool> = (=> | | (== Tuple[Array<I32>[1 2] "x"] Tuple[Array<I32>[1 2] "x"]))

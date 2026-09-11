@@ -1,0 +1,3 @@
+// conversions	value	F64	1.6092878570068703E19	U64 runtime conversion rounds once while preserving low sticky bits
+let value :U64 = 16092878570068704171U64
+let @pub run :Fn<;F64> = (=> | | F64[value])

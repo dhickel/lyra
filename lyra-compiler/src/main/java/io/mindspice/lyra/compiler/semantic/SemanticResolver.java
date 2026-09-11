@@ -879,6 +879,16 @@ public final class SemanticResolver {
             } else if (expression instanceof SyntaxNode.Coalesce coalesce) {
                 collectExpression(coalesce.value(), scope, work, Optional.empty());
                 collectExpression(coalesce.fallback(), scope, work, Optional.empty());
+            } else if (expression instanceof SyntaxNode.Match match) {
+                match.subject().ifPresent(value ->
+                        collectExpression(value, scope, work, Optional.empty()));
+                for (SyntaxNode.MatchArm arm : match.arms()) {
+                    arm.pattern().ifPresent(value ->
+                            collectExpression(value, scope, work, Optional.empty()));
+                    arm.guard().ifPresent(value ->
+                            collectExpression(value, scope, work, Optional.empty()));
+                    collectExpression(arm.result(), scope, work, Optional.empty());
+                }
             } else if (expression instanceof SyntaxNode.PrefixAssignment assignment) {
                 collectExpression(assignment.target(), scope, work, Optional.empty());
                 collectExpression(assignment.value(), scope, work, Optional.empty());
@@ -1769,6 +1779,67 @@ public final class SemanticResolver {
                 // must still retain aggregate identity when the branch's type is
                 // supplied later by the checker (notably after nil narrowing).
                 return Use.merged(Optional.empty(), List.of(thenUse, elseUse));
+            }
+            if (expression instanceof SyntaxNode.Match match) {
+                addLink(new SyntaxLink(match.span(), SyntaxLinkKind.MATCH));
+                if (match.subject().isPresent()) {
+                    resolveExpression(match.subject().orElseThrow(), scope, work, lambda,
+                            currentDeclaration, Optional.empty());
+                }
+                BindingFlowState continuation = ownershipProjectionState;
+                boolean continuationAuthority = ownershipProjectionAuthoritative;
+                List<Use> resultUses = new ArrayList<>();
+                List<BindingFlowState> resultStates = new ArrayList<>();
+                List<Boolean> resultAuthorities = new ArrayList<>();
+                Optional<LyraSignature> resultExpected = contextualExpected
+                        .flatMap(this::expectedLambdaSignature);
+                for (SyntaxNode.MatchArm arm : match.arms()) {
+                    ownershipProjectionState = continuation;
+                    ownershipProjectionAuthoritative = continuationAuthority;
+                    if (arm.pattern().isPresent()) {
+                        resolveExpression(arm.pattern().orElseThrow(), scope, work, lambda,
+                                currentDeclaration, Optional.empty());
+                    }
+                    BindingFlowState testedState = ownershipProjectionState;
+                    boolean testedAuthority = ownershipProjectionAuthoritative;
+                    if (arm.guard().isPresent()) {
+                        resolveExpression(arm.guard().orElseThrow(), scope, work, lambda,
+                                currentDeclaration, Optional.empty());
+                        BindingFlowState guardedState = ownershipProjectionState;
+                        boolean guardedAuthority = ownershipProjectionAuthoritative;
+                        continuation = arm.wildcard()
+                                ? guardedState : testedState.join(guardedState);
+                        continuationAuthority = arm.wildcard()
+                                ? guardedAuthority : testedAuthority && guardedAuthority;
+                    } else {
+                        continuation = testedState;
+                        continuationAuthority = testedAuthority;
+                    }
+                    rememberExpected(arm.result(), contextualExpected);
+                    Use resultUse = resolveExpression(arm.result(), scope, work, lambda,
+                            currentDeclaration, resultExpected);
+                    resultUses.add(resultUse);
+                    resultStates.add(ownershipProjectionState);
+                    resultAuthorities.add(ownershipProjectionAuthoritative);
+                }
+                BindingFlowState joined = resultStates.getFirst();
+                boolean authoritative = resultAuthorities.getFirst();
+                for (int index = 1; index < resultStates.size(); index++) {
+                    joined = joined.join(resultStates.get(index));
+                    authoritative &= resultAuthorities.get(index);
+                }
+                ownershipProjectionState = joined;
+                ownershipProjectionAuthoritative = authoritative;
+                if (contextualExpected.isPresent()) {
+                    return Use.mergedValue(contextualExpected.orElseThrow(), resultUses);
+                }
+                Optional<LyraType> common = resultUses.stream()
+                        .map(use -> use.type).flatMap(Optional::stream).findFirst();
+                if (common.isPresent() && resultUses.stream().allMatch(use ->
+                        use.type.isPresent() && use.type.orElseThrow().equals(common.orElseThrow()))) {
+                    return Use.mergedValue(common.orElseThrow(), resultUses);
+                }
+                return Use.merged(Optional.empty(), resultUses);
             }
             if (expression instanceof SyntaxNode.Coalesce coalesce) {
                 addLink(new SyntaxLink(coalesce.span(), SyntaxLinkKind.EXPRESSION));

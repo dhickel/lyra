@@ -45,7 +45,8 @@ public final class TypedExpressionNormalizer {
                 expression.memberName(),
                 expression.tupleIndex(),
                 expression.signature(),
-                expression.predicateBinding());
+                expression.predicateBinding(),
+                expression.match());
     }
 
     public static NormalizedExpression adapt(TypedExpression expression) {

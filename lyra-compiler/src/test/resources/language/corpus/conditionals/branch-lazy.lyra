@@ -1,0 +1,3 @@
+// conditionals	value	I32	7	branch lazy
+let bad :Fn<I32;I32> = (=> |n| (% 1 n))
+let @pub run :Fn<;I32> = (=> | | (#F -> ::bad[0] : 7))

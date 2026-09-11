@@ -432,6 +432,66 @@ final class TypedSemanticProvenance {
                     "typed conditional predicate is not truth-testable");
             return;
         }
+        if (syntax instanceof SyntaxNode.Match matchSyntax) {
+            require(expression.kind() == TypedExpressionKind.MATCH,
+                    "match source did not produce one typed match operation");
+            TypedMatch match = expression.match().orElseThrow(() -> invalid(
+                    "typed match has no closed arm metadata"));
+            require(match.mode() == (matchSyntax.mode() == SyntaxNode.MatchMode.TRADITIONAL
+                            ? TypedMatch.MatchMode.TRADITIONAL : TypedMatch.MatchMode.CONDITIONAL)
+                            && match.arms().size() == matchSyntax.arms().size()
+                            && match.childCount() == expression.children().size(),
+                    "typed match metadata does not match its source mode/arms");
+            if (matchSyntax.subject().isPresent()) {
+                require(match.subjectChild().isPresent(), "traditional typed match has no subject child");
+                validateSourceExpression(matchSyntax.subject().orElseThrow(),
+                        expression.children().get(match.subjectChild().getAsInt()), moduleId);
+            } else {
+                require(match.subjectChild().isEmpty(), "conditional typed match invented a subject expression");
+            }
+            LyraType resultType = expectedType.isPresent() ? expression.type() : inferredMatchType(matchSyntax);
+            require(expression.type().equals(resultType),
+                    "typed match does not have its independently inferred result type");
+            for (int index = 0; index < match.arms().size(); index++) {
+                TypedMatch.Arm arm = match.arms().get(index);
+                SyntaxNode.MatchArm sourceArm = matchSyntax.arms().get(index);
+                require(arm.span().equals(sourceArm.span()) && arm.wildcard() == sourceArm.wildcard(),
+                        "typed match arm does not retain its source role/span");
+                if (sourceArm.pattern().isPresent()) {
+                    require(arm.patternChild().isPresent(), "typed match arm lost its pattern/condition child");
+                    TypedExpression pattern = expression.children().get(arm.patternChild().getAsInt());
+                    if (matchSyntax.mode() == SyntaxNode.MatchMode.CONDITIONAL) {
+                        validateSourceExpression(sourceArm.pattern().orElseThrow(), pattern, moduleId);
+                        require(truthTestable(pattern.type()), "conditional match condition is not truth-testable");
+                        require(arm.comparisonType().isEmpty(), "conditional match invented equality metadata");
+                    } else {
+                        LyraType comparison = inferredMatchComparison(
+                                matchSyntax.subject().orElseThrow(), sourceArm.pattern().orElseThrow());
+                        require(arm.comparisonType().filter(comparison::equals).isPresent(),
+                                "typed match equality type is not source-derived");
+                        validateSourceExpression(sourceArm.pattern().orElseThrow(), pattern, moduleId,
+                                Optional.of(comparison));
+                        TypedExpression subject = expression.children().get(match.subjectChild().getAsInt());
+                        require(TypeRules.canImplicitlyConvert(subject.type(), comparison),
+                                "typed match subject cannot reach its equality type");
+                    }
+                } else {
+                    require(arm.patternChild().isEmpty() && arm.comparisonType().isEmpty(),
+                            "typed wildcard match arm carries pattern/equality metadata");
+                }
+                if (sourceArm.guard().isPresent()) {
+                    require(arm.guardChild().isPresent(), "typed match arm lost its guard child");
+                    TypedExpression guard = expression.children().get(arm.guardChild().getAsInt());
+                    validateSourceExpression(sourceArm.guard().orElseThrow(), guard, moduleId);
+                    require(truthTestable(guard.type()), "typed match guard is not truth-testable");
+                } else {
+                    require(arm.guardChild().isEmpty(), "typed match arm invented a guard child");
+                }
+                validateSourceExpression(sourceArm.result(), expression.children().get(arm.resultChild()),
+                        moduleId, Optional.of(resultType));
+            }
+            return;
+        }
         if (syntax instanceof SyntaxNode.Coalesce coalesce) {
             require(expression.kind() == TypedExpressionKind.COALESCE
                             && expression.children().size() == 2,
@@ -1510,13 +1570,17 @@ final class TypedSemanticProvenance {
                 return conditionalShape;
             }
         }
+        if (syntax instanceof SyntaxNode.Match match) {
+            Optional<LyraType> matchShape = synthesizeStructuralMatch(match);
+            if (matchShape.isPresent()) {
+                return matchShape;
+            }
+        }
         return StructuralContextPlan.synthesize(
                 syntax,
                 this::synthesizeAtomicTypeWithoutContext,
                 type -> Optional.of(syntaxType(type, TypePosition.BINDING).withoutQualifiers()),
-                candidate -> candidate instanceof SyntaxNode.Conditional nested
-                        ? synthesizeStructuralConditional(nested)
-                        : Optional.empty());
+                this::synthesizeControlResult);
     }
 
     private Optional<LyraType> synthesizeAtomicTypeWithoutContext(
@@ -1570,6 +1634,9 @@ final class TypedSemanticProvenance {
                 return Optional.empty();
             }
             return Optional.of(inferredConditionalType(conditional));
+        }
+        if (syntax instanceof SyntaxNode.Match match) {
+            return synthesizeStructuralMatch(match);
         }
         if (syntax instanceof SyntaxNode.ArrayLiteral array) {
             if (array.explicitType().isPresent()) {
@@ -1687,6 +1754,97 @@ final class TypedSemanticProvenance {
         }
         return StructuralContextPlan.foldHomogeneous(List.of(
                 thenType.orElseThrow(), elseType.orElseThrow()));
+    }
+
+    private Optional<LyraType> synthesizeStructuralMatch(SyntaxNode.Match match) {
+        List<SyntaxNode.Expression> results = match.arms().stream()
+                .map(SyntaxNode.MatchArm::result).toList();
+        List<Optional<LyraType>> shapes = results.stream()
+                .map(this::synthesizedTypeWithoutContext).toList();
+        List<LyraType> known = shapes.stream().flatMap(Optional::stream)
+                .map(TypedSemanticProvenance::removeMutableQualifier).toList();
+        if (known.isEmpty()) {
+            return StructuralContextPlan.synthesizePeers(
+                    results, this::synthesizeAtomicTypeWithoutContext,
+                    type -> Optional.of(syntaxType(type, TypePosition.BINDING).withoutQualifiers()),
+                    this::synthesizeControlResult);
+        }
+        LyraType common;
+        if (known.size() == results.size() && known.stream().allMatch(LyraType::isNumeric)
+                && known.stream().noneMatch(LyraType::isNilable)) {
+            common = numericCommonWithoutContext(results, false)
+                    .map(value -> (LyraType) value).orElse(null);
+        } else {
+            common = StructuralContextPlan.foldHomogeneous(known).orElse(null);
+        }
+        if (common == null) {
+            return Optional.empty();
+        }
+        for (int index = 0; index < results.size(); index++) {
+            if (shapes.get(index).isEmpty()
+                    || StructuralContextPlan.containsContextFreeNil(results.get(index))) {
+                Optional<LyraType> shaped = StructuralContextPlan.expectedFromPeer(results.get(index), common);
+                if (shaped.isEmpty()) {
+                    return Optional.empty();
+                }
+                common = StructuralContextPlan.mergeNilShape(common, shaped.orElseThrow());
+            }
+        }
+        return Optional.of(common);
+    }
+
+    private Optional<LyraType> synthesizeControlResult(SyntaxNode.Expression expression) {
+        if (expression instanceof SyntaxNode.Conditional conditional) {
+            return synthesizeStructuralConditional(conditional);
+        }
+        if (expression instanceof SyntaxNode.Match match) {
+            return synthesizeStructuralMatch(match);
+        }
+        return Optional.empty();
+    }
+
+    private LyraType inferredMatchType(SyntaxNode.Match match) {
+        return synthesizeStructuralMatch(match).orElseThrow(() -> invalid(
+                "inferred match results do not provide a complete peer shape"));
+    }
+
+    private LyraType inferredMatchComparison(
+            SyntaxNode.Expression subject, SyntaxNode.Expression pattern) {
+        Optional<LyraType> subjectType = synthesizedTypeWithoutContext(subject)
+                .map(TypedSemanticProvenance::removeMutableQualifier);
+        if (subjectType.isEmpty()) {
+            throw invalid("match subject has no independently synthesized type");
+        }
+        if (StructuralContextPlan.isContextFreeNil(pattern)) {
+            require(subjectType.orElseThrow().isNilable(), "#NIL match pattern has a non-nilable subject");
+            return subjectType.orElseThrow();
+        }
+        LyraType patternType = synthesizedTypeWithoutContext(pattern)
+                .map(TypedSemanticProvenance::removeMutableQualifier)
+                .orElseThrow(() -> invalid("match pattern has no independently synthesized type"));
+        if (subjectType.orElseThrow().isNumeric() && patternType.isNumeric()
+                && !subjectType.orElseThrow().isNilable() && !patternType.isNilable()) {
+            PrimitiveType subjectPrimitive = (PrimitiveType) subjectType.orElseThrow().withoutQualifiers();
+            ExactNumericLiteral literal = directNumericLiteral(pattern);
+            if (literal == null) {
+                return TypeRules.commonNumericType(subjectPrimitive, patternType)
+                        .orElseThrow(() -> invalid("match equality has no common numeric type"));
+            }
+            for (PrimitiveType candidate : NUMERIC_CANDIDATES) {
+                boolean subjectFits = TypeRules.canImplicitlyWiden(subjectPrimitive, candidate);
+                boolean patternFits = literal.forcedType().isPresent()
+                        ? LiteralTyping.representableAs(literal, literal.forcedType().orElseThrow())
+                        && TypeRules.canImplicitlyWiden(
+                                literal.forcedType().orElseThrow(), candidate)
+                        : LiteralTyping.representableAs(literal, candidate);
+                if (subjectFits && patternFits) {
+                    return candidate;
+                }
+            }
+            throw invalid("match equality has no common numeric type");
+        }
+        return StructuralContextPlan.foldHomogeneous(List.of(subjectType.orElseThrow(), patternType))
+                .orElseThrow(() -> invalid("match equality has no compatible value type"));
     }
 
     private Optional<LyraType> synthesizeNumericConditional(
@@ -1858,6 +2016,22 @@ final class TypedSemanticProvenance {
                     .or(() -> findSourceLet(conditional.thenBranch(), nameSpan))
                     .or(() -> conditional.elseBranch().flatMap(value -> findSourceLet(value, nameSpan)));
         }
+        if (expression instanceof SyntaxNode.Match match) {
+            Optional<SyntaxNode.LetBinding> found = match.subject()
+                    .flatMap(value -> findSourceLet(value, nameSpan));
+            if (found.isPresent()) {
+                return found;
+            }
+            for (SyntaxNode.MatchArm arm : match.arms()) {
+                found = arm.pattern().flatMap(value -> findSourceLet(value, nameSpan))
+                        .or(() -> arm.guard().flatMap(value -> findSourceLet(value, nameSpan)))
+                        .or(() -> findSourceLet(arm.result(), nameSpan));
+                if (found.isPresent()) {
+                    return found;
+                }
+            }
+            return Optional.empty();
+        }
         if (expression instanceof SyntaxNode.Coalesce coalesce) {
             return findSourceLet(coalesce.value(), nameSpan)
                     .or(() -> findSourceLet(coalesce.fallback(), nameSpan));
@@ -1974,6 +2148,23 @@ final class TypedSemanticProvenance {
                     .or(() -> findPredicateConditional(conditional.thenBranch(), bindingSpan))
                     .or(() -> conditional.elseBranch()
                             .flatMap(value -> findPredicateConditional(value, bindingSpan)));
+        }
+        if (expression instanceof SyntaxNode.Match match) {
+            Optional<SyntaxNode.Conditional> found = match.subject()
+                    .flatMap(value -> findPredicateConditional(value, bindingSpan));
+            if (found.isPresent()) {
+                return found;
+            }
+            for (SyntaxNode.MatchArm arm : match.arms()) {
+                found = arm.pattern().flatMap(value -> findPredicateConditional(value, bindingSpan))
+                        .or(() -> arm.guard().flatMap(value ->
+                                findPredicateConditional(value, bindingSpan)))
+                        .or(() -> findPredicateConditional(arm.result(), bindingSpan));
+                if (found.isPresent()) {
+                    return found;
+                }
+            }
+            return Optional.empty();
         }
         if (expression instanceof SyntaxNode.Coalesce coalesce) {
             return findPredicateConditional(coalesce.value(), bindingSpan)
@@ -2246,6 +2437,7 @@ final class TypedSemanticProvenance {
             case DECLARATION, REBINDING -> EnumSet.of(Metadata.LINK, Metadata.DECLARATION);
             case BLOCK -> EnumSet.of(Metadata.SCOPE);
             case CONDITIONAL -> EnumSet.of(Metadata.PREDICATE_BINDING);
+            case MATCH -> EnumSet.of(Metadata.MATCH);
             case COALESCE, CALLABLE_CALL, ARRAY_LITERAL, TUPLE_LITERAL,
                     INDEX_ACCESS, NARROWING -> EnumSet.noneOf(Metadata.class);
             case LAMBDA -> EnumSet.of(Metadata.LAMBDA, Metadata.SIGNATURE, Metadata.CAPTURES);
@@ -2277,6 +2469,10 @@ final class TypedSemanticProvenance {
                     "typed conditional has an invalid child count");
             case COALESCE -> require(expression.children().size() == 2,
                     "typed coalesce has an invalid child count");
+            case MATCH -> require(expression.match().isPresent()
+                            && expression.match().orElseThrow().childCount()
+                            == expression.children().size(),
+                    "typed match metadata/children are incomplete");
             case ARRAY_LITERAL -> require(!expression.type().isNilable()
                             && expression.children().stream().allMatch(Objects::nonNull)
                             && expression.type().withoutQualifiers() instanceof ArrayType,
@@ -2358,6 +2554,7 @@ final class TypedSemanticProvenance {
         checkMetadata(expression.signature().isPresent(), Metadata.SIGNATURE, allowed);
         checkMetadata(!expression.captureIds().isEmpty(), Metadata.CAPTURES, allowed);
         checkMetadata(expression.predicateBinding().isPresent(), Metadata.PREDICATE_BINDING, allowed);
+        checkMetadata(expression.match().isPresent(), Metadata.MATCH, allowed);
     }
 
     private void checkMetadata(boolean present, Metadata field, Set<Metadata> allowed) {
@@ -2455,6 +2652,7 @@ final class TypedSemanticProvenance {
         SCOPE,
         SIGNATURE,
         CAPTURES,
-        PREDICATE_BINDING
+        PREDICATE_BINDING,
+        MATCH
     }
 }

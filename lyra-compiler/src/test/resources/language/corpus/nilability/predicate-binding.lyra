@@ -1,0 +1,3 @@
+// nilability	value	I32	7	predicate binding
+let @nil value :I32 = 7
+let @pub run :Fn<;I32> = (=> | | (value present -> present : 9))

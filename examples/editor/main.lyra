@@ -1,0 +1,24 @@
+// Open this directory in Lyra Editor. Select a function and choose Run.
+import std->io as io
+import math
+
+let @mut visits :I32 = 0
+
+let greet :Fn<String;String> = (=> |name| {
+    visits := (+ visits 1)
+    let message :String = (+ "Hello, " name)
+    io->::println[message]
+    message
+})
+
+let calculate :Fn<I32;I32> = (=> |number| {
+    let doubled :I32 = math->::twice[number]
+    (+ doubled 1)
+})
+
+let @pub main :Fn<Array<String>;I32> = (=> |args| {
+    io->::println["Welcome to Lyra Editor"]
+    let answer :I32 = { ::calculate[20] }
+    io->::println[String[answer]]
+    0
+})

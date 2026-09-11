@@ -1,0 +1,4 @@
+let @pub run :Fn<U32,U32;U32> = (=> |a b| (match a ?? ((< a b) -> a : b) -> (match a ?? ((< a b) -> a : b) -> { let @nil maybe :U32 = Tuple<U32,Bool>[a, #T]:.0 (maybe : ((=> :U32 |value :U32| value) a)) } ?? _ -> ((=> :U32 |value :U32| value) (match a ?? ((< a b) -> a : b) -> b ?? _ -> b))) ?? _ -> Tuple<U32,Bool>[((< a b) -> { let temporary :U32 = b temporary } : { let @nil maybe :U32 = b (maybe : a) }), #T]:.0))
+/* Equivalent operator spelling, optional commas, and nested /* trivia */. */
+let @pub alternate :Fn<U32,U32;U32> = (=> |a b| ::match[a ?? ((< a b) -> a : b) -> ::match[a ?? ((< a b) -> a : b) -> { let @nil maybe :U32 = Tuple<U32,Bool>[a, #T]:.0 (maybe : ((=> :U32 |value :U32| value) a)) } ?? _ -> ((=> :U32 |value :U32| value) ::match[a ?? ((< a b) -> a : b) -> b ?? _ -> b])] ?? _ -> Tuple<U32,Bool>[((< a b) -> { let temporary :U32 = b temporary } : { let @nil maybe :U32 = b (maybe : a) }), #T]:.0])
+let @pub convert :Fn<U32;I32> = (=> |value| I32[value])

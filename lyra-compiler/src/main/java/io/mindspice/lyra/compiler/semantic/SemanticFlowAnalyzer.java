@@ -464,6 +464,9 @@ public final class SemanticFlowAnalyzer {
                 for (CapturedCellWrite write : summary.writes()) {
                     collectFreshSites(write.value(), sites);
                 }
+                for (var requirement : summary.ownershipRequirements()) {
+                    collectFreshSites(requirement.value(), sites);
+                }
                 for (var call : summary.callReferences()) {
                     collectFreshSites(call.target(), sites);
                     for (FormulaAlternatives argument : call.arguments()) {
@@ -972,6 +975,7 @@ public final class SemanticFlowAnalyzer {
                     case BLOCK -> block(expression, frame, state);
                     case CONDITIONAL -> conditional(expression, frame, state);
                     case COALESCE -> coalesce(expression, frame, state);
+                    case MATCH -> match(expression, frame, state);
                     case LAMBDA -> lambdaExpression(expression, frame, state);
                     case CALLABLE_CALL -> callableCall(expression, frame, state);
                     case DIRECT_CALL, NAMESPACE_DIRECT_CALL -> directCall(expression, frame, state);
@@ -1234,6 +1238,62 @@ public final class SemanticFlowAnalyzer {
                 }
                 ValueAlternatives value = thenBranch.value.join(elseBranch.value);
                 return new Eval(retag(value, expression.type()), joined, events,
+                        distinctEffects(effects));
+            }
+
+            private Eval match(
+                    TypedExpression expression,
+                    Frame frame,
+                    io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state) {
+                TypedMatch match = expression.match().orElseThrow(() -> failure(
+                        CallableSummaryResult.InternalFailure.Kind.INVALID_TYPED_EXPRESSION,
+                        "match operation has no typed arm metadata", expression.span()));
+                io.mindspice.lyra.compiler.semantic.flow.BindingFlowState continuation = state;
+                ArrayList<SemanticFlowEvent> events = new ArrayList<>();
+                ArrayList<EagerEffectWitness> effects = new ArrayList<>();
+                if (match.subjectChild().isPresent()) {
+                    Eval subject = evaluate(expression.children().get(
+                            match.subjectChild().getAsInt()), frame, continuation);
+                    continuation = subject.state;
+                    events.addAll(subject.events);
+                    effects.addAll(subject.effects);
+                }
+                ArrayList<io.mindspice.lyra.compiler.semantic.flow.BindingFlowState> resultStates =
+                        new ArrayList<>();
+                ValueAlternatives resultValues = ValueAlternatives.empty();
+                for (TypedMatch.Arm arm : match.arms()) {
+                    io.mindspice.lyra.compiler.semantic.flow.BindingFlowState tested = continuation;
+                    if (arm.patternChild().isPresent()) {
+                        Eval pattern = evaluate(expression.children().get(
+                                arm.patternChild().getAsInt()), frame, continuation);
+                        tested = pattern.state;
+                        events.addAll(pattern.events);
+                        effects.addAll(pattern.effects);
+                    }
+                    io.mindspice.lyra.compiler.semantic.flow.BindingFlowState selected = tested;
+                    if (arm.guardChild().isPresent()) {
+                        Eval guard = evaluate(expression.children().get(
+                                arm.guardChild().getAsInt()), frame, tested);
+                        selected = guard.state;
+                        events.addAll(guard.events);
+                        effects.addAll(guard.effects);
+                        continuation = arm.wildcard()
+                                ? guard.state : tested.branchJoin(guard.state);
+                    } else {
+                        continuation = tested;
+                    }
+                    Eval result = evaluate(expression.children().get(arm.resultChild()), frame, selected);
+                    resultStates.add(result.state);
+                    resultValues = resultValues.join(result.value);
+                    events.addAll(result.events);
+                    effects.addAll(result.effects);
+                }
+                io.mindspice.lyra.compiler.semantic.flow.BindingFlowState joined =
+                        resultStates.getFirst();
+                for (int index = 1; index < resultStates.size(); index++) {
+                    joined = joined.branchJoin(resultStates.get(index));
+                }
+                return new Eval(retag(resultValues, expression.type()), joined, events,
                         distinctEffects(effects));
             }
 

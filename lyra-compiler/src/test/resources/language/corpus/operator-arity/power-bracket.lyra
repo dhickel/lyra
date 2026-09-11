@@ -1,0 +1,2 @@
+// operator-arity	reject	-	LYC-PARSE-007	power bracket
+let bad = ^[2]

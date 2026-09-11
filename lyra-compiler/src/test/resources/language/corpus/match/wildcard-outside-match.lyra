@@ -1,0 +1,2 @@
+// match	reject	-	LYC-RESOLVE-013	wildcard is contextual and cannot be a value
+let @pub run :Fn<;I32> = (=> | | _)

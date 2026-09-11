@@ -1,0 +1,2 @@
+// match	value	I32	3	a guarded wildcard may precede the mandatory unguarded fallback
+let @pub run :Fn<;I32> = (=> | | (match 1 ?? _ when #F -> 2 ?? _ -> 3))

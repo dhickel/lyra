@@ -67,6 +67,12 @@ This is a Java-based compiler/runtime for a standalone functional JVM language, 
 **CLI** (`lyra-cli/src/main/java/io/mindspice/lyra/cli/`)
 - Provides the `run`/`compile` commands, dependency-free plain fallback, JLine editing, and credential-free loopback `attach` transport.
 
+**Editor** (`lyra-editor/src/main/java/io/mindspice/lyra/editor/`)
+- Provides the optional JavaFX workspace, compiler-backed syntax/import/type checks, definition tracking, persistent REPL client, and JDI debugger. JavaFX/RichTextFX dependencies stay in this module.
+- Editor-owned execution lives in a disposable Java 25 child process. File opening and analysis never execute source. Reuse the existing loopback REPL protocol and preserve owner confinement; no live runtime values cross into JavaFX.
+- Run saves buffers and starts a fresh session; explicit REPL evaluations retain initialized state. Configured editor functions do not change the standalone executable `main` contract. See `.internal-dev/specifications/editor.md` and `docs/editor.md`.
+- Run graphical integration checks with `mvn -pl lyra-editor -am verify -Dlyra.editor.uiTests=true` on a graphical display. The Phase 24 release gate still applies to the backend and now preserves the editor target tree too.
+
 **Error Handling**
 - Compiler phase boundaries and session APIs use immutable structured diagnostics; expected unsupported/live-linkage behavior is represented by stable compiler/session codes rather than unchecked placeholders.
 
@@ -93,8 +99,21 @@ This is a Java-based compiler/runtime for a standalone functional JVM language, 
 - Keep JSON/debug tooling out of the execution ABI and stable typed IR contract
 - Keep host integration explicit and testable. Do not couple the language core directly to Vulkan or a particular engine subsystem
 
+## Git Commit Policy
+
+- Every completed repository change, implementation phase, or coherent unit of work must end with a Git commit before proceeding to the next unit or reporting completion. This includes code, tests, documentation, and development records; do not wait for the user to request a commit.
+- Run the required validation, review the diff, and include the relevant specification, knowledge, and changelog updates in the commit. Use a descriptive commit message that accurately states the work and its validation status.
+- When unfinished work is checkpointed, commit it with an explicit WIP/checkpoint message and record the remaining scope or failing checks. A checkpoint is not a claim of completion.
+- Commit the files belonging to the current unit of work. Preserve unrelated changes unless the user explicitly requests committing them too. Do not commit secrets or generated build output, and do not push unless requested.
+
 ## Testing
 
 The tests cover compiler semantics/IR/JVM artifacts, runtime lifecycle, CLI launchers, REPL sessions/consoles, JLine PTY behavior, and remote protocol/security. Add focused JUnit assertions for every new language or compiler behavior, including malformed input and failure paths.
+
+The language conformance corpus, primitive/operator/numeric/ABI matrices, compiler/runtime fuzz campaigns, and persistent-session state model are mandatory core tests selected by ordinary `mvn test`. See `docs/language-testing.md` for the coverage matrix, source fixture format, replay/reduction workflow, worker budgets, and extended campaigns (`tools/fuzz-language.sh`).
+
+Every new or changed syntax form, primitive, operator, built-in, typed IR/JVM operation, runtime authority boundary, or persistent-session behavior must update its positive, negative, boundary and applicable runtime-failure assertions, fuzz generator and independent oracle/model, and developer coverage documentation in the same change. Preserve discovered counterexamples as permanent regression tests. Keep primitive/operator/built-in/IR inventory guards current; never remove assertions, suppress compiler invariants, accept unsupported-emission errors for valid source, or disable default fuzz execution to make a feature pass. Expected values must not be calculated by production compiler/runtime helpers.
+
+Run the bounded fuzz baseline with every core suite and an extended campaign when changing language/runtime behavior. Save failing replay files/transcripts and seeds before cleaning target output. Fuzz subprocess resource limits protect the test run; they do not turn the production runtime or unauthenticated development REPL into a hostile-code sandbox. The Phase 24 release audit remains mandatory for release.
 
 At minimum, run `mvn test` after changes. Before claiming an executable, persistent session, or embedding feature, add an integration test that starts from Lyra source and proves the host JVM can load/invoke the resulting artifact or session behavior.

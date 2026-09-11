@@ -1,0 +1,3 @@
+// runtime	throws	I8	LYR-ARITH	overflow
+let maximum :I8 = 127
+let @pub run :Fn<;I8> = (=> | | (++ maximum))

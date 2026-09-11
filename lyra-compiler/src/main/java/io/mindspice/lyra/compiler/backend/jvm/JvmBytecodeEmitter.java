@@ -2566,6 +2566,9 @@ final class JvmBytecodeEmitter {
             if (node instanceof IrNode.Coalesce coalesce) {
                 return emitCoalesce(coalesce);
             }
+            if (node instanceof IrNode.Match match) {
+                return emitMatch(match);
+            }
             if (node instanceof IrNode.DirectCall call) {
                 return emitDirectCall(call);
             }
@@ -3741,8 +3744,8 @@ final class JvmBytecodeEmitter {
                     if (wide(primitive)) { code.lconst_0(); code.lcmp(); code.ifeq(safe); }
                     else code.ifeq(safe);
                     loadPrimitive(primitive, result); loadPrimitive(primitive, right);
-                    String divide = primitive == PrimitiveType.U32 ? "divideUnsigned" : "divideUnsigned";
-                    code.invokestatic(integerClass, divide, method(descriptor));
+                    String divideDescriptor = primitive == PrimitiveType.U32 ? "(II)I" : "(JJ)J";
+                    code.invokestatic(integerClass, "divideUnsigned", method(divideDescriptor));
                     loadPrimitive(primitive, left);
                     code.invokestatic(integerClass, compare, method(descriptor));
                     code.ifeq(safe);
@@ -4079,7 +4082,12 @@ final class JvmBytecodeEmitter {
             Map<DeclarationId, Integer> savedCells = new HashMap<>(localCells);
             installPredicateBinding(branch, predicate);
             JvmTypePlan thenValue = emitNode(branch.thenBranch());
-            adapt(thenValue, target);
+            if (branch.elseBranch().isEmpty()) {
+                discard(thenValue);
+                emitUnit();
+            } else {
+                adapt(thenValue, target);
+            }
             code.goto_(end);
             locals.clear();
             locals.putAll(saved);
@@ -4171,6 +4179,169 @@ final class JvmBytecodeEmitter {
                     throw invalidPlan(module.span(), "coalesce target changes value representation");
                 }
             }
+        }
+
+        private JvmTypePlan emitMatch(IrNode.Match match) {
+            JvmTypePlan target = owner.mapper.map(match.type(), JvmMappingContext.INTERNAL_VALUE);
+            Optional<BindingStorage> subject = match.subject().map(this::evaluateMatchSubject);
+            if (subject.isPresent() && emitIntegralSwitchMatch(match, subject.orElseThrow(), target)) {
+                return target;
+            }
+            Label end = code.newLabel();
+            for (IrNode.MatchArm arm : match.arms()) {
+                line(arm.span());
+                Label selected = code.newLabel();
+                Label next = code.newLabel();
+                if (arm.wildcard()) {
+                    code.goto_(selected);
+                } else {
+                    emitMatchCondition(match, arm, subject, selected, next);
+                }
+                code.labelBinding(selected);
+                if (arm.guard().isPresent()) {
+                    PredicateStorage guard = emitPredicate(arm.guard().orElseThrow());
+                    Label guarded = code.newLabel();
+                    emitPredicateBranch(guard, guarded, next);
+                    code.labelBinding(guarded);
+                }
+                line(arm.result().span());
+                adapt(emitNode(arm.result()), target);
+                code.goto_(end);
+                code.labelBinding(next);
+            }
+            code.labelBinding(end);
+            return target;
+        }
+
+        private BindingStorage evaluateMatchSubject(IrNode subject) {
+            JvmTypePlan physical = owner.mapper.map(subject.type(), JvmMappingContext.INTERNAL_VALUE);
+            emitAt(subject, physical);
+            List<Integer> slots = allocateLocals(physical);
+            storeLocal(physical, slots);
+            return BindingStorage.local(subject.type(), physical, slots);
+        }
+
+        private void emitMatchCondition(
+                IrNode.Match match,
+                IrNode.MatchArm arm,
+                Optional<BindingStorage> subject,
+                Label selected,
+                Label next) {
+            IrNode pattern = arm.pattern().orElseThrow(() ->
+                    invalidPlan(arm.span(), "non-wildcard match arm has no pattern"));
+            if (match.mode() == IrNode.MatchMode.CONDITIONAL) {
+                emitPredicateBranch(emitPredicate(pattern), selected, next);
+                return;
+            }
+            BindingStorage original = subject.orElseThrow(() ->
+                    invalidPlan(match.span(), "traditional match has no evaluated subject"));
+            LyraType comparisonType = arm.comparisonType().orElseThrow(() ->
+                    invalidPlan(arm.span(), "traditional match arm has no equality type"));
+            JvmTypePlan comparison = owner.mapper.map(
+                    comparisonType, JvmMappingContext.INTERNAL_VALUE);
+            loadLocal(original);
+            LyraType subjectType = original.logical().withoutQualifiers();
+            LyraType targetType = comparisonType.withoutQualifiers();
+            if (!subjectType.equals(targetType)
+                    && subjectType instanceof PrimitiveType sourcePrimitive
+                    && targetType instanceof PrimitiveType targetPrimitive
+                    && sourcePrimitive.isNumeric() && targetPrimitive.isNumeric()) {
+                // Physical adaptation alone loses the logical unsigned value
+                // carried by narrow/raw JVM storage.  Match equality uses the
+                // same lossless numeric conversion as an implicit IR edge.
+                emitPrimitiveConversion(sourcePrimitive, targetPrimitive);
+            } else {
+                adapt(original.physical(), comparison);
+            }
+            List<Integer> subjectSlots = allocateLocals(comparison);
+            storeLocal(comparison, subjectSlots);
+            emitAt(pattern, comparison);
+            List<Integer> patternSlots = allocateLocals(comparison);
+            storeLocal(comparison, patternSlots);
+            emitEqualityPair(
+                    BindingStorage.local(comparisonType, comparison, subjectSlots),
+                    BindingStorage.local(comparisonType, comparison, patternSlots),
+                    selected, next, arm.span());
+        }
+
+        private boolean emitIntegralSwitchMatch(
+                IrNode.Match match,
+                BindingStorage subject,
+                JvmTypePlan target) {
+            if (match.mode() != IrNode.MatchMode.TRADITIONAL
+                    || !subject.physical().isSingleValue()
+                    || !isJvmIntSwitchKind(
+                            subject.physical().physicalComponents().getFirst().kind())) {
+                return false;
+            }
+            List<IrNode.MatchArm> cases = match.arms().subList(0, match.arms().size() - 1);
+            Map<Integer, IrNode.MatchArm> byKey = new TreeMap<>();
+            for (IrNode.MatchArm arm : cases) {
+                if (arm.wildcard() || arm.guard().isPresent()
+                        || arm.comparisonType().isEmpty()
+                        || !arm.comparisonType().orElseThrow().equals(subject.logical())
+                        || !(arm.pattern().orElse(null) instanceof IrNode.Constant constant)) {
+                    return false;
+                }
+                Integer key = integralSwitchKey(constant);
+                if (key == null || byKey.putIfAbsent(key, arm) != null) {
+                    return false;
+                }
+            }
+            if (byKey.size() < 2) {
+                return false;
+            }
+            Label fallback = code.newLabel();
+            Label end = code.newLabel();
+            Map<Integer, Label> labels = new TreeMap<>();
+            byKey.keySet().forEach(key -> labels.put(key, code.newLabel()));
+            loadLocal(subject);
+            LyraType logicalSubject = subject.logical().withoutQualifiers();
+            if (logicalSubject == PrimitiveType.U8 || logicalSubject == PrimitiveType.U16) {
+                normalizeUnsigned((PrimitiveType) logicalSubject);
+            }
+            code.lookupswitch(fallback, labels.entrySet().stream()
+                    .map(entry -> java.lang.classfile.instruction.SwitchCase.of(
+                            entry.getKey(), entry.getValue()))
+                    .toList());
+            for (Map.Entry<Integer, IrNode.MatchArm> entry : byKey.entrySet()) {
+                IrNode.MatchArm arm = entry.getValue();
+                code.labelBinding(labels.get(entry.getKey()));
+                line(arm.span());
+                line(arm.result().span());
+                adapt(emitNode(arm.result()), target);
+                code.goto_(end);
+            }
+            IrNode.MatchArm defaultArm = match.arms().getLast();
+            code.labelBinding(fallback);
+            line(defaultArm.span());
+            line(defaultArm.result().span());
+            adapt(emitNode(defaultArm.result()), target);
+            code.labelBinding(end);
+            return true;
+        }
+
+        private boolean isJvmIntSwitchKind(JvmTypeKind kind) {
+            return kind == JvmTypeKind.BYTE || kind == JvmTypeKind.SHORT
+                    || kind == JvmTypeKind.INT || kind == JvmTypeKind.BOOLEAN
+                    || kind == JvmTypeKind.CHAR;
+        }
+
+        private Integer integralSwitchKey(IrNode.Constant constant) {
+            try {
+                if (constant.value() instanceof IrConstantValue.IntegerValue integer) {
+                    return integer.value().integerValue().intValueExact();
+                }
+                if (constant.value() instanceof IrConstantValue.CharacterValue character) {
+                    return (int) character.value();
+                }
+                if (constant.value() instanceof IrConstantValue.BooleanValue bool) {
+                    return bool.value() ? 1 : 0;
+                }
+            } catch (ArithmeticException ignored) {
+                return null;
+            }
+            return null;
         }
 
         private JvmTypePlan emitDirectCall(IrNode.DirectCall call) {
@@ -4566,6 +4737,10 @@ final class JvmBytecodeEmitter {
                 emitTailCoalesce(coalesce);
                 return;
             }
+            if (node instanceof IrNode.Match match) {
+                emitTailMatch(match);
+                return;
+            }
             if (node instanceof IrNode.DirectCall call
                     && call.targetDeclaration().equals(lambda.ownerDeclaration())
                     && call.receiver().isEmpty()) {
@@ -4585,7 +4760,15 @@ final class JvmBytecodeEmitter {
             Map<DeclarationId, BindingStorage> saved = new HashMap<>(locals);
             Map<DeclarationId, Integer> savedCells = new HashMap<>(localCells);
             installPredicateBinding(branch, predicate);
-            emitTail(branch.thenBranch());
+            if (branch.elseBranch().isEmpty() && !branch.thenBranch().type().equals(PrimitiveType.UNIT)) {
+                // A then-only conditional discards non-Unit values. Unit branches
+                // retain ordinary tail lowering, including constant-stack self calls.
+                discard(emitNode(branch.thenBranch()));
+                emitUnit();
+                emitReturn(owner.mapper.map(PrimitiveType.UNIT, JvmMappingContext.INTERNAL_VALUE));
+            } else {
+                emitTail(branch.thenBranch());
+            }
             locals.clear(); locals.putAll(saved);
             localCells.clear(); localCells.putAll(savedCells);
             code.labelBinding(elseLabel);
@@ -4619,6 +4802,30 @@ final class JvmBytecodeEmitter {
             emitReturn(target);
             code.labelBinding(fallback);
             emitTail(coalesce.fallback());
+        }
+
+        private void emitTailMatch(IrNode.Match match) {
+            Optional<BindingStorage> subject = match.subject().map(this::evaluateMatchSubject);
+            for (IrNode.MatchArm arm : match.arms()) {
+                line(arm.span());
+                Label selected = code.newLabel();
+                Label next = code.newLabel();
+                if (arm.wildcard()) {
+                    code.goto_(selected);
+                } else {
+                    emitMatchCondition(match, arm, subject, selected, next);
+                }
+                code.labelBinding(selected);
+                if (arm.guard().isPresent()) {
+                    PredicateStorage guard = emitPredicate(arm.guard().orElseThrow());
+                    Label guarded = code.newLabel();
+                    emitPredicateBranch(guard, guarded, next);
+                    code.labelBinding(guarded);
+                }
+                line(arm.result().span());
+                emitTail(arm.result());
+                code.labelBinding(next);
+            }
         }
 
         private void emitSelfTailCall(IrNode.DirectCall call) {
@@ -5351,6 +5558,9 @@ final class JvmBytecodeEmitter {
         private void emitFloatingOperand(IrNode operand, JvmTypePlan target) {
             JvmTypePlan actual = emitNode(operand);
             PrimitiveType logical = primitiveBase(operand.type());
+            if (logical == PrimitiveType.U8 || logical == PrimitiveType.U16) {
+                normalizeUnsigned(logical);
+            }
             if (target.isSingleValue() && (target.descriptor().equals("F")
                     || target.descriptor().equals("D"))
                     && (logical == PrimitiveType.U32 || logical == PrimitiveType.U64)) {
@@ -5377,13 +5587,23 @@ final class JvmBytecodeEmitter {
             code.lconst_0();
             code.lcmp();
             code.ifge(nonNegative);
+            // Halve the unsigned value and retain a sticky low bit before rounding.
+            // Adding 2^63 to an already rounded signed payload can round twice.
             loadPrimitive(PrimitiveType.U64, value);
-            code.ldc(Long.MAX_VALUE);
+            code.iconst_1();
+            code.lushr();
+            loadPrimitive(PrimitiveType.U64, value);
+            code.lconst_1();
             code.land();
-            code.l2d();
-            code.loadConstant(0x1.0p63);
-            code.dadd();
-            if (targetDescriptor.equals("F")) code.d2f();
+            code.lor();
+            emitRawConversion("J", targetDescriptor);
+            if (targetDescriptor.equals("F")) {
+                code.loadConstant(2.0f);
+                code.fmul();
+            } else {
+                code.loadConstant(2.0);
+                code.dmul();
+            }
             code.goto_(end);
             code.labelBinding(nonNegative);
             loadPrimitive(PrimitiveType.U64, value);

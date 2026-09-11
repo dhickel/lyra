@@ -1,0 +1,2 @@
+// conditionals	value	String	()	then only reference
+let @pub run :Fn<;String> = (=> | | String[(#T -> Array<I32>[1 2])])

@@ -1,0 +1,2 @@
+// aggregates	reject	-	LYC-TYPE-013	tuple bounds
+let x = Tuple[1 2]:.2

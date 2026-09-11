@@ -1,0 +1,2 @@
+// modules	reject	-	LYC-RESOLVE-019	namespace as value
+import std->io let x = io

@@ -1,0 +1,2 @@
+// conversions	reject	-	LYC-TYPE-009	constant conversion
+let x = I8[128I64]

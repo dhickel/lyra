@@ -22,7 +22,7 @@ java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar repl [DIR] [--source-root DI
 
 - Startup is an **empty scratch workspace**. `DIR` and repeatable `--source-root DIR` configure module search directories only; nothing is initialized and `main` is never invoked.
 - User modules enter scope only through explicit `import` headers in a submission or explicit `:load`.
-- The only commands are `:help`, `:bindings`, `:type`, `:load`, `:reload MODULE`, `:reset`, `:history`, `:quit`.
+- The only commands are `:help`, `:bindings`, `:type`, `:load`, `:reload MODULE`, `:reset`, `:history`, `:quit`. Commands use a single leading colon; `::function[args]` is evaluated as ordinary Lyra source.
 - `:type` analyzes supplied source against the committed context **without executing, pinning, or publishing** anything.
 - `:load FILE` reads a local UTF-8 file once, maps diagnostics to that file, and submits its contents. `:reload MODULE` accepts a committed namespace alias or logical module ID and rebuilds only the REPL-owned reachable dependency closure; `:reload` without a target is a usage error.
 - Interactive TTY mode adds multiline completeness, bracketed-paste atomicity, indentation, highlighting, delimiter matching, Emacs/vi keymaps, history search, resize handling, and cleanup. `--plain` is the undecorated fallback.

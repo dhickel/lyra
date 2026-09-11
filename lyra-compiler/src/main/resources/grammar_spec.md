@@ -27,6 +27,9 @@ type-name        ::= I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64
 modifier         ::= '@pub' | '@mut' | '@nil' ;
 literal          ::= '#T' | '#F' | '#NIL' | integer | decimal
                    | string | character ;
+match-keyword    ::= 'match' ;
+guard-keyword    ::= 'when' ;
+match-arm-marker ::= '??' ;
 operator         ::= '+' | '-' | '*' | '/' | '^' | '%'
                    | '<' | '<=' | '>' | '>=' | '==' | '!='
                    | 'eq?' | '!eq?' | 'and' | 'or' | 'xor' | 'not'
@@ -90,12 +93,14 @@ atom              ::= literal
                      | block
                      | compact-lambda
                      | '::' identifier argument-list
+                     | match-bracket
                      | operator-bracket
                      | typed-expression ;
 
 parenthesized-expression
                    ::= '('
                      ( ')'
+                     | 'match' match-content ')'
                      | '=>' return-modifier* [return-annotation]
                        parameter-list expression ')'
                      | ':=' expression expression ')'
@@ -108,8 +113,8 @@ postfix            ::= '[' expression ']'
                      | ':.' member-name
                      | '::' identifier argument-list
                      | namespace-suffix ;
-namespace-suffix   ::= '->' identifier* (':.' member-name
-                     | '::' identifier argument-list) ;
+namespace-suffix   ::= '->' [identifier ('->' identifier)* ['->']]
+                     (':.' member-name | '::' identifier argument-list) ;
 member-name        ::= identifier | unsigned-decimal-field-position ;
 
 argument-list      ::= '[' (argument (comma-list argument)*)? ']' ;
@@ -129,6 +134,35 @@ Operators have the following grammar-level arities: `+`, `*`, comparisons,
 equality, identity, `and`, `or`, and `xor` have at least two operands; `-` and
 `/` have at least one; `%` and `^` have exactly two; and `not`, `++`, and `--`
 have exactly one.  Their operand types and all member legality are semantic.
+
+## Match expressions
+
+```ebnf
+match-bracket      ::= '::' 'match' '[' match-content ']' ;
+match-content      ::= value-match | conditional-match ;
+value-match        ::= expression value-arm* fallback-arm ;
+conditional-match  ::= '_' condition-arm* fallback-arm ;
+value-arm          ::= '??' expression ['when' expression] '->' expression
+                     | '??' '_' 'when' expression '->' expression ;
+condition-arm      ::= '??' expression '->' expression ;
+fallback-arm       ::= '??' '_' '->' expression ;
+```
+
+`match` and `when` are reserved words, not identifiers. The exact `_` in the
+subject position selects conditional mode; the exact `_` in a pattern/condition
+position selects the wildcard alternative rather than an identifier expression.
+Other occurrences of `_` remain ordinary identifiers. These contextual exclusions
+apply to the `expression` alternatives above.
+
+Every match requires a final unguarded wildcard; it may be the only arm. No arm may
+follow it. Conditional mode does not allow `when`. Arms are not comma-separated.
+Traditional patterns may be arbitrary value expressions; later semantic phases
+check typed equality compatibility, guard/condition truthiness, and result type
+unification. No arm bindings, type patterns, or destructuring are provided.
+
+The parenthesized and bracketed forms produce the same match structure. They are
+special forms, not ordinary eager calls. The matcher preserves each arm's pattern,
+optional guard, result, wildcard role, separators, and source spans.
 
 ## Arrays, tuples, conversions, and types
 
@@ -164,8 +198,8 @@ contract; `@pub` is not a nested contract modifier.
 
 ## Excluded syntax
 
-There are no grammar productions for classes, records, variants, `Match`,
-`Iter`, user generics, macros, `throw`, `try`, `catch`, `finally`, `Any`,
+There are no grammar productions for classes, records, variants, destructuring
+or type patterns, dedicated iteration, user generics, macros, `throw`, `try`, `catch`, `finally`, `Any`,
 varargs/default/named arguments, bitwise or shift operators, or `nor`/`nand`/
 `xnor`.  Their current lexical spellings either remain ordinary identifiers or
 produce the ordinary lexical/syntax diagnostic required by the living

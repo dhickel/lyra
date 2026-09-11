@@ -1,0 +1,2 @@
+// match	reject	-	LYC-PARSE-004	match arms do not accept comma separators
+let @pub run :Fn<;I32> = (=> | | (match 1 ?? 1 -> 2, ?? _ -> 3))

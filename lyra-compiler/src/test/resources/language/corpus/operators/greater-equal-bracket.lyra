@@ -1,0 +1,2 @@
+// operators	value	Bool	true	greater equal bracket
+let @pub run :Fn<;Bool> = (=> | | >=[3, 3, 2])

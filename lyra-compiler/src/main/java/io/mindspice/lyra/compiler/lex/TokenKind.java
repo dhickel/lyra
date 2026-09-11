@@ -14,6 +14,8 @@ public enum TokenKind {
     LET,
     IMPORT,
     AS,
+    MATCH,
+    WHEN,
     TYPE_NAME,
     MODIFIER,
 
@@ -47,6 +49,7 @@ public enum TokenKind {
     DECREMENT,
 
     COLON_EQUAL,
+    DOUBLE_QUESTION,
     ARROW,
     COLON_DOT,
     DOUBLE_COLON,
@@ -88,7 +91,7 @@ public enum TokenKind {
 
     public boolean isPunctuation() {
         return switch (this) {
-            case COLON_EQUAL, ARROW, COLON_DOT, DOUBLE_COLON, LAMBDA_ARROW,
+            case COLON_EQUAL, DOUBLE_QUESTION, ARROW, COLON_DOT, DOUBLE_COLON, LAMBDA_ARROW,
                     LEFT_PAREN, RIGHT_PAREN, LEFT_BRACE, RIGHT_BRACE,
                     LEFT_BRACKET, RIGHT_BRACKET, COLON, SEMICOLON, BAR,
                     COMMA, PERIOD, EQUAL -> true;

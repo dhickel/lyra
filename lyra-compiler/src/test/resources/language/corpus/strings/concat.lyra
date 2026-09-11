@@ -1,0 +1,2 @@
+// strings	value	String	abc	concat
+let @pub run :Fn<;String> = (=> | | +["a", "b", "c"])

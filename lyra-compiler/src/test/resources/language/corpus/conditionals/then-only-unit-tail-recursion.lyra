@@ -1,0 +1,3 @@
+// conditionals	value	String	()	then-only Unit tail recursion retains constant stack
+let loop :Fn<I32;Unit> = (=> |n| ((> n 0) -> ::loop[(- n 1)]))
+let @pub run :Fn<;String> = (=> | | String[::loop[100000]])

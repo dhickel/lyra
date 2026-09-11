@@ -1,0 +1,111 @@
+.workbench {
+    -fx-base: #20232e;
+    -fx-background: #171a23;
+    -fx-control-inner-background: #171a23;
+    -fx-accent: #79d9ba;
+    -fx-focus-color: #79d9ba;
+    -fx-faint-focus-color: transparent;
+    -fx-text-base-color: #dce0ec;
+    -fx-text-background-color: #dce0ec;
+    -fx-font-family: "Inter", "Noto Sans", "Segoe UI", sans-serif;
+    -fx-font-size: 12px;
+    -editor-text: #dce0ec;
+    -editor-background: #171a23;
+    -editor-selection: #384d65;
+    -editor-muted: #8994aa;
+    -editor-border: #303541;
+    -editor-keyword: #c8a7f2;
+    -editor-string: #a6dca7;
+    -editor-number: #f0c38a;
+    -editor-type: #79d9ba;
+    -editor-operator: #91bdec;
+    -editor-comment: #8794a1;
+    -editor-error: #ef8e93;
+}
+.workbench.light {
+    -fx-base: #edf0f5;
+    -fx-background: #fafbfe;
+    -fx-control-inner-background: #fafbfe;
+    -fx-accent: #267a67;
+    -fx-focus-color: #267a67;
+    -fx-text-base-color: #283347;
+    -fx-text-background-color: #283347;
+    -editor-text: #283347;
+    -editor-background: #fafbfe;
+    -editor-selection: #c9dfee;
+    -editor-muted: #59667d;
+    -editor-border: #d4dbe6;
+    -editor-keyword: #7738a9;
+    -editor-string: #326e35;
+    -editor-number: #935816;
+    -editor-type: #1d7165;
+    -editor-operator: #2e66a0;
+    -editor-comment: #63715e;
+    -editor-error: #b32134;
+}
+.label { -fx-text-fill: -editor-text; }
+.text-input { -fx-text-fill: -editor-text; -fx-prompt-text-fill: -editor-muted; -fx-highlight-fill: -editor-selection; -fx-highlight-text-fill: -editor-text; }
+.menu-bar { -fx-background-color: -fx-base; -fx-padding: 3 10 3 10; }
+.menu-bar .menu { -fx-padding: 3 10 3 10; }
+.main-toolbar { -fx-padding: 12 16 12 16; -fx-background-color: -fx-base; -fx-border-color: transparent transparent -editor-border transparent; }
+.brand { -fx-font-size: 19px; -fx-font-weight: bold; -fx-text-fill: -editor-type; -fx-padding: 0 10 0 0; }
+.project-name { -fx-text-fill: -editor-muted; }
+.button { -fx-background-radius: 5; -fx-border-radius: 5; -fx-padding: 6 11 6 11; -fx-cursor: hand; }
+.button:hover { -fx-background-color: derive(-fx-base, 20%); }
+.primary-button { -fx-background-color: #79d9ba; -fx-text-fill: #142e2b; -fx-font-weight: bold; }
+.primary-button:hover { -fx-background-color: #99e8cd; }
+.side-panel { -fx-background-color: -fx-base; }
+.panel-heading { -fx-padding: 10 10 8 12; -fx-font-size: 10px; -fx-font-weight: bold; -fx-background-color: -fx-base; }
+.panel-heading .label { -fx-text-fill: -editor-muted; }
+.panel-heading .button { -fx-padding: 1 6 1 6; -fx-font-size: 14px; }
+#symbol-filter { -fx-background-insets: 0; -fx-background-radius: 0; -fx-padding: 8 12 8 12; }
+.tree-view, .list-view { -fx-background-insets: 0; -fx-padding: 0; -fx-border-width: 0; }
+.tree-cell, .list-cell { -fx-padding: 7 10 7 10; -fx-background-color: -editor-background; -fx-text-fill: -editor-text; }
+.tree-cell:selected, .list-cell:selected { -fx-background-color: -editor-selection; -fx-text-fill: -editor-text; }
+.tree-cell:filled:hover, .list-cell:filled:hover { -fx-background-color: derive(-editor-selection, -10%); }
+.list-cell:empty { -fx-background-color: -editor-background; }
+.split-pane { -fx-background-insets: 0; -fx-padding: 0; -fx-background-color: -editor-background; }
+.split-pane-divider { -fx-padding: 0 2 0 2; -fx-background-color: -editor-border; }
+.tab-pane .tab-header-area { -fx-padding: 0; }
+.tab-pane .tab-header-background { -fx-background-color: -fx-base; }
+.tab-pane .tab { -fx-background-radius: 0; -fx-background-insets: 0; -fx-background-color: -fx-base; -fx-padding: 7 12 7 12; -fx-border-width: 0 0 2 0; -fx-border-color: transparent; }
+.tab-pane .tab:selected { -fx-background-color: -editor-background; -fx-border-color: -editor-type; }
+.tab .tab-label { -fx-text-fill: -editor-muted; }
+.tab:selected .tab-label { -fx-text-fill: -editor-text; }
+.tab-pane:focused > .tab-header-area > .headers-region > .tab:selected .focus-indicator { -fx-border-width: 0; }
+.source-editor { -fx-background-color: -editor-background; -fx-padding: 10 0 16 0; -fx-font-family: "JetBrains Mono", "DejaVu Sans Mono", "Consolas", monospace; -fx-font-size: 14px; }
+.source-editor .text { -fx-fill: -editor-text; }
+.source-editor .paragraph-box { -fx-padding: 1 0 1 0; }
+.source-editor .caret { -fx-stroke: -editor-type; }
+.source-editor .selection { -fx-fill: -editor-selection; }
+.source-editor .lineno { -fx-background-color: -editor-background; -fx-text-fill: -editor-muted; -fx-padding: 0 14 0 4; -fx-font-size: 12px; }
+.editor-gutter { -fx-background-color: -editor-background; -fx-padding: 0 5 0 6; }
+.breakpoint-marker { -fx-text-fill: #ec858a; -fx-font-size: 14px; }
+.execution-marker { -fx-text-fill: #f0c38a; -fx-font-size: 14px; }
+.source-editor .execution-line { -rtfx-background-color: #384638; }
+.source-editor .syntax-keyword { -fx-fill: -editor-keyword; -fx-font-weight: bold; }
+.source-editor .syntax-modifier { -fx-fill: -editor-keyword; }
+.source-editor .syntax-type { -fx-fill: -editor-type; }
+.source-editor .syntax-string { -fx-fill: -editor-string; }
+.source-editor .syntax-number { -fx-fill: -editor-number; }
+.source-editor .syntax-operator { -fx-fill: -editor-operator; }
+.source-editor .syntax-punctuation { -fx-fill: -editor-muted; }
+.source-editor .syntax-comment { -fx-fill: -editor-comment; -fx-font-style: italic; }
+.source-editor .matching-delimiter { -rtfx-background-color: -editor-selection; -fx-fill: -editor-type; -fx-font-weight: bold; }
+.source-editor .syntax-error { -rtfx-underline-color: -editor-error; -rtfx-underline-width: 1; -rtfx-underline-wave-radius: 2; -rtfx-underline-offset: 2; }
+.find-bar { -fx-background-color: -fx-base; }
+.find-bar .text-field { -fx-pref-width: 140; }
+.console-output, .console-input, #program-input { -fx-font-family: "JetBrains Mono", "DejaVu Sans Mono", "Consolas", monospace; -fx-font-size: 12px; }
+.console-output, .console-input { -fx-background-insets: 0; -fx-background-radius: 0; }
+.console-output .content, .console-input .content { -fx-background-radius: 0; -fx-background-color: -editor-background; -fx-padding: 8 12 8 12; }
+.console-input { -fx-border-width: 1 0 0 0; -fx-border-color: -editor-border; }
+.status-bar { -fx-padding: 6 14 6 14; -fx-background-color: -fx-base; -fx-font-size: 11px; }
+.status-bar .label { -fx-text-fill: -editor-muted; }
+.welcome-mark { -fx-font-size: 78px; -fx-text-fill: -editor-type; }
+.welcome-heading { -fx-font-size: 30px; -fx-font-weight: bold; }
+.welcome-description { -fx-font-size: 14px; -fx-text-fill: -editor-muted; -fx-line-spacing: 6; }
+.welcome-shortcuts { -fx-padding: 24 0 0 0; -fx-font-size: 11px; -fx-text-fill: -editor-muted; }
+.scroll-bar { -fx-background-color: -editor-background; }
+.scroll-bar .thumb { -fx-background-color: derive(-editor-muted, -35%); -fx-background-radius: 4; }
+.scroll-bar .increment-button, .scroll-bar .decrement-button { -fx-padding: 0; }
+.tooltip { -fx-font-size: 12px; -fx-wrap-text: true; -fx-max-width: 750; }

@@ -32,6 +32,7 @@ public interface SyntaxVisitor<R> {
     R visitArgumentList(SyntaxNode.ArgumentList node);
     R visitTypeArgumentList(SyntaxNode.TypeArgumentList node);
     R visitPredicateBinding(SyntaxNode.PredicateBinding node);
+    R visitMatchArm(SyntaxNode.MatchArm node);
 
     R visitLetBinding(SyntaxNode.LetBinding node);
     R visitReassignment(SyntaxNode.Reassignment node);
@@ -45,6 +46,7 @@ public interface SyntaxVisitor<R> {
     R visitUnitLiteral(SyntaxNode.UnitLiteral node);
     R visitBlock(SyntaxNode.Block node);
     R visitConditional(SyntaxNode.Conditional node);
+    R visitMatch(SyntaxNode.Match node);
     R visitCoalesce(SyntaxNode.Coalesce node);
     R visitPrefixAssignment(SyntaxNode.PrefixAssignment node);
     R visitLambda(SyntaxNode.Lambda node);

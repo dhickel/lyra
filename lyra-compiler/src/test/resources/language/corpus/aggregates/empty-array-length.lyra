@@ -1,0 +1,2 @@
+// aggregates	value	I32	0	empty array length
+let @pub run :Fn<;I32> = (=> | | Array<I32>[]:.length)

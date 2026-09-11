@@ -1,0 +1,2 @@
+// nilability	reject	-	LYC-TYPE-005	untyped nil
+let x = #NIL

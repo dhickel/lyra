@@ -1,0 +1,2 @@
+// functions	reject	-	LYC-PARSE-008	bare direct access
+let f :Fn<;I32> = (=> | | 1) let x = ::f

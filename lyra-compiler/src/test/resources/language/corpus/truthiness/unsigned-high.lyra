@@ -1,0 +1,2 @@
+// truthiness	value	Bool	true	unsigned high
+let @pub run :Fn<;Bool> = (=> | | (18446744073709551615U64 -> #T : #F))

@@ -1,0 +1,2 @@
+// aggregates	reject	-	LYC-TYPE-012	string write
+let @mut x = "hi" x[0] := 'x'

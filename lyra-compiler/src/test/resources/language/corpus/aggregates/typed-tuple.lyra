@@ -1,0 +1,2 @@
+// aggregates	value	String	x	typed tuple
+let @pub run :Fn<;String> = (=> | | Tuple<I32,String>[7 "x"]:.1)

@@ -1,0 +1,2 @@
+// primitives	value	String	125.0	f64 text
+let @pub run :Fn<;String> = (=> | | String[1.25e2F64])

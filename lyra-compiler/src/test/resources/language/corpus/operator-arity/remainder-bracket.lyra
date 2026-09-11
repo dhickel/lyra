@@ -1,0 +1,2 @@
+// operator-arity	reject	-	LYC-PARSE-007	remainder bracket
+let bad = %[7]

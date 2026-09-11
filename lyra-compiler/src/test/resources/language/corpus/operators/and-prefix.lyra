@@ -1,0 +1,2 @@
+// operators	value	Bool	true	and prefix
+let @pub run :Fn<;Bool> = (=> | | (and 1 "x" #T))

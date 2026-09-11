@@ -1,0 +1,2 @@
+// excluded	reject	-	LYC-PARSE-003	bitwise
+let x = (<< 1 2)

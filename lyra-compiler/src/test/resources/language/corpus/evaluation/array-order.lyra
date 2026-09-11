@@ -1,0 +1,4 @@
+// evaluation	value	I32	123	array order
+let @mut count :I32 = 0
+let tick :Fn<;I32> = (=> | | { count := (++ count) count })
+let @pub run :Fn<;I32> = (=> | | { let values = Array<I32>[(tick) (tick) (tick)] (+ (* values[0] 100) (* values[1] 10) values[2]) })

@@ -1,0 +1,2 @@
+// truthiness	value	Bool	true	tuple
+let @pub run :Fn<;Bool> = (=> | | (Tuple[0 #F] -> #T : #F))

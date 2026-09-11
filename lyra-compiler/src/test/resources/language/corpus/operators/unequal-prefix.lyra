@@ -1,0 +1,2 @@
+// operators	value	Bool	true	unequal prefix
+let @pub run :Fn<;Bool> = (=> | | (!= 1 2 3))

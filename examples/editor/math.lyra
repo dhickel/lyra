@@ -1,0 +1,4 @@
+// A separate module demonstrates import checking and stepping across files.
+let @pub twice :Fn<I32;I32> = (=> |value| {
+    (+ value value)
+})

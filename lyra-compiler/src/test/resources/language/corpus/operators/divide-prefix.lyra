@@ -1,0 +1,2 @@
+// operators	value	F64	4.0	divide prefix
+let @pub run :Fn<;F64> = (=> | | (/ 24 3 2))

@@ -1,0 +1,2 @@
+// match	reject	-	LYC-PARSE-003	match requires a traditional value or conditional wildcard subject
+let @pub run :Fn<;I32> = (=> | | (match ?? _ -> 0))

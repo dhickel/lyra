@@ -1,0 +1,2 @@
+// truthiness	value	Bool	true	char zero
+let @pub run :Fn<;Bool> = (=> | | ('\0' -> #T : #F))

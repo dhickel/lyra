@@ -1,0 +1,2 @@
+// operators	value	I32	3	increment prefix
+let @pub run :Fn<;I32> = (=> | | (++ 2))

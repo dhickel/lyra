@@ -1,0 +1,3 @@
+// runtime	throws	I32	LYR-ARITH	remainder zero
+let zero :I32 = 0
+let @pub run :Fn<;I32> = (=> | | (% 1 zero))

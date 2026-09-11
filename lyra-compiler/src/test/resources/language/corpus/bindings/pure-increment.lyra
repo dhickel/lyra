@@ -1,0 +1,2 @@
+// bindings	value	I32	5	pure increment
+let @pub run :Fn<;I32> = (=> | | { let n :I32 = 5 (++ n) n })

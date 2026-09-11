@@ -1,0 +1,2 @@
+// lexical	reject	-	LYC-LEX-003	unknown modifier
+let @const x = 1

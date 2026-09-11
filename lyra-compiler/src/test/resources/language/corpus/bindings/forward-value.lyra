@@ -1,0 +1,2 @@
+// bindings	reject	-	LYC-RESOLVE-014	forward value
+let x = y let y = 1

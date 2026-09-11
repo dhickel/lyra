@@ -39,7 +39,8 @@ public sealed interface SyntaxNode
                 SyntaxNode.ParameterList,
                 SyntaxNode.ArgumentList,
                 SyntaxNode.TypeArgumentList,
-                SyntaxNode.PredicateBinding {
+                SyntaxNode.PredicateBinding,
+                SyntaxNode.MatchArm {
 
     SourceSpan span();
 
@@ -60,6 +61,7 @@ public sealed interface SyntaxNode
                     Block,
                     Conditional,
                     Coalesce,
+                    Match,
                     PrefixAssignment,
                     Lambda,
                     CompactLambda,
@@ -98,6 +100,11 @@ public sealed interface SyntaxNode
         PARENTHESIZED,
         ARRAY,
         TUPLE
+    }
+
+    enum MatchMode {
+        TRADITIONAL,
+        CONDITIONAL
     }
 
     record Modifier(ModifierKind kind, String spelling, SourceSpan span) implements SyntaxNode {
@@ -606,6 +613,87 @@ public sealed interface SyntaxNode
         }
     }
 
+    record MatchArm(
+            Optional<Expression> pattern,
+            Optional<Expression> guard,
+            Expression result,
+            SourceSpan separatorSpan,
+            Optional<SourceSpan> wildcardSpan,
+            Optional<SourceSpan> whenSpan,
+            SourceSpan arrowSpan,
+            SourceSpan span) implements SyntaxNode {
+        public MatchArm {
+            Objects.requireNonNull(pattern, "pattern");
+            Objects.requireNonNull(guard, "guard");
+            Objects.requireNonNull(result, "result");
+            requireSpan(separatorSpan, "separatorSpan");
+            Objects.requireNonNull(wildcardSpan, "wildcardSpan");
+            Objects.requireNonNull(whenSpan, "whenSpan");
+            requireSpan(arrowSpan, "arrowSpan");
+            requireSpan(span);
+            if (pattern.isPresent() == wildcardSpan.isPresent()) {
+                throw new IllegalArgumentException("match arm must have exactly one pattern or wildcard");
+            }
+            if (guard.isPresent() != whenSpan.isPresent()) {
+                throw new IllegalArgumentException("match guard and 'when' span must agree");
+            }
+        }
+
+        public boolean wildcard() {
+            return wildcardSpan.isPresent();
+        }
+
+        @Override
+        public <R> R accept(SyntaxVisitor<R> visitor) {
+            return Objects.requireNonNull(visitor, "visitor").visitMatchArm(this);
+        }
+    }
+
+    record Match(
+            MatchMode mode,
+            Optional<Expression> subject,
+            List<MatchArm> arms,
+            SourceSpan matchKeywordSpan,
+            Optional<SourceSpan> directAccessorSpan,
+            SourceSpan openingDelimiterSpan,
+            SourceSpan closingDelimiterSpan,
+            SourceSpan span) implements Expression {
+        public Match {
+            Objects.requireNonNull(mode, "mode");
+            Objects.requireNonNull(subject, "subject");
+            arms = copy(arms, "arms");
+            requireSpan(matchKeywordSpan, "matchKeywordSpan");
+            Objects.requireNonNull(directAccessorSpan, "directAccessorSpan");
+            requireSpan(openingDelimiterSpan, "openingDelimiterSpan");
+            requireSpan(closingDelimiterSpan, "closingDelimiterSpan");
+            requireSpan(span);
+            if ((mode == MatchMode.TRADITIONAL) != subject.isPresent()) {
+                throw new IllegalArgumentException("traditional match alone has a value subject");
+            }
+            if (arms.isEmpty()) {
+                throw new IllegalArgumentException("match requires a fallback arm");
+            }
+            for (int index = 0; index < arms.size(); index++) {
+                MatchArm arm = arms.get(index);
+                if (mode == MatchMode.CONDITIONAL && arm.guard().isPresent()) {
+                    throw new IllegalArgumentException("conditional match arms cannot have guards");
+                }
+                if (arm.wildcard() && arm.guard().isEmpty() && index != arms.size() - 1) {
+                    throw new IllegalArgumentException("unconditional wildcard must be the final match arm");
+                }
+            }
+            MatchArm fallback = arms.getLast();
+            if (!fallback.wildcard() || fallback.guard().isPresent()) {
+                throw new IllegalArgumentException("match requires a final unguarded wildcard fallback");
+            }
+        }
+
+        @Override
+        public <R> R accept(SyntaxVisitor<R> visitor) {
+            return Objects.requireNonNull(visitor, "visitor").visitMatch(this);
+        }
+    }
+
     record Coalesce(
             Expression value,
             Expression fallback,
@@ -801,13 +889,16 @@ public sealed interface SyntaxNode
     record NamespaceMemberAccess(
             NamespacePath path,
             MemberName member,
-            SourceSpan terminalArrowSpan,
+            Optional<SourceSpan> terminalArrowSpan,
             SourceSpan accessorSpan,
             SourceSpan span) implements Expression {
         public NamespaceMemberAccess {
             Objects.requireNonNull(path, "path");
             Objects.requireNonNull(member, "member");
-            requireSpan(terminalArrowSpan, "terminalArrowSpan");
+            Objects.requireNonNull(terminalArrowSpan, "terminalArrowSpan");
+            if (terminalArrowSpan.isEmpty() && path.segments().size() < 2) {
+                throw new IllegalArgumentException("an unqualified namespace alias requires a terminal arrow");
+            }
             requireSpan(accessorSpan, "accessorSpan");
             requireSpan(span);
         }
@@ -822,14 +913,17 @@ public sealed interface SyntaxNode
             NamespacePath path,
             Identifier name,
             ArgumentList arguments,
-            SourceSpan terminalArrowSpan,
+            Optional<SourceSpan> terminalArrowSpan,
             SourceSpan accessorSpan,
             SourceSpan span) implements Expression {
         public NamespaceDirectCall {
             Objects.requireNonNull(path, "path");
             Objects.requireNonNull(name, "name");
             Objects.requireNonNull(arguments, "arguments");
-            requireSpan(terminalArrowSpan, "terminalArrowSpan");
+            Objects.requireNonNull(terminalArrowSpan, "terminalArrowSpan");
+            if (terminalArrowSpan.isEmpty() && path.segments().size() < 2) {
+                throw new IllegalArgumentException("an unqualified namespace alias requires a terminal arrow");
+            }
             requireSpan(accessorSpan, "accessorSpan");
             requireSpan(span);
         }

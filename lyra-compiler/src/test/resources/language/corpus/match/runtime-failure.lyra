@@ -1,0 +1,4 @@
+// match	throws	I32	LYR-ARITH	selected match fallback reports a source-mapped arithmetic failure
+let zero :I32 = 0
+let bad :Fn<;I32> = (=> | | (% 1 zero))
+let @pub run :Fn<;I32> = (=> | | (match 3 ?? 2 -> 5 ?? _ -> (bad)))

@@ -102,17 +102,19 @@ public final class TypedIrTest {
                         + "let direct = ::fn[1] let callable = (fn 2) "
                         + "let @nil maybe :I32 = 1 let coalesced = (maybe : 4) "
                         + "let converted = I64[value] let guard = (and #T #F) "
-                        + "let branch = (#T -> direct : callable) let block = { 1 } "
-                        + "let changed = (value := (++ value))")));
+                        + "let branch = (#T -> direct : callable) let matched = (match value ?? 0 -> 1 ?? _ -> 2) "
+                        + "let block = { 1 } let changed = (value := (++ value))")));
         Set<Class<?>> variants = new HashSet<>();
         IrTraversal.preOrder(ir.rootModule().body()).forEach(node -> variants.add(node.getClass()));
+        assertEquals(Set.of(IrNode.class.getPermittedSubclasses()), variants,
+                "Every new IR operation needs a source fixture that reaches lowering and the core conformance/fuzz suites");
         assertTrue(variants.containsAll(Set.of(
                 IrNode.Constant.class, IrNode.Reference.class, IrNode.CaptureReference.class,
                 IrNode.Declaration.class, IrNode.Rebinding.class, IrNode.Sequence.class,
                 IrNode.Block.class, IrNode.ArrayLiteral.class, IrNode.TupleLiteral.class,
                 IrNode.IndexAccess.class, IrNode.Operator.class, IrNode.ShortCircuit.class,
                 IrNode.Conversion.class, IrNode.Narrowing.class, IrNode.Branch.class,
-                IrNode.Coalesce.class, IrNode.DirectCall.class, IrNode.CallableCall.class,
+                IrNode.Coalesce.class, IrNode.Match.class, IrNode.DirectCall.class, IrNode.CallableCall.class,
                 IrNode.Lambda.class, IrNode.Access.class, IrNode.RuntimeCheck.class)));
     }
 
@@ -242,6 +244,7 @@ public final class TypedIrTest {
             public Void visitNarrowing(IrNode.Narrowing node) { return add(node); }
             public Void visitBranch(IrNode.Branch node) { return add(node); }
             public Void visitCoalesce(IrNode.Coalesce node) { return add(node); }
+            public Void visitMatch(IrNode.Match node) { return add(node); }
             public Void visitDirectCall(IrNode.DirectCall node) { return add(node); }
             public Void visitCallableCall(IrNode.CallableCall node) { return add(node); }
             public Void visitLambda(IrNode.Lambda node) { return add(node); }
@@ -259,6 +262,33 @@ public final class TypedIrTest {
                 shortCircuitOrder.edges().getFirst().kind());
         assertEquals(IrEvaluationOrder.EdgeKind.SHORT_CIRCUIT_OPERAND,
                 shortCircuitOrder.edges().get(1).kind());
+    }
+
+    @Test
+    public void matchIrRetainsClosedModesArmRolesAndLazyEvaluationEdges() {
+        TypedIr ir = phase(TypedIrBuilder.lower(typed(
+                "let subject :I32 = 2 let guard :Bool = #T "
+                        + "let value = (match subject ?? 1 when guard -> 10 ?? _ -> 20)")));
+        IrNode.Match match = IrTraversal.preOrder(ir.rootModule().body()).stream()
+                .filter(IrNode.Match.class::isInstance).map(IrNode.Match.class::cast)
+                .findFirst().orElseThrow();
+        assertEquals(IrNode.MatchMode.TRADITIONAL, match.mode());
+        assertTrue(match.subject().isPresent());
+        assertEquals(2, match.arms().size());
+        assertTrue(match.arms().getFirst().pattern().isPresent()
+                && match.arms().getFirst().guard().isPresent());
+        assertTrue(match.arms().getLast().wildcard()
+                && match.arms().getLast().guard().isEmpty());
+        IrEvaluationOrder order = ir.evaluationOrders().stream()
+                .filter(value -> value.kind() == IrEvaluationOrder.Kind.MATCH)
+                .findFirst().orElseThrow();
+        assertEquals(List.of(
+                        IrEvaluationOrder.EdgeKind.MATCH_SUBJECT,
+                        IrEvaluationOrder.EdgeKind.MATCH_PATTERN,
+                        IrEvaluationOrder.EdgeKind.MATCH_GUARD,
+                        IrEvaluationOrder.EdgeKind.MATCH_RESULT,
+                        IrEvaluationOrder.EdgeKind.MATCH_RESULT),
+                order.edges().stream().map(IrEvaluationOrder.Edge::kind).toList());
     }
 
     @Test

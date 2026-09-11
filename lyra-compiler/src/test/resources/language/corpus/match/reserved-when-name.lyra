@@ -1,0 +1,2 @@
+// match	reject	-	LYC-PARSE-001	when is reserved globally
+let when :I32 = 1

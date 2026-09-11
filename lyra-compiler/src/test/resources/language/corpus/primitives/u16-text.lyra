@@ -1,0 +1,2 @@
+// primitives	value	String	65535	u16 text
+let @pub run :Fn<;String> = (=> | | String[65535U16])

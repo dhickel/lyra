@@ -1,0 +1,2 @@
+// strings	value	I32	10	escapes
+let @pub run :Fn<;I32> = (=> | | "\\\"\'\n\r\t\b\f\0\u0041":.length)

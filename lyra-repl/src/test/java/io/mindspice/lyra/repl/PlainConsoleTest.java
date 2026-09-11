@@ -87,6 +87,16 @@ final class PlainConsoleTest {
     }
 
     @Test
+    void unqualifiedDirectCallsAreSourceNotConsoleCommands() {
+        Invocation invocation = run("let add :Fn<I32,I32;I32> = (=> |left right| (+ left right))\n"
+                + "::add[2 3]\n:quit\n");
+
+        assertEquals(0, invocation.status(), invocation.error());
+        assertTrue(invocation.output().contains("I32 5\n"), invocation.output());
+        assertFalse(invocation.error().contains("unknown command: ::add[2"), invocation.error());
+    }
+
+    @Test
     void colonCommandsAreRecognizedOnlyAtTopLevel() {
         Invocation invocation = run("(\n"
                 + ":help\n"

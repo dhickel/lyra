@@ -55,6 +55,7 @@ public sealed interface IrNode extends ImmutablePhaseArtifact
                 IrNode.Narrowing,
                 IrNode.Branch,
                 IrNode.Coalesce,
+                IrNode.Match,
                 IrNode.DirectCall,
                 IrNode.CallableCall,
                 IrNode.Lambda,
@@ -112,6 +113,16 @@ public sealed interface IrNode extends ImmutablePhaseArtifact
                 yield List.copyOf(children);
             }
             case Coalesce coalesce -> List.of(coalesce.value(), coalesce.fallback());
+            case Match match -> {
+                ArrayList<IrNode> children = new ArrayList<>();
+                match.subject().ifPresent(children::add);
+                for (MatchArm arm : match.arms()) {
+                    arm.pattern().ifPresent(children::add);
+                    arm.guard().ifPresent(children::add);
+                    children.add(arm.result());
+                }
+                yield List.copyOf(children);
+            }
             case DirectCall call -> {
                 ArrayList<IrNode> children = new ArrayList<>();
                 call.receiver().ifPresent(children::add);
@@ -596,6 +607,78 @@ public sealed interface IrNode extends ImmutablePhaseArtifact
         @Override
         public <R> R accept(IrVisitor<R> visitor) {
             return Objects.requireNonNull(visitor, "visitor").visitCoalesce(this);
+        }
+    }
+
+    enum MatchMode {
+        TRADITIONAL,
+        CONDITIONAL
+    }
+
+    record MatchArm(
+            SourceSpan span,
+            boolean wildcard,
+            Optional<IrNode> pattern,
+            Optional<IrNode> guard,
+            IrNode result,
+            Optional<LyraType> comparisonType) implements ImmutablePhaseArtifact {
+        public MatchArm {
+            Objects.requireNonNull(span, "span");
+            Objects.requireNonNull(pattern, "pattern");
+            Objects.requireNonNull(guard, "guard");
+            Objects.requireNonNull(result, "result");
+            Objects.requireNonNull(comparisonType, "comparisonType");
+            if (wildcard == pattern.isPresent()) {
+                throw new IllegalArgumentException("IR match arm must have exactly one wildcard or pattern");
+            }
+            if (wildcard && comparisonType.isPresent()) {
+                throw new IllegalArgumentException("IR wildcard cannot carry an equality type");
+            }
+        }
+    }
+
+    record Match(
+            SourceSpan span,
+            LyraType type,
+            MatchMode mode,
+            Optional<IrNode> subject,
+            List<MatchArm> arms,
+            Optional<FlowSiteId> siteId) implements IrNode {
+        public Match {
+            requireSpanAndType(span, type);
+            Objects.requireNonNull(mode, "mode");
+            Objects.requireNonNull(subject, "subject");
+            arms = copy(arms, "arms");
+            requireSite(siteId);
+            if ((mode == MatchMode.TRADITIONAL) != subject.isPresent()) {
+                throw new IllegalArgumentException("traditional IR match alone has a subject");
+            }
+            if (arms.isEmpty()) {
+                throw new IllegalArgumentException("IR match requires a fallback arm");
+            }
+            for (int index = 0; index < arms.size(); index++) {
+                MatchArm arm = arms.get(index);
+                if (mode == MatchMode.CONDITIONAL
+                        && (arm.guard().isPresent() || arm.comparisonType().isPresent())) {
+                    throw new IllegalArgumentException("conditional IR match cannot carry guard/equality metadata");
+                }
+                if (mode == MatchMode.TRADITIONAL && !arm.wildcard()
+                        && arm.comparisonType().isEmpty()) {
+                    throw new IllegalArgumentException("traditional IR match pattern lacks equality type");
+                }
+                if (arm.wildcard() && arm.guard().isEmpty() && index != arms.size() - 1) {
+                    throw new IllegalArgumentException("unconditional wildcard must be the final IR match arm");
+                }
+            }
+            MatchArm fallback = arms.getLast();
+            if (!fallback.wildcard() || fallback.guard().isPresent()) {
+                throw new IllegalArgumentException("IR match requires a final unconditional wildcard");
+            }
+        }
+
+        @Override
+        public <R> R accept(IrVisitor<R> visitor) {
+            return Objects.requireNonNull(visitor, "visitor").visitMatch(this);
         }
     }
 

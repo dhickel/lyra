@@ -1,0 +1,2 @@
+// truthiness	value	Bool	true	array
+let @pub run :Fn<;Bool> = (=> | | (Array<I32>[0] -> #T : #F))

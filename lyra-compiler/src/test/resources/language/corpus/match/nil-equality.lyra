@@ -1,0 +1,3 @@
+// match	value	I32	7	value match compares nil with typed equality
+let @nil value :I32 = #NIL
+let @pub run :Fn<;I32> = (=> | | (match value ?? #NIL -> 7 ?? _ -> 9))

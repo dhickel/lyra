@@ -1,0 +1,2 @@
+// lexical	reject	-	LYC-LEX-005	bad escape
+let x = "\q"

@@ -28,6 +28,8 @@ public final class Lexer {
             Map.entry("let", TokenKind.LET),
             Map.entry("import", TokenKind.IMPORT),
             Map.entry("as", TokenKind.AS),
+            Map.entry("match", TokenKind.MATCH),
+            Map.entry("when", TokenKind.WHEN),
             Map.entry("and", TokenKind.AND),
             Map.entry("or", TokenKind.OR),
             Map.entry("xor", TokenKind.XOR),
@@ -196,12 +198,17 @@ public final class Lexer {
 
             char character = source.charAt(index);
             if (character == '?') {
+                if (startsWith("??")) {
+                    index += 2;
+                    add(TokenKind.DOUBLE_QUESTION, start, index, TokenValue.None.INSTANCE);
+                    return null;
+                }
                 index++;
                 return error(
                         CompilerDiagnosticCodes.LEX_INVALID_OPERATOR,
                         start,
                         index,
-                        "'?' is only valid as part of eq? or !eq?");
+                        "'?' is only valid as part of ??, eq?, or !eq?");
             }
             if (character == '#') {
                 return readHashLiteral();

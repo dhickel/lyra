@@ -139,6 +139,19 @@ final class JLineConsoleTest {
     }
 
     @Test
+    void unqualifiedDirectCallsAreNotTreatedAsCommands() throws Exception {
+        try (Fixture fixture = new Fixture(
+                "let add :Fn<I32,I32;I32> = (=> |left right| (+ left right))\n"
+                        + "::add[2 3]\n", "emacs")) {
+            int status = fixture.run();
+            assertEquals(0, status, fixture.error.toString(StandardCharsets.UTF_8));
+            assertTrue(fixture.output.toString(StandardCharsets.UTF_8).contains("I32 5\n"),
+                    fixture.output.toString(StandardCharsets.UTF_8));
+            assertFalse(fixture.error.toString(StandardCharsets.UTF_8).contains("unknown command: ::add"));
+        }
+    }
+
+    @Test
     void completionIsLimitedToCommandsAndTypeNames() throws Exception {
         try (Fixture fixture = new Fixture(":hel\t\n", "emacs")) {
             assertEquals(":help \n", fixture.rich.readSource(List.of()));
@@ -289,12 +302,16 @@ final class JLineConsoleTest {
         try (Fixture fixture = new Fixture("", "emacs")) {
             LineReader reader = LineReaderBuilder.builder().terminal(fixture.terminal).build();
             LyraHighlighter highlighter = new LyraHighlighter();
-            String source = "(let x :String = \"😀)\" /* ] /* } */ ) */)";
+            String source = "(let x :String = \"😀)\" match when /* ] /* } */ ) */)";
             reader.getBuffer().write(source);
             var highlighted = highlighter.highlight(reader, source);
             assertEquals(source, highlighted.toString());
             assertNotEquals(highlighted.styleAt(1), highlighted.styleAt(5));
             assertNotEquals(highlighted.styleAt(source.indexOf('"')), highlighted.styleAt(5));
+            assertEquals(highlighted.styleAt(source.indexOf("let")),
+                    highlighted.styleAt(source.indexOf("match")));
+            assertEquals(highlighted.styleAt(source.indexOf("let")),
+                    highlighted.styleAt(source.indexOf("when")));
             assertEquals(0, highlighter.matchingDelimiter(source, source.length()));
             assertEquals(source.length() - 1, highlighter.matchingDelimiter(source, 0));
             assertEquals(-1, highlighter.matchingDelimiter(source, source.indexOf(']')));
