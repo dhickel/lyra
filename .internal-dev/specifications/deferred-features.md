@@ -4,9 +4,11 @@ These capabilities are accepted as future work but are not valid current languag
 
 ## User-declared data and object types
 
-- User classes, records/struct-like data, and variants are deferred to the next dedicated language-design sprint.
-- Direction already accepted for later refinement: fields use the same `let` declaration model; `@mut` marks mutable fields; types may eventually contain instance methods and shared bindings; `@static` is the preferred future spelling for shared type-level storage and may combine with `@mut`.
-- No current behavior, grammar, inheritance, construction, equality, layout, visibility, or `@static` legality is implied. The later specification must resolve those contracts before implementation.
+- Structs and classes have moved to the accepted, implementation-in-progress
+  contract in `language-core.md`; they are not yet executable features.
+- Variants, inheritance, interfaces, custom struct constructors and static/shared
+  type members remain deferred. `@static` remains the preferred future spelling
+  for shared type-level storage, possibly with `@mut`; it is not legal yet.
 
 ## Advanced patterns and iteration
 

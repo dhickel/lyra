@@ -79,7 +79,8 @@ seed. The Java harness lives in
 | Runtime authority/lifecycle | Existing exact handle, facade, callable authentication, initialization, owner and close assertions | Random action histories check wrong-thread refusal before mutation, forged SAM refusal before callback execution, retained live closure cells, failed-invocation effects, idempotent close and rejected stale handles |
 | Artifact loading | Existing deterministic classes/thin/bundled packaging, CLI and direct Java consumers | Truncated metadata/debug maps, broken class magic, missing/truncated classes; failure must be `LYR-COMPAT`, `LYR-LINK` or `LYR-VERIFY`; a clean load must still succeed afterwards |
 | Persistent sessions | Existing scalar/aggregate/callable/linkage/import/reload and protocol suites | `SessionStateFuzzTest`: Java model of original storage, array aliases/rebinding, closure captures, nil, failed publication versus completed effects, non-executing `:type`, reset and independent generations |
-| Excluded syntax | Classes, destructuring/type patterns, exception forms, bitwise syntax, `Any`, invalid calls/modifiers | Grammar/token mutations; excluded syntax never counts as a successful new language feature |
+| Nominal types (implementation pending) | `NominalTypeIdTest`: exact declaration identity, revision normalization, fixed canonical/hash vector, invalid names/revisions/occurrences | Four independent seeded identity models, 2,048 cases each. This tests an identity foundation only; structs/classes still lack parser, semantic and execution support. Existing class rejection is not positive feature coverage. Track full gates in `.internal-dev/plans/nominal-types/plan.md`. |
+| Excluded syntax | Destructuring/type patterns, exception forms, bitwise syntax, `Any`, invalid calls/modifiers | Grammar/token mutations; excluded syntax never counts as a successful new language feature |
 
 ## Fuzzer architecture and oracles
 

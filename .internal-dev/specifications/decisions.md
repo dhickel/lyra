@@ -445,3 +445,39 @@
   is claimed from these structural optimizations.
 - **Affected specifications:** language-core.md, backend-runtime.md and repl.md.
 - **Review timing:** on extending iterable domains, control flow or summary limits.
+
+## 2026-09-11 — Mutable nominal structs and classes
+
+- **Source:** owner design discussion and authorization to implement syntax and
+  full backend support; final confirmation that method replacements obey lexical
+  privacy even when contextual `self` is supplied.
+- **Decision:** structs are public-field data containers with optional mutable
+  fields and nested mutable data. Classes contain private-by-default fields and
+  lambda-valued methods. `@pub` exposes members; `@mut` permits slot replacement,
+  including method replacement, and is not a method-effect annotation.
+- **Decision:** constructors use the enclosing capitalized class name without
+  `let`, as `Counter = (=> |start :I32| ...)`. Construction uses `Counter[args]`;
+  constructor bodies produce Unit while construction produces the instance.
+  Structs retain positional data construction. No inheritance/interfaces are added.
+- **Decision:** `:.` reads fields/current bound method values; `::` executes the
+  selected method. Saved references retain callable selection and receiver, but
+  see current receiver state. Replacement affects future lookups. Existing function
+  captures are not rewritten when a function value is assigned to another slot.
+- **Decision:** methods may mutate their receiver's `@mut` fields when invoked
+  through immutable bindings. Direct assignment retains ordinary root/ownership
+  checks. A directly assigned replacement lambda receives the target as `self`
+  but receives no new private-access privilege. Privacy follows definition scope.
+- **Justification:** these preserve first-class function-value behavior and the
+  once-selected callback model already used by `iter` and `while`. Public-by-default
+  structs avoid private data that cannot be used through any struct method.
+- **Alternatives rejected:** immutable-only structs; forbidding method replacement;
+  `@mut` as a method-effect marker; automatic retargeting of saved method references;
+  assigning external replacement lambdas private class privileges.
+- **Tradeoffs:** mutable structs alias reference storage and have content equality
+  that changes with mutation. Ordinary final generated JVM classes, not Java
+  records, permit mutable fields. Nominal loading, cycle handling, provenance and
+  constructor initialization require explicit implementation and tests.
+- **Affected specifications:** language-core.md, backend-runtime.md, repl.md,
+  deferred-features.md.
+- **Review timing:** at each implementation gate in plans/nominal-types/plan.md.
+  This decision records intended behavior, not completed executable support.

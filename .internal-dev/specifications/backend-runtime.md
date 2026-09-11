@@ -118,6 +118,49 @@ JVM arrays preserve fixed length and identity. Non-nil primitive arrays are prim
 
 Java receives live arrays, not defensive copies. It can therefore mutate a returned array regardless of the Lyra binding's source-level `@mut` permission and can retain it after module close. This is an explicit trusted-Java ABI escape, not authority granted to another Lyra module. Facade and closure calls remain owner-thread checked, but raw array operations cannot be checked. Future untrusted/engine boundaries must wrap or copy arrays in their own specification. Other boxing is limited to unavoidable nilable, generic, reflection, or tooling boundaries.
 
+### Nominal objects (accepted; implementation in progress)
+
+Struct/class support requires nominal declaration/member identities, exact field
+and callable contracts, lexical access decisions, constructor initialization facts,
+and object/callable provenance before typed IR publication. Construction, field
+reads/writes, receiver-context lambda creation and method invocation require explicit
+typed lowering. The emitter must not reconstruct constructor analysis.
+
+Generate deterministic final JVM reference classes with exact typed fields for
+both structs and classes. Mutable fields rule out Java records as the general
+representation. Do not replace nominal types with maps, `Object[]`, or structural
+tuples. Primitive fields remain primitive where the existing nilable ABI permits.
+Representation fields are private; public typed accessors preserve source visibility,
+mutation contracts and owner/lifecycle checks. Typed construction factories retain
+the originating module instance; Java cannot construct unauthenticated raw objects.
+
+Method slots store exact typed function interfaces initialized with receiver-capturing
+closures. Direct calls load the slot once before evaluating explicit arguments.
+Reading a slot neither allocates a new wrapper nor retargets a receiver. Replacing
+a slot cannot alter already selected references. A directly assigned lambda captures
+the once-evaluated assignment target as contextual `self`; an existing callable
+retains its own captures. Private access is lexical at the lambda definition.
+
+Object fields require allocation/alias provenance and field-sensitive callable
+summaries across methods, captures, loops, modules and session generations. A method
+may mutate its own instance through an immutable receiver without authorizing the
+caller to mutate imported storage directly. Objects and their stored closures retain
+all actual producer dependencies. Existing callable authentication, thread and
+lifecycle checks must be preserved; Java class names/type shapes are not authority.
+
+Nominal schemas and exact origins must participate in Java signatures, deterministic
+generated names, artifact compatibility and dependency loading. Distinct declarations
+or revisions with identical shapes are different types. Canonical signature parsing
+requires a schema environment, not arbitrary unknown-name acceptance. Any metadata
+or ABI changes require explicit versioning and compatibility tests. Existing artifact
+encodings without nominal types remain unchanged unless a tested compatibility
+revision is required.
+
+Struct equality traverses current typed fields with visited object pairs for cycles;
+class equality uses identity. Equality does not invoke user code. Java-facing access,
+source-mapped failures, deterministic packaging, CLI execution and persistent sessions
+are completion gates. No nominal backend support is claimed by this checkpoint.
+
 ### Functions and closures
 
 - Every function value is identity-bearing under `eq?`. Each dynamic lambda evaluation creates a distinct identity. A closure may be cached only when language evaluation creates that value once, such as one top-level initializer; the compiler never coalesces separately evaluated lambdas.

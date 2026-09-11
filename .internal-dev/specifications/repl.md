@@ -68,6 +68,29 @@ and nonzero step without traversing the range. Both callback loops execute acros
 submissions, share prior mutable cells, preserve completed writes on failure, and
 honor session cancellation at backedges.
 
+### Nominal objects (accepted; implementation in progress)
+
+Successful submissions retain struct/class type environments alongside value
+bindings. Later submissions link the same initialized instances and exact schema/
+producer identities, not re-emitted declarations or structural look-alikes. Type
+replacement/reload must not retarget old instances or saved methods. Failure publishes
+no staged names; completed writes to older initialized objects survive as usual.
+
+Nominal loading requires a plan distinct from structural tuple/function interning:
+different declarations/revisions cannot merge by shape. Objects, bound functions,
+and nested mutable data retain actual producer/capture dependencies. Member access,
+method replacement, lexical privacy, owner confinement and reset/close obey the
+same language/runtime rules across submissions as in AOT execution.
+
+Snapshots expose immutable bounded type/member display data, never live object
+handles. Formatting invokes no constructors, methods, equality or user stringification.
+Alias/cycle references and truncation budgets remain explicit. Public fields and
+public method descriptions appear in declaration order; private class members are
+not exposed through the public value snapshot. Snapshot/protocol extensions require
+explicit schema handling and malformed-input tests, not source-replay serialization.
+
+These are required acceptance gates, not implementation claims.
+
 ### Console
 
 `lyra repl [ROOT]` supports source search directories, optional `--source-root DIR`, `--history PATH`, `--keymap emacs|vi` and `--plain`; it opens an empty workspace and never invokes `main`. `lyra attach HOST:PORT` connects to an explicitly enabled localhost service without a token file. `run ROOT --repl` enables the attachable instrumentation and the gated listener for that run, with run-only `--repl-port PORT` (0..65535, default 0) and `--repl-wait`. `compile ROOT --repl` builds the same capability but never listens; compiled artifacts activate only through the explicit `lyra.repl.enabled` (plus optional `lyra.repl.port` and `lyra.repl.wait`) runtime properties, default disabled.

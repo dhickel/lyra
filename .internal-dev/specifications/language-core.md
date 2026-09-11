@@ -16,7 +16,9 @@ Define Lyra's source syntax, static semantics, evaluation behavior, modules, and
 
 The current language includes static typing with local inference; immutable-by-default lexical bindings; `@pub`, `@mut`, and `@nil`; first-class typed lambdas; primitives, arrays, tuples, strings, and characters; blocks, conditionals, value and conditional matching, operators, assignment, modules, imports, exports, and the `->`, `:.`, and `::` accessors.
 
-Outside current scope are user-declared classes/records/variants, destructuring and type patterns, dedicated iteration syntax, generics, macros/quoting, catchable exceptions, omitted/default arguments, dynamic typing, and bitwise operators. See `deferred-features.md`.
+Structs and classes are an accepted extension with implementation in progress, specified below. Their presence in this intended contract is not evidence of executable support. The existing range, `iter`, and `while` sections also belong to the current language scope.
+
+Outside current scope are variants, destructuring and type patterns, inheritance, interfaces, user generics, macros/quoting, catchable exceptions, omitted/default arguments, dynamic typing, and bitwise operators. See `deferred-features.md`.
 
 ### Lexical rules
 
@@ -132,6 +134,126 @@ Modules, lambdas, and blocks create lexical scopes.
 Ordinary value declarations are source-ordered and cannot be read before initialization. Every `let` initialized by a completely typed lambda is signature-predeclared, permitting self recursion, forward references, and mutual recursion. Non-function eager initialization cycles are compile errors.
 
 Closures capture bindings. Immutable captures retain their selected value/reference. A captured `@mut` binding is one shared mutable cell visible to every capturing closure.
+
+### Structs and classes (accepted; implementation in progress)
+
+The owner accepted the following extension on 2026-09-11. Completion requires the
+corresponding backend and session gates; parsing alone does not complete it.
+
+```lyra
+struct Vec2 {
+    let @mut x :F64
+    let @mut y :F64
+}
+
+class Counter {
+    let @mut value :I32
+
+    Counter = (=> |start :I32| {
+        self:.value := start
+    })
+
+    let @pub @mut increment :Fn<;Unit> = (=> || {
+        self:.value := (++ self:.value)
+    })
+
+    let @pub current :Fn<;I32> = (=> || self:.value)
+}
+
+let position :Vec2 = Vec2[10.0 20.0]
+let counter :Counter = Counter[0]
+counter::increment[]
+let saved :Fn<;Unit> = counter:.increment
+```
+
+Declarations and identity:
+
+- `struct` and `class` introduce concrete nominal types, not tuple aliases. Type
+  identity belongs to the originating declaration/module revision, not its field
+  shape or import alias. No inheritance, interfaces, overriding, overloading,
+  user-defined operators, static members, or custom struct constructors are added.
+- Initial declarations are module-level: `struct [@pub] Name { members }` and
+  `class [@pub] Name { members }`. Names begin with an uppercase ASCII letter.
+  Type visibility is private unless `@pub`; this is separate from member visibility.
+  Types and values retain one namespace. Member names must be unique in a type.
+- Members use `let Modifier* name :Type [= expression]`. Every member contract
+  is explicit and complete. Missing initializers are legal only for these members,
+  not ordinary lexical bindings. `@nil` retains its existing value-contract meaning.
+- Struct fields are public by default. Class fields and methods are private unless
+  `@pub`. Access is checked lexically against the declaring class, including when
+  taking a method reference. Access through another instance of the same class
+  does not change that lexical access check.
+- Structs contain data and have no methods or `Fn`-typed data positions, including
+  functions nested in array/tuple/struct data contracts. Mutable fields and nested
+  mutable data are allowed. Nominal class references are reference-valued data;
+  their private implementation is not exposed by storage inside a struct.
+
+Construction and initialization:
+
+- `Type[arguments]` constructs a new instance. Arguments are exact positional
+  arguments, evaluated once left-to-right before instance initialization.
+- A struct's uninitialized fields are constructor parameters in declaration order.
+  Fields with initializers initialize themselves and are not optional arguments.
+- A class may contain one `Name = (=> |typed parameters| body)` constructor, using
+  the exact enclosing class name, without `let`. The parameter types are complete;
+  the expected return is `Unit`. A redundant inline return annotation must agree.
+  The construction expression returns the new instance, not the constructor body.
+- Without an explicit constructor, a class permits zero-argument construction only
+  if every field has an initializer. There is no implicit positional class constructor.
+- Field initializers run in declaration order before the constructor body. Required
+  struct arguments initialize their fields before the remaining initializers run.
+  Class methods may capture the constructing receiver when their slots are installed;
+  that installation alone is not publication of the receiver.
+- Definite initialization must prove all fields initialized on every completing
+  path. Immutable fields receive exactly one initialization. Reads before
+  initialization, duplicate immutable initialization, method invocation during
+  incomplete initialization, and escape of an incomplete receiver are errors.
+  Passing, returning, storing externally, or invoking a closure that exposes an
+  incomplete `self` counts as escape. A loop alone cannot prove an assignment
+  happens at least once. Constructor failure publishes no instance and does not
+  roll back effects already performed on other initialized state.
+- Recursive nominal references must have finite JVM reference layouts and still
+  satisfy initialization; no recursive inline expansion or infinite value layout
+  is permitted.
+
+Mutation, methods, and references:
+
+- `object:.field` accesses field data; `object::method[arguments]` invokes a callable
+  member; `object:.method` reads its current bound function value. There is no new
+  function declaration syntax. Class lambda-valued members use ordinary exact `Fn`
+  contracts whose explicit parameters exclude the implicit receiver `self`.
+- `@mut` permits replacement of a field or method slot. It does not classify a
+  method as effectful and does not grant extra member visibility. A replacement
+  must satisfy the exact declared contract. Immutable method slots cannot be replaced.
+- Direct member assignments retain ordinary mutation-root and imported-ownership
+  checks and additionally require an `@mut` member. Immutable receiver bindings
+  do not freeze instances: methods may mutate their receiver's `@mut` fields even
+  when called through an immutable binding. The implicit `self` supplies receiver
+  mutation permission, not permission to rebind the caller's variable.
+- Reading a method slot retains its current callable and receiver. It snapshots
+  the implementation selection, not object state. Replacing the slot affects later
+  lookups but does not retarget saved references, callbacks, or existing captures.
+  Repeated reads of an unchanged slot retain function identity.
+- A lambda directly initializing/replacing a method slot receives contextual
+  `self`, bound to the selected target instance evaluated once. That contextual
+  receiver does not grant lexical private access: a replacement written outside
+  the declaring class can use only accessible members. Nested closures retain
+  normal lexical capture and visibility rules.
+- Assigning an existing callable copies that callable value, including its existing
+  captures/bound receiver. It does not rewrite captured `self`. A forwarding lambda
+  such as `(=> || counter::increment[])` explicitly requests a fresh lookup on each
+  call. Neither direct invocation nor extraction adds an extra receiver argument to
+  an already selected callable.
+- Class equality is instance identity. Struct equality is nominally typed structural
+  equality over current field values; copying a reference does not clone mutable
+  storage. Nested class references compare by identity. Cyclic data traversal must
+  terminate using visited object pairs. Structs do not add source identity operators
+  beyond the existing identity-bearing type rules. Mutable structural values cannot
+  be assumed to have stable content hashes.
+
+These rules extend the earlier `@pub` placement, member-bearing types, constructor,
+and mutation descriptions only where expressly stated. Ordinary arrays, lexical
+bindings, imports, callable authentication, and module lifecycle remain unchanged.
 
 ### Functions and lambdas
 
