@@ -56,6 +56,9 @@ Runtime nominal identity/schema graphs and explicit schema-aware type/signature
 parsing are implemented. Compiler/runtime JVM mapping parity covers nominal,
 nilable nominal and array contracts. Deterministic nominal descriptors retain the
 full declaration digest and reject a different physical declaration identity.
-These are contract/mapping tests, not emitted object execution. Artifact schema
-versioning/publication, class/member plans, direct emission, authorities, equality,
+Artifact schema 2 now serializes and validates closed recursive nominal schemas,
+binds their complete canonical contracts into artifact revisions, and resolves
+nominal exports only after schema decoding. Schema-1 bytes remain unchanged.
+These are contract/mapping/metadata tests, not emitted object execution. Compiler
+artifact publication, class/member plans, direct emission, authorities, equality,
 Java factories and persistent sessions remain unfinished.

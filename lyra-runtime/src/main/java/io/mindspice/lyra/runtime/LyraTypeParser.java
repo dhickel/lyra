@@ -6,10 +6,10 @@ import java.util.Objects;
 /** Small canonical-spelling parser kept private to the runtime type model. */
 final class LyraTypeParser {
     private final String input;
-    private final NominalTypeEnvironment nominals;
+    private final java.util.function.Function<String, NominalType> nominals;
     private int index;
 
-    private LyraTypeParser(String input, NominalTypeEnvironment nominals) {
+    private LyraTypeParser(String input, java.util.function.Function<String, NominalType> nominals) {
         this.input = Objects.requireNonNull(input, "canonicalSpelling");
         this.nominals = Objects.requireNonNull(nominals, "nominals");
         for (int offset = 0; offset < input.length(); offset++) {
@@ -24,6 +24,12 @@ final class LyraTypeParser {
     }
 
     static LyraType parse(String input, NominalTypeEnvironment nominals) {
+        Objects.requireNonNull(nominals, "nominals");
+        return parse(input, nominals::resolve);
+    }
+
+    /** Metadata-only first pass; the caller must close and validate all decoded schemas. */
+    static LyraType parse(String input, java.util.function.Function<String, NominalType> nominals) {
         LyraTypeParser parser = new LyraTypeParser(input, nominals);
         LyraType result = parser.type();
         if (!parser.atEnd()) {
@@ -50,7 +56,7 @@ final class LyraTypeParser {
             String hash = identifier();
             if (!hash.matches("[0-9a-f]{64}")) throw error("invalid nominal identity digest");
             expect('>');
-            base = nominals.resolve("Nominal<" + hash + ">");
+            base = Objects.requireNonNull(nominals.apply("Nominal<" + hash + ">"), "unknown nominal contract");
         } else if (consumeWord("Array")) {
             expect('<');
             base = ArrayType.of(type());

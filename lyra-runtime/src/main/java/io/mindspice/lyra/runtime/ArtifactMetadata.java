@@ -19,6 +19,7 @@ import java.util.Optional;
  */
 public final class ArtifactMetadata {
     public static final int SCHEMA_VERSION = LyraRuntimeConstants.ARTIFACT_SCHEMA_VERSION;
+    public static final int NOMINAL_SCHEMA_VERSION = 2;
     public static final int LANGUAGE_CONTRACT_VERSION = LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION;
 
     private final int schemaVersion;
@@ -49,6 +50,7 @@ public final class ArtifactMetadata {
     private final List<ArtifactImport> imports;
     private final Map<String, String> reproducibleOptions;
     private final Optional<ReplCapability> replCapability;
+    private final NominalTypeEnvironment nominalSchemas;
 
     public ArtifactMetadata(
             int schemaVersion,
@@ -202,7 +204,29 @@ public final class ArtifactMetadata {
             List<? extends ArtifactImport> imports,
             Map<String, String> reproducibleOptions,
             Optional<ReplCapability> replCapability) {
-        if (schemaVersion != LyraRuntimeConstants.ARTIFACT_SCHEMA_VERSION
+        this(schemaVersion, languageContractVersion, compilerVersion, compilerBuild, runtimeAbi,
+                profile, javaClassFileTarget, previewRequired, artifactId, artifactRevision,
+                rootModuleId, rootModuleRevision, modules, sources, javaPackage, exports, javaNameMap,
+                debugMapVersion, debugMapHash, packagingMode, runtimeRequirement, executionProfile,
+                hookRequirements, dependencyRequirements, attachmentContext, imports, reproducibleOptions,
+                replCapability, NominalTypeEnvironment.empty());
+    }
+
+    /** Versioned nominal publication; legacy constructors continue to produce schema 1. */
+    public ArtifactMetadata(int schemaVersion, int languageContractVersion,
+            String compilerVersion, String compilerBuild, RuntimeAbi runtimeAbi, RuntimeProfile profile,
+            int javaClassFileTarget, boolean previewRequired, String artifactId, ArtifactRevision artifactRevision,
+            ModuleId rootModuleId, ModuleRevision rootModuleRevision, List<? extends ModuleMetadata> modules,
+            List<? extends SourceMetadata> sources, String javaPackage, List<? extends ExportMetadata> exports,
+            Map<String, String> javaNameMap, int debugMapVersion, String debugMapHash, PackagingMode packagingMode,
+            Optional<RuntimeRequirement> runtimeRequirement, ArtifactProfile executionProfile,
+            List<? extends ArtifactHook> hookRequirements, List<? extends ArtifactDependency> dependencyRequirements,
+            Optional<AttachmentContext> attachmentContext, List<? extends ArtifactImport> imports,
+            Map<String, String> reproducibleOptions, Optional<ReplCapability> replCapability,
+            NominalTypeEnvironment nominalSchemas) {
+        this.nominalSchemas = Objects.requireNonNull(nominalSchemas, "nominalSchemas");
+        int expectedSchema = nominalSchemas.schemas().isEmpty() ? SCHEMA_VERSION : NOMINAL_SCHEMA_VERSION;
+        if (schemaVersion != expectedSchema
                 || languageContractVersion != LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION
                 || debugMapVersion != LyraRuntimeConstants.DEBUG_MAP_SCHEMA_VERSION) {
             throw new IllegalArgumentException("unsupported metadata schema or language version");
@@ -232,6 +256,7 @@ public final class ArtifactMetadata {
         this.modules = sortedModules(modules);
         this.sources = sortedSources(sources);
         this.exports = sortedExports(exports);
+        this.exports.forEach(export -> nominalSchemas.validateReferences(export.contract()));
         this.javaNameMap = sortedNames(javaNameMap);
         this.debugMapVersion = debugMapVersion;
         this.debugMapHash = requireRevision(debugMapHash, "debugMapHash");
@@ -320,6 +345,7 @@ public final class ArtifactMetadata {
                 this.runtimeRequirement, this.executionProfile, this.hookRequirements,
                 this.dependencyRequirements, this.attachmentContext, this.imports,
                 this.reproducibleOptions, this.replCapability.isPresent());
+        expectedRevision = ArtifactRevision.bindNominalSchemas(expectedRevision, nominalSchemas);
         if (!expectedRevision.equals(this.artifactRevision)) {
             throw new IllegalArgumentException("artifact revision disagrees with metadata inputs");
         }
@@ -431,6 +457,7 @@ public final class ArtifactMetadata {
     public List<SourceMetadata> sources() { return sources; }
     public List<SourceMetadata> sourceMetadata() { return sources; }
     public List<ExportMetadata> exports() { return exports; }
+    public NominalTypeEnvironment nominalSchemas() { return nominalSchemas; }
     public Map<String, String> javaNameMap() { return javaNameMap; }
     public Map<String, String> nameMap() { return javaNameMap; }
     public int debugMapVersion() { return debugMapVersion; }
@@ -472,6 +499,7 @@ public final class ArtifactMetadata {
         fieldString(result, first, "rootModuleRevision", rootModuleRevision.value());
         fieldObject(result, first, "modules", modulesJson());
         fieldObject(result, first, "sources", sourcesJson());
+        if (schemaVersion == NOMINAL_SCHEMA_VERSION) fieldObject(result, first, "nominalSchemas", nominalSchemas.canonicalJson());
         fieldObject(result, first, "exports", exportsJson());
         fieldObject(result, first, "javaNameMap", namesJson());
         field(result, first, "debugMapVersion", Integer.toString(debugMapVersion));
@@ -532,6 +560,7 @@ public final class ArtifactMetadata {
                 && modules.equals(metadata.modules)
                 && sources.equals(metadata.sources)
                 && exports.equals(metadata.exports)
+                && nominalSchemas.schemas().equals(metadata.nominalSchemas.schemas())
                 && javaNameMap.equals(metadata.javaNameMap)
                 && debugMapVersion == metadata.debugMapVersion
                 && debugMapHash.equals(metadata.debugMapHash)
@@ -553,7 +582,7 @@ public final class ArtifactMetadata {
                 artifactRevision, rootModuleId, rootModuleRevision, modules, sources, exports, javaNameMap,
                 debugMapVersion, debugMapHash, packagingMode, runtimeRequirement, executionProfile,
                 hookRequirements, dependencyRequirements, attachmentContext, imports, reproducibleOptions,
-                replCapability);
+                replCapability, nominalSchemas.schemas());
     }
 
     @Override
@@ -1022,6 +1051,7 @@ public final class ArtifactMetadata {
         private List<ModuleMetadata> modules = List.of();
         private List<SourceMetadata> sources = List.of();
         private List<ExportMetadata> exports = List.of();
+        private NominalTypeEnvironment nominalSchemas = NominalTypeEnvironment.empty();
         private Map<String, String> javaNameMap = Map.of();
         private int debugMapVersion = LyraRuntimeConstants.DEBUG_MAP_SCHEMA_VERSION;
         private String debugMapHash;
@@ -1056,6 +1086,11 @@ public final class ArtifactMetadata {
         public Builder sources(List<? extends SourceMetadata> value) { sources = List.copyOf(value); return this; }
         public Builder sourceMetadata(List<? extends SourceMetadata> value) { sources = List.copyOf(value); return this; }
         public Builder exports(List<? extends ExportMetadata> value) { exports = List.copyOf(value); return this; }
+        public Builder nominalSchemas(NominalTypeEnvironment value) {
+            nominalSchemas = Objects.requireNonNull(value, "nominalSchemas");
+            schemaVersion = value.schemas().isEmpty() ? SCHEMA_VERSION : NOMINAL_SCHEMA_VERSION;
+            return this;
+        }
         public Builder javaNameMap(Map<String, String> value) { javaNameMap = Map.copyOf(value); return this; }
         public Builder debugMapVersion(int value) { debugMapVersion = value; return this; }
         public Builder debugMapHash(String value) { debugMapHash = value; return this; }
@@ -1080,7 +1115,7 @@ public final class ArtifactMetadata {
                     rootModuleId, rootModuleRevision, modules, sources, javaPackage, exports, javaNameMap,
                     debugMapVersion, debugMapHash, packagingMode, runtimeRequirement, executionProfile,
                     hookRequirements, dependencyRequirements, attachmentContext, imports,
-                    reproducibleOptions, replCapability);
+                    reproducibleOptions, replCapability, nominalSchemas);
         }
     }
 }

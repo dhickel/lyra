@@ -95,8 +95,18 @@ remain in progress.
 - Nominal JVM references use a distinct generated family and full declaration
   digest. Physical mapping validation checks that exact digest, not only a nominal
   class-name prefix. These descriptor plans do not yet emit or authenticate objects.
-- Runtime artifact schema publication, object authorities and retained nominal
+- Generated nominal artifact publication, object authorities and retained nominal
   sessions are not implemented by the compiler-only semantic heap or type records.
+- Artifact schema 2 now encodes the nonempty nominal schema graph before exports;
+  schema 1 omits it and keeps old revision inputs. The two-pass reader verifies
+  origin/digest pairs before resolving recursive contracts. The complete canonical
+  schema JSON is bound into the artifact revision with its own domain, so changing
+  even a valid field visibility/mutability/name cannot keep the old revision.
+  Both metadata construction and reader compatibility validation recompute this
+  extension; updating only one causes nominal round-trip failures.
+- This metadata reader does not yet make the compiler emit nominal artifacts or
+  authenticate generated nominal classes. Those remain separate implementation
+  gates, alongside schema-aware live loader/session linkage.
 
 ## Open Questions
 

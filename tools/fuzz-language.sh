@@ -18,5 +18,5 @@ EOF
     exit 0
 fi
 cd -- "$LYRA_FUZZ_ROOT"
-exec mvn -pl lyra-compiler -am test -Dtest=LanguageFuzzTest,RangeIntegrationTest,CallbackLoopIntegrationTest,NominalSyntaxTest,NominalSemanticsTest,NominalTypeTest,NominalTypeContractTest \
+exec mvn -pl lyra-compiler -am test -Dtest=LanguageFuzzTest,RangeIntegrationTest,CallbackLoopIntegrationTest,NominalSyntaxTest,NominalSemanticsTest,NominalTypeTest,NominalTypeContractTest,NominalArtifactMetadataTest \
     -Dsurefire.failIfNoSpecifiedTests=false -Dlyra.fuzz.cases=1800 "$@"

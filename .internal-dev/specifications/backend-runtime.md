@@ -156,6 +156,24 @@ or ABI changes require explicit versioning and compatibility tests. Existing art
 encodings without nominal types remain unchanged unless a tested compatibility
 revision is required.
 
+Nominal publications use artifact schema 2; schema-1 publications contain no nominal
+contracts and retain their existing bytes and revisions. Schema 2 requires a nonempty
+`nominalSchemas` section between `sources` and `exports`, sorted by canonical nominal
+spelling. Each entry records, in order, `module`, `revision`, `name`, `occurrence`,
+`type`, `kind`, `members`, and `parameters`. Members retain declaration order and
+record `name`, canonical `type`, `public`, `mutable`, and `initializer`; constructor
+parameters retain source order. Kinds are `STRUCT` and `CLASS`. A two-pass reader
+first validates exact identity/digest pairs, then resolves all field/constructor
+contracts in that closed environment before reading exports. Missing/duplicate
+identities, noncanonical ordering and unknown references reject.
+
+Schema-2 artifact revisions bind the existing artifact revision and the complete
+canonical nominal-schema JSON with the domain `LYRA-ARTIFACT-NOMINAL-SCHEMAS/1`,
+using the existing length-prefixed UTF-8 artifact hashing primitive. Empty schema
+environments leave the schema-1 revision unchanged. Metadata identity/integrity is
+not a live-object capability; runtime producer and lifecycle authentication remain
+separate mandatory boundaries.
+
 Struct equality traverses current typed fields with visited object pairs for cycles;
 class equality uses identity. Equality does not invoke user code. Java-facing access,
 source-mapped failures, deterministic packaging, CLI execution and persistent sessions

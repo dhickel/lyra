@@ -1235,7 +1235,8 @@ public final class LyraRuntime {
             MethodHandle metadataHandle = MethodHandles.publicLookup().findStatic(
                     facade, "$lyra$metadata", MethodType.methodType(ArtifactMetadata.class));
             ArtifactMetadata embedded = (ArtifactMetadata) metadataHandle.invokeExact();
-            if (embedded.schemaVersion() != LyraRuntimeConstants.ARTIFACT_SCHEMA_VERSION) {
+            if (embedded.schemaVersion() != LyraRuntimeConstants.ARTIFACT_SCHEMA_VERSION
+                    && embedded.schemaVersion() != ArtifactMetadata.NOMINAL_SCHEMA_VERSION) {
                 throw compatibility("generated facade metadata has an invalid schema", null);
             }
             if (!embedded.equals(expected)) {

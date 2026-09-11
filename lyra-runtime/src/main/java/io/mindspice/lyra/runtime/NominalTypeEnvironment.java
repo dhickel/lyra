@@ -30,6 +30,30 @@ public final class NominalTypeEnvironment {
     public static NominalTypeEnvironment empty() { return EMPTY; }
     public List<NominalSchema> schemas() { return List.copyOf(schemas.values()); }
 
+    /** Canonical schema-2 artifact section, ordered by exact nominal spelling. */
+    public String canonicalJson() {
+        var encoded = new java.util.ArrayList<String>();
+        for (NominalSchema schema : schemas()) {
+            var id = schema.type().id();
+            var fields = new java.util.ArrayList<String>();
+            for (NominalSchema.Member member : schema.members()) {
+                fields.add("{\"name\":" + CanonicalJson.quote(member.name())
+                        + ",\"type\":" + CanonicalJson.quote(member.type().canonicalSpelling())
+                        + ",\"public\":" + member.publicAccess() + ",\"mutable\":" + member.mutable()
+                        + ",\"initializer\":" + member.hasInitializer() + "}");
+            }
+            encoded.add("{\"module\":" + CanonicalJson.quote(id.module().canonicalSpelling())
+                    + ",\"revision\":" + CanonicalJson.quote(id.revision())
+                    + ",\"name\":" + CanonicalJson.quote(id.name()) + ",\"occurrence\":" + id.occurrence()
+                    + ",\"type\":" + CanonicalJson.quote(schema.type().canonicalSpelling())
+                    + ",\"kind\":" + CanonicalJson.quote(schema.kind().name())
+                    + ",\"members\":[" + String.join(",", fields)
+                    + "],\"parameters\":[" + String.join(",", schema.constructorParameters().stream()
+                    .map(type -> CanonicalJson.quote(type.canonicalSpelling())).toList()) + "]}");
+        }
+        return "[" + String.join(",", encoded) + "]";
+    }
+
     public NominalSchema require(NominalType type) {
         NominalSchema schema = schemas.get(Objects.requireNonNull(type, "type").canonicalSpelling());
         if (schema == null || !schema.type().equals(type)) throw new IllegalArgumentException("unknown nominal identity: " + type);

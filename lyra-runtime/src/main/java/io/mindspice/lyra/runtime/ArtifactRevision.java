@@ -12,6 +12,17 @@ import java.util.Optional;
 
 /** Deterministic revision of artifact compatibility inputs. */
 public final class ArtifactRevision implements Comparable<ArtifactRevision> {
+    /** Binds the complete nominal ABI without changing any schema-1 revision input. */
+    public static ArtifactRevision bindNominalSchemas(ArtifactRevision base, NominalTypeEnvironment schemas) {
+        Objects.requireNonNull(base, "base");
+        Objects.requireNonNull(schemas, "schemas");
+        if (schemas.schemas().isEmpty()) return base;
+        MessageDigest digest = sha256();
+        putString(digest, "LYRA-ARTIFACT-NOMINAL-SCHEMAS/1");
+        putString(digest, base.value());
+        putString(digest, schemas.canonicalJson());
+        return ArtifactRevision.of(HexFormat.of().formatHex(digest.digest()));
+    }
     public static final String DOMAIN_TAG = "LYRA-ARTIFACT-REVISION";
     private static final String REPL_CAPABILITY_DOMAIN = "LYRA-REPL-CAPABILITY";
     private final String value;

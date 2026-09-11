@@ -28,7 +28,7 @@ public final class ArtifactMetadataReader {
     private static final List<String> FIELD_ORDER = List.of(
             "schemaVersion", "languageContractVersion", "compilerVersion", "compilerBuild",
             "runtimeAbi", "profile", "javaPackage", "previewSupported", "javaClassFileTarget", "previewRequired", "artifactId",
-            "artifactRevision", "rootModuleId", "rootModuleRevision", "modules", "sources", "exports",
+            "artifactRevision", "rootModuleId", "rootModuleRevision", "modules", "sources", "nominalSchemas", "exports",
             "javaNameMap", "debugMapVersion", "debugMapHash", "packagingMode",
             "runtimeRequirement", "replCapability", "executionProfile", "hookRequirements",
             "dependencyRequirements", "attachmentContext", "imports", "reproducibleOptions");
@@ -129,7 +129,12 @@ public final class ArtifactMetadataReader {
             throw new IllegalArgumentException(
                     "source metadata must cover every module");
         }
-        List<ExportMetadata> exports = decodeExports(array(object, "exports"));
+        if ((schemaVersion == ArtifactMetadata.NOMINAL_SCHEMA_VERSION) != object.containsKey("nominalSchemas")) {
+            throw new IllegalArgumentException("nominal schema section/version mismatch");
+        }
+        NominalTypeEnvironment nominalSchemas = object.containsKey("nominalSchemas")
+                ? decodeNominalSchemas(array(object, "nominalSchemas")) : NominalTypeEnvironment.empty();
+        List<ExportMetadata> exports = decodeExports(array(object, "exports"), nominalSchemas);
         Map<String, String> names = decodeNames(objectValue(object.get("javaNameMap"), "javaNameMap"));
         int debugMapVersion = integer(object, "debugMapVersion");
         String debugMapHash = string(object, "debugMapHash");
@@ -164,7 +169,7 @@ public final class ArtifactMetadataReader {
                 runtimeAbi, profile, target, previewRequired, artifactId, artifactRevision,
                 rootModuleId, rootModuleRevision, modules, sources, javaPackage, exports, names, debugMapVersion,
                 debugMapHash, packagingMode, requirement, executionProfile, hooks, dependencies,
-                attachmentContext, imports, options, replCapability);
+                attachmentContext, imports, options, replCapability, nominalSchemas);
     }
 
     private static ReplCapability decodeReplCapability(Map<String, Object> object) {
@@ -234,7 +239,56 @@ public final class ArtifactMetadataReader {
         return List.copyOf(result);
     }
 
-    private static List<ExportMetadata> decodeExports(List<Object> values) {
+    private static NominalTypeEnvironment decodeNominalSchemas(List<Object> values) {
+        if (values.isEmpty()) throw new IllegalArgumentException("nominal schema version requires declarations");
+        var identities = new java.util.TreeMap<String, NominalType>();
+        var definitions = new ArrayList<Map<String, Object>>();
+        List<String> fields = List.of("module", "revision", "name", "occurrence", "type", "kind", "members", "parameters");
+        String previous = null;
+        for (Object value : values) {
+            Map<String, Object> definition = objectValue(value, "nominal schema");
+            validateObjectKeys(definition, fields, Set.copyOf(fields), "nominal schema");
+            String moduleSpelling = string(definition, "module");
+            ModuleId module = moduleId(moduleSpelling);
+            if (!module.canonicalSpelling().equals(moduleSpelling)) throw new IllegalArgumentException("noncanonical nominal module");
+            NominalType type = new NominalType(new NominalTypeId(module, string(definition, "revision"),
+                    string(definition, "name"), longValue(definition, "occurrence")));
+            String canonical = string(definition, "type");
+            if (!canonical.equals(type.canonicalSpelling()) || previous != null && previous.compareTo(canonical) >= 0) {
+                throw new IllegalArgumentException("nominal identity digest or canonical schema ordering differs");
+            }
+            previous = canonical;
+            if (identities.putIfAbsent(canonical, type) != null) throw new IllegalArgumentException("duplicate nominal schema");
+            definitions.add(definition);
+        }
+        java.util.function.Function<String, NominalType> resolver = canonical -> {
+            NominalType type = identities.get(canonical);
+            if (type == null) throw new IllegalArgumentException("unknown nominal schema reference: " + canonical);
+            return type;
+        };
+        var schemas = new ArrayList<NominalSchema>();
+        List<String> memberFields = List.of("name", "type", "public", "mutable", "initializer");
+        for (Map<String, Object> definition : definitions) {
+            var members = new ArrayList<NominalSchema.Member>();
+            for (Object value : array(definition, "members")) {
+                var member = objectValue(value, "nominal member");
+                validateObjectKeys(member, memberFields, Set.copyOf(memberFields), "nominal member");
+                members.add(new NominalSchema.Member(string(member, "name"),
+                        LyraTypeParser.parse(string(member, "type"), resolver), bool(member, "public"),
+                        bool(member, "mutable"), bool(member, "initializer")));
+            }
+            var parameters = new ArrayList<LyraType>();
+            for (Object value : array(definition, "parameters")) {
+                if (!(value instanceof String spelling)) throw new IllegalArgumentException("nominal parameter must be a type string");
+                parameters.add(LyraTypeParser.parse(spelling, resolver));
+            }
+            schemas.add(new NominalSchema(identities.get(string(definition, "type")),
+                    NominalSchema.Kind.valueOf(string(definition, "kind")), members, parameters));
+        }
+        return new NominalTypeEnvironment(schemas);
+    }
+
+    private static List<ExportMetadata> decodeExports(List<Object> values, NominalTypeEnvironment nominalSchemas) {
         ArrayList<ExportMetadata> result = new ArrayList<>(values.size());
         ExportId previous = null;
         for (Object value : values) {
@@ -252,7 +306,7 @@ public final class ArtifactMetadataReader {
                 throw new IllegalArgumentException("export module ID is not canonical");
             }
             String contractSpelling = string(object, "signature");
-            LyraType contract = LyraType.parse(contractSpelling);
+            LyraType contract = LyraType.parse(contractSpelling, nominalSchemas);
             if (!contract.canonicalSpelling().equals(contractSpelling)) {
                 throw new IllegalArgumentException("export contract is not canonical");
             }
@@ -463,7 +517,8 @@ public final class ArtifactMetadataReader {
     private static void validateCompatibility(ArtifactMetadata metadata,
                                               RuntimeProfile runningProfile,
                                               RuntimeAbi runningAbi) {
-        if (metadata.schemaVersion() != LyraRuntimeConstants.ARTIFACT_SCHEMA_VERSION) {
+        if (metadata.schemaVersion() != LyraRuntimeConstants.ARTIFACT_SCHEMA_VERSION
+                && metadata.schemaVersion() != ArtifactMetadata.NOMINAL_SCHEMA_VERSION) {
             throw compatibility("unsupported artifact schema version: " + metadata.schemaVersion(), null);
         }
         if (metadata.languageContractVersion() != LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION) {
@@ -492,6 +547,7 @@ public final class ArtifactMetadataReader {
                 metadata.executionProfile(), metadata.hookRequirements(), metadata.dependencyRequirements(),
                 metadata.attachmentContext(), metadata.imports(), metadata.reproducibleOptions(),
                 metadata.replCapable());
+        expected = ArtifactRevision.bindNominalSchemas(expected, metadata.nominalSchemas());
         if (!expected.equals(metadata.artifactRevision())) {
             throw compatibility("artifact revision does not match canonical metadata inputs", null);
         }
