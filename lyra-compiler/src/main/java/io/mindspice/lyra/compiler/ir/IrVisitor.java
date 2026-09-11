@@ -19,6 +19,7 @@ public interface IrVisitor<R> {
     R visitBranch(IrNode.Branch node);
     R visitCoalesce(IrNode.Coalesce node);
     R visitMatch(IrNode.Match node);
+    R visitRange(IrNode.Range node);
     R visitDirectCall(IrNode.DirectCall node);
     R visitCallableCall(IrNode.CallableCall node);
     R visitLambda(IrNode.Lambda node);

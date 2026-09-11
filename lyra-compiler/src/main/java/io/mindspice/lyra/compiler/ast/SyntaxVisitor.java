@@ -23,6 +23,8 @@ public interface SyntaxVisitor<R> {
     R visitTypeContract(SyntaxNode.TypeContract node);
     R visitPrimitiveType(SyntaxNode.PrimitiveType node);
     R visitArrayType(SyntaxNode.ArrayType node);
+    R visitRangeType(SyntaxNode.RangeType node);
+    R visitRange(SyntaxNode.Range node);
     R visitTupleType(SyntaxNode.TupleType node);
     R visitFunctionType(SyntaxNode.FunctionType node);
     R visitTypeAnnotation(SyntaxNode.TypeAnnotation node);

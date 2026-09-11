@@ -195,6 +195,9 @@ public final class TypedIrBuilder {
                 case CONDITIONAL -> lowerConditional(expression, site);
                 case COALESCE -> lowerCoalesce(expression, site);
                 case MATCH -> lowerMatch(expression, site);
+                case RANGE -> new IrNode.Range(expression.span(), expression.type(), child(expression, 0),
+                        child(expression, 1), child(expression, 2),
+                        expression.operator().filter("..."::equals).isPresent(), Optional.of(site));
                 case LAMBDA -> lowerLambda(expression, site);
                 case CALLABLE_CALL -> lowerCallableCall(expression, site);
                 case DIRECT_CALL, NAMESPACE_DIRECT_CALL -> lowerDirectCall(expression, site);

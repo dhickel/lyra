@@ -12,12 +12,14 @@ These capabilities are accepted as future work but are not valid current languag
 
 - Basic value and conditional `match` expressions are defined in `language-core.md`.
 - Destructuring patterns, type patterns, match-arm bindings, automatic match narrowing, and dedicated iteration forms remain deferred.
-- Current arrays/tuples do not imply a dedicated loop, range, iterator, exhaustiveness-analysis, or binding-pattern protocol.
+- First-class signed-integer ranges and callback-based `iter` are specified in
+  `language-core.md`. General iterator protocols, dedicated loop statements,
+  unsigned/floating ranges, exhaustiveness analysis and binding patterns remain deferred.
 
 ## Generics and macros
 
 - User-defined generics, macro systems, quoting, hygiene, and compile-time metaprogramming are deferred.
-- Built-in `Array<T>`, `Tuple<...>`, and `Fn<...;...>` syntax does not establish user-generic semantics.
+- Built-in `Array<T>`, `Range<T>`, `Tuple<...>`, and `Fn<...;...>` syntax does not establish user-generic semantics.
 
 ## Bitwise operations
 

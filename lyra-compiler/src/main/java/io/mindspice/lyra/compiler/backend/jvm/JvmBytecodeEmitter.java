@@ -381,7 +381,7 @@ final class JvmBytecodeEmitter {
 
         private void requireSupportedType(LyraType type, SourceSpan span) {
             LyraType base = type.withoutQualifiers();
-            if (base instanceof PrimitiveType) {
+            if (base instanceof PrimitiveType || base instanceof io.mindspice.lyra.compiler.types.RangeType) {
                 return;
             }
             if (base instanceof ArrayType array) {
@@ -2544,6 +2544,9 @@ final class JvmBytecodeEmitter {
             if (node instanceof IrNode.TupleLiteral tuple) {
                 return emitTupleLiteral(tuple);
             }
+            if (node instanceof IrNode.Range range) {
+                return emitRange(range);
+            }
             if (node instanceof IrNode.IndexAccess index) {
                 return emitIndexAccess(index);
             }
@@ -2585,6 +2588,30 @@ final class JvmBytecodeEmitter {
                 return emitRuntimeCheck(check);
             }
             throw unsupported(node.span(), "unhandled IR node: " + node.getClass().getName());
+        }
+
+        private JvmTypePlan emitRange(IrNode.Range range) {
+            var rangeType = (io.mindspice.lyra.compiler.types.RangeType) range.type();
+            int bits = ((PrimitiveType) rangeType.elementType()).numericDomain().orElseThrow().bitWidth();
+            List<Integer> slots = new ArrayList<>();
+            for (IrNode bound : range.childrenInEvaluationOrder()) {
+                emitNode(bound);
+                if (bits != 64) {
+                    code.i2l();
+                }
+                int slot = allocateLocal(JvmType.primitive("J"));
+                code.lstore(slot);
+                slots.add(slot);
+            }
+            code.new_(cd("io.mindspice.lyra.runtime.LyraRange"));
+            code.dup();
+            for (int slot : slots) {
+                code.lload(slot);
+            }
+            emitInt(range.inclusive() ? 1 : 0);
+            emitInt(bits);
+            code.invokespecial(cd("io.mindspice.lyra.runtime.LyraRange"), "<init>", method("(JJJZI)V"));
+            return owner.mapper.map(range.type(), JvmMappingContext.INTERNAL_VALUE);
         }
 
         private JvmTypePlan emitArrayLiteral(IrNode.ArrayLiteral array) {

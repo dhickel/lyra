@@ -62,6 +62,7 @@ public sealed interface SyntaxNode
                     Conditional,
                     Coalesce,
                     Match,
+                    Range,
                     PrefixAssignment,
                     Lambda,
                     CompactLambda,
@@ -93,7 +94,7 @@ public sealed interface SyntaxNode
 
     /** A syntax type, before semantic type construction. */
     sealed interface Type extends SyntaxNode
-            permits TypeContract, PrimitiveType, ArrayType, TupleType, FunctionType {
+            permits TypeContract, PrimitiveType, ArrayType, RangeType, TupleType, FunctionType {
     }
 
     enum UnitForm {
@@ -268,6 +269,45 @@ public sealed interface SyntaxNode
         @Override
         public <R> R accept(SyntaxVisitor<R> visitor) {
             return Objects.requireNonNull(visitor, "visitor").visitArrayType(this);
+        }
+    }
+
+    record RangeType(String name, TypeArgumentList arguments, SourceSpan span) implements Type {
+        public RangeType {
+            if (!"Range".equals(name)) {
+                throw new IllegalArgumentException("range type name must be Range");
+            }
+            Objects.requireNonNull(arguments, "arguments");
+            requireSpan(span);
+            if (arguments.types().size() != 1 || arguments.hasFunctionSeparator()) {
+                throw new IllegalArgumentException("Range type requires one element type");
+            }
+        }
+
+        public Type elementType() {
+            return arguments.types().getFirst();
+        }
+
+        @Override
+        public <R> R accept(SyntaxVisitor<R> visitor) {
+            return Objects.requireNonNull(visitor, "visitor").visitRangeType(this);
+        }
+    }
+
+    record Range(Expression start, Expression end, Expression step, boolean inclusive,
+                 SourceSpan operatorSpan, SourceSpan colonSpan, SourceSpan span) implements Expression {
+        public Range {
+            Objects.requireNonNull(start, "start");
+            Objects.requireNonNull(end, "end");
+            Objects.requireNonNull(step, "step");
+            requireSpan(operatorSpan);
+            requireSpan(colonSpan);
+            requireSpan(span);
+        }
+
+        @Override
+        public <R> R accept(SyntaxVisitor<R> visitor) {
+            return Objects.requireNonNull(visitor, "visitor").visitRange(this);
         }
     }
 

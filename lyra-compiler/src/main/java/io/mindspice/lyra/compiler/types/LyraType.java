@@ -13,7 +13,7 @@ import java.util.Set;
  * constants.</p>
  */
 public sealed interface LyraType
-        permits PrimitiveType, ArrayType, TupleType, FunctionType, QualifiedType {
+        permits PrimitiveType, ArrayType, RangeType, TupleType, FunctionType, QualifiedType {
     PrimitiveType I8 = PrimitiveType.I8;
     PrimitiveType I16 = PrimitiveType.I16;
     PrimitiveType I32 = PrimitiveType.I32;

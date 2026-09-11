@@ -464,6 +464,30 @@ public final class GrammarMatcher {
             }
 
             GrammarDescriptor predicateBinding = null;
+            if (at(TokenKind.RANGE_EXCLUSIVE) || at(TokenKind.RANGE_INCLUSIVE)) {
+                int rangeOperator = advance();
+                GrammarDescriptor end = parseExpression();
+                if (end == null) {
+                    return null;
+                }
+                if (!at(TokenKind.COLON)) {
+                    failExpected("':' followed by a range step expression");
+                    return null;
+                }
+                advance();
+                GrammarDescriptor step = parseExpression();
+                if (step == null) {
+                    return null;
+                }
+                if (!at(TokenKind.RIGHT_PAREN)) {
+                    failExpected("')' after a range step expression");
+                    return null;
+                }
+                int close = advance();
+                return descriptor(ProductionKind.RANGE, open, close + 1,
+                        List.of(predicate, end, step),
+                        metadata(open, close, rangeOperator, List.of(), List.of(), List.of()));
+            }
             if (at(TokenKind.IDENTIFIER) && peekKind(1) == TokenKind.ARROW) {
                 GrammarDescriptor bindingName = leaf(ProductionKind.IDENTIFIER, advance());
                 predicateBinding = descriptor(
@@ -1144,7 +1168,8 @@ public final class GrammarMatcher {
             int baseToken = advance();
             String spelling = tokens.get(baseToken).lexeme();
             GrammarDescriptor base;
-            if (spelling.equals("Array") || spelling.equals("Tuple") || spelling.equals("Fn")) {
+            if (spelling.equals("Array") || spelling.equals("Range")
+                    || spelling.equals("Tuple") || spelling.equals("Fn")) {
                 if (!at(TokenKind.LESS)) {
                     fail(
                             CompilerDiagnosticCodes.PARSE_INVALID_TYPE_FORM,
@@ -1156,16 +1181,16 @@ public final class GrammarMatcher {
                 if (arguments == null) {
                     return null;
                 }
-                if (spelling.equals("Array")) {
+                if (spelling.equals("Array") || spelling.equals("Range")) {
                     if (countTypeChildren(arguments) != 1) {
                         fail(
                                 CompilerDiagnosticCodes.PARSE_INVALID_TYPE_FORM,
                                 baseToken,
-                                "Array requires exactly one element type");
+                                spelling + " requires exactly one element type");
                         return null;
                     }
                     base = descriptor(
-                            ProductionKind.ARRAY_TYPE,
+                            spelling.equals("Range") ? ProductionKind.RANGE_TYPE : ProductionKind.ARRAY_TYPE,
                             baseToken,
                             arguments.endTokenIndex(),
                             List.of(leaf(ProductionKind.TYPE_NAME, baseToken), arguments),
@@ -1371,11 +1396,11 @@ public final class GrammarMatcher {
                                 List.of(),
                                 List.of()));
             }
-            if (spelling.equals("Fn")) {
+            if (spelling.equals("Fn") || spelling.equals("Range")) {
                 fail(
                         CompilerDiagnosticCodes.PARSE_INVALID_TYPE_FORM,
                         current,
-                        "Fn is a type name, not a value constructor");
+                        spelling + " is a type name, not a value constructor");
                 return null;
             }
             GrammarDescriptor type = descriptor(

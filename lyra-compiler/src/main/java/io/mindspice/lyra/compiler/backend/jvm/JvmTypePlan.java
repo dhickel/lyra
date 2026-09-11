@@ -228,6 +228,12 @@ record JvmTypePlan(
                             : nilable ? JvmMaterializationKind.NULLABLE_REFERENCE
                             : JvmMaterializationKind.DIRECT;
                     requireMaterialization(materialization, expected, baseCanonical);
+                } else if (baseCanonical.startsWith("Range<")) {
+                    validateReferenceMapping(nilable, representation, materialization,
+                            "Lio/mindspice/lyra/runtime/LyraRange;", JvmTypeKind.REFERENCE);
+                    requireMaterialization(materialization, nilable
+                            ? JvmMaterializationKind.NULLABLE_REFERENCE : JvmMaterializationKind.DIRECT,
+                            baseCanonical);
                 } else if (baseCanonical.startsWith("Tuple<")) {
                     compositeInner(baseCanonical, "Tuple<", false);
                     if (nilable) {
@@ -388,7 +394,7 @@ record JvmTypePlan(
             case TUPLE -> requireGeneratedReferenceFamily(descriptor, "$lyra$tuple$", "tuple");
             case FUNCTION -> requireGeneratedReferenceFamily(
                     descriptor, "$lyra$fn$", "function");
-            case PRIMITIVE -> {
+            case PRIMITIVE, RANGE -> {
                 // Primitive, String, and Unit descriptors are validated by the
                 // logical/physical mapping checks above.
             }
@@ -412,6 +418,9 @@ record JvmTypePlan(
     private static List<String> knownPhysicalDescriptors(
             CanonicalType type,
             JvmMappingContext context) {
+        if (type.shape() == CanonicalShape.RANGE) {
+            return List.of("Lio/mindspice/lyra/runtime/LyraRange;");
+        }
         if (type.shape() == CanonicalShape.PRIMITIVE) {
             String base = type.baseCanonical();
             boolean nilable = type.qualifiers().contains("@nil");
@@ -468,6 +477,7 @@ record JvmTypePlan(
     }
 
     private enum CanonicalShape {
+        RANGE,
         PRIMITIVE,
         ARRAY,
         TUPLE,
@@ -527,6 +537,14 @@ record JvmTypePlan(
             if (consume("Array<")) {
                 shape = CanonicalShape.ARRAY;
                 CanonicalType element = parseType(false);
+                require('>');
+                children = List.of(element);
+            } else if (consume("Range<")) {
+                shape = CanonicalShape.RANGE;
+                CanonicalType element = parseType(false);
+                if (!List.of("I8", "I16", "I32", "I64").contains(element.canonical())) {
+                    throw invalid();
+                }
                 require('>');
                 children = List.of(element);
             } else if (consume("Tuple<")) {

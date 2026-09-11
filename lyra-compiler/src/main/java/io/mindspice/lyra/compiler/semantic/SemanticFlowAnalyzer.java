@@ -984,7 +984,7 @@ public final class SemanticFlowAnalyzer {
                     case ARRAY_LITERAL -> array(expression, frame, state);
                     case TUPLE_LITERAL -> tuple(expression, frame, state);
                     case INDEX_ACCESS -> index(expression, frame, state);
-                    case OPERATOR, SHORT_CIRCUIT -> operator(expression, frame, state);
+                    case OPERATOR, SHORT_CIRCUIT, RANGE -> operator(expression, frame, state);
                     case CONVERSION, NARROWING -> unary(expression, frame, state);
                 };
                 requireFlowDomain(result.value, expression.span());

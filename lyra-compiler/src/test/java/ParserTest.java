@@ -30,6 +30,26 @@ import java.util.List;
 /** Assertion-grade syntax AST and grammar replay tests. */
 public final class ParserTest {
     @Test
+    public void testFirstClassRangeSyntaxRetainsBoundsStepAndEndpointKind() {
+        Parsed parsed = parse("let values :Range<I32> = (0..100:1) "
+                + "let reverse = (100...0:(- 1)) "
+                + "let result = ::iter[values |x| ::iter[reverse || ()]]");
+        SyntaxNode.LetBinding values = let(parsed.syntax(), "values");
+        SyntaxNode.RangeType type = (SyntaxNode.RangeType) values.annotation().orElseThrow().type();
+        check(((SyntaxNode.PrimitiveType) type.elementType()).name().equals("I32"),
+                "range element annotation is retained");
+        SyntaxNode.Range range = (SyntaxNode.Range) values.initializer();
+        check(!range.inclusive(), "double dot range excludes its endpoint");
+        check(range.start() instanceof SyntaxNode.IntegerLiteral, "range start is an expression");
+        check(range.end() instanceof SyntaxNode.IntegerLiteral, "range end is an expression");
+        check(range.step() instanceof SyntaxNode.IntegerLiteral, "range step is an expression");
+        SyntaxNode.Range reverse = (SyntaxNode.Range) let(parsed.syntax(), "reverse").initializer();
+        check(reverse.inclusive(), "triple dot range includes a reached endpoint");
+        check(reverse.step() instanceof SyntaxNode.OperatorSExpression,
+                "negative step uses the ordinary negation expression");
+    }
+
+    @Test
     public void testParserBuildsCompleteImmutableTree() {
         String source = "import game->math->vector as vec "
                 + "import @pub game->math->vector->{length normalize as norm} "
@@ -496,6 +516,8 @@ public final class ParserTest {
         @Override public Void visitTypeContract(SyntaxNode.TypeContract node) { return hit(); }
         @Override public Void visitPrimitiveType(SyntaxNode.PrimitiveType node) { return hit(); }
         @Override public Void visitArrayType(SyntaxNode.ArrayType node) { return hit(); }
+        @Override public Void visitRangeType(SyntaxNode.RangeType node) { return hit(); }
+        @Override public Void visitRange(SyntaxNode.Range node) { return hit(); }
         @Override public Void visitTupleType(SyntaxNode.TupleType node) { return hit(); }
         @Override public Void visitFunctionType(SyntaxNode.FunctionType node) { return hit(); }
         @Override public Void visitTypeAnnotation(SyntaxNode.TypeAnnotation node) { return hit(); }

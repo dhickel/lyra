@@ -56,6 +56,7 @@ Primitive types are:
 Composite types are:
 
 - `Array<T>`: homogeneous fixed-size array;
+- `Range<T>`: immutable signed-integer range (`I8`, `I16`, `I32`, or `I64`);
 - `Tuple<T1,T2,...>`: heterogeneous fixed-shape tuple;
 - `Fn<P1,P2,...;R>`: positional function type.
 
@@ -296,6 +297,50 @@ count := ++[count]
 - Bounds failure aborts the invocation.
 - `array[index] := value` requires an `@mut` root binding.
 - `array:.length` returns the fixed element count as `I32`.
+
+### Ranges and iteration
+
+Range construction is an enclosed expression with an explicit step:
+
+```lyra
+let ascending :Range<I32> = (0..100:1)
+let descending :Range<I32> = (100...0:(- 1))
+```
+
+`..` excludes the endpoint. `...` includes it only when the step reaches it;
+`(0...5:2)` visits 0, 2, 4. A range evaluates its start, end and step exactly
+once, left-to-right, at construction. Those immutable values may be stored,
+passed, returned or captured, and each traversal starts afresh. Construction
+does not allocate or evaluate a collection of elements.
+
+The bounds and step have the same signed integer type, selected under a complete
+expected `Range<T>` or the ordinary common numeric/contextual-literal rules.
+Unsigned and floating ranges are not part of this initial contract. Zero step
+is a compile error when constant and an invocation-fatal arithmetic error
+otherwise. A step directed away from the endpoint produces an empty traversal.
+Exclusive equal-endpoint ranges are empty; inclusive equal-endpoint ranges have
+one element. Completion must not attempt an overflowing terminal increment.
+Negative steps use existing unary expressions, such as `(- 1)` or `-[1]`.
+
+`iter` takes a range and a Unit-returning callback, and returns Unit:
+
+```lyra
+::iter[(0..100:1) |x| ::consume[x]]
+::iter[(0..100:1) || ::tick[]]
+(iter (0..100:1) |x| (consume x))
+```
+
+The callback contract is either `Fn<T;Unit>` for the exact range element type or
+`Fn<;Unit>`. Compact and full lambdas and existing function values are accepted.
+An anonymous callback's parameter count selects its expected contract; this does
+not introduce general overloading, user generics, omitted arguments or varargs.
+The range and callback expressions evaluate once in source order. Traversal then
+invokes the callback synchronously, once per element, with exactly one argument
+or exactly zero arguments. Empty ranges invoke neither form. The callback
+parameter is an ordinary immutable parameter and each invocation has its own
+binding, including when captured by a returned/stored closure. Nested iteration
+uses existing lexical captures. Runtime failure aborts traversal immediately.
+Generated traversal backedges honor existing application/session safe points.
 
 ### Tuples
 

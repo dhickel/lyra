@@ -39,7 +39,7 @@ class LanguageCoverageTest {
         assertEquals(all, negative, "Add malformed-arity fixtures for every new operator");
         Set<String> features = corpus.stream().map(LanguageCorpus.Case::feature).collect(Collectors.toSet());
         assertEquals(Set.of("primitives", "truthiness", "operators", "operator-arity", "evaluation", "bindings", "functions",
-                "nilability", "conditionals", "aggregates", "strings", "lexical", "conversions", "modules", "excluded", "runtime", "match"), features);
+                "nilability", "conditionals", "aggregates", "strings", "lexical", "conversions", "modules", "excluded", "runtime", "match", "ranges"), features);
         assertTrue(LanguageFuzzWorker.MODES.contains("match"), "Match scenarios must remain in the bounded fuzz campaign");
         var matches = corpus.stream().filter(test -> test.feature().equals("match")).toList();
         assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value") && test.source().contains("(match ")),

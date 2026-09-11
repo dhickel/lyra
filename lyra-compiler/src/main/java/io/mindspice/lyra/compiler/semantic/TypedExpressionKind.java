@@ -10,6 +10,7 @@ public enum TypedExpressionKind {
     CONDITIONAL,
     COALESCE,
     MATCH,
+    RANGE,
     LAMBDA,
     CALLABLE_CALL,
     DIRECT_CALL,

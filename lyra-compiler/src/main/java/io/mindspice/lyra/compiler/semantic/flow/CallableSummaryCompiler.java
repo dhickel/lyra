@@ -655,7 +655,7 @@ public final class CallableSummaryCompiler {
                 case ARRAY_LITERAL -> array(expression, state);
                 case TUPLE_LITERAL -> tuple(expression, state);
                 case INDEX_ACCESS -> index(expression, state);
-                case OPERATOR, SHORT_CIRCUIT -> operator(expression, state);
+                case OPERATOR, SHORT_CIRCUIT, RANGE -> operator(expression, state);
                 case CONVERSION, NARROWING -> unaryValue(expression, state);
             };
         }

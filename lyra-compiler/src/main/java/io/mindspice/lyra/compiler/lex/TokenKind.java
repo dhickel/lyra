@@ -50,6 +50,8 @@ public enum TokenKind {
 
     COLON_EQUAL,
     DOUBLE_QUESTION,
+    RANGE_EXCLUSIVE,
+    RANGE_INCLUSIVE,
     ARROW,
     COLON_DOT,
     DOUBLE_COLON,
@@ -91,7 +93,7 @@ public enum TokenKind {
 
     public boolean isPunctuation() {
         return switch (this) {
-            case COLON_EQUAL, DOUBLE_QUESTION, ARROW, COLON_DOT, DOUBLE_COLON, LAMBDA_ARROW,
+            case COLON_EQUAL, DOUBLE_QUESTION, RANGE_EXCLUSIVE, RANGE_INCLUSIVE, ARROW, COLON_DOT, DOUBLE_COLON, LAMBDA_ARROW,
                     LEFT_PAREN, RIGHT_PAREN, LEFT_BRACE, RIGHT_BRACE,
                     LEFT_BRACKET, RIGHT_BRACKET, COLON, SEMICOLON, BAR,
                     COMMA, PERIOD, EQUAL -> true;

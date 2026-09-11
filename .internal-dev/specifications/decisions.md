@@ -1,5 +1,30 @@
 # Durable Decisions
 
+## 2026-09-10 — First-class range values and callback iteration (implementation in progress)
+
+- **Source:** owner accepted enclosed range syntax and ordinary compact/full
+  callback lambdas, requested both callback arities, authorized implementation,
+  then renamed the built-in from `each` to `iter`.
+- **Decision:** `(start..end:step)` excludes the end; `(start...end:step)` includes
+  a reached end. Range construction is eager once; traversal is reusable and
+  synchronous. `iter` takes a range and `Fn<T;Unit>` or `Fn<;Unit>` and returns Unit.
+- **Rationale:** range data remains first-class while iteration reuses existing
+  function, lambda and closure semantics. Explicit existing unary negation avoids
+  a new signed-literal syntax. Safe terminal arithmetic avoids an overflowing
+  increment after the final element.
+- **Initial scope assumption:** signed integer widths I8–I64, as announced while
+  asking the owner about unsigned support. Unsigned descending ranges need a
+  separate signed-step contract.
+- **Pending decision:** whether iter is a reserved built-in name or an ordinary
+  shadowable name. Ordinary postfix grammar consumes `::iter` following another
+  expression as a receiver call, including across a newline. The owner was asked
+  to settle that public grammar/namespace choice; no silent reservation is made.
+- **Affected specifications:** language-core.md, backend-runtime.md,
+  deferred-features.md and the human-readable grammar resource.
+- **Validation status:** range construction has Java execution tests. Full iter
+  behavior, repeated callback flow and persistence remain incomplete; see the
+  active range-iter plan before treating this decision as implemented.
+
 ## 2026-09-11 — Commit every repository work unit
 
 - **Source:** owner request to commit the match implementation and all pending work, and to require commits for every subsequent phase/unit of repository work.

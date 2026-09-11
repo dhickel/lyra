@@ -572,6 +572,14 @@ public final class TypedSemanticGraph implements ImmutablePhaseArtifact, TypedSe
                     throw new IllegalArgumentException("typed array literal is incomplete");
                 }
             }
+            case RANGE -> {
+                if (!(expression.type() instanceof io.mindspice.lyra.compiler.types.RangeType range)
+                        || expression.children().size() != 3
+                        || expression.children().stream().anyMatch(child -> !child.type().equals(range.elementType()))
+                        || expression.operator().filter(value -> value.equals("..") || value.equals("...")).isEmpty()) {
+                    throw new IllegalArgumentException("typed range construction is incomplete");
+                }
+            }
             case TUPLE_LITERAL -> {
                 if (expression.type().isNilable()
                         || !(expression.type().withoutQualifiers() instanceof TupleType)

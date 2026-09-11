@@ -105,6 +105,7 @@ public final class Parser {
                 case CONDITIONAL -> replayConditional(descriptor);
                 case PREDICATE_BINDING -> replayPredicateBinding(descriptor);
                 case COALESCE -> replayCoalesce(descriptor);
+                case RANGE -> replayRange(descriptor);
                 case MATCH -> replayMatch(descriptor);
                 case MATCH_ARM -> replayMatchArm(descriptor);
 
@@ -123,6 +124,7 @@ public final class Parser {
                 case TYPE_CONTRACT -> replayTypeContract(descriptor);
                 case PRIMITIVE_TYPE -> replayPrimitiveType(descriptor);
                 case ARRAY_TYPE -> replayArrayType(descriptor);
+                case RANGE_TYPE -> replayCompositeType(descriptor, "Range");
                 case TUPLE_TYPE -> replayTupleType(descriptor);
                 case FUNCTION_TYPE -> replayFunctionType(descriptor);
                 case TYPE_ARGUMENT_LIST -> replayTypeArgumentList(descriptor);
@@ -532,6 +534,22 @@ public final class Parser {
                     arrow, sourceView.span(descriptor));
         }
 
+        private Object replayRange(GrammarDescriptor descriptor) {
+            cursor.consume(TokenKind.LEFT_PAREN, descriptor);
+            var startDescriptor = descriptor.children().get(0);
+            var start = asExpression(replay(startDescriptor), startDescriptor);
+            TokenKind operator = cursor.currentToken(descriptor).kind();
+            SourceSpan operatorSpan = cursor.consume(operator, descriptor);
+            var endDescriptor = descriptor.children().get(1);
+            var end = asExpression(replay(endDescriptor), endDescriptor);
+            SourceSpan colon = cursor.consume(TokenKind.COLON, descriptor);
+            var stepDescriptor = descriptor.children().get(2);
+            var step = asExpression(replay(stepDescriptor), stepDescriptor);
+            cursor.consume(TokenKind.RIGHT_PAREN, descriptor);
+            return new SyntaxNode.Range(start, end, step, operator == TokenKind.RANGE_INCLUSIVE,
+                    operatorSpan, colon, sourceView.span(descriptor));
+        }
+
         private Object replayCoalesce(GrammarDescriptor descriptor) {
             SourceSpan opening = cursor.consume(TokenKind.LEFT_PAREN, descriptor);
             if (descriptor.children().size() != 2) {
@@ -794,6 +812,7 @@ public final class Parser {
             SyntaxNode.TypeArgumentList arguments = asTypeArgumentList(
                     replay(argumentsDescriptor), argumentsDescriptor);
             return switch (expectedName) {
+                case "Range" -> new SyntaxNode.RangeType(expectedName, arguments, sourceView.span(descriptor));
                 case "Array" -> new SyntaxNode.ArrayType(
                         prefix.lexeme(), arguments, sourceView.span(descriptor));
                 case "Tuple" -> new SyntaxNode.TupleType(

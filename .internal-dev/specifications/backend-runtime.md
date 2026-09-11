@@ -104,6 +104,7 @@ Known paths use primitives and concrete references. Universal `Object`, tagged u
 | `String` | `java.lang.String` |
 | `Unit` | `void` only for language-function returns; `io.mindspice.lyra.runtime.LyraUnit` elsewhere |
 | `Array<T>` | exact primitive/reference JVM array under the element mapping below |
+| `Range<T>` | immutable `io.mindspice.lyra.runtime.LyraRange`, with signed-long bounds/step and an exact element-width tag |
 | `Tuple<...>` | deterministic generated immutable final value class |
 | `Fn<...;...>` | deterministic generated typed functional interface and closure class |
 

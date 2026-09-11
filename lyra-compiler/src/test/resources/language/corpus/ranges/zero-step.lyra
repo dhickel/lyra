@@ -1,0 +1,2 @@
+// ranges	reject	-	LYC-TYPE-016	constant zero step
+let value = (0..10:0)

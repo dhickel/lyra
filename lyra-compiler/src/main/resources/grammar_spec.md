@@ -23,7 +23,7 @@ The grammar uses the following conventions:
 identifier       ::= ASCII-identifier ;
 type-name        ::= I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64
                    | F32 | F64 | Bool | Char | String | Unit
-                   | Array | Tuple | Fn ;
+                   | Array | Range | Tuple | Fn ;
 modifier         ::= '@pub' | '@mut' | '@nil' ;
 literal          ::= '#T' | '#F' | '#NIL' | integer | decimal
                    | string | character ;
@@ -107,6 +107,7 @@ parenthesized-expression
                      | operator expression-list ')'
                      | expression [identifier] '->' expression [':' expression] ')'
                      | expression ':' expression ')'
+                     | expression ('..' | '...') expression ':' expression ')'
                      | expression expression* ')' ) ;
 
 postfix            ::= '[' expression ']'
@@ -176,14 +177,16 @@ typed-expression    ::= array-expression
                        | primitive-type argument-list ;
 
 array-type          ::= 'Array' '<' type '>' ;
+range-type          ::= 'Range' '<' type '>' ;
 tuple-type          ::= 'Tuple' '<' type (comma-list type)* '>' ;
 function-type       ::= 'Fn' '<' function-parameter-types ';' type '>' ;
 function-parameter-types ::= ε | type (comma-list type)* ;
-primitive-type      ::= type-name-except-Array-Tuple-Fn ;
+primitive-type      ::= type-name-except-Array-Range-Tuple-Fn ;
 
 type                ::= modifier* type-base ;
 type-base           ::= primitive-type
                        | array-type
+                       | range-type
                        | tuple-type
                        | function-type ;
 ```

@@ -15,6 +15,7 @@ import io.mindspice.lyra.compiler.source.ModuleGraph;
 import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.source.SourceSpan;
 import io.mindspice.lyra.compiler.types.ArrayType;
+import io.mindspice.lyra.compiler.types.RangeType;
 import io.mindspice.lyra.compiler.types.BindingContract;
 import io.mindspice.lyra.compiler.types.BindingMutability;
 import io.mindspice.lyra.compiler.types.ConversionDecision;
@@ -330,6 +331,8 @@ public final class TypeChecker {
                 result = checkCoalesce(coalesce, expected, moduleId);
             } else if (syntax instanceof SyntaxNode.Match match) {
                 result = checkMatch(match, expected, moduleId);
+            } else if (syntax instanceof SyntaxNode.Range range) {
+                result = checkRange(range, expected, moduleId);
             } else if (syntax instanceof SyntaxNode.PrefixAssignment assignment) {
                 result = checkRebinding(assignment.target(), assignment.value(), assignment.span(), moduleId);
             } else if (syntax instanceof SyntaxNode.Reassignment assignment) {
@@ -482,6 +485,35 @@ public final class TypeChecker {
                     Optional.of(literal),
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), List.of(), Optional.empty()));
+        }
+
+        private ExprResult checkRange(SyntaxNode.Range syntax, Optional<LyraType> expected,
+                                      ModuleId moduleId) {
+            Optional<LyraType> elementExpected = expected.map(LyraType::withoutQualifiers)
+                    .filter(RangeType.class::isInstance).map(type -> ((RangeType) type).elementType());
+            NumericOperands numeric = numericOperands(List.of(syntax.start(), syntax.end(), syntax.step()),
+                    elementExpected, TokenKind.PLUS, moduleId);
+            if (numeric == null) {
+                return null;
+            }
+            RangeType rangeType;
+            try {
+                rangeType = RangeType.of(numeric.commonType);
+            } catch (IllegalArgumentException invalid) {
+                fail(CompilerDiagnosticCodes.TYPE_MISMATCH, syntax.span(), invalid.getMessage());
+                return null;
+            }
+            BigInteger step = constantIntegerValue(numeric.expressions.get(2));
+            if (BigInteger.ZERO.equals(step)) {
+                fail(CompilerDiagnosticCodes.TYPE_INVALID_BINDING, syntax.step().span(),
+                        "a range step must not be zero");
+                return null;
+            }
+            return result(node(TypedExpressionKind.RANGE, syntax.span(), rangeType,
+                    numeric.expressions, Optional.empty(), Optional.empty(), Optional.empty(),
+                    Optional.of(syntax.inclusive() ? "..." : ".."), Optional.empty(), Optional.empty(),
+                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                    List.of(), Optional.empty()));
         }
 
         private ExprResult checkArrayLiteral(
@@ -1207,6 +1239,10 @@ public final class TypeChecker {
                 }
                 if (syntax instanceof SyntaxNode.ArrayType array) {
                     return ArrayType.of(typeFromSyntax(array.elementType(), TypePosition.NESTED_VALUE));
+                }
+                if (syntax instanceof SyntaxNode.RangeType range) {
+                    LyraType element = typeFromSyntax(range.elementType(), TypePosition.NESTED_VALUE);
+                    return element == null ? null : RangeType.of(element);
                 }
                 if (syntax instanceof SyntaxNode.TupleType tuple) {
                     List<LyraType> members = new ArrayList<>();
@@ -2249,7 +2285,6 @@ public final class TypeChecker {
                     reference.targetDeclaration(), Optional.empty(), Optional.empty(), Optional.empty(),
                     List.of(), Optional.empty()));
         }
-
         private ExprResult checkNamespaceMemberAccess(
                 SyntaxNode.NamespaceMemberAccess access,
                 ModuleId moduleId) {

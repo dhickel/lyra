@@ -31,6 +31,7 @@ import io.mindspice.lyra.compiler.semantic.flow.ProjectionStep;
 import io.mindspice.lyra.compiler.semantic.flow.ValueAlternative;
 import io.mindspice.lyra.compiler.semantic.flow.ValueAlternatives;
 import io.mindspice.lyra.compiler.types.ArrayType;
+import io.mindspice.lyra.compiler.types.RangeType;
 import io.mindspice.lyra.compiler.types.BindingContract;
 import io.mindspice.lyra.compiler.types.BindingMutability;
 import io.mindspice.lyra.compiler.types.ExactNumericLiteral;
@@ -939,6 +940,10 @@ public final class SemanticResolver {
                 for (SyntaxNode.Expression element : tuple.elements()) {
                     collectExpression(element, scope, work, Optional.empty());
                 }
+            } else if (expression instanceof SyntaxNode.Range range) {
+                collectExpression(range.start(), scope, work, Optional.empty());
+                collectExpression(range.end(), scope, work, Optional.empty());
+                collectExpression(range.step(), scope, work, Optional.empty());
             } else if (expression instanceof SyntaxNode.TypeConversion conversion) {
                 collectExpression(conversion.value(), scope, work, Optional.empty());
             }
@@ -1213,6 +1218,8 @@ public final class SemanticResolver {
                     }
                 } else if (syntax instanceof SyntaxNode.ArrayType array) {
                     type = ArrayType.of(resolveType(array.elementType(), TypePosition.NESTED_VALUE));
+                } else if (syntax instanceof SyntaxNode.RangeType range) {
+                    type = RangeType.of(resolveType(range.elementType(), TypePosition.NESTED_VALUE));
                 } else if (syntax instanceof SyntaxNode.TupleType tuple) {
                     List<LyraType> members = new ArrayList<>();
                     for (SyntaxNode.Type member : tuple.elementTypes()) {
@@ -1694,6 +1701,26 @@ public final class SemanticResolver {
                 addLink(new SyntaxLink(literal.span(), SyntaxLinkKind.LITERAL));
                 return literalUse(literal, contextualExpected);
             }
+            if (expression instanceof SyntaxNode.Range range) {
+                addLink(new SyntaxLink(range.span(), SyntaxLinkKind.EXPRESSION));
+                Optional<LyraType> elementExpected = contextualExpected.map(LyraType::withoutQualifiers)
+                        .filter(RangeType.class::isInstance).map(type -> ((RangeType) type).elementType());
+                List<Use> bounds = new ArrayList<>();
+                for (SyntaxNode.Expression bound : List.of(range.start(), range.end(), range.step())) {
+                    rememberExpected(bound, elementExpected);
+                    bounds.add(resolveExpression(bound, scope, work, lambda, currentDeclaration, Optional.empty()));
+                }
+                Optional<LyraType> element = elementExpected.or(() ->
+                        io.mindspice.lyra.compiler.types.TypeRules.commonNumericType(
+                                bounds.stream().map(use -> use.type.orElse(PrimitiveType.I64)).toList())
+                                .map(value -> (LyraType) value));
+                try {
+                    return element.map(value -> Use.mergedValue(RangeType.of(value), bounds)).orElseGet(Use::empty);
+                } catch (IllegalArgumentException invalid) {
+                    // The type checker owns invalid range domains and reports the source diagnostic.
+                    return Use.empty();
+                }
+            }
             if (expression instanceof SyntaxNode.Block block) {
                 ScopeDraft child = scopeBySyntax.get(block);
                 if (child == null) {
@@ -2091,7 +2118,6 @@ public final class SemanticResolver {
         private boolean isShortCircuit(TokenKind tokenKind) {
             return tokenKind == TokenKind.AND || tokenKind == TokenKind.OR;
         }
-
         private Optional<LyraSignature> signatureOf(Use use) {
             return use.signature.or(() -> use.type.flatMap(this::expectedLambdaSignature));
         }

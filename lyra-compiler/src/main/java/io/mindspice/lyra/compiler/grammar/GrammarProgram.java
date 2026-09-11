@@ -169,7 +169,7 @@ public record GrammarProgram(
 
     private static void validateDelimitedMetadataShape(GrammarDescriptor descriptor) {
         boolean requiresDelimiters = switch (descriptor.kind()) {
-            case LAMBDA, CALLABLE_CALL, CONDITIONAL, COALESCE, MATCH, PREFIX_ASSIGNMENT,
+            case LAMBDA, CALLABLE_CALL, CONDITIONAL, COALESCE, MATCH, RANGE, PREFIX_ASSIGNMENT,
                     OPERATOR_S_EXPRESSION, ARRAY_LITERAL, TUPLE_LITERAL, UNIT_LITERAL -> true;
             default -> false;
         };
@@ -234,6 +234,8 @@ public record GrammarProgram(
             case COALESCE, TYPE_ANNOTATION, RETURN_ANNOTATION -> TokenKind.COLON;
             case MATCH -> TokenKind.MATCH;
             case MATCH_ARM -> TokenKind.DOUBLE_QUESTION;
+            case RANGE -> source.tokens().get(descriptor.children().getFirst().endTokenIndex()).kind()
+                    == TokenKind.RANGE_INCLUSIVE ? TokenKind.RANGE_INCLUSIVE : TokenKind.RANGE_EXCLUSIVE;
             case LAMBDA -> TokenKind.LAMBDA_ARROW;
             case DIRECT_CALL, NAMESPACE_DIRECT_CALL -> TokenKind.DOUBLE_COLON;
             case MEMBER_ACCESS, NAMESPACE_MEMBER_ACCESS -> TokenKind.COLON_DOT;
@@ -265,7 +267,7 @@ public record GrammarProgram(
                     ARRAY_LITERAL, TUPLE_LITERAL, OPERATOR_BRACKET -> descriptor.startTokenIndex();
             case LAMBDA, PREFIX_ASSIGNMENT, OPERATOR_S_EXPRESSION ->
                     descriptor.metadata().openingTokenIndex() + 1;
-            case REASSIGNMENT, COALESCE -> descriptor.children().getFirst().endTokenIndex();
+            case REASSIGNMENT, COALESCE, RANGE -> descriptor.children().getFirst().endTokenIndex();
             case CONDITIONAL -> conditionalArrowIndex(descriptor);
             case MATCH -> descriptor.startTokenIndex() == descriptor.metadata().openingTokenIndex()
                     ? descriptor.metadata().openingTokenIndex() + 1 : descriptor.startTokenIndex() + 1;
@@ -312,7 +314,7 @@ public record GrammarProgram(
             throw new IllegalArgumentException(descriptor.kind() + " must record both delimiters or neither");
         }
         boolean allowsDelimiters = switch (descriptor.kind()) {
-            case LAMBDA, CALLABLE_CALL, CONDITIONAL, COALESCE, MATCH, PREFIX_ASSIGNMENT,
+            case LAMBDA, CALLABLE_CALL, CONDITIONAL, COALESCE, MATCH, RANGE, PREFIX_ASSIGNMENT,
                     OPERATOR_S_EXPRESSION, ARRAY_LITERAL, TUPLE_LITERAL, UNIT_LITERAL,
                     BLOCK, PARAMETER_LIST, ARGUMENT_LIST, IMPORT_SELECTION,
                     TYPE_ARGUMENT_LIST, REASSIGNMENT -> true;
@@ -392,6 +394,19 @@ public record GrammarProgram(
             case PREFIX_ASSIGNMENT -> validatePrefixAssignmentShape(descriptor);
             case CONDITIONAL -> validateConditionalShape(descriptor);
             case COALESCE -> validateCoalesceShape(descriptor);
+            case RANGE -> {
+                requireChildCount(descriptor, 3);
+                var start = descriptor.children().get(0);
+                var end = descriptor.children().get(1);
+                var step = descriptor.children().get(2);
+                if (start.startTokenIndex() != descriptor.startTokenIndex() + 1
+                        || start.endTokenIndex() + 1 != end.startTokenIndex()
+                        || end.endTokenIndex() + 1 != step.startTokenIndex()
+                        || step.endTokenIndex() != descriptor.endTokenIndex() - 1) {
+                    throw new IllegalArgumentException("range must contain exactly start, end and step");
+                }
+                requireToken(source.tokens().get(end.endTokenIndex()), TokenKind.COLON, descriptor.kind());
+            }
             case MATCH -> validateMatchShape(descriptor, source);
             case MATCH_ARM -> validateMatchArmShape(descriptor, source);
             case DIRECT_CALL -> validateDirectCallShape(descriptor);
@@ -403,6 +418,7 @@ public record GrammarProgram(
             case ARRAY_LITERAL -> validateAggregateLiteralShape(descriptor, source, "Array");
             case TUPLE_LITERAL -> validateAggregateLiteralShape(descriptor, source, "Tuple");
             case ARRAY_TYPE -> validateCompositeTypeShape(descriptor, source, "Array");
+            case RANGE_TYPE -> validateCompositeTypeShape(descriptor, source, "Range");
             case TUPLE_TYPE -> validateCompositeTypeShape(descriptor, source, "Tuple");
             case FUNCTION_TYPE -> validateCompositeTypeShape(descriptor, source, "Fn");
             case UNIT_LITERAL -> validateUnitShape(descriptor, source);
@@ -900,7 +916,7 @@ public record GrammarProgram(
         TokenKind openingKind = source.tokens().get(opening).kind();
         TokenKind closingKind = source.tokens().get(closing).kind();
         switch (descriptor.kind()) {
-            case LAMBDA, CALLABLE_CALL, CONDITIONAL, COALESCE, PREFIX_ASSIGNMENT,
+            case LAMBDA, CALLABLE_CALL, CONDITIONAL, COALESCE, RANGE, PREFIX_ASSIGNMENT,
                     OPERATOR_S_EXPRESSION, REASSIGNMENT -> {
                 requireToken(source.tokens().get(opening), TokenKind.LEFT_PAREN, descriptor.kind());
                 requireToken(source.tokens().get(closing), TokenKind.RIGHT_PAREN, descriptor.kind());

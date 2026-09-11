@@ -24,6 +24,23 @@ import java.util.stream.Collectors;
 /** Assertion-grade, dependency-free tests for grammar matching and replay data. */
 public final class GrammarMatcherTest {
     @Test
+    public void testRangeExpressionGrammarAndMalformedBounds() {
+        for (String source : List.of("(0..100:1)", "(100...0:(- 1))",
+                "(::start[]..::end[]:stride)", "(0.0..1.0:0.1)",
+                "(iter (0..10:1) |x| ())", "::iter[(0..10:1) || ()]",
+                "let r :Range<I32> = (0I32..10I32:1I32)",
+                "let r :Range<I32>=(0..10:1)")) {
+            success(source);
+        }
+        for (String source : List.of("(0..10)", "(0..:1)", "(..10:1)",
+                "(0..10:)", "0..10:1", "(0..10:1 2)",
+                "(0..10:-1)", "let r :Range<I32,I64> = (0..1:1)")) {
+            check(GrammarMatcher.match(lex(source)) instanceof PhaseResult.Failure<?>,
+                    "malformed range must fail grammar: " + source);
+        }
+    }
+
+    @Test
     public void testNormativeFormsProduceReplayDescriptors() {
         normativeFormsProduceReplayDescriptors();
     }

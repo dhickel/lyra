@@ -27,6 +27,7 @@ public enum ProductionKind {
     COALESCE,
     MATCH,
     MATCH_ARM,
+    RANGE,
 
     IDENTIFIER,
     LITERAL,
@@ -43,6 +44,7 @@ public enum ProductionKind {
     TYPE_CONTRACT,
     PRIMITIVE_TYPE,
     ARRAY_TYPE,
+    RANGE_TYPE,
     TUPLE_TYPE,
     FUNCTION_TYPE,
     TYPE_ARGUMENT_LIST,

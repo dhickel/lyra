@@ -1,0 +1,2 @@
+// ranges	reject	-	LYC-RESOLVE-016	unsigned ranges require a separately specified step contract
+let value :Range<U32> = (0..10:1)

@@ -955,6 +955,12 @@ final class ResolvedTopologyValidator {
             }
             return;
         }
+        if (expression instanceof SyntaxNode.Range range) {
+            collectMutationSites(range.start(), moduleId, destination);
+            collectMutationSites(range.end(), moduleId, destination);
+            collectMutationSites(range.step(), moduleId, destination);
+            return;
+        }
         if (expression instanceof SyntaxNode.DirectCall call) {
             call.receiver().ifPresent(value -> collectMutationSites(value, moduleId, destination));
             for (SyntaxNode.Expression argument : call.argumentExpressions()) {

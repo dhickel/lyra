@@ -1,0 +1,10 @@
+// ranges	value	I32	123	bounds and step execute once in source order
+let @pub run :Fn<;I32> = (=> || {
+  let @mut trace :I32 = 0
+  let mark :Fn<I32;I32> = (=> |value| {
+    trace := (+ (* trace 10) value)
+    value
+  })
+  let saved :Range<I32> = ((mark 1)..(mark 2):(mark 3))
+  trace
+})

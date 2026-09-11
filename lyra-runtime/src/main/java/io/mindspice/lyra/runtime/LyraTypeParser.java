@@ -43,6 +43,10 @@ final class LyraTypeParser {
             expect('<');
             base = ArrayType.of(type());
             expect('>');
+        } else if (consumeWord("Range")) {
+            expect('<');
+            base = RangeType.of(type());
+            expect('>');
         } else if (consumeWord("Tuple")) {
             expect('<');
             if (peek('>')) {

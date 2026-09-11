@@ -627,6 +627,21 @@ final class TypedSemanticProvenance {
             validateArrayLiteral(array, expression, moduleId, expectedType);
             return;
         }
+        if (syntax instanceof SyntaxNode.Range range) {
+            require(expression.kind() == TypedExpressionKind.RANGE && expression.children().size() == 3,
+                    "typed range does not match its source bounds");
+            require(expression.type() instanceof io.mindspice.lyra.compiler.types.RangeType,
+                    "range construction must have a Range type");
+            var rangeType = (io.mindspice.lyra.compiler.types.RangeType) expression.type();
+            require(expression.operator().orElse("").equals(range.inclusive() ? "..." : ".."),
+                    "range endpoint inclusion changed from source");
+            var bounds = List.of(range.start(), range.end(), range.step());
+            for (int index = 0; index < bounds.size(); index++) {
+                validateSourceExpression(bounds.get(index), expression.children().get(index), moduleId,
+                        Optional.of(rangeType.elementType()));
+            }
+            return;
+        }
         if (syntax instanceof SyntaxNode.TupleLiteral tuple) {
             validateTupleLiteral(tuple, expression, moduleId, expectedType);
             return;
@@ -898,6 +913,10 @@ final class TypedSemanticProvenance {
         }
         if (syntax instanceof SyntaxNode.ArrayType array) {
             return ArrayType.of(syntaxType(array.elementType(), TypePosition.NESTED_VALUE));
+        }
+        if (syntax instanceof SyntaxNode.RangeType range) {
+            return io.mindspice.lyra.compiler.types.RangeType.of(
+                    syntaxType(range.elementType(), TypePosition.NESTED_VALUE));
         }
         if (syntax instanceof SyntaxNode.TupleType tuple) {
             return TupleType.of(tuple.elementTypes().stream()
@@ -1588,6 +1607,10 @@ final class TypedSemanticProvenance {
 
     private Optional<LyraType> synthesizeAtomicTypeWithoutContext(
             SyntaxNode.Expression syntax) {
+        if (syntax instanceof SyntaxNode.Range range) {
+            return numericCommonWithoutContext(List.of(range.start(), range.end(), range.step()), false)
+                    .map(io.mindspice.lyra.compiler.types.RangeType::of);
+        }
         if (syntax instanceof SyntaxNode.NilLiteral) {
             return Optional.empty();
         }
@@ -2089,6 +2112,11 @@ final class TypedSemanticProvenance {
                     .map(value -> findSourceLet(value, nameSpan))
                     .flatMap(Optional::stream).findFirst();
         }
+        if (expression instanceof SyntaxNode.Range range) {
+            return List.of(range.start(), range.end(), range.step()).stream()
+                    .map(value -> findSourceLet(value, nameSpan))
+                    .flatMap(Optional::stream).findFirst();
+        }
         if (expression instanceof SyntaxNode.TupleLiteral tuple) {
             return tuple.elements().stream()
                     .map(value -> findSourceLet(value, nameSpan))
@@ -2223,6 +2251,11 @@ final class TypedSemanticProvenance {
         }
         if (expression instanceof SyntaxNode.ArrayLiteral array) {
             return array.elements().stream()
+                    .map(value -> findPredicateConditional(value, bindingSpan))
+                    .flatMap(Optional::stream).findFirst();
+        }
+        if (expression instanceof SyntaxNode.Range range) {
+            return List.of(range.start(), range.end(), range.step()).stream()
                     .map(value -> findPredicateConditional(value, bindingSpan))
                     .flatMap(Optional::stream).findFirst();
         }
@@ -2448,7 +2481,7 @@ final class TypedSemanticProvenance {
             case MEMBER_ACCESS -> EnumSet.of(Metadata.MEMBER_NAME, Metadata.TUPLE_INDEX);
             case NAMESPACE_MEMBER_ACCESS -> EnumSet.of(
                     Metadata.LINK, Metadata.MEMBER_NAME, Metadata.TUPLE_INDEX);
-            case OPERATOR, SHORT_CIRCUIT -> EnumSet.of(Metadata.OPERATOR);
+            case OPERATOR, SHORT_CIRCUIT, RANGE -> EnumSet.of(Metadata.OPERATOR);
             case CONVERSION -> EnumSet.of(Metadata.CONVERSION);
         };
         rejectForeignMetadata(expression, allowed);

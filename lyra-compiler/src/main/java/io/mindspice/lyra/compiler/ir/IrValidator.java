@@ -671,6 +671,22 @@ public final class IrValidator {
                 case IrNode.Block block -> validateBlock(block);
                 case IrNode.ArrayLiteral array -> validateArrayLiteral(array);
                 case IrNode.TupleLiteral tuple -> validateTupleLiteral(tuple);
+                case IrNode.Range range -> {
+                    if (!(range.type() instanceof io.mindspice.lyra.compiler.types.RangeType type)) {
+                        add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, range.span(),
+                                "range construction requires an unqualified Range type");
+                    } else {
+                        for (IrNode bound : range.childrenInEvaluationOrder()) {
+                            if (!bound.type().equals(type.elementType())) {
+                                add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, bound.span(),
+                                        "range bounds and step must match the element type");
+                            }
+                        }
+                    }
+                    for (IrNode bound : range.childrenInEvaluationOrder()) {
+                        validateNode(bound, range.span(), false);
+                    }
+                }
                 case IrNode.IndexAccess index -> validateIndexAccess(index);
                 case IrNode.Operator operator -> validateOperator(operator);
                 case IrNode.ShortCircuit shortCircuit -> validateShortCircuit(shortCircuit);

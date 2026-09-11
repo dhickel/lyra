@@ -49,6 +49,7 @@ public final class Lexer {
             Map.entry("String", TokenKind.TYPE_NAME),
             Map.entry("Unit", TokenKind.TYPE_NAME),
             Map.entry("Array", TokenKind.TYPE_NAME),
+            Map.entry("Range", TokenKind.TYPE_NAME),
             Map.entry("Tuple", TokenKind.TYPE_NAME),
             Map.entry("Fn", TokenKind.TYPE_NAME));
 
@@ -166,6 +167,14 @@ public final class Lexer {
 
         private Diagnostic readToken() {
             int start = index;
+
+            if (startsWith("..")) {
+                boolean inclusive = startsWith("...");
+                index += inclusive ? 3 : 2;
+                add(inclusive ? TokenKind.RANGE_INCLUSIVE : TokenKind.RANGE_EXCLUSIVE,
+                        start, index, TokenValue.None.INSTANCE);
+                return null;
+            }
 
             if (startsWith("!eq?")) {
                 int end = index + 4;
@@ -536,7 +545,7 @@ public final class Lexer {
             }
 
             boolean floating = false;
-            if (index < source.length() && source.charAt(index) == '.') {
+            if (index < source.length() && source.charAt(index) == '.' && !startsWith("..")) {
                 if (index + 1 >= source.length() || !isAsciiDigit(source.charAt(index + 1))) {
                     return invalidNumber(
                             start,
@@ -589,7 +598,7 @@ public final class Lexer {
                         malformedNumberEnd(index),
                         "unsupported or malformed numeric suffix");
             }
-            if (index < source.length() && source.charAt(index) == '.') {
+            if (index < source.length() && source.charAt(index) == '.' && !startsWith("..")) {
                 return invalidNumber(
                         start,
                         malformedNumberEnd(index + 1),
@@ -896,6 +905,7 @@ public final class Lexer {
             Token previous = tokens.getLast();
             return previous.kind() == TokenKind.TYPE_NAME
                     && (previous.lexeme().equals("Array")
+                    || previous.lexeme().equals("Range")
                     || previous.lexeme().equals("Tuple")
                     || previous.lexeme().equals("Fn"));
         }

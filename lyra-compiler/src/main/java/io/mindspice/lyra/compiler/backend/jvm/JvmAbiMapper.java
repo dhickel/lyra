@@ -261,6 +261,10 @@ final class JvmAbiMapper {
         return switch (view.shape()) {
             case PRIMITIVE -> mapPrimitive(view, context);
             case ARRAY -> mapArray(view, context);
+            case RANGE -> singlePlan(view, context,
+                    JvmType.reference("io.mindspice.lyra.runtime.LyraRange"),
+                    view.nilable() ? JvmMaterializationKind.NULLABLE_REFERENCE : JvmMaterializationKind.DIRECT,
+                    "immutable range data with signed primitive bounds and step");
             case TUPLE -> mapTuple(view, context);
             case FUNCTION -> mapFunctionValue(view, context);
         };
@@ -447,6 +451,10 @@ final class JvmAbiMapper {
             return new TypeView(type.canonicalSpelling(), base.canonicalSpelling(), qualifiers,
                     Shape.ARRAY, null, List.of(compilerView(array.elementType())));
         }
+        if (base instanceof io.mindspice.lyra.compiler.types.RangeType range) {
+            return new TypeView(type.canonicalSpelling(), base.canonicalSpelling(), qualifiers,
+                    Shape.RANGE, null, List.of(compilerView(range.elementType())));
+        }
         if (base instanceof io.mindspice.lyra.compiler.types.TupleType tuple) {
             return new TypeView(type.canonicalSpelling(), base.canonicalSpelling(), qualifiers,
                     Shape.TUPLE, null, tuple.memberTypes().stream()
@@ -474,6 +482,10 @@ final class JvmAbiMapper {
             return new TypeView(type.canonicalSpelling(), base.canonicalSpelling(), qualifiers,
                     Shape.ARRAY, null, List.of(runtimeView(array.elementType())));
         }
+        if (base instanceof io.mindspice.lyra.runtime.RangeType range) {
+            return new TypeView(type.canonicalSpelling(), base.canonicalSpelling(), qualifiers,
+                    Shape.RANGE, null, List.of(runtimeView(range.elementType())));
+        }
         if (base instanceof io.mindspice.lyra.runtime.TupleType tuple) {
             return new TypeView(type.canonicalSpelling(), base.canonicalSpelling(), qualifiers,
                     Shape.TUPLE, null, tuple.memberTypes().stream()
@@ -490,6 +502,7 @@ final class JvmAbiMapper {
     }
 
     private enum Shape {
+        RANGE,
         PRIMITIVE,
         ARRAY,
         TUPLE,
