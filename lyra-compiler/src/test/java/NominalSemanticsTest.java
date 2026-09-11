@@ -19,6 +19,115 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class NominalSemanticsTest {
     @Test
+    void seededFactoryOrderingMatchesIndependentSlotModel() {
+        int cases = Integer.getInteger("lyra.nominal.factory.cases", Integer.getInteger("lyra.fuzz.cases", 24));
+        for (long seed : new long[] { 83, 1427, 20260911 }) {
+            Random random = new Random(seed);
+            for (int index = 0; index < cases; index++) {
+                boolean before = random.nextBoolean();
+                boolean after = random.nextBoolean();
+                boolean wrapped = random.nextBoolean();
+                String source = """
+                        let @mut selected :Fn<;I32> = (=> || 0)
+                        class Box { Box = (=> || { selected := (=> || 1) }) }
+                        let make :Fn<;Fn<;I32>> = (=> || { %s Box[] %s selected })
+                        let wrapper :Fn<;Fn<;I32>> = (=> || ::make[])
+                        let observed :Fn<;I32> = ::%s[]
+                        """.formatted(before ? "selected := (=> || 3)" : "",
+                        after ? "selected := (=> || 2)" : "", wrapped ? "wrapper" : "make");
+                String replay = "seed=" + seed + ", index=" + index + "\n" + source;
+                var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve(source))));
+                var observed = typed.declarations().stream().filter(value -> value.name().equals("observed")).findFirst().orElseThrow();
+                int expectedOffset = source.indexOf(after ? "(=> || 2)" : "(=> || 1)");
+                var expected = typed.lambdas().stream().filter(value -> value.span().startOffset() == expectedOffset).findFirst().orElseThrow();
+                var actual = typed.semanticFlowFacts().declarationValues().get(observed.id());
+                assertEquals(expected.id(), actual.alternatives().getFirst().callableFlows().getFirst().lambdaId().orElseThrow(), replay);
+                success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(typed));
+            }
+        }
+    }
+
+    @Test
+    void constructorEffectsFollowEarlierFactoryWrites() {
+        String source = """
+                let @mut selected :Fn<;I32> = (=> || 0)
+                class Box { Box = (=> || { selected := (=> || 1) }) }
+                let make :Fn<;Box> = (=> || { selected := (=> || 2) Box[] })
+                let box :Box = ::make[]
+                let observed :Fn<;I32> = selected
+                """;
+        var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve(source))));
+        var observed = typed.declarations().stream().filter(value -> value.name().equals("observed")).findFirst().orElseThrow();
+        var expected = typed.lambdas().stream().filter(value -> value.span().startOffset()
+                == source.indexOf("(=> || 1)")).findFirst().orElseThrow();
+        var actual = typed.semanticFlowFacts().declarationValues().get(observed.id());
+        assertEquals(expected.id(), actual.alternatives().getFirst().callableFlows().getFirst().lambdaId().orElseThrow());
+        success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(typed));
+    }
+
+    @Test
+    void writesAfterUnusedConstructionRemainLast() {
+        String source = """
+                let @mut selected :Fn<;I32> = (=> || 0)
+                class Box { Box = (=> || { selected := (=> || 1) }) }
+                let make :Fn<;Unit> = (=> || { Box[] selected := (=> || 2) })
+                let completed :Unit = ::make[]
+                let observed :Fn<;I32> = selected
+                """;
+        var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve(source))));
+        var observed = typed.declarations().stream().filter(value -> value.name().equals("observed")).findFirst().orElseThrow();
+        var expected = typed.lambdas().stream().filter(value -> value.span().startOffset()
+                == source.indexOf("(=> || 2)")).findFirst().orElseThrow();
+        var actual = typed.semanticFlowFacts().declarationValues().get(observed.id());
+        assertEquals(expected.id(), actual.alternatives().getFirst().callableFlows().getFirst().lambdaId().orElseThrow());
+        success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(typed));
+    }
+
+    @Test
+    void factoryReadsCallableReplacedByConstructor() {
+        String source = """
+                let @mut selected :Fn<;I32> = (=> || 0)
+                class Box { Box = (=> || { selected := (=> || 1) }) }
+                let make :Fn<;Fn<;I32>> = (=> || { selected := (=> || 2) Box[] selected })
+                let observed :Fn<;I32> = ::make[]
+                """;
+        var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve(source))));
+        var observed = typed.declarations().stream().filter(value -> value.name().equals("observed")).findFirst().orElseThrow();
+        var expected = typed.lambdas().stream().filter(value -> value.span().startOffset()
+                == source.indexOf("(=> || 1)")).findFirst().orElseThrow();
+        var actual = typed.semanticFlowFacts().declarationValues().get(observed.id());
+        assertEquals(expected.id(), actual.alternatives().getFirst().callableFlows().getFirst().lambdaId().orElseThrow());
+        success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(typed));
+    }
+
+    @Test
+    void functionsConstructAndReturnNominalObjects() {
+        var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
+                struct Point { let x :I32 let y :I32 = 2 }
+                let make :Fn<I32;Point> = (=> |x| Point[x])
+                let wrapped :Fn<I32;Point> = (=> |x| ::make[x])
+                let point :Point = ::wrapped[3]
+                point:.x
+                """))));
+        success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(typed));
+    }
+
+    @Test
+    void factoryFunctionsReturnInitializedClassMethods() {
+        var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
+                class Counter {
+                    let @mut x :I32
+                    let @pub read :Fn<;I32> = (=> || self:.x)
+                    Counter = (=> |start :I32| { self:.x := start })
+                }
+                let make :Fn<I32;Counter> = (=> |x| Counter[x])
+                let counter :Counter = ::make[3]
+                counter::read[]
+                """))));
+        success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(typed));
+    }
+
+    @Test
     void typesDefaultAndRequiredStructConstruction() {
         var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
                 struct Point { let @mut x :I32 let y :I64 = 2 }

@@ -33,10 +33,27 @@ public sealed interface ValueFormula extends Comparable<ValueFormula>
                 ValueFormula.Lambda,
                 ValueFormula.FreshAllocation,
                 ValueFormula.ObjectReference,
+                ValueFormula.Constructor,
                 ValueFormula.Scalar,
                 ValueFormula.CallResult,
                 ValueFormula.Opaque {
     LyraType type();
+
+    /** Exact nominal factory target, not a user-callable value or unknown function. */
+    record Constructor(DeclarationId declaration, io.mindspice.lyra.compiler.types.NominalType nominalType,
+                       FunctionType type, ProjectionPath resultRoute) implements ValueFormula {
+        public Constructor {
+            Objects.requireNonNull(declaration, "declaration");
+            Objects.requireNonNull(nominalType, "nominalType");
+            Objects.requireNonNull(type, "type");
+            Objects.requireNonNull(resultRoute, "resultRoute");
+            if (!type.returnType().equals(nominalType) || !resultRoute.isRoot()) {
+                throw new IllegalArgumentException("constructor target must retain its exact nominal return contract");
+            }
+        }
+        @Override public Constructor withResultRoute(ProjectionPath route) { return new Constructor(declaration, nominalType, type, route); }
+        @Override public String canonicalKey() { return "constructor/" + declaration + "/" + type.canonicalSpelling(); }
+    }
 
     /** Finite heap identity plus a lazy field route, never a recursively expanded object shape. */
     record ObjectReference(NominalObjectFact object, ProjectionPath sourceRoute,

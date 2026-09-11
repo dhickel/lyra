@@ -9,6 +9,24 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 public class NominalTypeTest {
+    @Test
+    void constructorFormulaRequiresExactNominalReturnAndRootTarget() {
+        var nominal = type("Factory");
+        var declaration = new io.mindspice.lyra.compiler.identity.DeclarationId(1);
+        var root = io.mindspice.lyra.compiler.semantic.flow.ProjectionPath.root();
+        var signature = FunctionType.of(List.of(LyraType.I32), nominal);
+        var formula = new io.mindspice.lyra.compiler.semantic.flow.ValueFormula.Constructor(
+                declaration, nominal, signature, root);
+        assertEquals(signature, formula.type());
+        assertEquals(nominal, formula.nominalType());
+        assertThrows(IllegalArgumentException.class, () ->
+                new io.mindspice.lyra.compiler.semantic.flow.ValueFormula.Constructor(declaration,
+                        nominal, FunctionType.of(List.of(), type("Other")), root));
+        assertThrows(IllegalArgumentException.class, () ->
+                new io.mindspice.lyra.compiler.semantic.flow.ValueFormula.Constructor(declaration,
+                        nominal, signature, io.mindspice.lyra.compiler.semantic.flow.ProjectionPath.tupleMember(0)));
+    }
+
     private static NominalType type(String name) {
         return new NominalType(new NominalTypeId(ModuleIdentity.of(ModuleId.of("types.lyra")), "a".repeat(64), name, 0));
     }

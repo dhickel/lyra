@@ -162,6 +162,15 @@ final class SemanticFlowFactValidator {
                             .filter(expression -> graph.flowSiteId(expression).equals(call.siteId().orElseThrow()))
                             .findFirst().orElseThrow(() -> invalid("call has no originating typed expression"));
                     boolean loop = source.kind() == TypedExpressionKind.ITER || source.kind() == TypedExpressionKind.WHILE;
+                    require((source.kind() == TypedExpressionKind.CONSTRUCTION)
+                                    == (call.kind() == CallableCallReference.Kind.CONSTRUCTION),
+                            "nominal constructor call kind changed from its source");
+                    if (source.kind() == TypedExpressionKind.CONSTRUCTION) {
+                        require(call.targetDeclaration().equals(source.declarationId())
+                                        && call.referenceId().equals(source.link().flatMap(TypedLink::referenceId))
+                                        && ((FunctionType) call.target().rootType()).signature().equals(source.signature().orElseThrow()),
+                                "constructor call does not retain its source signature and target");
+                    }
                     require(loop == call.repeat().isPresent(), "call repetition metadata changed from source");
                     call.repeat().ifPresent(repeat -> require(repeat.predicate().isPresent()
                             == (source.kind() == TypedExpressionKind.WHILE), "loop predicate mode changed from source"));
@@ -221,7 +230,13 @@ final class SemanticFlowFactValidator {
                 } catch (IllegalArgumentException invalidRoute) {
                     throw invalid("formula result route is incompatible with its root type");
                 }
-                if (formula instanceof ValueFormula.Parameter parameter) {
+                if (formula instanceof ValueFormula.Constructor constructor) {
+                    var nominal = graph.resolvedGraph().nominals().stream().filter(value -> value.declaration().equals(constructor.declaration()))
+                            .findFirst().orElseThrow(() -> invalid("constructor formula has no source-issued nominal origin"));
+                    require(nominal.schema().type().equals(constructor.nominalType())
+                                    && constructor.type().equals(FunctionType.of(nominal.schema().constructorParameters(), nominal.schema().type())),
+                            "constructor formula schema changed");
+                } else if (formula instanceof ValueFormula.Parameter parameter) {
                     require(parameter.parameterIndex() < owner.parameters().size()
                                     && owner.parameters().get(parameter.parameterIndex())
                                     .declarationId().equals(parameter.declarationId()),
@@ -813,7 +828,8 @@ final class SemanticFlowFactValidator {
                     || expression.kind() == TypedExpressionKind.ITER
                     || expression.kind() == TypedExpressionKind.WHILE
                     || expression.kind() == TypedExpressionKind.DIRECT_CALL
-                    || expression.kind() == TypedExpressionKind.NAMESPACE_DIRECT_CALL;
+                    || expression.kind() == TypedExpressionKind.NAMESPACE_DIRECT_CALL
+                    || expression.kind() == TypedExpressionKind.CONSTRUCTION;
         }
 
         private static void require(boolean condition, String message) {

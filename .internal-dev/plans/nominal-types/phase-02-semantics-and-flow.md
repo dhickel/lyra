@@ -59,8 +59,11 @@ aliases and saved method captures; exact nominal projection steps bridge callabl
 summary reads/writes. Focused tests cover required/default fields, class methods,
 saved slots, incomplete publication and branch-set initialization models.
 
-This phase remains open. Construction within ordinary callable summaries is still
-an explicit unfinished transfer. Contextual replacement self, general repeated and
+Construction within callable summaries now has exact source-linked transfer,
+including transitive factories and ordered ambient callable writes. Independent
+slot models exercise writes before/after construction and post-construction reads.
+
+This phase remains open. Contextual replacement self, general repeated and
 nested heap writes, imported/cross-generation ownership, complete route sealing,
 cyclic object graphs and all malformed producer cases need further implementation
 and tests. Do not infer completion from the focused top-level examples.

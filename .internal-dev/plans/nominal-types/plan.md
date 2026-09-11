@@ -18,8 +18,9 @@ In progress: intended contracts, nominal identity/type/schema models, lexical/
 grammar/AST support and initial declaration/member resolution are implemented.
 Typed construction, a producer-bound initialization proof, nominal IR operations,
 and an initial field-sensitive heap/callable transfer now support focused semantic
-and IR tests. Complete contextual replacement, general constructor-call summaries,
-cross-module/callback heap transfer, JVM/artifacts and session support remain
+and IR tests. Constructor summaries now support transitive factories and ordered
+ambient callable writes. Complete contextual replacement, branch-sensitive/repeated
+constructor effects, cross-module/callback heap transfer, JVM/artifacts and session support remain
 unfinished. NominalSemanticsTest includes typed/IR positives but is not executable
 conformance. Work continues through the remaining gates;
 tested checkpoints are not completion or stopping points.

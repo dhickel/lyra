@@ -256,7 +256,7 @@ public final class CallableSummarySolver {
             Set<DeclarationId> externalCallableDeclarations) {
         Set<LambdaId> targets = staticTargets(call, lambdaByDeclaration);
         boolean intrinsicTarget = hasIntrinsicTarget(call, intrinsicDeclarations);
-        boolean callerDependentTarget = !call.targetParameterIndexes().isEmpty()
+        boolean callerDependentTarget = call.kind() == CallableCallReference.Kind.CONSTRUCTION || !call.targetParameterIndexes().isEmpty()
                 || !call.targetCaptureIds().isEmpty()
                 || containsCallResult(call.target())
                 || containsComputedDeclaration(
@@ -428,7 +428,7 @@ public final class CallableSummarySolver {
             CallableCallReference call,
             Set<DeclarationId> computedCallableDeclarations,
             Set<DeclarationId> externalCallableDeclarations) {
-        return !call.targetParameterIndexes().isEmpty()
+        return call.kind() == CallableCallReference.Kind.CONSTRUCTION || !call.targetParameterIndexes().isEmpty()
                 || !call.targetCaptureIds().isEmpty()
                 || containsComputedDeclaration(
                 call.target(), computedCallableDeclarations)
@@ -446,6 +446,7 @@ public final class CallableSummarySolver {
             return false;
         }
         if (formula instanceof ValueFormula.Lambda
+                || formula instanceof ValueFormula.Constructor
                 || formula instanceof ValueFormula.Parameter
                 || formula instanceof ValueFormula.Capture
                 || formula instanceof ValueFormula.CallResult) {
@@ -697,6 +698,7 @@ public final class CallableSummarySolver {
                     || arguments.stream().anyMatch(argument ->
                     containsExternalDeclaration(argument, externalCallableDeclarations));
             if (call.repeat().isEmpty() && !deferredCallResult
+                    && !transferSet.requiresHeapTransfer(materialized, new LinkedHashSet<>())
                     && !deferredComputedDeclaration
                     && !deferredCallerCallable
                     && !deferredExternalCallable
@@ -800,6 +802,7 @@ public final class CallableSummarySolver {
             case CALLABLE -> EagerEffectWitness.Kind.CALLABLE_CALL;
             case PARAMETER -> EagerEffectWitness.Kind.PARAMETER_CALL;
             case CAPTURE -> EagerEffectWitness.Kind.CAPTURE_CALL;
+            case CONSTRUCTION -> EagerEffectWitness.Kind.DIRECT_CALL;
         };
         for (LambdaId target : staticTargets(call, lambdaByDeclaration)) {
             CallableSummary callee = summaries.get(target);

@@ -45,7 +45,8 @@ public record CallableCallReference(
         NAMESPACE,
         CALLABLE,
         PARAMETER,
-        CAPTURE
+        CAPTURE,
+        CONSTRUCTION
     }
 
     /** Repetition retains its selected action and optional pre-test predicate. */
@@ -168,6 +169,15 @@ public record CallableCallReference(
             if (targetDeclaration.isEmpty()) {
                 throw new IllegalArgumentException(kind + " calls need a target declaration");
             }
+        }
+        if (kind == Kind.CONSTRUCTION && (targetDeclaration.isEmpty() || targetLambda.isPresent()
+                || referenceId.isEmpty() || siteId.isEmpty() || repeat.isPresent()
+                || target.formulas().size() != 1 || !(target.only() instanceof ValueFormula.Constructor constructor)
+                || !targetDeclaration.equals(Optional.of(constructor.declaration())))) {
+            throw new IllegalArgumentException("construction call must have one exact source-issued factory target");
+        }
+        if (kind != Kind.CONSTRUCTION && target.formulas().stream().anyMatch(ValueFormula.Constructor.class::isInstance)) {
+            throw new IllegalArgumentException("nominal constructor targets cannot be invoked as user-callable values");
         }
         if (kind == Kind.PARAMETER
                 && (targetParameterIndexes.isEmpty()

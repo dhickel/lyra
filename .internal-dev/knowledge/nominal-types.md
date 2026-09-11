@@ -74,9 +74,20 @@ remain in progress.
   cell. Constructor default/argument evaluation records real source mutation events.
 - Canonical nominal spellings are cached once per type; repeated comparisons no
   longer recompute SHA-256. This is not a measured benchmark claim.
-- Typed/IR tests do not cover arbitrary constructor calls inside functions yet.
-  CallableSummaryCompiler still reports an explicit unfinished constructor transfer;
-  JVM mappings, runtime schemas, object authorities and retained nominal sessions
+- Constructor call references now preserve exact nominal declaration/source identity
+  and transfer initialization through the caller-owned heap. Transitive factory
+  calls must remain deferred in the solver; materializing them without a caller
+  loses allocation and ambient-state effects. Event-major write sequences order
+  constructor calls with surrounding writes; activation-local memoization prevents
+  return and write projections from executing the same call twice.
+- Mutable module function slots are linked storage outside REPL graphs too. Their
+  symbolic values must be seeded and their writes transferred, not silently omitted
+  merely because the resolver does not represent them as lexical captures.
+- A constructor may replace an ambient callable slot. The enclosing factory must
+  read its post-construction value, not reuse a symbolic value from before the call.
+  Focused and seeded independent slot-order models cover this semantic boundary.
+  This does not establish complete branch/cyclic/imported/repeated heap transfers.
+- JVM mappings, runtime schemas, object authorities and retained nominal sessions
   are not implemented by the semantic heap model.
 
 ## Open Questions

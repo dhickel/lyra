@@ -22,6 +22,8 @@ import io.mindspice.lyra.compiler.semantic.flow.EagerCycleWitness;
 import io.mindspice.lyra.compiler.semantic.flow.EagerEffectFact;
 import io.mindspice.lyra.compiler.semantic.flow.EagerEffectWitness;
 import io.mindspice.lyra.compiler.semantic.flow.FreshAllocationSite;
+import io.mindspice.lyra.compiler.semantic.flow.CallableCallReference;
+import io.mindspice.lyra.compiler.semantic.flow.SummaryCallId;
 import io.mindspice.lyra.compiler.semantic.flow.NominalObjectFact;
 import io.mindspice.lyra.compiler.semantic.flow.FormulaAlternatives;
 import io.mindspice.lyra.compiler.semantic.flow.NilProvenance;
@@ -52,6 +54,7 @@ import io.mindspice.lyra.compiler.types.TupleType;
 import java.math.BigInteger;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
@@ -1096,9 +1099,6 @@ public final class SemanticFlowAnalyzer {
 
             private Eval construction(TypedExpression expression, Frame caller,
                     io.mindspice.lyra.compiler.semantic.flow.BindingFlowState input) {
-                ResolvedNominal nominal = graph.resolvedGraph().nominals().stream()
-                        .filter(value -> value.declaration().equals(expression.declarationId().orElseThrow()))
-                        .findFirst().orElseThrow();
                 var current = input;
                 List<ValueAlternatives> arguments = new ArrayList<>();
                 List<SemanticFlowEvent> events = new ArrayList<>();
@@ -1108,6 +1108,15 @@ public final class SemanticFlowAnalyzer {
                     current = evaluated.state; arguments.add(evaluated.value);
                     events.addAll(evaluated.events); effects.addAll(evaluated.effects);
                 }
+                return initializeNominal(expression, caller, current, arguments, events, effects);
+            }
+
+            private Eval initializeNominal(TypedExpression expression, Frame caller,
+                    io.mindspice.lyra.compiler.semantic.flow.BindingFlowState current,
+                    List<ValueAlternatives> arguments, List<SemanticFlowEvent> events, List<EagerEffectWitness> effects) {
+                ResolvedNominal nominal = graph.resolvedGraph().nominals().stream()
+                        .filter(value -> value.declaration().equals(expression.declarationId().orElseThrow()))
+                        .findFirst().orElseThrow();
                 Frame owner = frame(nominal.schema().type().id().module().moduleId());
                 if (owner != caller) {
                     Lookup initialized = ensure(owner, nominal.declaration(), expression.span());
@@ -1810,28 +1819,66 @@ public final class SemanticFlowAnalyzer {
                                 argumentExpressions.get(index), actualFormulas[index])
                                 : actualFormulas[index]);
                     }
-                    io.mindspice.lyra.compiler.semantic.flow.BindingFlowState
-                            declarationState = state;
+                    var declarationState = new io.mindspice.lyra.compiler.semantic.flow.BindingFlowState[] { state };
                     Map<DeclarationId, FormulaAlternatives> declarationFormulas =
                             new TreeMap<>();
+                    var constructed = new IdentityHashMap<Object, Map<SummaryCallId, FormulaAlternatives>>();
+                    boolean orderedHeapEffects = !state.objects().isEmpty()
+                            || summaries.requiresHeapTransfer(lambdaId);
                     SummaryTransferResult transfer = summaries.invoke(
                             lambdaId, invocationArguments, writeArguments,
                             captureFormulas, call.span(), new io.mindspice.lyra.compiler.semantic.flow.SummaryObjectResolver() {
+                                @Override public boolean orderedEffects() { return orderedHeapEffects; }
+                                @Override public void applyWrite(CapturedCellWrite write, CallableSummary owner, Object activation) {
+                                    ValueAlternatives replacement = fromFormulas(write.value(), frame.module.moduleId(), write.span());
+                                    declarationState[0] = applyTransferredWrite(declarationState[0], owner, write,
+                                            replacement, argumentExpressions, call.span());
+                                    declarationFormulas.clear();
+                                    rememberPrefix(frame, declarationState[0]);
+                                }
                                 @Override public Optional<FormulaAlternatives> apply(ValueFormula.Declaration declaration) {
                                     return resolveCallableDeclaration(declaration, candidate, frame,
-                                            declarationState, call, effects, declarationFormulas);
+                                            declarationState[0], call, effects, declarationFormulas);
                                 }
                                 @Override public Optional<FormulaAlternatives> resolveObject(ValueFormula.ObjectReference object) {
                                     ValueAlternatives selected = selectObjectRoute(
                                             new ValueAlternatives(List.of(ValueAlternative.object(object.object().identity(), object.object().ownership()))),
-                                            object.sourceRoute(), declarationState, call.span());
+                                            object.sourceRoute(), declarationState[0], call.span());
                                     return Optional.of(toFormulas(selected, frame.module.moduleId(), call.span()));
+                                }
+                                @Override public Optional<FormulaAlternatives> construct(CallableCallReference constructorCall,
+                                        List<FormulaAlternatives> constructorArguments, Object activation) {
+                                    var cache = constructed.computeIfAbsent(activation, ignored -> new TreeMap<>());
+                                    FormulaAlternatives prior = cache.get(constructorCall.id());
+                                    if (prior != null) return Optional.of(prior);
+                                    TypedExpression source = graph.expressions().stream().filter(expression ->
+                                            constructorCall.siteId().equals(Optional.of(graph.flowSiteId(expression))))
+                                            .findFirst().orElseThrow(() -> failure(CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
+                                                    "constructor transfer has no canonical source site", constructorCall.span()));
+                                    if (source.kind() != TypedExpressionKind.CONSTRUCTION || !source.declarationId().equals(constructorCall.targetDeclaration())) {
+                                        throw failure(CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
+                                                "constructor transfer changed its nominal source target", constructorCall.span());
+                                    }
+                                    List<ValueAlternatives> actuals = constructorArguments.stream().map(argument ->
+                                            fromFormulas(argument, frame.module.moduleId(), constructorCall.span())).toList();
+                                    Eval initialized = initializeNominal(source, frame(ModuleId.fromSourceId(source.span().sourceId())),
+                                            declarationState[0], actuals, new ArrayList<>(), new ArrayList<>());
+                                    declarationState[0] = initialized.state;
+                                    effects.addAll(initialized.effects);
+                                    // Like ordinary summarized lambda bodies, factory internals
+                                    // are not additional module-root event boundaries. Their
+                                    // initialized heap and effects belong to this invocation.
+                                    declarationFormulas.clear();
+                                    FormulaAlternatives result = toFormulas(initialized.value, frame.module.moduleId(), constructorCall.span());
+                                    cache.put(constructorCall.id(), result);
+                                    return Optional.of(result);
                                 }
                             });
                     if (transfer instanceof SummaryTransferResult.Failure failure) {
                         throw new FlowFailure(failure.failure());
                     }
                     SummaryTransferResult.Success success = (SummaryTransferResult.Success) transfer;
+                    state = declarationState[0];
                     Map<OwnershipOriginKey, Set<SourceSpan>> diagnosticOrigins =
                             diagnosticOrigins(
                                     argumentValues, candidate,
@@ -1864,7 +1911,7 @@ public final class SemanticFlowAnalyzer {
                                 frame.module.moduleId());
                         rememberTransferredOwnershipOrigins(
                                 replacement, frame.module.moduleId(), diagnosticOrigins);
-                        state = applyTransferredWrite(
+                        if (!orderedHeapEffects) state = applyTransferredWrite(
                                 state, summary, write, replacement,
                                 argumentExpressions, call.span());
                         // Calls can fail/cancel between ordered writes, not only on return.

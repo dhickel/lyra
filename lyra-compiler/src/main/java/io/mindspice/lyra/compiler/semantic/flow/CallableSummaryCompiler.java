@@ -569,8 +569,8 @@ public final class CallableSummaryCompiler {
                                     ProjectionPath.root(), ProjectionPath.root(), type)));
                 }
             }
-            if (context.graph.resolvedGraph().isSessionGraph()) {
-                // A session module-root mutable binding is live state rather
+            {
+                // A module-root mutable binding is live state rather
                 // than a lexical capture.  Seed only such cells; seeding
                 // immutable callable declarations would change self-recursive
                 // summary resolution.
@@ -643,7 +643,7 @@ public final class CallableSummaryCompiler {
                 case NAMESPACE_MEMBER_ACCESS -> namespaceMember(expression, state);
                 case DECLARATION -> declaration(expression, state);
                 case NOMINAL_DECLARATION -> value(expression, state, scalar(expression.type()).value());
-                case CONSTRUCTION -> throw failure("nominal construction summary transfer is not yet installed", expression.span());
+                case CONSTRUCTION -> construction(expression, state);
                 case REBINDING -> rebinding(expression, state);
                 case BLOCK -> block(expression, state);
                 case CONDITIONAL -> conditional(expression, state);
@@ -661,6 +661,38 @@ public final class CallableSummaryCompiler {
                 case OPERATOR, SHORT_CIRCUIT, RANGE -> operator(expression, state);
                 case CONVERSION, NARROWING -> unaryValue(expression, state);
             };
+        }
+
+        private Eval construction(TypedExpression expression, Map<DeclarationId, FormulaAlternatives> state) {
+            var nominal = context.graph.resolvedGraph().nominals().stream().filter(value -> expression.declarationId()
+                    .equals(Optional.of(value.declaration()))).findFirst().orElseThrow(() -> failure("construction has no nominal schema", expression.span()));
+            Sequence arguments = evaluateSequential(expression.children(), state);
+            FunctionType signature = FunctionType.of(nominal.schema().constructorParameters(), nominal.schema().type());
+            var target = FormulaAlternatives.singleton(new ValueFormula.Constructor(nominal.declaration(), nominal.schema().type(),
+                    signature, ProjectionPath.root()));
+            SummaryCallId id = nextCall();
+            CallableCallReference call = new CallableCallReference(id, CallableCallReference.Kind.CONSTRUCTION, expression.span(),
+                    expression.link().flatMap(TypedLink::referenceId), Optional.of(nominal.declaration()),
+                    Optional.of(nominal.schema().type().id().module().moduleId()), Optional.empty(), Optional.empty(),
+                    List.of(), List.of(), target, arguments.values(), Optional.of(context.site(expression)));
+            var calls = new ArrayList<>(arguments.calls());
+            calls.add(call);
+            Map<DeclarationId, FormulaAlternatives> after = copyState(arguments.state());
+            for (var entry : arguments.state().entrySet()) {
+                ResolvedDeclaration declaration = context.resolvedDeclarations.get(entry.getKey());
+                if (declaration != null && declaration.isMutable()
+                        && entry.getValue().rootType().withoutQualifiers() instanceof FunctionType
+                        && context.graph.resolvedGraph().module(declaration.moduleId())
+                        .map(module -> module.rootScope().equals(declaration.scopeId())).orElse(false)) {
+                    // Constructor bodies can replace module callable slots. Read
+                    // their post-call contents from the ordered caller state.
+                    after.put(entry.getKey(), FormulaAlternatives.singleton(new ValueFormula.Declaration(
+                            entry.getKey(), Optional.of(declaration.moduleId()), ProjectionPath.root(),
+                            ProjectionPath.root(), entry.getValue().rootType())));
+                }
+            }
+            return new Eval(FormulaAlternatives.singleton(callResult(expression, id)), after, arguments.writes(), calls,
+                    arguments.effects());
         }
 
         private Eval literal(
@@ -1390,6 +1422,7 @@ public final class CallableSummaryCompiler {
                 case CALLABLE -> EagerEffectWitness.Kind.CALLABLE_CALL;
                 case PARAMETER -> EagerEffectWitness.Kind.PARAMETER_CALL;
                 case CAPTURE -> EagerEffectWitness.Kind.CAPTURE_CALL;
+                case CONSTRUCTION -> EagerEffectWitness.Kind.DIRECT_CALL;
             };
             if (call.targetModule().isPresent()
                     && !call.targetModule().orElseThrow().equals(lambda.moduleId())) {
@@ -1859,7 +1892,7 @@ public final class CallableSummaryCompiler {
                         .map(module -> module.rootScope().equals(target.scopeId()))
                         .orElse(false);
                 if (target != null && (target.externalBinding().isPresent()
-                        || context.graph.resolvedGraph().isSessionGraph() && moduleRoot)) {
+                        || moduleRoot)) {
                     return Optional.of(CapturedCellWrite.declaration(sequence, declaration,
                             writeKind(route), route, replacement, expression.span(),
                             context.graph.flowSiteId(expression)));

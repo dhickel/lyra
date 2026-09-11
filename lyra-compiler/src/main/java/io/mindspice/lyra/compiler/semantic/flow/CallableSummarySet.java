@@ -585,7 +585,48 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
             ArrayList<CapturedCellWrite> writes = new ArrayList<>();
             ArrayList<OwnershipRequirement> ownershipRequirements = new ArrayList<>();
             ArrayList<EagerEffectWitness> effects = new ArrayList<>();
-            LinkedHashSet<SummaryCallId> appliedCalls = new LinkedHashSet<>();
+            LinkedHashSet<SummaryCallId> appliedCalls = new CallMemo();
+            boolean ordered = declarationResolver instanceof SummaryObjectResolver resolver
+                    && resolver.orderedEffects();
+            if (ordered) {
+                // Summary sequences are event-major, including writes materialized
+                // from static callees. Heap-dependent calls must run between them.
+                java.util.TreeMap<Integer, List<Object>> schedule = new java.util.TreeMap<>();
+                for (CallableCallReference call : summary.callReferences()) {
+                    if (!isMaterializedStaticCall(call)) schedule.computeIfAbsent(
+                            CapturedCellWrite.sequenceAtEvent(call.id().sequence(), 0, limits),
+                            ignored -> new ArrayList<>()).add(call);
+                }
+                for (CapturedCellWrite write : summary.writes()) schedule.computeIfAbsent(
+                        write.sequence(), ignored -> new ArrayList<>()).add(write);
+                for (List<Object> event : schedule.values()) for (Object operation : event) {
+                    if (operation instanceof CallableCallReference call) {
+                        if (applyCall(call, arguments, writeArguments, captures, declarationResolver,
+                                summary, callSpan, active, writes, ownershipRequirements, effects,
+                                appliedCalls).isEmpty()) {
+                            return failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                                    "an ordered call has no caller fact", call.span());
+                        }
+                        appliedCalls.add(call.id());
+                    } else {
+                        CapturedCellWrite write = (CapturedCellWrite) operation;
+                        Optional<FormulaAlternatives> value = substituteAlternatives(write.value(),
+                                arguments, writeArguments, captures, declarationResolver, summary,
+                                callSpan, active, writes, ownershipRequirements, effects, appliedCalls);
+                        Optional<List<CapturedCellWrite>> transferred = value.flatMap(replacement ->
+                                transferWriteTarget(write, replacement, writeArguments, captures,
+                                        summary, declarationResolver));
+                        if (transferred.isEmpty()) return failure(
+                                CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                                "an ordered write has no caller fact", write.span());
+                        for (CapturedCellWrite replacement : transferred.orElseThrow()) {
+                            ((SummaryObjectResolver) declarationResolver).applyWrite(replacement, summary, appliedCalls);
+                            writes.add(replacement);
+                        }
+                        limits.requireWrites(new LinkedHashSet<>(writes).size());
+                    }
+                }
+            }
             for (ValueFormula formula : summary.returnFormula().formulas()) {
                 Optional<List<ValueFormula>> substituted = substituteFormula(
                         formula, arguments, writeArguments, captures, declarationResolver,
@@ -626,7 +667,7 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
             FormulaAlternatives returnValue = new FormulaAlternatives(
                     summary.signature().returnType(), returned, returnedOverrides);
             requireProjectionDepth(returnValue);
-            for (CapturedCellWrite write : summary.writes()) {
+            for (CapturedCellWrite write : ordered ? List.<CapturedCellWrite>of() : summary.writes()) {
                 ArrayList<ValueFormula> values = new ArrayList<>();
                 ArrayList<FormulaAlternatives.ExactOverride> valueOverrides = new ArrayList<>();
                 for (ValueFormula value : write.value().formulas()) {
@@ -985,7 +1026,28 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
                 : CapturedCellWrite.Kind.EXACT_ROUTE;
     }
 
+    private static final class CallMemo extends LinkedHashSet<SummaryCallId> {
+        private final Map<SummaryCallId, FormulaAlternatives> values = new java.util.HashMap<>();
+    }
+
     private Optional<FormulaAlternatives> applyCall(
+            CallableCallReference call, List<FormulaAlternatives> arguments,
+            List<FormulaAlternatives> writeArguments,
+            Map<io.mindspice.lyra.compiler.identity.CaptureId, FormulaAlternatives> captures,
+            Function<ValueFormula.Declaration, Optional<FormulaAlternatives>> declarationResolver,
+            CallableSummary owner, SourceSpan callSpan, LinkedHashSet<LambdaId> active,
+            List<CapturedCellWrite> writes, List<OwnershipRequirement> ownershipRequirements,
+            List<EagerEffectWitness> effects, LinkedHashSet<SummaryCallId> appliedCalls) {
+        CallMemo memo = declarationResolver instanceof SummaryObjectResolver resolver
+                && resolver.orderedEffects() && appliedCalls instanceof CallMemo cache ? cache : null;
+        if (memo != null && memo.values.containsKey(call.id())) return Optional.of(memo.values.get(call.id()));
+        Optional<FormulaAlternatives> result = evaluateCall(call, arguments, writeArguments, captures,
+                declarationResolver, owner, callSpan, active, writes, ownershipRequirements, effects, appliedCalls);
+        if (memo != null) result.ifPresent(value -> memo.values.put(call.id(), value));
+        return result;
+    }
+
+    private Optional<FormulaAlternatives> evaluateCall(
             CallableCallReference call,
             List<FormulaAlternatives> arguments,
             List<FormulaAlternatives> writeArguments,
@@ -1017,12 +1079,17 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
                     argument, writeArguments, writeArguments, captures,
                     declarationResolver, owner, callSpan, active,
                     new ArrayList<>(), new ArrayList<>(), new ArrayList<>(),
-                    new LinkedHashSet<>());
+                    declarationResolver instanceof SummaryObjectResolver resolver && resolver.orderedEffects()
+                            ? appliedCalls : new LinkedHashSet<>());
             if (substituted.isEmpty() || writeTarget.isEmpty()) {
                 return Optional.empty();
             }
             callArguments.add(substituted.orElseThrow());
             callWriteArguments.add(writeTarget.orElseThrow());
+        }
+        if (call.kind() == CallableCallReference.Kind.CONSTRUCTION) {
+            return declarationResolver instanceof SummaryObjectResolver resolver
+                    ? resolver.construct(call, callArguments, appliedCalls) : Optional.empty();
         }
         if (call.repeat().isPresent()) {
             Optional<FormulaAlternatives> predicate = Optional.empty();
@@ -1336,6 +1403,7 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
             case CALLABLE -> EagerEffectWitness.Kind.CALLABLE_CALL;
             case PARAMETER -> EagerEffectWitness.Kind.PARAMETER_CALL;
             case CAPTURE -> EagerEffectWitness.Kind.CAPTURE_CALL;
+            case CONSTRUCTION -> EagerEffectWitness.Kind.DIRECT_CALL;
         };
         io.mindspice.lyra.compiler.identity.FlowSiteId site =
                 call.siteId().orElseThrow();
@@ -1356,6 +1424,7 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
     }
 
     private boolean isMaterializedStaticCall(CallableCallReference call) {
+        if (requiresHeapTransfer(call, new LinkedHashSet<>())) return false;
         if (call.repeat().isPresent()) return false;
         if (containsCallResult(call.target())
                 || call.arguments().stream().anyMatch(this::containsCallResult)
@@ -1370,6 +1439,24 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
                 && resolution.alternatives().stream()
                 .allMatch(alternative -> alternative.isIntrinsic()
                         || summaries.containsKey(alternative.lambdaId().orElseThrow()));
+    }
+
+    public boolean requiresHeapTransfer(LambdaId lambda) {
+        return requiresHeapTransfer(lambda, new LinkedHashSet<>());
+    }
+
+    private boolean requiresHeapTransfer(LambdaId lambda, java.util.Set<LambdaId> visited) {
+        if (!visited.add(lambda)) return false;
+        CallableSummary summary = summaries.get(lambda);
+        return summary != null && summary.callReferences().stream()
+                .anyMatch(call -> requiresHeapTransfer(call, visited));
+    }
+
+    boolean requiresHeapTransfer(CallableCallReference call, java.util.Set<LambdaId> visited) {
+        if (call.kind() == CallableCallReference.Kind.CONSTRUCTION) return true;
+        TargetResolution resolution = targetAlternatives(call.target());
+        return resolution.alternatives().stream().anyMatch(target -> !target.isIntrinsic()
+                && requiresHeapTransfer(target.lambdaId().orElseThrow(), visited));
     }
 
     private boolean containsCallerResolvedCallable(
