@@ -22,6 +22,7 @@ import io.mindspice.lyra.compiler.semantic.flow.EagerCycleWitness;
 import io.mindspice.lyra.compiler.semantic.flow.EagerEffectFact;
 import io.mindspice.lyra.compiler.semantic.flow.EagerEffectWitness;
 import io.mindspice.lyra.compiler.semantic.flow.FreshAllocationSite;
+import io.mindspice.lyra.compiler.semantic.flow.NominalObjectFact;
 import io.mindspice.lyra.compiler.semantic.flow.FormulaAlternatives;
 import io.mindspice.lyra.compiler.semantic.flow.NilProvenance;
 import io.mindspice.lyra.compiler.semantic.flow.NormalizedExpression;
@@ -442,7 +443,8 @@ public final class SemanticFlowAnalyzer {
 
         private void assignArrayAllocationIds() {
             List<TypedExpression> arrays = graph.expressions().stream()
-                    .filter(expression -> expression.kind() == TypedExpressionKind.ARRAY_LITERAL)
+                    .filter(expression -> expression.kind() == TypedExpressionKind.ARRAY_LITERAL
+                            || expression.kind() == TypedExpressionKind.CONSTRUCTION)
                     .sorted(expressionComparator())
                     .toList();
             for (int index = 0; index < arrays.size(); index++) {
@@ -983,6 +985,11 @@ public final class SemanticFlowAnalyzer {
                     case LITERAL -> literal(expression, state);
                     case REFERENCE -> reference(expression, frame, state);
                     case DECLARATION -> declaration(expression, frame, state);
+                    case NOMINAL_DECLARATION -> new Eval(scalarValue(PrimitiveType.UNIT),
+                            bind(state, expression.declarationId().orElseThrow(), scalarValue(
+                                    graph.contract(expression.declarationId().orElseThrow()).orElseThrow().valueType()), expression.span()),
+                            List.of(), List.of());
+                    case CONSTRUCTION -> construction(expression, frame, state);
                     case REBINDING -> rebinding(expression, frame, state);
                     case BLOCK -> block(expression, frame, state);
                     case CONDITIONAL -> conditional(expression, frame, state);
@@ -1087,6 +1094,62 @@ public final class SemanticFlowAnalyzer {
                 return new Eval(value, state, List.of(), List.of());
             }
 
+            private Eval construction(TypedExpression expression, Frame caller,
+                    io.mindspice.lyra.compiler.semantic.flow.BindingFlowState input) {
+                ResolvedNominal nominal = graph.resolvedGraph().nominals().stream()
+                        .filter(value -> value.declaration().equals(expression.declarationId().orElseThrow()))
+                        .findFirst().orElseThrow();
+                var current = input;
+                List<ValueAlternatives> arguments = new ArrayList<>();
+                List<SemanticFlowEvent> events = new ArrayList<>();
+                List<EagerEffectWitness> effects = new ArrayList<>();
+                for (TypedExpression argument : expression.children()) {
+                    Eval evaluated = evaluate(argument, caller, current);
+                    current = evaluated.state; arguments.add(evaluated.value);
+                    events.addAll(evaluated.events); effects.addAll(evaluated.effects);
+                }
+                Frame owner = frame(nominal.schema().type().id().module().moduleId());
+                if (owner != caller) {
+                    Lookup initialized = ensure(owner, nominal.declaration(), expression.span());
+                    effects.addAll(initialized.effects);
+                    current = current.join(owner.state);
+                }
+                var identity = new io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity(
+                        caller.module.moduleId(), graph.flowSiteId(expression), nominal.schema().type());
+                var fresh = new io.mindspice.lyra.compiler.semantic.flow.NominalObjectState(nominal.schema(), Map.of(), true);
+                var previous = current.objects().get(identity);
+                current = current.withObject(identity, previous == null ? fresh : previous.repeatedAllocation());
+                DeclarationId allocation = arrayAllocationIds.get(expression);
+                OwnershipWitness witness = OwnershipWitness.local(caller.module.moduleId(), allocation,
+                        graph.flowScopeId(expression), expression.span()).withOriginSite(graph.flowSiteId(expression));
+                ValueAlternatives object = ValueAlternatives.singleton(ValueAlternative.object(identity, witness));
+                current = bind(current, nominal.self(), object, expression.span());
+                int parameter = 0;
+                if (nominal.schema().kind() == io.mindspice.lyra.compiler.types.NominalSchema.Kind.STRUCT) {
+                    for (int index = 0; index < nominal.members().size(); index++) {
+                        if (nominal.schema().members().get(index).hasInitializer()) continue;
+                        current = current.withObject(identity, current.objects().get(identity).write(index, arguments.get(parameter++), true));
+                    }
+                }
+                for (int index = 0; index < nominal.members().size(); index++) {
+                    if (!nominal.schema().members().get(index).hasInitializer()) continue;
+                    var initializer = declarations.get(nominal.members().get(index)).initializer().orElseThrow();
+                    Eval evaluated = evaluate(initializer, owner, current);
+                    current = evaluated.state;
+                    current = current.withObject(identity, current.objects().get(identity).write(index, evaluated.value, true));
+                    events.addAll(evaluated.events); effects.addAll(evaluated.effects);
+                }
+                if (nominal.constructor().isPresent()) {
+                    TypedLambda constructor = lambdas.get(nominal.constructor().orElseThrow());
+                    for (int index = 0; index < constructor.parameterIds().size(); index++) {
+                        current = bind(current, constructor.parameterIds().get(index), arguments.get(index), expression.span());
+                    }
+                    Eval body = evaluate(constructor.body(), owner, current);
+                    current = body.state; events.addAll(body.events); effects.addAll(body.effects);
+                }
+                return new Eval(object, current, events, distinctEffects(effects));
+            }
+
             private Eval reference(
                     TypedExpression expression,
                     Frame frame,
@@ -1159,6 +1222,32 @@ public final class SemanticFlowAnalyzer {
                             "rebinding operation is incomplete", expression.span());
                 }
                 TypedExpression targetExpression = expression.children().getFirst();
+                if (targetExpression.kind() == TypedExpressionKind.MEMBER_ACCESS && targetExpression.declarationId().isPresent()) {
+                    Eval receiver = evaluate(targetExpression.children().getFirst(), frame, state);
+                    Eval replacement = evaluate(expression.children().get(1), frame, receiver.state);
+                    var updated = replacement.state;
+                    var fields = receiver.value.alternatives().stream().flatMap(value -> value.objects().stream())
+                            .filter(fact -> fact.route().isRoot()).distinct().toList();
+                    if (fields.isEmpty()) throw failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                            "nominal field write has no object identity", expression.span());
+                    for (var fact : fields) {
+                        var object = updated.objects().get(fact.identity());
+                        if (object == null) throw failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                                "nominal field write has no retained heap state", expression.span());
+                        int index = nominalMemberIndex(targetExpression.declarationId().orElseThrow(), object.schema().type());
+                        updated = updated.withObject(fact.identity(), object.write(index, replacement.value, fields.size() == 1));
+                    }
+                    var events = new ArrayList<>(concat(receiver.events, replacement.events));
+                    TargetPath path = targetPath(targetExpression);
+                    if (path == null) throw failure(CallableSummaryResult.InternalFailure.Kind.INVALID_TYPED_EXPRESSION,
+                            "nominal field write has no canonical root", expression.span());
+                    events.add(new SemanticFlowEvent(SemanticFlowEvent.Kind.MUTATION, frame.module.moduleId(),
+                            expression.span(), Optional.empty(), Optional.of(path.declaration), Optional.empty(), Optional.empty(),
+                            expression.link().flatMap(TypedLink::referenceId), Optional.empty(), Optional.of(path.route),
+                            replacement.value, List.of(), List.of(), Optional.of(graph.flowSiteId(expression)), Optional.empty()));
+                    return new Eval(scalarValue(PrimitiveType.UNIT), updated, events,
+                            distinctEffects(concat(receiver.effects, replacement.effects)));
+                }
                 Eval target = evaluate(targetExpression, frame, state);
                 TargetPath path = targetPath(targetExpression);
                 if (path == null) {
@@ -1727,11 +1816,18 @@ public final class SemanticFlowAnalyzer {
                             new TreeMap<>();
                     SummaryTransferResult transfer = summaries.invoke(
                             lambdaId, invocationArguments, writeArguments,
-                            captureFormulas, call.span(), declaration ->
-                            resolveCallableDeclaration(
-                                    declaration, candidate, frame,
-                                    declarationState, call, effects,
-                                    declarationFormulas));
+                            captureFormulas, call.span(), new io.mindspice.lyra.compiler.semantic.flow.SummaryObjectResolver() {
+                                @Override public Optional<FormulaAlternatives> apply(ValueFormula.Declaration declaration) {
+                                    return resolveCallableDeclaration(declaration, candidate, frame,
+                                            declarationState, call, effects, declarationFormulas);
+                                }
+                                @Override public Optional<FormulaAlternatives> resolveObject(ValueFormula.ObjectReference object) {
+                                    ValueAlternatives selected = selectObjectRoute(
+                                            new ValueAlternatives(List.of(ValueAlternative.object(object.object().identity(), object.object().ownership()))),
+                                            object.sourceRoute(), declarationState, call.span());
+                                    return Optional.of(toFormulas(selected, frame.module.moduleId(), call.span()));
+                                }
+                            });
                     if (transfer instanceof SummaryTransferResult.Failure failure) {
                         throw new FlowFailure(failure.failure());
                     }
@@ -1985,6 +2081,13 @@ public final class SemanticFlowAnalyzer {
                 for (Map.Entry<DeclarationId,
                         io.mindspice.lyra.compiler.semantic.flow.BindingFlowValue> entry
                         : state.bindings().entrySet()) {
+                    for (var value : entry.getValue().alternatives()) {
+                        for (var object : value.objects()) {
+                            if (object.ownership().originDeclaration().equals(write.declarationId())) {
+                                return new TargetPath(entry.getKey(), object.route().compose(write.route()));
+                            }
+                        }
+                    }
                     for (var fact : facts(entry.getValue().alternatives())) {
                         if (fact.identity().originDeclaration().equals(write.declarationId())) {
                             return new TargetPath(
@@ -2260,6 +2363,25 @@ public final class SemanticFlowAnalyzer {
                     Frame frame,
                     io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state) {
                 Eval receiver = evaluate(expression.children().getFirst(), frame, state);
+                if (expression.declarationId().isPresent()) {
+                    ValueAlternatives values = ValueAlternatives.empty();
+                    for (var value : receiver.value) {
+                        for (var fact : value.objects()) {
+                            if (!fact.route().isRoot()) continue;
+                            var object = receiver.state.objects().get(fact.identity());
+                            if (object == null) throw failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                                    "nominal field read has no retained heap state", expression.span());
+                            int index = nominalMemberIndex(expression.declarationId().orElseThrow(), object.schema().type());
+                            var field = object.fields().get(index);
+                            if (field == null) throw failure(CallableSummaryResult.InternalFailure.Kind.INVALID_TYPED_EXPRESSION,
+                                    "nominal field read precedes its certified initialization", expression.span());
+                            values = values.join(field);
+                        }
+                    }
+                    if (values.isEmpty()) throw failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                            "nominal field read has no object identity", expression.span());
+                    return new Eval(retag(values, expression.type()), receiver.state, receiver.events, receiver.effects);
+                }
                 if (expression.tupleIndex().isPresent()) {
                     ProjectionPath route = ProjectionPath.tupleMember(
                             expression.tupleIndex().orElseThrow().intValueExact());
@@ -2268,6 +2390,14 @@ public final class SemanticFlowAnalyzer {
                 }
                 return new Eval(scalarValue(expression.type()), receiver.state,
                         receiver.events, receiver.effects);
+            }
+
+            private int nominalMemberIndex(DeclarationId member, io.mindspice.lyra.compiler.types.NominalType type) {
+                var nominal = graph.resolvedGraph().nominals().stream().filter(value -> value.schema().type().equals(type))
+                        .findFirst().orElseThrow();
+                int index = nominal.members().indexOf(member);
+                if (index < 0) throw new IllegalArgumentException("member does not belong to object schema");
+                return index;
             }
 
             private Eval index(
@@ -2322,7 +2452,9 @@ public final class SemanticFlowAnalyzer {
                             ArrayList<NilProvenance> nils = new ArrayList<>(prefix.nils);
                             nils.addAll(member.nilProvenance().stream()
                                     .map(nil -> nil.prefixedBy(route)).toList());
-                            next.add(new PartialValue(facts, callables, nils));
+                            var objects = new ArrayList<>(prefix.objects);
+                            objects.addAll(member.objects().stream().map(fact -> fact.prefixedBy(route)).toList());
+                            next.add(new PartialValue(facts, callables, nils, objects));
                         }
                     }
                     requireCombinationCount(next.size(), child.span());
@@ -2351,7 +2483,7 @@ public final class SemanticFlowAnalyzer {
                     facts.add(new io.mindspice.lyra.compiler.semantic.flow.AggregateIdentityFact(
                             identity, ProjectionPath.root(), witness));
                     values.add(ValueAlternative.of(
-                            arrayType, facts, combination.callables, combination.nils));
+                            arrayType, facts, combination.callables, combination.nils, combination.objects));
                 }
                 return new Eval(new ValueAlternatives(values), current, events,
                         distinctEffects(effects));
@@ -2390,7 +2522,9 @@ public final class SemanticFlowAnalyzer {
                             ArrayList<NilProvenance> nils = new ArrayList<>(prefix.nils);
                             nils.addAll(member.nilProvenance().stream()
                                     .map(nil -> nil.prefixedBy(route)).toList());
-                            next.add(new PartialValue(facts, callables, nils));
+                            var objects = new ArrayList<>(prefix.objects);
+                            objects.addAll(member.objects().stream().map(fact -> fact.prefixedBy(route)).toList());
+                            next.add(new PartialValue(facts, callables, nils, objects));
                         }
                     }
                     requireCombinationCount(next.size(), expression.children().get(index).span());
@@ -2400,7 +2534,7 @@ public final class SemanticFlowAnalyzer {
                 for (PartialValue combination : combinations) {
                     values.add(ValueAlternative.of(
                             tupleType, combination.facts, combination.callables,
-                            combination.nils));
+                            combination.nils, combination.objects));
                 }
                 return new Eval(new ValueAlternatives(values), current, events,
                         distinctEffects(effects));
@@ -2490,6 +2624,26 @@ public final class SemanticFlowAnalyzer {
                             "mutation route is not compatible with its binding", span);
                 }
                 ValueAlternatives normalized = retag(replacement, routeType);
+                if (!target.route.isRoot() && target.route.steps().getLast() instanceof ProjectionStep.NominalMember member) {
+                    ProjectionPath receiverRoute = ProjectionPath.of(target.route.steps().subList(0, target.route.depth() - 1));
+                    ValueAlternatives receiver = selectObjectRoute(current, receiverRoute, state, span);
+                    var objects = receiver.alternatives().stream().flatMap(value -> value.objects().stream())
+                            .filter(value -> value.route().isRoot()).distinct().toList();
+                    if (objects.isEmpty()) throw failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                            "nominal mutation lost its receiver identity", span);
+                    var updated = state;
+                    for (var object : objects) {
+                        var heap = updated.objects().get(object.identity());
+                        if (heap == null || !heap.schema().type().equals(member.owner())
+                                || member.index() >= heap.schema().members().size()
+                                || !heap.schema().members().get(member.index()).type().equals(member.type())) {
+                            throw failure(CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
+                                    "nominal mutation differs from its exact heap schema", span);
+                        }
+                        updated = updated.withObject(object.identity(), heap.write(member.index(), normalized, objects.size() == 1));
+                    }
+                    return updated;
+                }
                 if (target.route.isRoot()) {
                     io.mindspice.lyra.compiler.semantic.flow.BindingFlowState updated =
                             state.replaceWholeBinding(declaration, normalized);
@@ -2606,6 +2760,14 @@ public final class SemanticFlowAnalyzer {
                                     indexStep(expression.children().get(1)))));
                 }
                 if (expression.kind() == TypedExpressionKind.MEMBER_ACCESS
+                        && expression.declarationId().isPresent()) {
+                    TargetPath parent = targetPath(expression.children().getFirst());
+                    var type = (io.mindspice.lyra.compiler.types.NominalType) expression.children().getFirst().type().withoutQualifiers();
+                    int index = nominalMemberIndex(expression.declarationId().orElseThrow(), type);
+                    return parent == null ? null : new TargetPath(parent.declaration,
+                            parent.route.append(new ProjectionStep.NominalMember(type, index, expression.type())));
+                }
+                if (expression.kind() == TypedExpressionKind.MEMBER_ACCESS
                         && expression.tupleIndex().isPresent()) {
                     TargetPath parent = targetPath(expression.children().getFirst());
                     return parent == null ? null : new TargetPath(
@@ -2630,6 +2792,39 @@ public final class SemanticFlowAnalyzer {
                     }
                 }
                 return ProjectionStep.unknownArrayElement();
+            }
+
+            private ValueAlternatives selectObjectRoute(ValueAlternatives value, ProjectionPath route,
+                    io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state, SourceSpan span) {
+                ValueAlternatives current = value;
+                for (ProjectionStep step : route.steps()) {
+                    if (step instanceof ProjectionStep.NominalMember member) {
+                        var schema = graph.resolvedGraph().nominalTypes().require(member.owner());
+                        if (member.index() >= schema.members().size()
+                                || !schema.members().get(member.index()).type().equals(member.type())) {
+                            throw failure(CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
+                                    "heap projection differs from its nominal schema", span);
+                        }
+                        ValueAlternatives selected = ValueAlternatives.empty();
+                        for (ValueAlternative alternative : current.alternatives()) {
+                            for (NominalObjectFact object : alternative.objects()) {
+                                if (!object.route().isRoot()) continue;
+                                var heap = state.objects().get(object.identity());
+                                if (heap == null || !heap.schema().equals(schema) || !heap.fields().containsKey(member.index())) {
+                                    throw failure(CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
+                                            "heap projection has no initialized exact object slot", span);
+                                }
+                                selected = selected.join(heap.fields().get(member.index()));
+                            }
+                        }
+                        if (selected.isEmpty()) throw failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                                "nominal projection lost its object identity", span);
+                        current = selected;
+                    } else {
+                        current = current.select(ProjectionPath.of(step));
+                    }
+                }
+                return current;
             }
 
             private ValueAlternatives selectOrScalar(
@@ -2662,7 +2857,7 @@ public final class SemanticFlowAnalyzer {
                                 value.callableFlows().stream()
                                         .map(callable -> refreshCallable(callable, state))
                                         .toList(),
-                                value.nilProvenance()))
+                                value.nilProvenance(), value.objects()))
                         .toList());
             }
 
@@ -3217,7 +3412,7 @@ public final class SemanticFlowAnalyzer {
                         value.type(), ProjectionPath.root(), ownerModule,
                         originDeclaration, export, witnessSpan, facts, attachable);
                 alternatives.add(ValueAlternative.of(
-                        value.type(), facts, value.callableFlows(), value.nilProvenance()));
+                        value.type(), facts, value.callableFlows(), value.nilProvenance(), value.objects()));
             }
             return new ValueAlternatives(alternatives);
         }
@@ -3344,6 +3539,10 @@ public final class SemanticFlowAnalyzer {
                 for (CallableFlow callable : value.callableFlows()) {
                     formulas.add(callableFormula(callable, value.type(), contextModule, span));
                 }
+                for (NominalObjectFact object : value.objects()) {
+                    formulas.add(new ValueFormula.ObjectReference(object.withRoute(ProjectionPath.root()),
+                            ProjectionPath.root(), object.route(), object.identity().type()));
+                }
                 for (NilProvenance nil : value.nilProvenance()) {
                     formulas.add(ValueFormula.Scalar.nil(
                                     ValueAlternative.typeAt(value.type(), nil.route()),
@@ -3352,6 +3551,7 @@ public final class SemanticFlowAnalyzer {
                 }
                 if (value.aggregateIdentities().isEmpty()
                         && value.callableFlows().isEmpty()
+                        && value.objects().isEmpty()
                         && value.nilProvenance().isEmpty()) {
                     formulas.add(new ValueFormula.Scalar(value.type()));
                 }
@@ -3483,8 +3683,14 @@ public final class SemanticFlowAnalyzer {
             ArrayList<io.mindspice.lyra.compiler.semantic.flow.AggregateIdentityFact> facts = new ArrayList<>();
             ArrayList<CallableFlow> callables = new ArrayList<>();
             ArrayList<NilProvenance> nils = new ArrayList<>();
+            ArrayList<NominalObjectFact> objects = new ArrayList<>();
             for (ValueFormula formula : alternatives.formulas()) {
-                if (formula instanceof ValueFormula.FreshAllocation fresh) {
+                if (formula instanceof ValueFormula.ObjectReference object) {
+                    if (!object.sourceRoute().isRoot()) throw failure(
+                            CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
+                            "object projection was not resolved against caller heap", span);
+                    objects.add(object.object().withRoute(object.resultRoute()));
+                } else if (formula instanceof ValueFormula.FreshAllocation fresh) {
                     DeclarationId allocation = summaryAllocationIds.get(fresh.allocationSite());
                     if (allocation == null) {
                         throw failure(
@@ -3674,7 +3880,7 @@ public final class SemanticFlowAnalyzer {
                     }
                 }
             }
-            if (facts.isEmpty() && callables.isEmpty() && nils.isEmpty()) {
+            if (facts.isEmpty() && callables.isEmpty() && nils.isEmpty() && objects.isEmpty()) {
                 if (validateReturnedCallables
                         && alternatives.rootType().withoutQualifiers()
                         instanceof FunctionType) {
@@ -3686,7 +3892,7 @@ public final class SemanticFlowAnalyzer {
             }
             return new ValueAlternatives(List.of(
                     ValueAlternative.of(
-                            alternatives.rootType(), facts, callables, nils)));
+                            alternatives.rootType(), facts, callables, nils, objects)));
         }
 
         private ScopeId declarationScope(DeclarationId declaration, SourceSpan span) {
@@ -3801,7 +4007,7 @@ public final class SemanticFlowAnalyzer {
                         declaration, alternative.type(), ProjectionPath.root(),
                         alternative, facts);
                 normalized.add(ValueAlternative.of(
-                        type, facts, alternative.callableFlows(), alternative.nilProvenance()));
+                        type, facts, alternative.callableFlows(), alternative.nilProvenance(), alternative.objects()));
             }
             return new ValueAlternatives(normalized);
         }
@@ -3909,7 +4115,7 @@ public final class SemanticFlowAnalyzer {
                                 } catch (IllegalArgumentException incompatibleRoute) {
                                     return false;
                                 }
-                            }).toList()))
+                            }).toList(), value.objects()))
                     .toList());
         }
 
@@ -4089,12 +4295,16 @@ public final class SemanticFlowAnalyzer {
         private record PartialValue(
                 List<io.mindspice.lyra.compiler.semantic.flow.AggregateIdentityFact> facts,
                 List<CallableFlow> callables,
-                List<NilProvenance> nils) {
+                List<NilProvenance> nils,
+                List<io.mindspice.lyra.compiler.semantic.flow.NominalObjectFact> objects) {
             private PartialValue {
                 facts = List.copyOf(facts);
                 callables = List.copyOf(callables);
                 nils = List.copyOf(nils);
+                objects = List.copyOf(objects);
             }
+            private PartialValue(List<io.mindspice.lyra.compiler.semantic.flow.AggregateIdentityFact> facts,
+                    List<CallableFlow> callables, List<NilProvenance> nils) { this(facts, callables, nils, List.of()); }
         }
 
         private record CallBranch(

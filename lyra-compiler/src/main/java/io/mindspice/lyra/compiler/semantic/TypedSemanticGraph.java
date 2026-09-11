@@ -305,7 +305,7 @@ public final class TypedSemanticGraph implements ImmutablePhaseArtifact, TypedSe
                         "value declaration has no complete typed contract: " + declaration.id());
             }
             if (declaration.initializer().isPresent()
-                    && resolved.kind() != DeclarationKind.LET) {
+                    && resolved.kind() != DeclarationKind.LET && resolved.kind() != DeclarationKind.MEMBER) {
                 throw new IllegalArgumentException("non-let declaration has an initializer");
             }
             declaration.initializerLambda().ifPresent(lambda -> {
@@ -461,6 +461,10 @@ public final class TypedSemanticGraph implements ImmutablePhaseArtifact, TypedSe
             }
         });
         expression.predicateBinding().ifPresent(this::requireDeclaration);
+        if ((expression.kind() == TypedExpressionKind.NOMINAL_DECLARATION)
+                != expression.nominalInitialization().isPresent()) {
+            throw new IllegalArgumentException("nominal initialization proof is missing or foreign");
+        }
         if ((expression.kind() == TypedExpressionKind.MATCH) != expression.match().isPresent()) {
             throw new IllegalArgumentException("typed match metadata is missing or foreign");
         }

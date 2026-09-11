@@ -20,12 +20,37 @@ import java.util.TreeMap;
 public final class BindingFlowState {
     private final NavigableMap<DeclarationId, BindingFlowValue> bindings;
     private final NavigableMap<DeclarationId, ValueAlternatives> sharedCells;
+    private final NavigableMap<NominalObjectIdentity, NominalObjectState> objects;
 
     private BindingFlowState(
             Map<DeclarationId, BindingFlowValue> bindings,
             Map<DeclarationId, ValueAlternatives> sharedCells) {
+        this(bindings, sharedCells, Map.of());
+    }
+
+    private BindingFlowState(Map<DeclarationId, BindingFlowValue> bindings,
+            Map<DeclarationId, ValueAlternatives> sharedCells, Map<NominalObjectIdentity, NominalObjectState> objects) {
         this.bindings = immutableBindings(bindings);
         this.sharedCells = immutableCells(sharedCells);
+        var copy = new TreeMap<NominalObjectIdentity, NominalObjectState>();
+        Objects.requireNonNull(objects, "objects").forEach((identity, state) -> {
+            if (!identity.type().equals(state.schema().type())) throw new IllegalArgumentException("object identity/schema mismatch");
+            copy.put(identity, state);
+        });
+        this.objects = Collections.unmodifiableNavigableMap(copy);
+    }
+
+    public NavigableMap<NominalObjectIdentity, NominalObjectState> objects() { return objects; }
+
+    public static BindingFlowState of(Map<DeclarationId, BindingFlowValue> bindings,
+            Map<DeclarationId, ValueAlternatives> cells, Map<NominalObjectIdentity, NominalObjectState> objects) {
+        return new BindingFlowState(bindings, cells, objects);
+    }
+
+    public BindingFlowState withObject(NominalObjectIdentity identity, NominalObjectState state) {
+        var updated = new TreeMap<>(objects);
+        updated.put(identity, state);
+        return new BindingFlowState(bindings, sharedCells, updated);
     }
 
     public static BindingFlowState empty() {
@@ -76,7 +101,7 @@ public final class BindingFlowState {
         }
         TreeMap<DeclarationId, BindingFlowValue> next = new TreeMap<>(bindings);
         next.put(declaration, new BindingFlowValue(contract, alternatives));
-        return new BindingFlowState(next, sharedCells);
+        return new BindingFlowState(next, sharedCells, objects);
     }
 
     /** Strongly publishes the latest immutable snapshot for one stable shared cell. */
@@ -87,7 +112,7 @@ public final class BindingFlowState {
         Objects.requireNonNull(replacement, "replacement");
         TreeMap<DeclarationId, ValueAlternatives> next = new TreeMap<>(sharedCells);
         next.put(cell, replacement);
-        return new BindingFlowState(bindings, next);
+        return new BindingFlowState(bindings, next, objects);
     }
 
     /** Strongly replaces the complete binding value and discards all old alternatives. */
@@ -163,7 +188,9 @@ public final class BindingFlowState {
             ValueAlternatives left = joinedCells.get(cell);
             joinedCells.put(cell, left == null ? right : left.join(right));
         });
-        return new BindingFlowState(joined, joinedCells);
+        var joinedObjects = new TreeMap<>(objects);
+        other.objects.forEach((identity, state) -> joinedObjects.merge(identity, state, NominalObjectState::join));
+        return new BindingFlowState(joined, joinedCells, joinedObjects);
     }
 
     public BindingFlowState branchJoin(BindingFlowState other) {
@@ -178,7 +205,7 @@ public final class BindingFlowState {
         TreeMap<DeclarationId, BindingFlowValue> next = new TreeMap<>(bindings);
         next.put(Objects.requireNonNull(declaration, "declaration"),
                 Objects.requireNonNull(value, "value"));
-        return new BindingFlowState(next, sharedCells);
+        return new BindingFlowState(next, sharedCells, objects);
     }
 
     private static NavigableMap<DeclarationId, BindingFlowValue> immutableBindings(
@@ -206,16 +233,17 @@ public final class BindingFlowState {
         return this == other
                 || other instanceof BindingFlowState state
                 && bindings.equals(state.bindings)
-                && sharedCells.equals(state.sharedCells);
+                && sharedCells.equals(state.sharedCells)
+                && objects.equals(state.objects);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(bindings, sharedCells);
+        return Objects.hash(bindings, sharedCells, objects);
     }
 
     @Override
     public String toString() {
-        return "bindings=" + bindings + ", sharedCells=" + sharedCells;
+        return "bindings=" + bindings + ", sharedCells=" + sharedCells + (objects.isEmpty() ? "" : ", objects=" + objects);
     }
 }

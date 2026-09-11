@@ -600,6 +600,7 @@ public final class IrValidator {
                     case CONDITIONAL -> IrEvaluationOrder.Kind.BRANCH;
                     case COALESCE -> IrEvaluationOrder.Kind.COALESCE;
                     case MATCH -> IrEvaluationOrder.Kind.MATCH;
+                    case NOMINAL_DECLARATION -> IrEvaluationOrder.Kind.INSTANCE_INITIALIZATION;
                     default -> IrEvaluationOrder.Kind.STRICT;
                 };
                 List<IrEvaluationOrder.Edge> edges = new ArrayList<>();
@@ -614,6 +615,7 @@ public final class IrValidator {
                         case COALESCE -> index == 0 ? IrEvaluationOrder.EdgeKind.NON_NIL_VALUE
                                 : IrEvaluationOrder.EdgeKind.FALLBACK;
                         case MATCH -> matchEdgeKind(expression.match().orElseThrow(), index);
+                        case INSTANCE_INITIALIZATION -> IrEvaluationOrder.EdgeKind.INSTANCE_INITIALIZER;
                         default -> IrEvaluationOrder.EdgeKind.STRICT;
                     };
                     edges.add(new IrEvaluationOrder.Edge(index,
@@ -657,6 +659,8 @@ public final class IrValidator {
                 case IrNode.Reference reference -> validateReference(reference);
                 case IrNode.CaptureReference reference -> validateCaptureReference(reference);
                 case IrNode.Declaration declaration -> validateDeclaration(declaration);
+                case IrNode.NominalDeclaration declaration -> validateNominalDeclaration(declaration);
+                case IrNode.Construction construction -> validateConstruction(construction);
                 case IrNode.Rebinding rebinding -> validateRebinding(rebinding);
                 case IrNode.Sequence sequence -> {
                     validateOrdered(sequence.forms(), sequence.span());
@@ -829,6 +833,80 @@ public final class IrValidator {
             }
         }
 
+        private void validateNominalDeclaration(IrNode.NominalDeclaration node) {
+            var nominal = semantic.resolvedGraph().nominals().stream()
+                    .filter(value -> value.declaration().equals(node.declarationId())).findFirst().orElse(null);
+            TypedExpression source = node.siteId().map(expressionsBySite::get).orElse(null);
+            if (nominal == null || !nominal.schema().equals(node.schema())
+                    || !nominal.self().equals(node.self()) || !nominal.members().equals(node.members())
+                    || !nominal.constructor().equals(node.constructor())
+                    || !node.initializedFields().equals(node.members())
+                    || source == null || source.kind() != TypedExpressionKind.NOMINAL_DECLARATION
+                    || source.nominalInitialization().isEmpty()) {
+                add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK, node.span(),
+                        "nominal initialization must retain its exact schema and producer-issued completion proof");
+                return;
+            }
+            source.nominalInitialization().orElseThrow().requireMatches(node.declarationId(), source.children());
+            if (node.initializers().size() != source.children().size()) {
+                add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, node.span(), "nominal initializer inventory differs from its proof");
+            }
+            for (int child = 0; child < Math.min(node.initializers().size(), source.children().size()); child++) {
+                if (!node.initializers().get(child).siteId().equals(Optional.of(semantic.flowSiteId(source.children().get(child))))) {
+                    add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK, node.span(), "nominal initializer order differs from its certified source tree");
+                }
+            }
+            int index = 0;
+            for (var member : node.schema().members()) {
+                if (member.hasInitializer()) {
+                    if (index >= node.initializers().size()
+                            || !assignable(node.initializers().get(index), member.type())) {
+                        add(CompilerDiagnosticCodes.IR_UNRECORDED_CONVERSION, node.span(),
+                                "nominal field initializer does not match its exact contract");
+                    }
+                    index++;
+                }
+            }
+            if (node.constructor().isPresent()
+                    && (index >= node.initializers().size()
+                    || !(node.initializers().get(index) instanceof IrNode.Lambda lambda)
+                    || !lambda.lambdaId().equals(node.constructor()))) {
+                add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK, node.span(), "nominal constructor identity differs from its schema");
+            }
+            // Defaults execute in field order, then the constructor, independently
+            // of where the constructor declaration occurs textually in the class.
+            // Exact proof-bound child sites above certify this role-based order.
+            node.initializers().forEach(child -> validateNode(child, node.span(), false));
+        }
+
+        private void validateConstruction(IrNode.Construction node) {
+            var nominal = semantic.resolvedGraph().nominals().stream()
+                    .filter(value -> value.declaration().equals(node.declarationId())).findFirst().orElse(null);
+            TypedExpression source = node.siteId().map(expressionsBySite::get).orElse(null);
+            TypedReference reference = node.referenceId().flatMap(semantic::reference).orElse(null);
+            if (nominal == null || !nominal.schema().type().equals(node.type())
+                    || source == null || source.kind() != TypedExpressionKind.CONSTRUCTION
+                    || !source.declarationId().equals(Optional.of(node.declarationId()))
+                    || reference == null || !reference.type().equals(Optional.of(node.type()))
+                    || !source.link().flatMap(value -> value.referenceId()).equals(node.referenceId())) {
+                add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK, node.span(), "construction has an unresolved nominal origin");
+                return;
+            }
+            var parameters = nominal.schema().constructorParameters();
+            if (parameters.size() != node.arguments().size()) {
+                add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, node.span(), "constructor arity differs from its schema");
+            } else {
+                for (int index = 0; index < parameters.size(); index++) {
+                    if (!assignable(node.arguments().get(index), parameters.get(index))) {
+                        add(CompilerDiagnosticCodes.IR_UNRECORDED_CONVERSION, node.span(),
+                                "constructor argument does not match its exact parameter contract");
+                    }
+                }
+            }
+            validateOrdered(node.arguments(), node.span());
+            node.arguments().forEach(child -> validateNode(child, node.span(), false));
+        }
+
         private void validateDeclaration(IrNode.Declaration node) {
             DeclarationId id = requireDeclaration(node.declarationId(), node.span());
             if (node.declarationKind() != DeclarationKind.LET) {
@@ -873,8 +951,12 @@ public final class IrValidator {
             boolean checkedArrayElement = node.target() instanceof IrNode.RuntimeCheck check
                     && check.checkKind() == IrCheckKind.BOUNDS
                     && check.operand() instanceof IrNode.IndexAccess;
+            boolean nominalField = node.target() instanceof IrNode.Access access
+                    && access.accessKind() == AccessKind.MEMBER_VALUE && access.declarationId().isPresent()
+                    && access.receiver().isPresent() && access.receiver().orElseThrow().type().withoutQualifiers()
+                    instanceof io.mindspice.lyra.compiler.types.NominalType;
             Optional<DeclarationId> target = rebindingTargetDeclaration(node.target());
-            if ((!directBinding && !checkedArrayElement) || target.isEmpty()) {
+            if ((!directBinding && !checkedArrayElement && !nominalField) || target.isEmpty()) {
                 add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, node.span(),
                         "rebinding target must be a resolved binding or checked array element");
             } else if (id != null && !target.orElseThrow().equals(id)) {
@@ -889,6 +971,7 @@ public final class IrValidator {
                             "reassignment target has no typed contract");
                 } else {
                     LyraType assignmentType = contract.valueType();
+                    if (nominalField) assignmentType = node.target().type();
                     if (node.target() instanceof IrNode.RuntimeCheck check
                             && check.checkKind() == IrCheckKind.BOUNDS
                             && check.operand() instanceof IrNode.IndexAccess index) {
@@ -900,7 +983,7 @@ public final class IrValidator {
                     }
                 }
                 semantic.resolvedGraph().declaration(id).ifPresent(declaration -> {
-                    if (!declaration.isMutable()) {
+                    if (!declaration.isMutable() && !(nominalField && declaration.kind() == DeclarationKind.SELF)) {
                         add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, node.span(),
                                 "IR rebinds an immutable declaration");
                     }
@@ -1997,7 +2080,6 @@ public final class IrValidator {
                     boolean oneSelector = node.memberName().isPresent() ^ node.tupleIndex().isPresent();
                     if (node.receiver().isEmpty() || !oneSelector
                             || node.referenceId().isPresent()
-                            || node.declarationId().isPresent()
                             || node.moduleId().isPresent()
                             || node.exportId().isPresent()) {
                         add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, node.span(),
@@ -2033,6 +2115,25 @@ public final class IrValidator {
                 return;
             }
             LyraType base = receiver.type().withoutQualifiers();
+            if (base instanceof io.mindspice.lyra.compiler.types.NominalType nominalType) {
+                var nominal = semantic.resolvedGraph().nominals().stream()
+                        .filter(value -> value.schema().type().equals(nominalType)).findFirst().orElse(null);
+                int index = nominal == null ? -1 : node.declarationId().map(nominal.members()::indexOf).orElse(-1);
+                if (index < 0 || node.tupleIndex().isPresent()
+                        || !node.memberName().equals(Optional.of(nominal.schema().members().get(index).name()))
+                        || !node.type().equals(nominal.schema().members().get(index).type())) {
+                    add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK, node.span(), "nominal member differs from its exact schema slot");
+                }
+                TypedExpression source = node.siteId().map(expressionsBySite::get).orElse(null);
+                if (source == null || source.kind() != TypedExpressionKind.MEMBER_ACCESS
+                        || !source.declarationId().equals(node.declarationId())) {
+                    add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK, node.span(), "nominal access lacks its authorized source member");
+                }
+                return;
+            }
+            if (node.declarationId().isPresent()) {
+                add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, node.span(), "structural access carries a nominal field identity");
+            }
             if (node.memberName().filter("length"::equals).isPresent()
                     && (base == PrimitiveType.STRING || base instanceof ArrayType)) {
                 if (node.tupleIndex().isPresent() || node.type() != PrimitiveType.I32) {

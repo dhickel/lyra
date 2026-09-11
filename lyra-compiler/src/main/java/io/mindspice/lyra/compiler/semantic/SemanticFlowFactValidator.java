@@ -311,8 +311,28 @@ final class SemanticFlowFactValidator {
         private void collectRootRequirements(
                 TypedExpression expression,
                 Set<EventRequirement> destination) {
+            collectRootRequirements(expression, destination, new HashSet<>());
+        }
+
+        private void collectRootRequirements(TypedExpression expression,
+                Set<EventRequirement> destination, Set<DeclarationId> initializing) {
             FlowSiteId site = graph.flowSiteId(expression);
             switch (expression.kind()) {
+                case NOMINAL_DECLARATION -> { return; }
+                case CONSTRUCTION -> {
+                    DeclarationId id = expression.declarationId().orElseThrow();
+                    if (initializing.add(id)) {
+                        var nominal = graph.resolvedGraph().nominals().stream().filter(value -> value.declaration().equals(id))
+                                .findFirst().orElseThrow();
+                        for (DeclarationId member : nominal.members()) {
+                            graph.declaration(member).orElseThrow().initializer()
+                                    .ifPresent(value -> collectRootRequirements(value, destination, initializing));
+                        }
+                        nominal.constructor().map(lambdas::get).ifPresent(value ->
+                                collectRootRequirements(value.body(), destination, initializing));
+                        initializing.remove(id);
+                    }
+                }
                 case DECLARATION -> destination.add(new EventRequirement(
                         SemanticFlowEvent.Kind.DECLARATION, site, Optional.empty()));
                 case REBINDING -> destination.add(new EventRequirement(
@@ -341,7 +361,7 @@ final class SemanticFlowFactValidator {
                 }
             }
             expression.children().forEach(child ->
-                    collectRootRequirements(child, destination));
+                    collectRootRequirements(child, destination, initializing));
         }
 
         private void validateEvent(SemanticFlowEvent event) {
@@ -431,6 +451,7 @@ final class SemanticFlowFactValidator {
                             "nil provenance route is not nilable");
                 }
                 value.aggregateIdentities().forEach(this::validateAggregate);
+                value.objects().forEach(this::validateObject);
                 value.callableFlows().forEach(this::validateCallable);
             }
         }
@@ -459,6 +480,22 @@ final class SemanticFlowFactValidator {
                             route.compose(ProjectionPath.tupleMember(index)));
                 }
             }
+        }
+
+        private void validateObject(io.mindspice.lyra.compiler.semantic.flow.NominalObjectFact fact) {
+            var identity = fact.identity();
+            var witness = fact.ownership();
+            var source = graph.expressions().stream().filter(value -> graph.flowSiteId(value).equals(identity.allocationSite()))
+                    .findFirst().orElseThrow(() -> invalid("object allocation site is foreign and uncertified"));
+            require(source.kind() == TypedExpressionKind.CONSTRUCTION && source.type().equals(identity.type()),
+                    "object identity does not name its exact nominal construction");
+            require(identity.ownerModule().sourceId().equals(source.span().sourceId())
+                            && witness.ownerModule().equals(identity.ownerModule())
+                            && witness.originSite().equals(Optional.of(identity.allocationSite()))
+                            && witness.sourceSpan().equals(source.span())
+                            && witness.scopeId().equals(graph.flowScopeId(source)),
+                    "object ownership differs from its canonical allocation origin");
+            graph.resolvedGraph().nominalTypes().require(identity.type());
         }
 
         private void validateAggregate(AggregateIdentityFact fact) {
@@ -599,6 +636,19 @@ final class SemanticFlowFactValidator {
         private void validateFinalStates() {
             facts.finalStates().forEach((module, state) -> {
                 require(modules.contains(module), "final state names a foreign module");
+                state.objects().forEach((identity, object) -> {
+                    require(object.schema().equals(graph.resolvedGraph().nominalTypes().require(identity.type())),
+                            "object heap schema differs from its declared nominal identity");
+                    require(object.fields().size() == object.schema().members().size(),
+                            "published object heap has incomplete initialization");
+                    object.fields().forEach((index, values) -> {
+                        require(index >= 0 && index < object.schema().members().size(), "object heap has a foreign slot");
+                        require(!values.isEmpty() && values.alternatives().stream().allMatch(value ->
+                                        value.type().equals(object.schema().members().get(index).type())),
+                                "object heap field differs from its exact member contract");
+                        validateValues(values);
+                    });
+                });
                 state.bindings().forEach((declaration, value) -> {
                     if (declarations.containsKey(declaration)) {
                         Optional<io.mindspice.lyra.compiler.types.BindingContract> expected =

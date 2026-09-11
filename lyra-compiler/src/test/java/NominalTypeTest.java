@@ -29,6 +29,33 @@ public class NominalTypeTest {
         assertFalse(TypeRules.canImplicitlyConvert(first.nilable(), first));
         assertFalse(TypeRules.canImplicitlyConvert(first, type("Second")));
         assertFalse(TypeRules.canImplicitlyConvert(ArrayType.of(first), ArrayType.of(type("Second"))));
+        assertSame(first.canonicalSpelling(), first.canonicalSpelling());
+    }
+
+    @Test
+    void heapSnapshotsAndNominalRoutesKeepExactContracts() {
+        var type = type("Cell");
+        var field = new NominalSchema.Member("value", LyraType.I32, true, BindingMutability.MUTABLE, true);
+        var schema = new NominalSchema(type, NominalSchema.Kind.CLASS, List.of(field), List.of());
+        var value = io.mindspice.lyra.compiler.semantic.flow.ValueAlternatives.singleton(
+                io.mindspice.lyra.compiler.semantic.flow.ValueAlternative.scalar(LyraType.I32));
+        var heap = new io.mindspice.lyra.compiler.semantic.flow.NominalObjectState(schema, java.util.Map.of(0, value), true);
+        assertThrows(UnsupportedOperationException.class, () -> heap.fields().clear());
+        assertThrows(IllegalArgumentException.class, () -> heap.write(1, value, true));
+        assertThrows(IllegalArgumentException.class, () -> heap.write(0,
+                io.mindspice.lyra.compiler.semantic.flow.ValueAlternatives.empty(), true));
+        var narrower = io.mindspice.lyra.compiler.semantic.flow.ValueAlternatives.singleton(
+                io.mindspice.lyra.compiler.semantic.flow.ValueAlternative.scalar(LyraType.I8));
+        assertThrows(IllegalArgumentException.class, () -> heap.write(0, narrower, true));
+        assertFalse(heap.repeatedAllocation().singleton());
+        assertEquals(heap.fields(), heap.repeatedAllocation().fields());
+        var route = io.mindspice.lyra.compiler.semantic.flow.ProjectionPath.of(
+                new io.mindspice.lyra.compiler.semantic.flow.ProjectionStep.NominalMember(type, 0, LyraType.I32));
+        assertEquals(LyraType.I32, io.mindspice.lyra.compiler.semantic.flow.ValueAlternative.typeAt(type, route));
+        assertThrows(IllegalArgumentException.class, () ->
+                io.mindspice.lyra.compiler.semantic.flow.ValueAlternative.typeAt(type("Other"), route));
+        assertFalse(route.overlaps(io.mindspice.lyra.compiler.semantic.flow.ProjectionPath.tupleMember(0)));
+        assertFalse(route.overlaps(io.mindspice.lyra.compiler.semantic.flow.ProjectionPath.unknownArrayElement()));
     }
 
     @Test

@@ -28,7 +28,8 @@ public record IrEvaluationOrder(
         SHORT_CIRCUIT,
         BRANCH,
         COALESCE,
-        MATCH
+        MATCH,
+        INSTANCE_INITIALIZATION
     }
 
     public enum EdgeKind {
@@ -41,7 +42,8 @@ public record IrEvaluationOrder(
         MATCH_SUBJECT,
         MATCH_PATTERN,
         MATCH_GUARD,
-        MATCH_RESULT
+        MATCH_RESULT,
+        INSTANCE_INITIALIZER
     }
 
     public record Edge(int ordinal, FlowSiteId childSite, EdgeKind kind)
@@ -107,6 +109,7 @@ public record IrEvaluationOrder(
             case COALESCE -> index == 0
                     ? EdgeKind.NON_NIL_VALUE : EdgeKind.FALLBACK;
             case MATCH -> null;
+            case INSTANCE_INITIALIZATION -> EdgeKind.INSTANCE_INITIALIZER;
         };
     }
 

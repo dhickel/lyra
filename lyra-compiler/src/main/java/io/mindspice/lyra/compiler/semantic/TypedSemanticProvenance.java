@@ -124,7 +124,8 @@ final class TypedSemanticProvenance {
                         "module namespace declaration acquired a value contract");
             }
 
-            if (source.kind() == DeclarationKind.LET) {
+            if (source.kind() == DeclarationKind.LET || source.kind() == DeclarationKind.MEMBER
+                    && declarationInitializers.containsKey(source.id())) {
                 TypedExpression expected = declarationInitializers.get(source.id());
                 require(expected != null && declaration.initializer().orElse(null) == expected,
                         "typed let initializer is not the source declaration child: " + source.id());
@@ -275,6 +276,36 @@ final class TypedSemanticProvenance {
     }
 
     private void validateForm(SyntaxNode.Form syntax, TypedExpression expression, ModuleId moduleId) {
+        if (syntax instanceof SyntaxNode.NominalDeclaration declaration) {
+            var nominal = resolved.nominals().stream().filter(value -> resolved.declaration(value.declaration())
+                    .orElseThrow().nameSpan().equals(declaration.name().span())).findFirst()
+                    .orElseThrow(() -> invalid("source nominal has no resolved schema"));
+            require(expression.kind() == TypedExpressionKind.NOMINAL_DECLARATION
+                            && expression.type() == PrimitiveType.UNIT && expression.span().equals(declaration.span())
+                            && expression.declarationId().equals(Optional.of(nominal.declaration()))
+                            && expression.scopeId().equals(Optional.of(resolved.declaration(nominal.self()).orElseThrow().scopeId()))
+                            && expression.nominalInitialization().isPresent(),
+                    "typed nominal declaration differs from its source schema");
+            expression.nominalInitialization().orElseThrow().requireMatches(nominal.declaration(), expression.children());
+            int index = 0;
+            for (int memberIndex = 0; memberIndex < declaration.members().size(); memberIndex++) {
+                var member = declaration.members().get(memberIndex);
+                if (member.initializer().isEmpty()) continue;
+                require(index < expression.children().size(), "nominal field initializer is missing");
+                TypedExpression initializer = expression.children().get(index++);
+                require(declarationInitializers.put(nominal.members().get(memberIndex), initializer) == null,
+                        "nominal member initializer occurs more than once");
+                validateSourceExpression(member.initializer().orElseThrow(), initializer, moduleId,
+                        Optional.of(nominal.schema().members().get(memberIndex).type()));
+            }
+            if (declaration.constructor().isPresent()) {
+                require(index < expression.children().size(), "nominal constructor is missing");
+                validateSourceExpression(declaration.constructor().orElseThrow().initializer(), expression.children().get(index++),
+                        moduleId, Optional.of(FunctionType.of(nominal.schema().constructorParameters(), PrimitiveType.UNIT)));
+            }
+            require(index == expression.children().size(), "nominal declaration carries foreign initializers");
+            return;
+        }
         if (syntax instanceof SyntaxNode.LetBinding let) {
             require(expression.kind() == TypedExpressionKind.DECLARATION
                             && expression.span().equals(let.span())
@@ -348,6 +379,43 @@ final class TypedSemanticProvenance {
         }
         require(expression.span().equals(syntax.span()),
                 "typed expression does not retain its exact originating source span");
+
+        if (expression.kind() == TypedExpressionKind.CONSTRUCTION) {
+            List<SyntaxNode.Expression> arguments;
+            SyntaxNode.Expression target;
+            if (syntax instanceof SyntaxNode.BracketApplication application) {
+                target = application.target();
+                arguments = application.arguments().arguments();
+            } else if (syntax instanceof SyntaxNode.IndexAccess index) {
+                target = index.receiver();
+                arguments = List.of(index.index());
+            } else {
+                throw invalid("typed construction has no bracket source");
+            }
+            var origin = resolved.syntaxLinks().stream().filter(link -> link.kind() == SyntaxLinkKind.CALL
+                            && link.span().equals(syntax.span())).flatMap(link -> link.declarationId().stream())
+                    .flatMap(id -> resolved.nominals().stream().filter(value -> value.declaration().equals(id)))
+                    .findFirst().orElseThrow(() -> invalid("construction has no resolved nominal origin"));
+            ResolvedReference reference;
+            if (target instanceof SyntaxNode.Identifier identifier) {
+                reference = findReference(identifier.span(), identifier.name(), ReferenceKind.VALUE);
+            } else if (target instanceof SyntaxNode.NamespaceMemberAccess namespace) {
+                reference = findReference(namespace.member().span(), namespace.member().name(), ReferenceKind.NAMESPACE_MEMBER);
+            } else throw invalid("construction target is not a type name");
+            requireReferenceLink(expression, reference, Optional.empty());
+            require(expression.declarationId().equals(Optional.of(origin.declaration()))
+                            && expression.type().equals(origin.schema().type())
+                            && expression.signature().equals(Optional.of(FunctionType.of(origin.schema().constructorParameters(),
+                            origin.schema().type()).signature()))
+                            && arguments.size() == origin.schema().constructorParameters().size()
+                            && expression.children().size() == arguments.size(),
+                    "construction differs from its exact source schema");
+            for (int index = 0; index < arguments.size(); index++) {
+                validateSourceExpression(arguments.get(index), expression.children().get(index), moduleId,
+                        Optional.of(origin.schema().constructorParameters().get(index)));
+            }
+            return;
+        }
 
         if (CallbackLoop.of(syntax).isPresent()) {
             TypedExpressionKind kind = CallbackLoop.of(syntax).orElseThrow() == CallbackLoop.ITER
@@ -574,6 +642,25 @@ final class TypedSemanticProvenance {
             return;
         }
         if (syntax instanceof SyntaxNode.DirectCall call) {
+            if (call.receiver().isPresent()) {
+                require(expression.kind() == TypedExpressionKind.CALLABLE_CALL
+                                && expression.children().size() == call.argumentExpressions().size() + 1,
+                        "member invocation must select its current callable slot");
+                TypedExpression selected = expression.children().getFirst();
+                require(selected.kind() == TypedExpressionKind.MEMBER_ACCESS && selected.children().size() == 1
+                                && selected.memberName().equals(Optional.of(call.name().name()))
+                                && selected.span().equals(call.span()), "member invocation selector differs from source");
+                validateSourceExpression(call.receiver().orElseThrow(), selected.children().getFirst(), moduleId);
+                validateMemberContract(selected, selected.children().getFirst().type());
+                FunctionType function = requireFunctionType(selected.type());
+                require(function.arity() == call.argumentExpressions().size(), "member invocation arity differs from its slot");
+                for (int index = 0; index < function.arity(); index++) {
+                    validateSourceExpression(call.argumentExpressions().get(index), expression.children().get(index + 1),
+                            moduleId, Optional.of(function.parameterType(index)));
+                }
+                validateCallContract(expression, selected.type(), 1);
+                return;
+            }
             require(call.receiver().isEmpty()
                             && expression.kind() == TypedExpressionKind.DIRECT_CALL
                             && expression.children().size() == call.argumentExpressions().size(),
@@ -1026,7 +1113,9 @@ final class TypedSemanticProvenance {
         require(target != null, "typed rebinding target has no declaration link");
         BindingContract contract = typed.contract(target).orElseThrow(() -> invalid(
                 "typed rebinding target has no contract"));
-        LyraType valueType = targetSyntax instanceof SyntaxNode.IndexAccess
+        boolean nominalField = targetExpression.kind() == TypedExpressionKind.MEMBER_ACCESS
+                && targetExpression.declarationId().isPresent();
+        LyraType valueType = targetSyntax instanceof SyntaxNode.IndexAccess || nominalField
                 ? targetExpression.type() : contract.valueType();
         validateSourceExpression(valueSyntax, expression.children().get(1),
                 moduleId, Optional.of(valueType));
@@ -1041,7 +1130,7 @@ final class TypedSemanticProvenance {
         ReferenceId rootReference = targetLink.referenceId().orElseThrow(() -> invalid(
                 "typed rebinding root link has no canonical reference identity"));
         MutationKind mutationKind = targetSyntax instanceof SyntaxNode.IndexAccess
-                ? MutationKind.ARRAY_ELEMENT : MutationKind.REBINDING;
+                ? MutationKind.ARRAY_ELEMENT : nominalField ? MutationKind.MEMBER_FIELD : MutationKind.REBINDING;
         long matchingMutations = typed.mutations().stream()
                 .filter(mutation -> mutation.kind() == mutationKind
                         && mutation.moduleId().equals(moduleId)
@@ -1593,6 +1682,11 @@ final class TypedSemanticProvenance {
     }
 
     private Optional<LyraType> synthesizedTypeWithoutContext(SyntaxNode.Expression syntax) {
+        var constructed = resolved.syntaxLinks().stream().filter(link -> link.kind() == SyntaxLinkKind.CALL
+                        && link.span().equals(syntax.span())).flatMap(link -> link.declarationId().stream())
+                .flatMap(id -> resolved.nominals().stream().filter(value -> value.declaration().equals(id)))
+                .map(value -> (LyraType) value.schema().type()).findFirst();
+        if (constructed.isPresent()) return constructed;
         if (syntax instanceof SyntaxNode.ArrayLiteral
                 || syntax instanceof SyntaxNode.TupleLiteral
                 || syntax instanceof SyntaxNode.Block) {
@@ -2417,6 +2511,22 @@ final class TypedSemanticProvenance {
         require(!receiverType.isNilable(),
                 "typed member receiver is nilable");
         LyraType base = receiverType.withoutQualifiers();
+        if (base instanceof io.mindspice.lyra.compiler.types.NominalType nominalType) {
+            var nominal = resolved.nominals().stream().filter(value -> value.schema().type().equals(nominalType))
+                    .findFirst().orElseThrow(() -> invalid("nominal member receiver has no schema"));
+            int index = expression.declarationId().map(nominal.members()::indexOf).orElse(-1);
+            require(index >= 0 && expression.tupleIndex().isEmpty(), "nominal member has no exact declaration identity");
+            var member = nominal.schema().members().get(index);
+            require(expression.memberName().equals(Optional.of(member.name())) && expression.type().equals(member.type()),
+                    "nominal member does not match its exact schema slot");
+            var declaration = resolved.declaration(nominal.declaration()).orElseThrow();
+            require(member.publicAccess() || declaration.span().sourceId().equals(expression.span().sourceId())
+                            && declaration.span().startOffset() <= expression.span().startOffset()
+                            && declaration.span().endOffset() >= expression.span().endOffset(),
+                    "private nominal member escapes its declaring lexical scope");
+            return;
+        }
+        require(expression.declarationId().isEmpty(), "structural member carries a nominal field identity");
         if (expression.memberName().filter("length"::equals).isPresent()
                 && (base == PrimitiveType.STRING || base instanceof ArrayType)) {
             require(expression.type() == PrimitiveType.I32 && expression.tupleIndex().isEmpty(),
@@ -2489,6 +2599,8 @@ final class TypedSemanticProvenance {
             case LITERAL -> EnumSet.of(Metadata.LITERAL);
             case REFERENCE -> EnumSet.of(Metadata.LINK, Metadata.CAPTURES);
             case DECLARATION, REBINDING -> EnumSet.of(Metadata.LINK, Metadata.DECLARATION);
+            case NOMINAL_DECLARATION -> EnumSet.of(Metadata.DECLARATION, Metadata.SCOPE);
+            case CONSTRUCTION -> EnumSet.of(Metadata.LINK, Metadata.DECLARATION, Metadata.SIGNATURE);
             case BLOCK -> EnumSet.of(Metadata.SCOPE);
             case CONDITIONAL -> EnumSet.of(Metadata.PREDICATE_BINDING);
             case MATCH -> EnumSet.of(Metadata.MATCH);
@@ -2496,7 +2608,7 @@ final class TypedSemanticProvenance {
                     INDEX_ACCESS, NARROWING -> EnumSet.noneOf(Metadata.class);
             case LAMBDA -> EnumSet.of(Metadata.LAMBDA, Metadata.SIGNATURE, Metadata.CAPTURES);
             case DIRECT_CALL, NAMESPACE_DIRECT_CALL -> EnumSet.of(Metadata.LINK, Metadata.DECLARATION);
-            case MEMBER_ACCESS -> EnumSet.of(Metadata.MEMBER_NAME, Metadata.TUPLE_INDEX);
+            case MEMBER_ACCESS -> EnumSet.of(Metadata.MEMBER_NAME, Metadata.TUPLE_INDEX, Metadata.DECLARATION);
             case NAMESPACE_MEMBER_ACCESS -> EnumSet.of(
                     Metadata.LINK, Metadata.MEMBER_NAME, Metadata.TUPLE_INDEX);
             case OPERATOR, SHORT_CIRCUIT, RANGE -> EnumSet.of(Metadata.OPERATOR);
@@ -2596,6 +2708,9 @@ final class TypedSemanticProvenance {
     }
 
     private void rejectForeignMetadata(TypedExpression expression, Set<Metadata> allowed) {
+        require((expression.kind() == TypedExpressionKind.NOMINAL_DECLARATION)
+                        == expression.nominalInitialization().isPresent(),
+                "nominal initialization proof is missing or foreign");
         checkMetadata(expression.literal().isPresent(), Metadata.LITERAL, allowed);
         checkMetadata(expression.link().isPresent(), Metadata.LINK, allowed);
         checkMetadata(expression.conversion().isPresent(), Metadata.CONVERSION, allowed);

@@ -19,6 +19,160 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class NominalSemanticsTest {
     @Test
+    void typesDefaultAndRequiredStructConstruction() {
+        var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
+                struct Point { let @mut x :I32 let y :I64 = 2 }
+                let p :Point = Point[1]
+                p:.x
+                """))));
+        assertEquals(1, typed.expressions().stream().filter(value -> value.kind()
+                == io.mindspice.lyra.compiler.semantic.TypedExpressionKind.CONSTRUCTION).count());
+        assertTrue(typed.expressions().stream().anyMatch(value -> value.nominalInitialization().isPresent()));
+        success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(typed));
+    }
+
+    @Test
+    void rejectsIncompleteAndDuplicateClassInitialization() {
+        for (String source : List.of(
+                "class Bad { let x :I32 }",
+                "class Bad { let x :I32 = self:.x }",
+                "class Bad { let x :I32 = 1 Bad = (=> || { self:.x := 2 }) }",
+                "class Bad { let x :I32 Bad = (=> |flag :Bool| { (flag -> { self:.x := 1 }) }) }")) {
+            var result = io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve(source)));
+            assertInstanceOf(PhaseResult.Failure.class, result, source);
+            assertTrue(result.diagnostics().stream().anyMatch(value -> value.code().equals(
+                            io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes.TYPE_INVALID_BINDING)),
+                    () -> source + "\n" + result.diagnostics());
+        }
+    }
+
+    @Test
+    void typesClassConstructorAndBoundMethodSelection() {
+        var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
+                class Counter {
+                    let @mut value :I32
+                    Counter = (=> |start :I32| { self:.value := start })
+                    let @pub current :Fn<;I32> = (=> || self:.value)
+                    let @pub increment :Fn<;Unit> = (=> || { self:.value := (++ self:.value) })
+                }
+                let counter :Counter = Counter[0]
+                counter::increment[]
+                counter::current[]
+                """))));
+        success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(typed));
+    }
+
+    @Test
+    void savedCallableRetainsSelectedSlotWhileAliasesSeeReplacement() {
+        var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
+                class Cell { let @pub @mut read :Fn<;I32> = (=> || 1) }
+                let @mut cell :Cell = Cell[]
+                let alias :Cell = cell
+                let saved :Fn<;I32> = cell:.read
+                cell:.read := (=> || 2)
+                let selected :Fn<;I32> = alias:.read
+                """))));
+        var saved = typed.declarations().stream().filter(value -> value.name().equals("saved")).findFirst().orElseThrow();
+        var selected = typed.declarations().stream().filter(value -> value.name().equals("selected")).findFirst().orElseThrow();
+        var savedValue = typed.semanticFlowFacts().declarationValues().get(saved.id());
+        var selectedValue = typed.semanticFlowFacts().declarationValues().get(selected.id());
+        var originalLambda = typed.lambdas().stream().min(java.util.Comparator.comparingInt(value -> value.span().startOffset())).orElseThrow();
+        var replacementLambda = typed.lambdas().stream().max(java.util.Comparator.comparingInt(value -> value.span().startOffset())).orElseThrow();
+        assertEquals(originalLambda.id(), savedValue.alternatives().getFirst().callableFlows().getFirst().lambdaId().orElseThrow());
+        assertEquals(replacementLambda.id(), selectedValue.alternatives().getFirst().callableFlows().getFirst().lambdaId().orElseThrow());
+        success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(typed));
+    }
+
+    @Test
+    void initializationRejectsPrematurePublicationAndInvocation() {
+        for (String body : List.of(
+                "let leaked = ::consume[self] self:.x := 1",
+                "let callback :Fn<;Box> = (=> || self) let leaked = ::publish[callback] self:.x := 1",
+                "let value = self::read[] self:.x := value",
+                "::iter[(0..1:1) || { self:.x := 1 }]")) {
+            String source = """
+                    let consume :Fn<Box;Unit> = (=> |box| {})
+                    let publish :Fn<Fn<;Box>;Unit> = (=> |callback| {})
+                    class Box {
+                        let @mut x :I32
+                        let @pub read :Fn<;I32> = (=> || self:.x)
+                        Box = (=> || { %s })
+                    }
+                    """.formatted(body);
+            var result = io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve(source)));
+            assertInstanceOf(PhaseResult.Failure.class, result, source);
+            assertEquals(io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes.TYPE_INVALID_BINDING,
+                    result.diagnostics().getFirst().code(), () -> result.diagnostics().toString());
+        }
+    }
+
+    @Test
+    void seededInitializationChecksUseIndependentBranchSetModel() {
+        int cases = Integer.getInteger("lyra.nominal.initialization.cases", Integer.getInteger("lyra.fuzz.cases", 36));
+        for (long seed : new long[] { 37, 971, 20260912 }) {
+            Random random = new Random(seed);
+            for (int test = 0; test < cases; test++) {
+                int fields = 1 + random.nextInt(6);
+                int full = (1 << fields) - 1;
+                int defaults = random.nextInt(full + 1);
+                int left = random.nextInt(full + 1);
+                int right = random.nextInt(full + 1);
+                boolean expected = (defaults | (left & right)) == full
+                        && (defaults & (left | right)) == 0;
+                StringBuilder source = new StringBuilder("class Box { ");
+                for (int field = 0; field < fields; field++) {
+                    source.append("let f").append(field).append(" :I32");
+                    if ((defaults & (1 << field)) != 0) source.append(" = ").append(field);
+                    source.append(' ');
+                }
+                source.append("Box = (=> |flag :Bool| { (flag -> { ");
+                for (int field = 0; field < fields; field++) {
+                    if ((left & (1 << field)) != 0) source.append("self:.f").append(field).append(" := ").append(field).append(' ');
+                }
+                source.append("} : { ");
+                for (int field = 0; field < fields; field++) {
+                    if ((right & (1 << field)) != 0) source.append("self:.f").append(field).append(" := ").append(field).append(' ');
+                }
+                source.append("}) }) } let box :Box = Box[#T]");
+                var result = io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve(source.toString())));
+                assertEquals(expected, result instanceof PhaseResult.Success<?>,
+                        "seed=" + seed + " case=" + test + " source=" + source + " diagnostics=" + result.diagnostics());
+                if (result instanceof PhaseResult.Success<?> success) {
+                    success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(
+                            (io.mindspice.lyra.compiler.semantic.TypedSemanticGraph) success.value()));
+                } else assertEquals(io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes.TYPE_INVALID_BINDING,
+                        result.diagnostics().getFirst().code());
+            }
+        }
+    }
+
+    @Test
+    void nominalNamesAreNotInstancesAndCapitalizedArraysRemainIndexable() {
+        var invalid = io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve(
+                "struct Point {} let notAnInstance = Point")));
+        assertInstanceOf(PhaseResult.Failure.class, invalid);
+        assertEquals(io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes.TYPE_INVALID_ACCESS,
+                invalid.diagnostics().getFirst().code());
+        success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(success(
+                io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve(
+                        "let Point = Array[1 2] let first = Point[0]"))))));
+    }
+
+    @Test
+    void requiredArgumentsAreInstalledBeforeSourceOrderedDefaults() {
+        var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
+                struct Point { let first :I32 = self:.required let required :I32 let next :I32 = (+ self:.first 1) }
+                let point :Point = Point[4]
+                """))));
+        success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(typed));
+        var invalid = io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve(
+                "struct Point { let first :I32 = self:.next let next :I32 = 1 }")));
+        assertInstanceOf(PhaseResult.Failure.class, invalid);
+        assertEquals(io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes.TYPE_INVALID_BINDING,
+                invalid.diagnostics().getFirst().code());
+    }
+
+    @Test
     void collectsExactSchemasAndRequiredFieldConstructorOrder() {
         var graph = success(resolve("""
                 struct Point { let @mut x :I32 let y :I64 let label :String = "p" }

@@ -2151,8 +2151,10 @@ public final class SemanticResolver {
                 Use target = resolveExpression(
                         assignment.target(), scope, work, lambda, currentDeclaration, Optional.empty());
                 authorizeMutation(target, assignment.target(), work, lambda);
+                rememberExpected(assignment.value(), target.type);
                 Use value = resolveExpression(
-                        assignment.value(), scope, work, lambda, currentDeclaration, Optional.empty());
+                        assignment.value(), scope, work, lambda, currentDeclaration,
+                        target.type.flatMap(this::expectedLambdaSignature));
                 applyOwnershipProjectionUpdate(target, assignment.target(), value.ownershipValues, scope);
                 return Use.empty();
             }
@@ -2167,7 +2169,7 @@ public final class SemanticResolver {
                 Use target = resolveExpression(
                         call.target(), scope, work, lambda, currentDeclaration, Optional.empty());
                 Optional<LyraSignature> targetSignature = signatureOf(target);
-                addCallLink(call.span(), target);
+                addCallLink(call.span(), target, selectedMembers.get(call.target().span()));
                 resolveArguments(
                         call.argumentExpressions(), targetSignature, scope, work, lambda, currentDeclaration);
                 return targetSignature.map(this::opaqueCallResult)
@@ -2842,6 +2844,14 @@ public final class SemanticResolver {
         }
 
         private void addCallLink(SourceSpan span, Use target) {
+            addCallLink(span, target, selectedMembers.get(span));
+        }
+
+        private void addCallLink(SourceSpan span, Use target, DeclDraft selectedMember) {
+            if (selectedMember != null) {
+                addLink(SyntaxLink.call(span, Optional.empty(), Optional.of(selectedMember.id), Optional.empty(), Optional.empty()));
+                return;
+            }
             Optional<DeclarationId> declaration = target.declaration.map(value -> value.id);
             Optional<ModuleId> module = target.module.isPresent()
                     ? target.module

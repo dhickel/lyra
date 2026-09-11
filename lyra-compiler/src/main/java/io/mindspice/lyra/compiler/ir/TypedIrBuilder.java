@@ -187,6 +187,17 @@ public final class TypedIrBuilder {
                 case LITERAL -> lowerLiteral(expression, site);
                 case REFERENCE -> lowerReference(expression, site);
                 case DECLARATION -> lowerDeclaration(expression, site);
+                case NOMINAL_DECLARATION -> {
+                    var proof = expression.nominalInitialization().orElseThrow();
+                    proof.requireMatches(expression.declarationId().orElseThrow(), expression.children());
+                    var nominal = proof.nominal();
+                    yield new IrNode.NominalDeclaration(expression.span(), expression.type(), nominal.declaration(),
+                            nominal.self(), nominal.schema(), nominal.members(), nominal.constructor(), lowerChildren(expression),
+                            nominal.members(), Optional.of(site));
+                }
+                case CONSTRUCTION -> new IrNode.Construction(expression.span(),
+                        (io.mindspice.lyra.compiler.types.NominalType) expression.type(), expression.declarationId().orElseThrow(),
+                        expression.link().flatMap(TypedLink::referenceId), lowerChildren(expression), Optional.of(site));
                 case REBINDING -> lowerRebinding(expression, site);
                 case BLOCK -> lowerBlock(expression, site);
                 case ARRAY_LITERAL -> lowerArrayLiteral(expression, site);
@@ -293,7 +304,7 @@ public final class TypedIrBuilder {
                     && mutation.rootDeclaration().equals(declarationId)
                     && mutation.rootReference().equals(rootReference)) {
                 mutationKind = Optional.of(mutation.kind());
-                route = mutation.isArrayElement() ? route : ProjectionPath.root();
+                route = mutation.kind() == MutationKind.REBINDING ? ProjectionPath.root() : route;
                 break;
             }
         }
@@ -423,7 +434,7 @@ public final class TypedIrBuilder {
                 expression.span(), expression.type(),
                 member ? AccessKind.MEMBER_VALUE : AccessKind.NAMESPACE_VALUE,
                 member ? Optional.of(child(expression, 0)) : Optional.empty(),
-                link.referenceId(), link.declarationId(), link.moduleId(), link.exportId(),
+                link.referenceId(), expression.declarationId().or(link::declarationId), link.moduleId(), link.exportId(),
                 expression.memberName(), expression.tupleIndex(), Optional.of(site));
     }
 
@@ -496,6 +507,14 @@ public final class TypedIrBuilder {
     }
 
     private ProjectionPath targetRoute(TypedExpression target) {
+        if (target.kind() == TypedExpressionKind.MEMBER_ACCESS && target.declarationId().isPresent()) {
+            var type = (io.mindspice.lyra.compiler.types.NominalType) target.children().getFirst().type().withoutQualifiers();
+            var nominal = typedGraph.resolvedGraph().nominals().stream().filter(value -> value.schema().type().equals(type))
+                    .findFirst().orElseThrow();
+            int index = nominal.members().indexOf(target.declarationId().orElseThrow());
+            return targetRoute(target.children().getFirst()).append(
+                    new io.mindspice.lyra.compiler.semantic.flow.ProjectionStep.NominalMember(type, index, target.type()));
+        }
         if (target.kind() == TypedExpressionKind.INDEX_ACCESS && target.children().size() == 2) {
             return targetRoute(target.children().getFirst()).compose(
                     indexRoute(target.children().get(1)));
@@ -565,6 +584,7 @@ public final class TypedIrBuilder {
             case CONDITIONAL -> IrEvaluationOrder.Kind.BRANCH;
             case COALESCE -> IrEvaluationOrder.Kind.COALESCE;
             case MATCH -> IrEvaluationOrder.Kind.MATCH;
+            case NOMINAL_DECLARATION -> IrEvaluationOrder.Kind.INSTANCE_INITIALIZATION;
             default -> IrEvaluationOrder.Kind.STRICT;
         };
         List<IrEvaluationOrder.Edge> edges = new ArrayList<>();
@@ -580,6 +600,7 @@ public final class TypedIrBuilder {
                 case COALESCE -> index == 0 ? IrEvaluationOrder.EdgeKind.NON_NIL_VALUE
                         : IrEvaluationOrder.EdgeKind.FALLBACK;
                 case MATCH -> matchEdgeKind(expression.match().orElseThrow(), index);
+                case INSTANCE_INITIALIZATION -> IrEvaluationOrder.EdgeKind.INSTANCE_INITIALIZER;
                 default -> IrEvaluationOrder.EdgeKind.STRICT;
             };
             edges.add(new IrEvaluationOrder.Edge(index, childSite, edgeKind));

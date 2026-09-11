@@ -32,10 +32,32 @@ public sealed interface ValueFormula extends Comparable<ValueFormula>
                 ValueFormula.Declaration,
                 ValueFormula.Lambda,
                 ValueFormula.FreshAllocation,
+                ValueFormula.ObjectReference,
                 ValueFormula.Scalar,
                 ValueFormula.CallResult,
                 ValueFormula.Opaque {
     LyraType type();
+
+    /** Finite heap identity plus a lazy field route, never a recursively expanded object shape. */
+    record ObjectReference(NominalObjectFact object, ProjectionPath sourceRoute,
+                           ProjectionPath resultRoute, LyraType type) implements ValueFormula {
+        public ObjectReference {
+            Objects.requireNonNull(object, "object");
+            Objects.requireNonNull(sourceRoute, "sourceRoute");
+            Objects.requireNonNull(resultRoute, "resultRoute");
+            Objects.requireNonNull(type, "type");
+            if (!object.route().isRoot() || !ValueAlternative.typeAt(object.identity().type(), sourceRoute)
+                    .withoutQualifiers().equals(type.withoutQualifiers())) {
+                throw new IllegalArgumentException("object formula route does not match its exact type");
+            }
+        }
+        @Override public ObjectReference withResultRoute(ProjectionPath route) {
+            return new ObjectReference(object, sourceRoute, route, type);
+        }
+        @Override public String canonicalKey() {
+            return "object/" + object + "/source=" + sourceRoute + "/result=" + resultRoute + "/type=" + type.canonicalSpelling();
+        }
+    }
 
     ProjectionPath resultRoute();
 

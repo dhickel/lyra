@@ -369,6 +369,10 @@ public record FormulaAlternatives(
                     call.callId(), selectedType,
                     call.callRoute().compose(sourceSuffix), ProjectionPath.root());
         }
+        if (formula instanceof ValueFormula.ObjectReference object) {
+            return new ValueFormula.ObjectReference(object.object(), object.sourceRoute().compose(sourceSuffix),
+                    ProjectionPath.root(), selectedType);
+        }
         if (formula instanceof ValueFormula.Opaque) {
             return new ValueFormula.Opaque(selectedType, ProjectionPath.root(),
                     "projected from " + formula.resultRoute());

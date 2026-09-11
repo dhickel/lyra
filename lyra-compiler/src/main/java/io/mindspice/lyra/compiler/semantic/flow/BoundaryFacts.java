@@ -107,7 +107,7 @@ public final class BoundaryFacts {
             addPotentialBoundaryFacts(typed, value.type(), ProjectionPath.root(),
                     ownerModule, originDeclaration, export, useSpan, facts, attachable);
             alternatives.add(ValueAlternative.of(
-                    value.type(), facts, value.callableFlows(), value.nilProvenance()));
+                    value.type(), facts, value.callableFlows(), value.nilProvenance(), value.objects()));
         }
         return new ValueAlternatives(alternatives);
     }

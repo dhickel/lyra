@@ -36,7 +36,8 @@ public record TypedExpression(
         Optional<LyraSignature> signature,
         List<CaptureId> captureIds,
         Optional<DeclarationId> predicateBinding,
-        Optional<TypedMatch> match) implements ImmutablePhaseArtifact {
+        Optional<TypedMatch> match,
+        Optional<NominalInitializationProof> nominalInitialization) implements ImmutablePhaseArtifact {
     public TypedExpression {
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(span, "span");
@@ -55,6 +56,8 @@ public record TypedExpression(
         captureIds = copy(captureIds, "captureIds");
         Objects.requireNonNull(predicateBinding, "predicateBinding");
         Objects.requireNonNull(match, "match");
+        Objects.requireNonNull(nominalInitialization, "nominalInitialization");
+        if (nominalInitialization.isPresent()) nominalInitialization.orElseThrow().requireMatches(declarationId.orElseThrow(), children);
         if (memberName.isPresent() == tupleIndex.isPresent()) {
             if (memberName.isPresent()) {
                 throw new IllegalArgumentException("a typed member is either a name or tuple index");
@@ -65,6 +68,16 @@ public record TypedExpression(
                 throw new IllegalArgumentException("tuple member index must not be negative");
             }
         });
+    }
+
+    public TypedExpression(TypedExpressionKind kind, SourceSpan span, LyraType type,
+            List<TypedExpression> children, Optional<TypedLiteralValue> literal, Optional<TypedLink> link,
+            Optional<TypedConversion> conversion, Optional<String> operator, Optional<String> memberName,
+            Optional<BigInteger> tupleIndex, Optional<DeclarationId> declarationId, Optional<LambdaId> lambdaId,
+            Optional<ScopeId> scopeId, Optional<LyraSignature> signature, List<CaptureId> captureIds,
+            Optional<DeclarationId> predicateBinding, Optional<TypedMatch> match) {
+        this(kind, span, type, children, literal, link, conversion, operator, memberName, tupleIndex,
+                declarationId, lambdaId, scopeId, signature, captureIds, predicateBinding, match, Optional.empty());
     }
 
     /** Compatibility constructor for non-match expression fixtures and adapters. */

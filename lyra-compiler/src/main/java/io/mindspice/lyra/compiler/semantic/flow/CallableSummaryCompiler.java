@@ -642,6 +642,8 @@ public final class CallableSummaryCompiler {
                 case REFERENCE -> reference(expression, state);
                 case NAMESPACE_MEMBER_ACCESS -> namespaceMember(expression, state);
                 case DECLARATION -> declaration(expression, state);
+                case NOMINAL_DECLARATION -> value(expression, state, scalar(expression.type()).value());
+                case CONSTRUCTION -> throw failure("nominal construction summary transfer is not yet installed", expression.span());
                 case REBINDING -> rebinding(expression, state);
                 case BLOCK -> block(expression, state);
                 case CONDITIONAL -> conditional(expression, state);
@@ -1116,6 +1118,11 @@ public final class CallableSummaryCompiler {
                 TypedExpression expression,
                 Map<DeclarationId, FormulaAlternatives> state) {
             Eval receiver = evaluate(expression.children().getFirst(), state);
+            if (expression.declarationId().isPresent()) {
+                FormulaAlternatives selected = selectedOrOpaque(receiver.value(), nominalRoute(expression),
+                        expression.type(), expression.span());
+                return new Eval(selected, receiver.state(), receiver.writes(), receiver.calls(), receiver.effects());
+            }
             if (expression.tupleIndex().isPresent()) {
                 ProjectionPath route = ProjectionPath.tupleMember(
                         expression.tupleIndex().orElseThrow().intValueExact());
@@ -1451,6 +1458,17 @@ public final class CallableSummaryCompiler {
                     : selected;
         }
 
+        private ProjectionPath nominalRoute(TypedExpression expression) {
+            var type = (io.mindspice.lyra.compiler.types.NominalType) expression.children().getFirst().type().withoutQualifiers();
+            var nominal = context.graph.resolvedGraph().nominals().stream().filter(value -> value.schema().type().equals(type))
+                    .findFirst().orElseThrow(() -> failure("nominal receiver has no schema", expression.span()));
+            int index = nominal.members().indexOf(expression.declarationId().orElseThrow());
+            if (index < 0 || !nominal.schema().members().get(index).type().equals(expression.type())) {
+                throw failure("nominal member differs from its schema", expression.span());
+            }
+            return ProjectionPath.of(new ProjectionStep.NominalMember(type, index, expression.type()));
+        }
+
         private TargetPath targetPath(TypedExpression expression) {
             if (expression.kind() == TypedExpressionKind.REFERENCE) {
                 DeclarationId declaration = expression.link()
@@ -1465,6 +1483,11 @@ public final class CallableSummaryCompiler {
                 ProjectionPath step = indexRoute(
                         expression.children().get(1), expression.children().getFirst().type());
                 return new TargetPath(parent.declaration(), parent.capture(), parent.route().compose(step));
+            }
+            if (expression.kind() == TypedExpressionKind.MEMBER_ACCESS
+                    && expression.declarationId().isPresent()) {
+                TargetPath parent = targetPath(expression.children().getFirst());
+                return new TargetPath(parent.declaration(), parent.capture(), parent.route().compose(nominalRoute(expression)));
             }
             if (expression.kind() == TypedExpressionKind.MEMBER_ACCESS
                     && expression.tupleIndex().isPresent()) {
@@ -1814,6 +1837,11 @@ public final class CallableSummaryCompiler {
                     int sequence) {
                 if (capture.isPresent()) {
                     ResolvedCapture resolved = context.capture(capture.orElseThrow(), expression.span());
+                    if (!route.isRoot() && context.resolvedDeclarations.get(resolved.declarationId()).kind()
+                            == io.mindspice.lyra.compiler.semantic.DeclarationKind.SELF) {
+                        return Optional.of(CapturedCellWrite.captureAggregate(sequence, capture.orElseThrow(),
+                                resolved.declarationId(), writeKind(route), route, replacement, expression.span()));
+                    }
                     if (resolved.mode() != CaptureMode.SHARED_MUTABLE_CELL
                             || resolved.sharedCellId().isEmpty()) {
                         throw new SummaryFailureException(

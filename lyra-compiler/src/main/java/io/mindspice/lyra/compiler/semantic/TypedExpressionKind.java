@@ -5,6 +5,8 @@ public enum TypedExpressionKind {
     LITERAL,
     REFERENCE,
     DECLARATION,
+    NOMINAL_DECLARATION,
+    CONSTRUCTION,
     REBINDING,
     BLOCK,
     CONDITIONAL,

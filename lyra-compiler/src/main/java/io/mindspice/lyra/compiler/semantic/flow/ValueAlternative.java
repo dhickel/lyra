@@ -20,13 +20,20 @@ public record ValueAlternative(
         LyraType type,
         List<AggregateIdentityFact> aggregateIdentities,
         List<CallableFlow> callableFlows,
-        List<NilProvenance> nilProvenance)
+        List<NilProvenance> nilProvenance,
+        List<NominalObjectFact> objects)
         implements Comparable<ValueAlternative> {
     public ValueAlternative {
         Objects.requireNonNull(type, "type");
         aggregateIdentities = canonicalFacts(aggregateIdentities);
         callableFlows = canonicalCallables(callableFlows);
         nilProvenance = canonicalNils(nilProvenance);
+        objects = List.copyOf(objects).stream().distinct().sorted().toList();
+        for (NominalObjectFact object : objects) {
+            if (!typeAt(type, object.route()).withoutQualifiers().equals(object.identity().type())) {
+                throw new IllegalArgumentException("object identity route does not denote its exact nominal type");
+            }
+        }
         for (AggregateIdentityFact fact : aggregateIdentities) {
             LyraType projected = typeAt(type, fact.route()).withoutQualifiers();
             if (!(projected instanceof ArrayType array)
@@ -47,6 +54,16 @@ public record ValueAlternative(
                         "nil provenance route does not denote a nilable contract: " + nil.route());
             }
         }
+    }
+
+    public ValueAlternative(LyraType type, List<AggregateIdentityFact> aggregateIdentities,
+            List<CallableFlow> callableFlows, List<NilProvenance> nilProvenance) {
+        this(type, aggregateIdentities, callableFlows, nilProvenance, List.of());
+    }
+
+    public static ValueAlternative object(NominalObjectIdentity identity, OwnershipWitness witness) {
+        return new ValueAlternative(identity.type(), List.of(), List.of(), List.of(),
+                List.of(new NominalObjectFact(identity, ProjectionPath.root(), witness)));
     }
 
     /** Compatibility constructor for callers without route-specific nil provenance. */
@@ -120,6 +137,12 @@ public record ValueAlternative(
         return !aggregateIdentities.isEmpty();
     }
 
+    public static ValueAlternative of(LyraType type, List<? extends AggregateIdentityFact> identities,
+            List<? extends CallableFlow> callables, List<? extends NilProvenance> nils,
+            List<? extends NominalObjectFact> objects) {
+        return new ValueAlternative(type, List.copyOf(identities), List.copyOf(callables), List.copyOf(nils), List.copyOf(objects));
+    }
+
     public List<AggregateIdentityFact> identities() {
         return aggregateIdentities;
     }
@@ -139,7 +162,12 @@ public record ValueAlternative(
         LyraType current = type;
         for (ProjectionStep step : route.steps()) {
             LyraType shape = current.withoutQualifiers();
-            if (step instanceof ProjectionStep.TupleMember member) {
+            if (step instanceof ProjectionStep.NominalMember member) {
+                if (!shape.equals(member.owner())) {
+                    throw new IllegalArgumentException("nominal member route belongs to another type: " + route);
+                }
+                current = member.type();
+            } else if (step instanceof ProjectionStep.TupleMember member) {
                 if (!(shape instanceof TupleType tuple) || member.index() >= tuple.arity()) {
                     throw new IllegalArgumentException(
                             "tuple member route is incompatible with " + type + ": " + route);
@@ -185,7 +213,9 @@ public record ValueAlternative(
             selectedNils.add(nil.withRoute(nilRoute.suffix(selection.depth())));
         }
         return new ValueAlternative(
-                selectedType, selectedFacts, selectedCallables, selectedNils);
+                selectedType, selectedFacts, selectedCallables, selectedNils,
+                objects.stream().filter(fact -> fact.route().depth() >= selection.depth() && selection.overlaps(fact.route()))
+                        .map(fact -> fact.withRoute(fact.route().suffix(selection.depth()))).toList());
     }
 
     /**
@@ -233,7 +263,10 @@ public record ValueAlternative(
         for (NilProvenance nil : replacement.nilProvenance()) {
             nils.add(nil.prefixedBy(route));
         }
-        return new ValueAlternative(type, facts, callables, nils);
+        List<NominalObjectFact> replacedObjects = new ArrayList<>(objects.stream()
+                .filter(fact -> !route.selects(fact.route())).toList());
+        replacement.objects.forEach(fact -> replacedObjects.add(fact.prefixedBy(route)));
+        return new ValueAlternative(type, facts, callables, nils, replacedObjects);
     }
 
     /** Removes all facts below an exact route without adding a replacement. */
@@ -256,7 +289,7 @@ public record ValueAlternative(
                         .toList(),
                 nilProvenance.stream()
                         .filter(nil -> !route.selects(nil.route()))
-                        .toList());
+                        .toList(), objects.stream().filter(fact -> !route.selects(fact.route())).toList());
     }
 
     /** Adds a wildcard replacement while retaining every previous possibility. */
@@ -283,7 +316,9 @@ public record ValueAlternative(
         for (NilProvenance nil : replacement.nilProvenance()) {
             nils.add(nil.prefixedBy(route));
         }
-        return new ValueAlternative(type, facts, callables, nils);
+        List<NominalObjectFact> joinedObjects = new ArrayList<>(objects);
+        replacement.objects.forEach(fact -> joinedObjects.add(fact.prefixedBy(route)));
+        return new ValueAlternative(type, facts, callables, nils, joinedObjects);
     }
 
     private static List<AggregateIdentityFact> canonicalFacts(
@@ -365,6 +400,12 @@ public record ValueAlternative(
             if (nilComparison != 0) {
                 return nilComparison;
             }
+        }
+        countComparison = Integer.compare(objects.size(), other.objects.size());
+        if (countComparison != 0) return countComparison;
+        for (int index = 0; index < objects.size(); index++) {
+            int compared = objects.get(index).compareTo(other.objects.get(index));
+            if (compared != 0) return compared;
         }
         return 0;
     }

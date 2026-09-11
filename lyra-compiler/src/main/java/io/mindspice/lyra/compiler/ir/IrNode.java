@@ -43,6 +43,8 @@ public sealed interface IrNode extends ImmutablePhaseArtifact
                 IrNode.Reference,
                 IrNode.CaptureReference,
                 IrNode.Declaration,
+                IrNode.NominalDeclaration,
+                IrNode.Construction,
                 IrNode.Rebinding,
                 IrNode.Sequence,
                 IrNode.Block,
@@ -97,6 +99,8 @@ public sealed interface IrNode extends ImmutablePhaseArtifact
             case Reference ignored -> List.of();
             case CaptureReference ignored -> List.of();
             case Declaration declaration -> List.of(declaration.initializer());
+            case NominalDeclaration declaration -> declaration.initializers();
+            case Construction construction -> construction.arguments();
             case Rebinding rebinding -> List.of(rebinding.target(), rebinding.value());
             case Sequence sequence -> sequence.forms();
             case Block block -> block.forms();
@@ -146,6 +150,46 @@ public sealed interface IrNode extends ImmutablePhaseArtifact
     }
 
     <R> R accept(IrVisitor<R> visitor);
+
+    /** Deferred instance initialization, certified before lowering; not module-time field execution. */
+    record NominalDeclaration(SourceSpan span, LyraType type, DeclarationId declarationId,
+                              DeclarationId self, io.mindspice.lyra.compiler.types.NominalSchema schema,
+                              List<DeclarationId> members, Optional<LambdaId> constructor,
+                              List<IrNode> initializers, List<DeclarationId> initializedFields,
+                              Optional<FlowSiteId> siteId) implements IrNode {
+        public NominalDeclaration {
+            requireSpanAndType(span, type);
+            Objects.requireNonNull(declarationId, "declarationId");
+            Objects.requireNonNull(self, "self");
+            Objects.requireNonNull(schema, "schema");
+            members = List.copyOf(members);
+            Objects.requireNonNull(constructor, "constructor");
+            initializers = List.copyOf(initializers);
+            initializedFields = List.copyOf(initializedFields);
+            requireSite(siteId);
+            if (type != io.mindspice.lyra.compiler.types.PrimitiveType.UNIT
+                    || members.size() != schema.members().size() || !initializedFields.equals(members)
+                    || initializers.size() != schema.members().stream().filter(
+                            io.mindspice.lyra.compiler.types.NominalSchema.Member::hasInitializer).count()
+                    + (constructor.isPresent() ? 1 : 0)) {
+                throw new IllegalArgumentException("nominal initialization roles or completion facts are inconsistent");
+            }
+        }
+        @Override public <R> R accept(IrVisitor<R> visitor) { return visitor.visitNominalDeclaration(this); }
+    }
+
+    record Construction(SourceSpan span, io.mindspice.lyra.compiler.types.NominalType type,
+                        DeclarationId declarationId, Optional<ReferenceId> referenceId,
+                        List<IrNode> arguments, Optional<FlowSiteId> siteId) implements IrNode {
+        public Construction {
+            requireSpanAndType(span, type);
+            Objects.requireNonNull(declarationId, "declarationId");
+            Objects.requireNonNull(referenceId, "referenceId");
+            arguments = List.copyOf(arguments);
+            requireSite(siteId);
+        }
+        @Override public <R> R accept(IrVisitor<R> visitor) { return visitor.visitConstruction(this); }
+    }
 
     record Constant(
             SourceSpan span,

@@ -12,12 +12,13 @@ import java.util.OptionalInt;
  */
 public sealed interface ProjectionStep extends Comparable<ProjectionStep>
         permits ProjectionStep.TupleMember, ProjectionStep.ArrayElement,
-        ProjectionStep.UnknownArrayElement {
+        ProjectionStep.UnknownArrayElement, ProjectionStep.NominalMember {
     /** Stable ordering category used by canonical route ordering. */
     enum Kind {
         TUPLE_MEMBER,
         ARRAY_ELEMENT,
-        UNKNOWN_ARRAY_ELEMENT
+        UNKNOWN_ARRAY_ELEMENT,
+        NOMINAL_MEMBER
     }
 
     Kind kind();
@@ -30,7 +31,7 @@ public sealed interface ProjectionStep extends Comparable<ProjectionStep>
     }
 
     default boolean isArrayElement() {
-        return kind() != Kind.TUPLE_MEMBER;
+        return kind() == Kind.ARRAY_ELEMENT || kind() == Kind.UNKNOWN_ARRAY_ELEMENT;
     }
 
     default boolean isWildcardArrayElement() {
@@ -43,6 +44,7 @@ public sealed interface ProjectionStep extends Comparable<ProjectionStep>
      */
     default boolean overlaps(ProjectionStep other) {
         Objects.requireNonNull(other, "other");
+        if (this instanceof NominalMember || other instanceof NominalMember) return equals(other);
         if (isTupleMember() || other.isTupleMember()) {
             return this instanceof TupleMember left
                     && other instanceof TupleMember right
@@ -57,6 +59,7 @@ public sealed interface ProjectionStep extends Comparable<ProjectionStep>
     /** Returns whether this selector selects the value denoted by {@code other}. */
     default boolean selects(ProjectionStep other) {
         Objects.requireNonNull(other, "other");
+        if (this instanceof NominalMember || other instanceof NominalMember) return equals(other);
         if (this instanceof TupleMember left) {
             return other instanceof TupleMember right && left.index() == right.index();
         }
@@ -95,7 +98,26 @@ public sealed interface ProjectionStep extends Comparable<ProjectionStep>
         if (this instanceof ArrayElement left && other instanceof ArrayElement right) {
             return Integer.compare(left.index(), right.index());
         }
+        if (this instanceof NominalMember left && other instanceof NominalMember right) {
+            int owner = left.owner().canonicalSpelling().compareTo(right.owner().canonicalSpelling());
+            if (owner != 0) return owner;
+            int slot = Integer.compare(left.index(), right.index());
+            return slot != 0 ? slot : left.type().canonicalSpelling().compareTo(right.type().canonicalSpelling());
+        }
         return 0;
+    }
+
+    /** Exact nominal slot contract; validated against the closed schema at publication. */
+    record NominalMember(io.mindspice.lyra.compiler.types.NominalType owner, int index,
+                         io.mindspice.lyra.compiler.types.LyraType type) implements ProjectionStep {
+        public NominalMember {
+            Objects.requireNonNull(owner, "owner");
+            Objects.requireNonNull(type, "type");
+            if (index < 0 || type.isMutable()) throw new IllegalArgumentException("invalid nominal slot contract");
+        }
+        @Override public Kind kind() { return Kind.NOMINAL_MEMBER; }
+        @Override public OptionalInt exactIndex() { return OptionalInt.of(index); }
+        @Override public String toString() { return ".{" + owner.canonicalSpelling() + ":" + index + ":" + type.canonicalSpelling() + "}"; }
     }
 
     /** An exact positional tuple-member selector. */

@@ -49,3 +49,18 @@ Use independent state models for field aliases and repeated callback effects.
 All accepted operations have sealed typed/flow records, negatives have source-linked
 diagnostics, and the full suite plus extended semantic fuzz pass. Commit evidence;
 do not label runtime support complete at this boundary.
+
+## Current Progress
+
+Typed member selection/construction, immutable-self field writes, contextual Fn
+replacement typing, initial definite-initialization certification and nominal IR
+lowering are implemented. The compiler-only heap preserves object identity across
+aliases and saved method captures; exact nominal projection steps bridge callable
+summary reads/writes. Focused tests cover required/default fields, class methods,
+saved slots, incomplete publication and branch-set initialization models.
+
+This phase remains open. Construction within ordinary callable summaries is still
+an explicit unfinished transfer. Contextual replacement self, general repeated and
+nested heap writes, imported/cross-generation ownership, complete route sealing,
+cyclic object graphs and all malformed producer cases need further implementation
+and tests. Do not infer completion from the focused top-level examples.

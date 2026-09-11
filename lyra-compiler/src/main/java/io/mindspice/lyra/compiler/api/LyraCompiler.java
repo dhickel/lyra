@@ -472,7 +472,7 @@ public final class LyraCompiler {
                     next.put(binding.declarationId(),
                             new BindingFlowValue(binding.contract(), converted));
                 }
-                return BindingFlowState.of(next, state.sharedCells());
+                return BindingFlowState.of(next, state.sharedCells(), state.objects());
             };
         }
 
@@ -1167,7 +1167,7 @@ public final class LyraCompiler {
                                 exportId, export.span(), boundary);
                         next.put(fresh, new BindingFlowValue(export.contract(), converted));
                     }
-                    return BindingFlowState.of(next, state.sharedCells());
+                    return BindingFlowState.of(next, state.sharedCells(), state.objects());
                 });
 
         SessionSnapshot initial = new SessionSnapshot(

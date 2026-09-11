@@ -705,6 +705,32 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
             List<FormulaAlternatives> arguments,
             List<FormulaAlternatives> writeArguments,
             Map<io.mindspice.lyra.compiler.identity.CaptureId, FormulaAlternatives> captures,
+            Function<ValueFormula.Declaration, Optional<FormulaAlternatives>> declarationResolver,
+            CallableSummary summary, SourceSpan callSpan, LinkedHashSet<LambdaId> active,
+            List<CapturedCellWrite> transferredWrites,
+            List<OwnershipRequirement> transferredOwnershipRequirements,
+            List<EagerEffectWitness> transferredEffects, LinkedHashSet<SummaryCallId> appliedCalls) {
+        var substituted = substituteFormulaValue(formula, arguments, writeArguments, captures, declarationResolver,
+                summary, callSpan, active, transferredWrites, transferredOwnershipRequirements, transferredEffects, appliedCalls);
+        if (substituted.isEmpty()) return substituted;
+        ArrayList<ValueFormula> values = new ArrayList<>();
+        for (ValueFormula value : substituted.orElseThrow()) {
+            if (value instanceof ValueFormula.ObjectReference object && !object.sourceRoute().isRoot()) {
+                if (!(declarationResolver instanceof SummaryObjectResolver resolver)) return Optional.empty();
+                var selected = resolver.resolveObject(object);
+                if (selected.isEmpty()) return Optional.empty();
+                selected.orElseThrow().formulas().forEach(term -> values.add(term.prefixedBy(object.resultRoute())));
+            } else values.add(value);
+        }
+        limits.requireFormulaAlternatives(values.size());
+        return Optional.of(List.copyOf(values));
+    }
+
+    private Optional<List<ValueFormula>> substituteFormulaValue(
+            ValueFormula formula,
+            List<FormulaAlternatives> arguments,
+            List<FormulaAlternatives> writeArguments,
+            Map<io.mindspice.lyra.compiler.identity.CaptureId, FormulaAlternatives> captures,
             Function<ValueFormula.Declaration, Optional<FormulaAlternatives>>
                     declarationResolver,
             CallableSummary summary,
@@ -900,6 +926,10 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
                         : CapturedCellWrite.captureAggregate(
                         write.sequence(), capture.captureId(), capture.declarationId(),
                         writeKind(route), route, value, write.span()));
+            } else if (write.isCaptureWrite() && formula instanceof ValueFormula.ObjectReference object) {
+                ProjectionPath route = object.sourceRoute().compose(write.route());
+                result.add(CapturedCellWrite.captureAggregate(write.sequence(), write.capture(),
+                        object.object().ownership().originDeclaration(), writeKind(route), route, value, write.span()));
             } else if (write.isCaptureWrite()
                     && formula instanceof ValueFormula.FreshAllocation fresh) {
                 ProjectionPath route = fresh.resultRoute().compose(write.route());

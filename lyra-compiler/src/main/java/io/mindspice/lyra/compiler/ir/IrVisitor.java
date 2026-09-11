@@ -6,6 +6,8 @@ public interface IrVisitor<R> {
     R visitReference(IrNode.Reference node);
     R visitCaptureReference(IrNode.CaptureReference node);
     R visitDeclaration(IrNode.Declaration node);
+    R visitNominalDeclaration(IrNode.NominalDeclaration node);
+    R visitConstruction(IrNode.Construction node);
     R visitRebinding(IrNode.Rebinding node);
     R visitSequence(IrNode.Sequence node);
     R visitBlock(IrNode.Block node);

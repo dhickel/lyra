@@ -15,6 +15,7 @@ import io.mindspice.lyra.compiler.source.ModuleGraph;
 import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.source.SourceSpan;
 import io.mindspice.lyra.compiler.types.ArrayType;
+import io.mindspice.lyra.compiler.types.NominalType;
 import io.mindspice.lyra.compiler.types.RangeType;
 import io.mindspice.lyra.compiler.types.BindingContract;
 import io.mindspice.lyra.compiler.types.BindingMutability;
@@ -241,6 +242,9 @@ public final class TypeChecker {
             if (form instanceof SyntaxNode.LetBinding let) {
                 return checkLet(let, moduleId);
             }
+            if (form instanceof SyntaxNode.NominalDeclaration nominal) {
+                return checkNominal(nominal, moduleId);
+            }
             if (form instanceof SyntaxNode.Expression expression) {
                 ExprResult result = checkExpression(expression, expected, moduleId);
                 return result == null ? null : result.expression();
@@ -314,6 +318,39 @@ public final class TypeChecker {
                     List.of(), Optional.empty());
         }
 
+        private TypedExpression checkNominal(SyntaxNode.NominalDeclaration syntax, ModuleId moduleId) {
+            DeclarationId id = declarationIdAt(syntax.name().span(), DeclarationKind.NOMINAL);
+            ResolvedNominal nominal = graph.nominals().stream().filter(value -> value.declaration().equals(id))
+                    .findFirst().orElseThrow();
+            List<TypedExpression> children = new ArrayList<>();
+            for (int index = 0; index < syntax.members().size(); index++) {
+                var member = syntax.members().get(index);
+                if (member.initializer().isEmpty()) continue;
+                DeclarationId memberId = nominal.members().get(index);
+                ExprResult value = checkExpression(member.initializer().orElseThrow(),
+                        Optional.of(nominal.schema().members().get(index).type()), moduleId);
+                if (value == null) return null;
+                initializers.put(memberId, value.expression());
+                children.add(value.expression());
+            }
+            if (syntax.constructor().isPresent()) {
+                ExprResult constructor = checkExpression(syntax.constructor().orElseThrow().initializer(),
+                        Optional.of(FunctionType.of(nominal.schema().constructorParameters(), PrimitiveType.UNIT)), moduleId);
+                if (constructor == null) return null;
+                children.add(constructor.expression());
+            }
+            var proof = NominalInitializationProof.analyze(graph, nominal, children);
+            if (proof instanceof PhaseResult.Failure<NominalInitializationProof>) {
+                fail(proof.diagnostics().getFirst());
+                return null;
+            }
+            return new TypedExpression(TypedExpressionKind.NOMINAL_DECLARATION, syntax.span(), PrimitiveType.UNIT,
+                    children, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                    Optional.empty(), Optional.of(id), Optional.empty(),
+                    Optional.of(declarations.get(nominal.self()).scopeId()), Optional.empty(), List.of(), Optional.empty(),
+                    Optional.empty(), proof.optionalValue());
+        }
+
         private ExprResult checkExpression(
                 SyntaxNode.Expression syntax,
                 Optional<LyraType> expected,
@@ -363,6 +400,8 @@ public final class TypeChecker {
                 result = checkTupleLiteral(tuple, expected, moduleId);
             } else if (syntax instanceof SyntaxNode.IndexAccess index) {
                 result = checkIndexAccess(index, moduleId);
+            } else if (syntax instanceof SyntaxNode.BracketApplication application) {
+                result = checkConstruction(application.target(), application.arguments().expressions(), application.span(), moduleId);
             } else {
                 fail(CompilerDiagnosticCodes.TYPE_UNSUPPORTED_CONSTRUCT,
                         syntax.span(), "source expression has no typed semantic representation");
@@ -685,6 +724,9 @@ public final class TypeChecker {
         private ExprResult checkIndexAccess(
                 SyntaxNode.IndexAccess syntax,
                 ModuleId moduleId) {
+            if (constructionAt(syntax.span()).isPresent()) {
+                return checkConstruction(syntax.receiver(), List.of(syntax.index()), syntax.span(), moduleId);
+            }
             ExprResult receiver = checkExpression(syntax.receiver(), Optional.empty(), moduleId);
             if (receiver == null) {
                 return null;
@@ -735,6 +777,39 @@ public final class TypeChecker {
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.empty(), List.of(), Optional.empty()));
+        }
+
+        private Optional<ResolvedNominal> constructionAt(SourceSpan span) {
+            return graph.syntaxLinks().stream().filter(link -> link.kind() == SyntaxLinkKind.CALL && link.span().equals(span))
+                    .flatMap(link -> link.declarationId().stream())
+                    .flatMap(id -> graph.nominals().stream().filter(value -> value.declaration().equals(id))).findFirst();
+        }
+
+        private ExprResult checkConstruction(SyntaxNode.Expression target, List<SyntaxNode.Expression> arguments,
+                SourceSpan span, ModuleId moduleId) {
+            ResolvedNominal nominal = constructionAt(span).orElse(null);
+            if (nominal == null) {
+                fail(CompilerDiagnosticCodes.TYPE_INVALID_ACCESS, span, "construction requires a declared type name");
+                return null;
+            }
+            ResolvedReference reference;
+            if (target instanceof SyntaxNode.Identifier identifier) {
+                reference = findReference(identifier.span(), identifier.name(), ReferenceKind.VALUE);
+            } else if (target instanceof SyntaxNode.NamespaceMemberAccess namespace) {
+                typeNamespacePath(namespace.path(), moduleId);
+                reference = findReference(namespace.member().span(), namespace.member().name(), ReferenceKind.NAMESPACE_MEMBER);
+            } else {
+                fail(CompilerDiagnosticCodes.TYPE_INVALID_ACCESS, target.span(), "constructor target must be a type name");
+                return null;
+            }
+            if (reference == null || typeReference(reference, moduleId) == null) return null;
+            var signature = FunctionType.of(nominal.schema().constructorParameters(), nominal.schema().type()).signature();
+            var values = checkArguments(arguments, signature, moduleId, span);
+            if (values == null) return null;
+            return result(node(TypedExpressionKind.CONSTRUCTION, span, nominal.schema().type(), values,
+                    Optional.empty(), Optional.of(link(reference, Optional.empty())), Optional.empty(), Optional.empty(),
+                    Optional.empty(), Optional.empty(), Optional.of(nominal.declaration()), Optional.empty(), Optional.empty(),
+                    Optional.of(signature), List.of(), Optional.empty()));
         }
 
         private LyraType inferArrayElementType(
@@ -1237,6 +1312,13 @@ public final class TypeChecker {
                     }
                     return value;
                 }
+                if (syntax instanceof SyntaxNode.NamedType named) {
+                    return graph.syntaxLinks().stream().filter(link -> link.kind() == SyntaxLinkKind.TYPE
+                                    && link.span().equals(named.span()) && link.declarationId().isPresent())
+                            .map(link -> graph.declaration(link.declarationId().orElseThrow()).orElseThrow()
+                                    .effectiveContract().orElseThrow().valueType())
+                            .findFirst().orElseThrow(() -> new IllegalStateException("named type lacks exact resolved declaration"));
+                }
                 if (syntax instanceof SyntaxNode.ArrayType array) {
                     return ArrayType.of(typeFromSyntax(array.elementType(), TypePosition.NESTED_VALUE));
                 }
@@ -1281,6 +1363,10 @@ public final class TypeChecker {
             ResolvedReference reference = findReference(
                     identifier.span(), identifier.name(), ReferenceKind.VALUE);
             if (reference == null) {
+                return null;
+            }
+            if (isNominalName(reference)) {
+                fail(CompilerDiagnosticCodes.TYPE_INVALID_ACCESS, identifier.span(), "a nominal type name must be constructed with brackets");
                 return null;
             }
             TypedReference typedReference = typeReference(reference, moduleId);
@@ -1987,7 +2073,8 @@ public final class TypeChecker {
                 SourceSpan span,
                 ModuleId moduleId) {
             boolean aggregateElement = targetSyntax instanceof SyntaxNode.IndexAccess;
-            if (!aggregateElement && !(targetSyntax instanceof SyntaxNode.Identifier)) {
+            boolean memberField = targetSyntax instanceof SyntaxNode.MemberAccess access && access.member().isIdentifier();
+            if (!aggregateElement && !memberField && !(targetSyntax instanceof SyntaxNode.Identifier)) {
                 fail(CompilerDiagnosticCodes.TYPE_INVALID_REBINDING,
                         targetSyntax.span(), "assignment target must be a binding or array element");
                 return null;
@@ -2003,7 +2090,8 @@ public final class TypeChecker {
                 return null;
             }
             ResolvedDeclaration declaration = declarations.get(declarationId);
-            if (declaration == null || declaration.bindingMutability() != BindingMutability.MUTABLE) {
+            if (declaration == null || declaration.bindingMutability() != BindingMutability.MUTABLE
+                    && !(declaration.kind() == DeclarationKind.SELF && (aggregateElement || memberField))) {
                 fail(CompilerDiagnosticCodes.TYPE_INVALID_REBINDING,
                         targetSyntax.span(), "assignment requires an @mut binding root");
                 return null;
@@ -2023,7 +2111,16 @@ public final class TypeChecker {
                         "assignment target has no canonical resolver root reference");
                 return null;
             }
-            if (aggregateElement) {
+            if (memberField) {
+                if (target.expression().declarationId().isEmpty()
+                        || declarations.get(target.expression().declarationId().orElseThrow()).kind() != DeclarationKind.MEMBER
+                        || !graph.mutations().stream().anyMatch(mutation -> mutation.kind() == MutationKind.MEMBER_FIELD
+                        && mutation.span().equals(targetSyntax.span()) && mutation.rootDeclaration().equals(declarationId)
+                        && mutation.rootReference().equals(Optional.of(canonicalRootReference)))) {
+                    fail(CompilerDiagnosticCodes.TYPE_INVALID_REBINDING, targetSyntax.span(), "field write lacks exact member authorization");
+                    return null;
+                }
+            } else if (aggregateElement) {
                 boolean immediateArrayElement = target.expression().children().size() == 2
                         && !target.expression().children().getFirst().type().isNilable()
                         && target.expression().children().getFirst().type().withoutQualifiers()
@@ -2056,7 +2153,7 @@ public final class TypeChecker {
                         targetSyntax.span(), "assignment lacks resolver mutation authorization");
                 return null;
             }
-            LyraType targetValueType = aggregateElement ? target.type() : contract.valueType();
+            LyraType targetValueType = aggregateElement || memberField ? target.type() : contract.valueType();
             ExprResult value = checkExpression(valueSyntax, Optional.of(targetValueType), moduleId);
             if (value == null) {
                 return null;
@@ -2254,9 +2351,17 @@ public final class TypeChecker {
                 if (receiver == null) {
                     return null;
                 }
-                fail(CompilerDiagnosticCodes.TYPE_INVALID_ACCESS,
-                        call.span(), "member direct calls require a statically declared callable member");
-                return null;
+                TypedExpression selected = nominalMember(receiver.expression(), call.name().name(), call.name().span(), call.span());
+                if (selected == null) return null;
+                FunctionType function = callableType(selected.type(), call.span());
+                if (function == null) return null;
+                var arguments = checkArguments(call.argumentExpressions(), function.signature(), moduleId, call.span());
+                if (arguments == null) return null;
+                List<TypedExpression> children = new ArrayList<>();
+                children.add(selected); children.addAll(arguments);
+                return result(node(TypedExpressionKind.CALLABLE_CALL, call.span(), function.returnType(), children,
+                        Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                        Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), List.of(), Optional.empty()));
             }
             ResolvedReference reference = findReference(
                     call.name().span(), call.name().name(), ReferenceKind.DIRECT_CALL_TARGET);
@@ -2320,6 +2425,16 @@ public final class TypeChecker {
                     List.of(), Optional.empty()));
         }
 
+        private boolean isNominalName(ResolvedReference reference) {
+            ResolvedDeclaration declaration = reference.targetDeclaration().map(declarations::get).orElse(null);
+            var seen = new java.util.HashSet<DeclarationId>();
+            while (declaration != null && seen.add(declaration.id())) {
+                if (declaration.kind() == DeclarationKind.NOMINAL) return true;
+                declaration = declaration.originDeclaration().map(declarations::get).orElse(null);
+            }
+            return false;
+        }
+
         private ExprResult checkNamespaceMemberAccess(
                 SyntaxNode.NamespaceMemberAccess access,
                 ModuleId moduleId) {
@@ -2327,6 +2442,10 @@ public final class TypeChecker {
             ResolvedReference reference = findReference(
                     access.member().span(), access.member().name(), ReferenceKind.NAMESPACE_MEMBER);
             if (reference == null) {
+                return null;
+            }
+            if (isNominalName(reference)) {
+                fail(CompilerDiagnosticCodes.TYPE_INVALID_ACCESS, access.span(), "a nominal type name must be constructed with brackets");
                 return null;
             }
             TypedReference typedReference = typeReference(reference, moduleId);
@@ -2397,6 +2516,10 @@ public final class TypeChecker {
                 return null;
             }
             LyraType base = receiver.type().withoutQualifiers();
+            if (base instanceof NominalType && access.member().isIdentifier()) {
+                TypedExpression member = nominalMember(receiver.expression(), access.member().name(), access.member().span(), access.span());
+                return member == null ? null : result(member);
+            }
             LyraType memberType = null;
             if (access.member().isIdentifier()
                     && access.member().name().equals("length")
@@ -2424,6 +2547,33 @@ public final class TypeChecker {
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
                     access.member().identifier(), access.member().tupleIndex(), Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.empty(), List.of(), Optional.empty()));
+        }
+
+        private TypedExpression nominalMember(TypedExpression receiver, String name, SourceSpan nameSpan, SourceSpan span) {
+            if (receiver.type().isNilable() || !(receiver.type().withoutQualifiers() instanceof NominalType nominalType)) {
+                fail(CompilerDiagnosticCodes.TYPE_INVALID_ACCESS, nameSpan, "member access requires a non-nil nominal receiver");
+                return null;
+            }
+            var nominal = graph.nominals().stream().filter(value -> value.schema().type().equals(nominalType)).findFirst().orElseThrow();
+            int index = -1;
+            for (int candidate = 0; candidate < nominal.schema().members().size(); candidate++) {
+                if (nominal.schema().members().get(candidate).name().equals(name)) index = candidate;
+            }
+            if (index < 0) {
+                fail(CompilerDiagnosticCodes.TYPE_INVALID_ACCESS, nameSpan, "unknown nominal member: " + name);
+                return null;
+            }
+            var member = nominal.schema().members().get(index);
+            var declaration = declarations.get(nominal.declaration());
+            boolean lexicalAccess = declaration.span().sourceId().equals(span.sourceId())
+                    && declaration.span().startOffset() <= span.startOffset() && declaration.span().endOffset() >= span.endOffset();
+            if (!member.publicAccess() && !lexicalAccess) {
+                fail(CompilerDiagnosticCodes.TYPE_INVALID_ACCESS, nameSpan, "member is private: " + name);
+                return null;
+            }
+            return node(TypedExpressionKind.MEMBER_ACCESS, span, member.type(), List.of(receiver), Optional.empty(), Optional.empty(),
+                    Optional.empty(), Optional.empty(), Optional.of(name), Optional.empty(), Optional.of(nominal.members().get(index)),
+                    Optional.empty(), Optional.empty(), Optional.empty(), List.of(), Optional.empty());
         }
 
         private List<TypedExpression> checkArguments(

@@ -35,11 +35,11 @@ public record TypedDeclaration(
         if (!moduleId.sourceId().equals(span.sourceId())) {
             throw new IllegalArgumentException("typed declaration span belongs to another module");
         }
-        if (initializer.isPresent() && kind != DeclarationKind.LET) {
-            throw new IllegalArgumentException("only let declarations have initializers");
+        if (initializer.isPresent() && kind != DeclarationKind.LET && kind != DeclarationKind.MEMBER) {
+            throw new IllegalArgumentException("only let and nominal member declarations have initializers");
         }
-        if (initializerLambda.isPresent() && kind != DeclarationKind.LET) {
-            throw new IllegalArgumentException("only let declarations own initializer lambdas");
+        if (initializerLambda.isPresent() && kind != DeclarationKind.LET && kind != DeclarationKind.MEMBER) {
+            throw new IllegalArgumentException("only let and nominal member declarations own initializer lambdas");
         }
         contract.ifPresent(value -> {
             if (value.valueType().hasQualifier(io.mindspice.lyra.compiler.types.TypeQualifier.MUT)) {

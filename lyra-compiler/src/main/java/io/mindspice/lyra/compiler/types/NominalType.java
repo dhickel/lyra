@@ -6,12 +6,19 @@ import java.util.Objects;
 import java.util.Set;
 
 /** An exact declaration reference. Member schemas are separate, allowing recursive layouts. */
-public record NominalType(NominalTypeId id) implements LyraType {
-    public NominalType {
-        Objects.requireNonNull(id, "id");
+public final class NominalType implements LyraType {
+    private final NominalTypeId id;
+    private final String canonical;
+
+    public NominalType(NominalTypeId id) {
+        this.id = Objects.requireNonNull(id, "id");
+        this.canonical = "Nominal<" + id.stableHash() + ">";
     }
 
-    @Override public String canonicalSpelling() { return "Nominal<" + id.stableHash() + ">"; }
+    public NominalTypeId id() { return id; }
+    @Override public boolean equals(Object other) { return other instanceof NominalType type && id.equals(type.id); }
+    @Override public int hashCode() { return id.hashCode(); }
+    @Override public String canonicalSpelling() { return canonical; }
     @Override public String canonical() { return canonicalSpelling(); }
     @Override public String spelling() { return canonicalSpelling(); }
     @Override public boolean isPrimitive() { return false; }

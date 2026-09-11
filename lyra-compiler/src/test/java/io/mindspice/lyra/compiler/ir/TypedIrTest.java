@@ -104,7 +104,8 @@ public final class TypedIrTest {
                         + "let converted = I64[value] let guard = (and #T #F) "
                         + "let branch = (#T -> direct : callable) let matched = (match value ?? 0 -> 1 ?? _ -> 2) "
                         + "let range = (0..10:1) ::iter[range || {}] ::while[|| #F || {}] "
-                        + "let block = { 1 } let changed = (value := (++ value))")));
+                        + "let block = { 1 } let changed = (value := (++ value)) "
+                        + "struct Point { let x :I32 } let point :Point = Point[1]")));
         Set<Class<?>> variants = new HashSet<>();
         IrTraversal.preOrder(ir.rootModule().body()).forEach(node -> variants.add(node.getClass()));
         assertEquals(Set.of(IrNode.class.getPermittedSubclasses()), variants,
@@ -233,6 +234,8 @@ public final class TypedIrTest {
             public Void visitReference(IrNode.Reference node) { return add(node); }
             public Void visitCaptureReference(IrNode.CaptureReference node) { return add(node); }
             public Void visitDeclaration(IrNode.Declaration node) { return add(node); }
+            public Void visitNominalDeclaration(IrNode.NominalDeclaration node) { return add(node); }
+            public Void visitConstruction(IrNode.Construction node) { return add(node); }
             public Void visitRebinding(IrNode.Rebinding node) { return add(node); }
             public Void visitSequence(IrNode.Sequence node) { return add(node); }
             public Void visitBlock(IrNode.Block node) { return add(node); }

@@ -63,6 +63,21 @@ remain in progress.
 - Namespace collection now precedes source signature collection across modules.
   Tests selecting the original callable must distinguish LET from IMPORT_VALUE;
   graph-local declaration allocation order is not an origin-selection contract.
+- Typed nominal declarations carry a privately issued NominalInitializationProof
+  bound to child object identities. Lowering consumes that proof; instance defaults
+  and constructors are deferred, represented by INSTANCE_INITIALIZATION edges.
+- NominalObjectIdentity/State are compiler analysis records, not the runtime object
+  representation. Keep cyclic heap fields separate from aggregate value routes.
+  NominalMember projection steps carry exact owner/index/type contracts. Saved
+  callable captures retain object identities while field state remains shared.
+- Self-field writes use aggregate-capture transfer, never a fictitious mutable self
+  cell. Constructor default/argument evaluation records real source mutation events.
+- Canonical nominal spellings are cached once per type; repeated comparisons no
+  longer recompute SHA-256. This is not a measured benchmark claim.
+- Typed/IR tests do not cover arbitrary constructor calls inside functions yet.
+  CallableSummaryCompiler still reports an explicit unfinished constructor transfer;
+  JVM mappings, runtime schemas, object authorities and retained nominal sessions
+  are not implemented by the semantic heap model.
 
 ## Open Questions
 
