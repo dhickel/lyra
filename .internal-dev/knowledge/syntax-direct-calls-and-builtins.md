@@ -15,5 +15,26 @@ The grammar recognizes :: followed by an identifier and bracket arguments withou
 ## Project Relevance
 When discussing new forms, distinguish surface notation from evaluation semantics. The user subsequently authorized implementation of both match spellings; the accepted contract is now recorded in language-core.md and decisions.md. Implementation and validation status must be checked separately.
 
+## Direct :: calls vs callable-value calls
+
+`::f[args]` is not sugar for `(f args)` and the two take different compiler paths:
+
+- `(f args)` is a callable-value call: TypeChecker.checkCallableCall ->
+  TypedExpressionKind.CALLABLE_CALL -> IrNode.CallableCall ->
+  JvmBytecodeEmitter.emitCallableCall.
+- `::f[args]` is a direct named call: checkDirectCall -> DIRECT_CALL ->
+  IrNode.DirectCall -> emitDirectCall.
+
+Both end in invokeinterface on the generated Fn interface, but the callable path emits a
+per-call `LyraSignature.parse(canonicalSpelling)` plus
+`LyraClosureSupport.requireAuthenticatedForGeneratedInvocation` (token/thread checks,
+sameArtifact/sameSession, structural signature equals) before every invoke. That is the
+intended callable authentication boundary (backend-runtime.md rejects arbitrary Java SAMs
+with LYR-LINK), but emitCallableCall applies it uniformly with no fast path for
+provably compiler-owned immutable targets, so self-recursive `(fib ...)` forms can run two
+orders of magnitude slower than `::fib[...]` (measured ~137x on fib(30); ~450 ns marginal
+per call). emitCallableCall already computes targetDeclaration() but only uses it for
+intrinsics. See bugs/callable-call-per-call-authentication-overhead.
+
 ## Open Questions
 Advanced binding, destructuring, and type-pattern designs remain deferred. The initial value/conditional match syntax and semantics were settled by the user; see specifications/language-core.md.
