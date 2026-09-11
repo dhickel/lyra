@@ -20,6 +20,36 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Assertion-grade JVM-independent ABI mapping coverage for Phase 14. */
 public final class JvmAbiMapperTest {
+    @Test
+    void nominalCompilerAndRuntimeContractsHaveExactReferenceAbi() {
+        var compiler = new io.mindspice.lyra.compiler.types.NominalType(
+                new io.mindspice.lyra.compiler.identity.NominalTypeId(
+                        io.mindspice.lyra.compiler.identity.ModuleIdentity.of(
+                                io.mindspice.lyra.compiler.source.ModuleId.of("types.lyra")), "a".repeat(64), "Box", 0));
+        var runtime = new io.mindspice.lyra.runtime.NominalType(new io.mindspice.lyra.runtime.NominalTypeId(
+                io.mindspice.lyra.runtime.ModuleId.path("types.lyra"), "a".repeat(64), "Box", 0));
+        assertEquals(compiler.id().canonicalInput(), runtime.id().canonicalInput());
+        assertEquals(compiler.canonicalSpelling(), runtime.canonicalSpelling());
+        var mapper = new JvmAbiMapper("example.objects");
+        String descriptor = "Lexample/objects/$lyra$nominal$" + compiler.id().stableHash() + ";";
+        for (var context : List.of(JvmMappingContext.INTERNAL_VALUE, JvmMappingContext.JAVA_VALUE,
+                JvmMappingContext.EXPORTED_VALUE)) {
+            assertEquals(descriptor, mapper.map(compiler, context).descriptor());
+            assertEquals(mapper.map(compiler, context), mapper.map(runtime, context));
+            assertEquals(mapper.map(compiler.nilable(), context), mapper.map(runtime.nilable(), context));
+        }
+        assertEquals("[" + descriptor, mapper.map(ArrayType.of(compiler)).descriptor());
+        assertEquals(JvmTypeKind.NOMINAL, mapper.map(compiler).representation().single().kind());
+        assertThrows(IllegalArgumentException.class, () -> JvmType.reference("example.Box", JvmTypeKind.NOMINAL));
+        assertThrows(IllegalArgumentException.class, () -> mapper.names().nominalBinaryName("Nominal<bad>"));
+        var wrong = JvmType.reference("example.objects.$lyra$nominal$" + "0".repeat(64), JvmTypeKind.NOMINAL);
+        var materialization = new JvmMaterializationPlan(JvmMaterializationKind.DIRECT,
+                JvmMappingContext.JAVA_VALUE, "forged nominal identity", List.of(wrong.descriptor()));
+        assertThrows(IllegalArgumentException.class, () -> new JvmTypePlan(compiler.canonicalSpelling(),
+                compiler.canonicalSpelling(), List.of(), JvmMappingContext.JAVA_VALUE,
+                new JvmSingleValue(wrong), materialization));
+    }
+
     private static final String UNIT_DESCRIPTOR =
             "Lio/mindspice/lyra/runtime/LyraUnit;";
 

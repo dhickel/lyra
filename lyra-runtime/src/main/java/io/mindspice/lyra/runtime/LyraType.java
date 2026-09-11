@@ -11,7 +11,7 @@ import java.util.Set;
  * happen to use the same JVM representation.</p>
  */
 public sealed interface LyraType
-        permits PrimitiveType, ArrayType, RangeType, TupleType, FunctionType, QualifiedType {
+        permits PrimitiveType, ArrayType, RangeType, TupleType, FunctionType, QualifiedType, NominalType {
     PrimitiveType I8 = PrimitiveType.I8;
     PrimitiveType I16 = PrimitiveType.I16;
     PrimitiveType I32 = PrimitiveType.I32;
@@ -71,6 +71,10 @@ public sealed interface LyraType
 
     static LyraType parse(String canonicalSpelling) {
         return LyraTypeParser.parse(canonicalSpelling);
+    }
+
+    static LyraType parse(String canonicalSpelling, NominalTypeEnvironment nominals) {
+        return LyraTypeParser.parse(canonicalSpelling, nominals);
     }
 
     static LyraType fromCanonical(String canonicalSpelling) {

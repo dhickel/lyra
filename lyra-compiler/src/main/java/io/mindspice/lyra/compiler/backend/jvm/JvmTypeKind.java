@@ -15,6 +15,7 @@ enum JvmTypeKind {
     WRAPPER,
     ARRAY,
     TUPLE,
+    NOMINAL,
     FUNCTION,
     UNIT;
 
@@ -27,7 +28,7 @@ enum JvmTypeKind {
 
     public boolean isReference() {
         return this == REFERENCE || this == WRAPPER || this == ARRAY
-                || this == TUPLE || this == FUNCTION || this == UNIT;
+                || this == TUPLE || this == NOMINAL || this == FUNCTION || this == UNIT;
     }
 
     public boolean isCategory2() {

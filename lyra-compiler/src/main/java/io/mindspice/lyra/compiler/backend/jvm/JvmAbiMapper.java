@@ -267,6 +267,10 @@ final class JvmAbiMapper {
                     "immutable range data with signed primitive bounds and step");
             case TUPLE -> mapTuple(view, context);
             case FUNCTION -> mapFunctionValue(view, context);
+            case NOMINAL -> singlePlan(view, context,
+                    JvmType.reference(names.nominalBinaryName(view.baseCanonical()), JvmTypeKind.NOMINAL),
+                    view.nilable() ? JvmMaterializationKind.NULLABLE_REFERENCE : JvmMaterializationKind.DIRECT,
+                    "exact generated nominal reference class");
         };
     }
 
@@ -443,6 +447,10 @@ final class JvmAbiMapper {
         Objects.requireNonNull(type, "type");
         io.mindspice.lyra.compiler.types.LyraType base = type.withoutQualifiers();
         List<String> qualifiers = qualifiers(type);
+        if (base instanceof io.mindspice.lyra.compiler.types.NominalType) {
+            return new TypeView(type.canonicalSpelling(), base.canonicalSpelling(), qualifiers,
+                    Shape.NOMINAL, null, List.of());
+        }
         if (base instanceof io.mindspice.lyra.compiler.types.PrimitiveType primitive) {
             return new TypeView(type.canonicalSpelling(), base.canonicalSpelling(), qualifiers,
                     Shape.PRIMITIVE, primitive.canonicalSpelling(), List.of());
@@ -474,6 +482,10 @@ final class JvmAbiMapper {
         Objects.requireNonNull(type, "type");
         io.mindspice.lyra.runtime.LyraType base = type.withoutQualifiers();
         List<String> qualifiers = qualifiers(type);
+        if (base instanceof io.mindspice.lyra.runtime.NominalType) {
+            return new TypeView(type.canonicalSpelling(), base.canonicalSpelling(), qualifiers,
+                    Shape.NOMINAL, null, List.of());
+        }
         if (base instanceof io.mindspice.lyra.runtime.PrimitiveType primitive) {
             return new TypeView(type.canonicalSpelling(), base.canonicalSpelling(), qualifiers,
                     Shape.PRIMITIVE, primitive.canonicalSpelling(), List.of());
@@ -502,6 +514,7 @@ final class JvmAbiMapper {
     }
 
     private enum Shape {
+        NOMINAL,
         RANGE,
         PRIMITIVE,
         ARRAY,

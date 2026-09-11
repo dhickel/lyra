@@ -234,6 +234,10 @@ record JvmTypePlan(
                     requireMaterialization(materialization, nilable
                             ? JvmMaterializationKind.NULLABLE_REFERENCE : JvmMaterializationKind.DIRECT,
                             baseCanonical);
+                } else if (baseCanonical.startsWith("Nominal<")) {
+                    validateReferenceMapping(nilable, representation, materialization, null, JvmTypeKind.NOMINAL);
+                    requireMaterialization(materialization, nilable ? JvmMaterializationKind.NULLABLE_REFERENCE
+                            : JvmMaterializationKind.DIRECT, baseCanonical);
                 } else if (baseCanonical.startsWith("Tuple<")) {
                     compositeInner(baseCanonical, "Tuple<", false);
                     if (nilable) {
@@ -392,6 +396,13 @@ record JvmTypePlan(
                 validateGeneratedReferenceFamilies(type.children().getFirst(), descriptor.substring(1));
             }
             case TUPLE -> requireGeneratedReferenceFamily(descriptor, "$lyra$tuple$", "tuple");
+            case NOMINAL -> {
+                requireGeneratedReferenceFamily(descriptor, "$lyra$nominal$", "nominal");
+                String digest = type.baseCanonical().substring(8, type.baseCanonical().length() - 1);
+                if (!descriptor.endsWith("/$lyra$nominal$" + digest + ";")) {
+                    throw new IllegalArgumentException("nominal descriptor differs from its exact declaration identity");
+                }
+            }
             case FUNCTION -> requireGeneratedReferenceFamily(
                     descriptor, "$lyra$fn$", "function");
             case PRIMITIVE, RANGE -> {
@@ -477,6 +488,7 @@ record JvmTypePlan(
     }
 
     private enum CanonicalShape {
+        NOMINAL,
         RANGE,
         PRIMITIVE,
         ARRAY,
@@ -534,7 +546,14 @@ record JvmTypePlan(
             int baseStart = position;
             CanonicalShape shape;
             List<CanonicalType> children;
-            if (consume("Array<")) {
+            if (consume("Nominal<")) {
+                shape = CanonicalShape.NOMINAL;
+                int end = position + 64;
+                if (end >= input.length() || !input.substring(position, end).matches("[0-9a-f]{64}")) throw invalid();
+                position = end;
+                require('>');
+                children = List.of();
+            } else if (consume("Array<")) {
                 shape = CanonicalShape.ARRAY;
                 CanonicalType element = parseType(false);
                 require('>');

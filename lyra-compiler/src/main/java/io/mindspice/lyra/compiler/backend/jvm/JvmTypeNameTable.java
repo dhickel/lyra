@@ -80,6 +80,11 @@ final class JvmTypeNameTable {
         return nameFor(canonicalSignature, functionNames, "function");
     }
 
+    public String nominalBinaryName(String canonicalType) {
+        JvmTypePlan.requireCanonicalCompositeSpelling(canonicalType, "Nominal<");
+        return basePackage + ".$lyra$nominal$" + canonicalType.substring(8, canonicalType.length() - 1);
+    }
+
     public boolean hasTuple(String canonicalType) {
         return tupleNames.containsKey(Objects.requireNonNull(canonicalType, "canonicalType"));
     }

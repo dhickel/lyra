@@ -52,15 +52,15 @@ record JvmType(
             throw new IllegalArgumentException("array JVM kinds do not have a binary class name");
         }
         if ((kind == JvmTypeKind.WRAPPER || kind == JvmTypeKind.TUPLE
-                || kind == JvmTypeKind.FUNCTION || kind == JvmTypeKind.UNIT)
+                || kind == JvmTypeKind.FUNCTION || kind == JvmTypeKind.NOMINAL || kind == JvmTypeKind.UNIT)
                 && binaryName.isEmpty()) {
             throw new IllegalArgumentException(kind + " needs a binary class name");
         }
-        if (kind == JvmTypeKind.TUPLE || kind == JvmTypeKind.FUNCTION) {
+        if (kind == JvmTypeKind.TUPLE || kind == JvmTypeKind.FUNCTION || kind == JvmTypeKind.NOMINAL) {
             String simpleName = binaryName.orElseThrow().substring(
                     binaryName.orElseThrow().lastIndexOf('.') + 1);
             String requiredPrefix = kind == JvmTypeKind.TUPLE
-                    ? "$lyra$tuple$" : "$lyra$fn$";
+                    ? "$lyra$tuple$" : kind == JvmTypeKind.NOMINAL ? "$lyra$nominal$" : "$lyra$fn$";
             if (!simpleName.startsWith(requiredPrefix)
                     || simpleName.length() == requiredPrefix.length()) {
                 throw new IllegalArgumentException(

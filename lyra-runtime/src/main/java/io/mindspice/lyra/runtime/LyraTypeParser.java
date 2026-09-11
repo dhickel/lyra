@@ -6,10 +6,12 @@ import java.util.Objects;
 /** Small canonical-spelling parser kept private to the runtime type model. */
 final class LyraTypeParser {
     private final String input;
+    private final NominalTypeEnvironment nominals;
     private int index;
 
-    private LyraTypeParser(String input) {
+    private LyraTypeParser(String input, NominalTypeEnvironment nominals) {
         this.input = Objects.requireNonNull(input, "canonicalSpelling");
+        this.nominals = Objects.requireNonNull(nominals, "nominals");
         for (int offset = 0; offset < input.length(); offset++) {
             if (Character.isWhitespace(input.charAt(offset))) {
                 throw error("whitespace is not permitted in a canonical type");
@@ -18,7 +20,11 @@ final class LyraTypeParser {
     }
 
     static LyraType parse(String input) {
-        LyraTypeParser parser = new LyraTypeParser(input);
+        return parse(input, NominalTypeEnvironment.empty());
+    }
+
+    static LyraType parse(String input, NominalTypeEnvironment nominals) {
+        LyraTypeParser parser = new LyraTypeParser(input, nominals);
         LyraType result = parser.type();
         if (!parser.atEnd()) {
             throw parser.error("unexpected trailing type text");
@@ -39,7 +45,13 @@ final class LyraTypeParser {
         }
 
         LyraType base;
-        if (consumeWord("Array")) {
+        if (consumeWord("Nominal")) {
+            expect('<');
+            String hash = identifier();
+            if (!hash.matches("[0-9a-f]{64}")) throw error("invalid nominal identity digest");
+            expect('>');
+            base = nominals.resolve("Nominal<" + hash + ">");
+        } else if (consumeWord("Array")) {
             expect('<');
             base = ArrayType.of(type());
             expect('>');

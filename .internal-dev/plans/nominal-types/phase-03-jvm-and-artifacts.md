@@ -49,3 +49,13 @@ reads do not allocate bound wrappers. Do not claim measured speedups without ben
 All normative nominal source operations execute through the direct emitter; positive
 tests cannot accept unsupported-emission diagnostics. Full suite and extended runtime
 fuzz pass with reviewed committed metadata/docs/evidence. Sessions remain required.
+
+## Current Progress
+
+Runtime nominal identity/schema graphs and explicit schema-aware type/signature
+parsing are implemented. Compiler/runtime JVM mapping parity covers nominal,
+nilable nominal and array contracts. Deterministic nominal descriptors retain the
+full declaration digest and reject a different physical declaration identity.
+These are contract/mapping tests, not emitted object execution. Artifact schema
+versioning/publication, class/member plans, direct emission, authorities, equality,
+Java factories and persistent sessions remain unfinished.

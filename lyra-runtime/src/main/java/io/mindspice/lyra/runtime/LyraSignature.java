@@ -39,7 +39,11 @@ public final class LyraSignature {
     }
 
     public static LyraSignature parse(String canonicalSpelling) {
-        LyraType parsed = LyraType.parse(canonicalSpelling);
+        return parse(canonicalSpelling, NominalTypeEnvironment.empty());
+    }
+
+    public static LyraSignature parse(String canonicalSpelling, NominalTypeEnvironment nominals) {
+        LyraType parsed = LyraType.parse(canonicalSpelling, nominals);
         if (!(parsed instanceof FunctionType function)) {
             throw new IllegalArgumentException("signature must be an unqualified Fn type: "
                     + canonicalSpelling);

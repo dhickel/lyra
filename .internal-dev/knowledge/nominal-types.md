@@ -87,8 +87,16 @@ remain in progress.
   read its post-construction value, not reuse a symbolic value from before the call.
   Focused and seeded independent slot-order models cover this semantic boundary.
   This does not establish complete branch/cyclic/imported/repeated heap transfers.
-- JVM mappings, runtime schemas, object authorities and retained nominal sessions
-  are not implemented by the semantic heap model.
+- Runtime nominal identity/schema contracts and explicit schema-aware canonical
+  type/signature parsing now exist independently of the compiler model. Both hash
+  the same versioned UTF-8-length-prefixed origin contract. Default parsing has an
+  empty schema environment and rejects nominal spellings, including valid hashes.
+  Do not introduce a process-global registry to bypass this boundary.
+- Nominal JVM references use a distinct generated family and full declaration
+  digest. Physical mapping validation checks that exact digest, not only a nominal
+  class-name prefix. These descriptor plans do not yet emit or authenticate objects.
+- Runtime artifact schema publication, object authorities and retained nominal
+  sessions are not implemented by the compiler-only semantic heap or type records.
 
 ## Open Questions
 
