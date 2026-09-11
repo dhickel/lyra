@@ -105,3 +105,32 @@ nominal-schema work).
   aggregate slots, mutable cells, session/imported bindings).
 - Add a performance regression test comparing both fib forms once fixed.
 - Mirrored to GitHub: https://github.com/dhickel/lyra/issues/6 (created 2026-09-11).
+
+## Extended form-homogeneity review (appended to issue #6)
+
+A full `(f args)` vs `::f[args]` review found five more divergences beyond the
+per-call tax; full evidence is in the issue comment (id 5639745595):
+
+1. Tail calls: `emitTail` lowers only `IrNode.DirectCall` self-tail calls to
+   constant-stack loops. `(count (- n 1))` tail recursion throws raw
+   `StackOverflowError` at depth ~20k while `::count[(- n 1)]` succeeds; the
+   spec-mandated LYR-STACK conversion also leaks because argument evaluation
+   sits outside the SOE catch range.
+2. `::f[...]` is a grammar postfix: after any expression form it is absorbed as
+   a receiver-call (`{ let add = (=> |x| (+ x 1)) ::add[1] }` parses as ONE let
+   with initializer `(lambda)::add[1]`), producing the misleading
+   LYC-RESOLVE-017 on the lambda parameter. `(add 1)` does not absorb.
+3. A parenthesized direct call `(::id[5])` misparses as a zero-arg call on the
+   direct call's result (LYC-TYPE-007), so `::f[...]` cannot be parenthesized
+   or delimited after another expression (no form terminator exists).
+4. Nilable-Fn coalesce `(f : (=> |x| 0))` crashes the emitter
+   (`Could not resolve class $lyra$fn$...` in Class-File API stack-map
+   generation; interface not yet registered) — independent of call form, but it
+   blocks the nilable-callable path entirely.
+5. Nominal method calls (`receiver::method[...]` and `(receiver:.method ...)`)
+   both crash the emitter in the current nominal WIP, so method-form parity is
+   unassessed.
+
+Parity confirmed for: parameter calls, capture calls, @mut rebinding,
+shadowing, iter/while spellings, intrinsic calls, arity diagnostics,
+nilable-target rejection, moderate-depth recursion, tuple-member calls.
