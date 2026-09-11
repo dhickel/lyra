@@ -4942,7 +4942,21 @@ final class JvmBytecodeEmitter {
                 return;
             }
             if (base instanceof PrimitiveType primitive && primitive.isNumeric()) {
-                loadPhysical(physical, slot);
+                if (logical.hasQualifier(io.mindspice.lyra.compiler.types.TypeQualifier.NIL)
+                        && physical.isReference()) {
+                    loadPhysical(physical, slot);
+                    code.ifnull(elseLabel);
+                    loadPhysical(physical, slot);
+                    JvmType valueType = owner.mapper.map(
+                                    primitive, JvmMappingContext.INTERNAL_VALUE)
+                            .physicalComponents().getFirst();
+                    unboxPrimitive(valueType);
+                    if (primitive == PrimitiveType.U8 || primitive == PrimitiveType.U16) {
+                        normalizeUnsigned(primitive);
+                    }
+                } else {
+                    loadPhysical(physical, slot);
+                }
                 if (primitive == PrimitiveType.I64 || primitive == PrimitiveType.U64) {
                     code.lconst_0();
                     code.lcmp();
@@ -4958,13 +4972,26 @@ final class JvmBytecodeEmitter {
                 return;
             }
             if (base == PrimitiveType.BOOL) {
-                loadPhysical(physical, slot);
+                if (logical.hasQualifier(io.mindspice.lyra.compiler.types.TypeQualifier.NIL)
+                        && physical.isReference()) {
+                    loadPhysical(physical, slot);
+                    code.ifnull(elseLabel);
+                    loadPhysical(physical, slot);
+                    unboxPrimitive(JvmType.primitive("Z"));
+                } else {
+                    loadPhysical(physical, slot);
+                }
                 code.ifne(thenLabel);
                 code.goto_(elseLabel);
                 return;
             }
             if (base == PrimitiveType.CHAR) {
                 // Every non-nil character is truthy, including U+0000.
+                if (logical.hasQualifier(io.mindspice.lyra.compiler.types.TypeQualifier.NIL)
+                        && physical.isReference()) {
+                    loadPhysical(physical, slot);
+                    code.ifnull(elseLabel);
+                }
                 code.goto_(thenLabel);
                 return;
             }
@@ -5024,6 +5051,12 @@ final class JvmBytecodeEmitter {
         }
 
         private JvmTypePlan emitValueEquality(IrNode.Operator operator) {
+            boolean truthEquality = operator.operands().stream().anyMatch(value ->
+                    value.type().withoutQualifiers() == PrimitiveType.BOOL)
+                    && operator.operands().stream().map(IrNode::type).distinct().count() > 1;
+            if (truthEquality) {
+                return emitTruthEquality(operator);
+            }
             List<BindingStorage> values = new ArrayList<>();
             for (IrNode operand : operator.operands()) {
                 JvmTypePlan physical = owner.mapper.map(operand.type(), JvmMappingContext.INTERNAL_VALUE);
@@ -5050,6 +5083,31 @@ final class JvmBytecodeEmitter {
             }
             emitInt(1); code.goto_(end);
             code.labelBinding(falseLabel); emitInt(0); code.labelBinding(end);
+            return owner.mapper.map(operator.type(), JvmMappingContext.INTERNAL_VALUE);
+        }
+
+        private JvmTypePlan emitTruthEquality(IrNode.Operator operator) {
+            List<Integer> values = new ArrayList<>();
+            for (IrNode operand : operator.operands()) {
+                emitTruthValue(operand);
+                int slot = allocateLocal(JvmType.primitive("Z"));
+                code.istore(slot);
+                values.add(slot);
+            }
+            Label falseLabel = code.newLabel();
+            Label end = code.newLabel();
+            boolean equal = operator.operator() == TokenKind.EQUAL_EQUAL;
+            for (int index = 1; index < values.size(); index++) {
+                code.iload(values.get(index - 1));
+                code.iload(values.get(index));
+                code.branch(equal ? java.lang.classfile.Opcode.IF_ICMPNE
+                        : java.lang.classfile.Opcode.IF_ICMPEQ, falseLabel);
+            }
+            emitInt(1);
+            code.goto_(end);
+            code.labelBinding(falseLabel);
+            emitInt(0);
+            code.labelBinding(end);
             return owner.mapper.map(operator.type(), JvmMappingContext.INTERNAL_VALUE);
         }
 

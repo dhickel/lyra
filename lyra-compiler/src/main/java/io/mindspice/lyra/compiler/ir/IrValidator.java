@@ -1427,6 +1427,12 @@ public final class IrValidator {
             if (operands.isEmpty()) {
                 return;
             }
+            boolean truthEquality = operands.stream().anyMatch(value ->
+                    value.type().withoutQualifiers() == PrimitiveType.BOOL)
+                    && operands.stream().allMatch(value -> truthTestable(value.type()));
+            if (truthEquality) {
+                return;
+            }
             boolean allNumeric = operands.stream().allMatch(value ->
                     value.type().isNumeric() && !value.type().isNilable());
             if (allNumeric) {

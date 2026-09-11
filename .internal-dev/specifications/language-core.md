@@ -271,7 +271,7 @@ Assignment alone additionally has infix form and does not have bracket form.
 - `%` and `^` accept exactly two numeric operands. `%` requires integer operands of one resolved common integer type.
 - `and`, `or`, and `xor` accept at least two operands of any truth-testable types and return `Bool`. `and`/`or` short-circuit left-to-right; `xor` evaluates all operands and is true for odd truthy parity.
 - `not`, `++`, and `--` accept exactly one operand.
-- `==`, `!=`, `eq?`, and `!eq?` accept at least two operands. Value equality selects compatible operand types using exact typing or permitted lossless numeric widening; identity requires the same identity-bearing static type.
+- `==`, `!=`, `eq?`, and `!eq?` accept at least two operands. Value equality selects compatible operand types using exact typing or permitted lossless numeric widening. When at least one operand is `Bool`, `==` and `!=` compare the truthiness of all truth-testable operands; this makes `#NIL` consistently equivalent to false in an explicitly typed nilable context. Identity requires the same identity-bearing static type.
 - `<`, `<=`, `>`, and `>=` accept at least two numeric operands, select one common numeric type using permitted lossless widening, and chain adjacent comparisons.
 - `nor`, `nand`, and `xnor` are not core operators.
 

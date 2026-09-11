@@ -1153,7 +1153,10 @@ final class TypedSemanticProvenance {
                             && commonNonNilNumeric(operandTypes).isPresent(),
                     "typed relational operator has no common numeric contract");
             case EQUAL_EQUAL, NOT_EQUAL -> require(expression.type() == PrimitiveType.BOOL
-                            && TypeRules.commonType(operandTypes).isPresent(),
+                            && (TypeRules.commonType(operandTypes).isPresent()
+                            || operandTypes.stream().anyMatch(value ->
+                            value.withoutQualifiers() == PrimitiveType.BOOL)
+                            && operandTypes.stream().allMatch(TypedSemanticProvenance::truthTestable)),
                     "typed value equality has no common operand contract");
             case IDENTITY_EQUAL, IDENTITY_NOT_EQUAL -> {
                 LyraType base = operandTypes.getFirst().withoutQualifiers();

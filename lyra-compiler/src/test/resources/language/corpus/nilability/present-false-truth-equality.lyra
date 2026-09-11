@@ -1,0 +1,3 @@
+// nilability	value	Bool	true	present false remains false in truth equality
+let @nil value :Bool = #F
+let @pub run :Fn<;Bool> = (=> | | (== #F value))

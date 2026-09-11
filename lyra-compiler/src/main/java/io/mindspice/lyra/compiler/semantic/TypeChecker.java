@@ -3152,6 +3152,32 @@ public final class TypeChecker {
                 initial.add(value);
             }
             List<LyraType> known = shapes.stream().flatMap(Optional::stream).toList();
+            boolean truthEquality = known.stream().anyMatch(value ->
+                    value.withoutQualifiers() == PrimitiveType.BOOL)
+                    && known.stream().allMatch(State::truthTestable)
+                    && unresolved.stream().allMatch(SyntaxNode.NilLiteral.class::isInstance);
+            if (truthEquality) {
+                List<ExprResult> values = new ArrayList<>();
+                for (int index = 0; index < operands.size(); index++) {
+                    ExprResult value = initial.get(index);
+                    if (value == null) {
+                        value = checkExpression(operands.get(index),
+                                Optional.of(PrimitiveType.BOOL.nilable()), moduleId);
+                    }
+                    if (value == null) {
+                        return null;
+                    }
+                    values.add(value);
+                }
+                return result(node(
+                        TypedExpressionKind.OPERATOR,
+                        span,
+                        PrimitiveType.BOOL,
+                        values.stream().map(ExprResult::expression).toList(),
+                        Optional.empty(), Optional.empty(), Optional.empty(), Optional.of(operator.spelling()),
+                        Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                        Optional.empty(), List.of(), Optional.empty()));
+            }
             if (known.isEmpty()) {
                 Optional<LyraType> folded = StructuralContextPlan.synthesizePeers(
                         operands,

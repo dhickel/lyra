@@ -174,7 +174,7 @@ public final class LanguageFuzzWorker {
                 .append("let apply :Fn<Fn<I32;I32>,I32;I32> = (=> |f x| (f x))\n");
         for (int i = 0; i < random.nextInt(8, 25); i++) {
             int value = random.nextInt(10), index = random.nextInt(array.length);
-            switch (random.nextInt(8)) {
+            switch (random.nextInt(9)) {
                 case 0 -> { body.append("alias[").append(index).append("] := ").append(value).append('\n'); array[index] = value; }
                 case 1 -> { body.append("n := (+ n ").append(value).append(")\n"); n += value; }
                 case 2 -> { body.append("(bump)\n"); n++; }
@@ -187,6 +187,16 @@ public final class LanguageFuzzWorker {
                 }
                 case 6 -> { body.append("n := ::apply[|x| (+ x 2), n]\n"); n += 2; }
                 case 7 -> body.append("{ let saved :Fn<;I32> = (=> | | n) let n :String = \"shadow\" (saved) }\n");
+                case 8 -> {
+                    boolean nil = random.nextBoolean();
+                    int truthValue = random.nextBoolean() ? 0 : random.nextInt(1, 10);
+                    body.append("{ let @nil maybe :I32 = ")
+                            .append(nil ? "#NIL" : truthValue)
+                            .append(" (maybe present -> { n := (+ n present) } : { n := (+ n 3) }) ")
+                            .append("((== #F maybe) -> { n := (+ n 5) } : { n := (+ n 7) }) }\n");
+                    n += nil || truthValue == 0 ? 3 : truthValue;
+                    n += nil || truthValue == 0 ? 5 : 7;
+                }
                 default -> throw new AssertionError();
             }
         }

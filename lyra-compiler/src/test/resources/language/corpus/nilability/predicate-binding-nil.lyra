@@ -1,0 +1,3 @@
+// nilability	value	I32	9	nilable predicate takes fallback without exposing its binding
+let @nil value :I32 = #NIL
+let @pub run :Fn<;I32> = (=> | | (value present -> present : 9))
