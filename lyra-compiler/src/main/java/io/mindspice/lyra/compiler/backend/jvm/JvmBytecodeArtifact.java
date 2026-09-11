@@ -130,6 +130,7 @@ public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
     }
 
     private final TypedIr ir;
+    private final io.mindspice.lyra.runtime.NominalTypeEnvironment nominalSchemas;
     private final GeneratedTypePlan typePlan;
     private final Map<String, byte[]> classFiles;
     private final Map<String, String> descriptors;
@@ -151,6 +152,7 @@ public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
                                boolean previewRequired, EmissionMode emissionMode,
                                Map<String, String> reproducibleOptions) {
         this.ir = Objects.requireNonNull(ir, "ir").requireValidated();
+        this.nominalSchemas = NominalRuntimeContracts.from(ir);
         this.typePlan = Objects.requireNonNull(typePlan, "typePlan");
         Objects.requireNonNull(classFiles, "classFiles");
         LinkedHashMap<String, byte[]> copied = new LinkedHashMap<>();
@@ -202,6 +204,8 @@ public final class JvmBytecodeArtifact implements ImmutablePhaseArtifact {
     public TypedIr ir() {
         return ir;
     }
+
+    public io.mindspice.lyra.runtime.NominalTypeEnvironment nominalSchemas() { return nominalSchemas; }
 
     public TypedIr typedIr() {
         return ir;

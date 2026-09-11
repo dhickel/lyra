@@ -107,6 +107,12 @@ remain in progress.
 - This metadata reader does not yet make the compiler emit nominal artifacts or
   authenticate generated nominal classes. Those remain separate implementation
   gates, alongside schema-aware live loader/session linkage.
+- NominalRuntimeContracts projects a validated IR's closed schemas directly into
+  independent runtime records. It caches declaration references during recursive
+  contract conversion and compares canonical spellings at the boundary. Embedded
+  facade metadata and artifact assembly both use this projection and bind it into
+  revisions; neither may call the schema-free type parser for nominal exports.
+  Generated object class plans/emission remain a separate gate.
 
 ## Open Questions
 

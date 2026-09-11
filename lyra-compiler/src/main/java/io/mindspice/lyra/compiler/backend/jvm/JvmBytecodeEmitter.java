@@ -258,6 +258,7 @@ final class JvmBytecodeEmitter {
 
     private static final class Emitter {
         private final TypedIr ir;
+        private final io.mindspice.lyra.runtime.NominalTypeEnvironment nominalSchemas;
         private final GeneratedTypePlan plan;
         private final JvmAbiMapper mapper;
         private final boolean chunkedMetadata;
@@ -274,6 +275,7 @@ final class JvmBytecodeEmitter {
 
         private Emitter(TypedIr ir, GeneratedTypePlan plan, boolean chunkedMetadata) {
             this.ir = ir;
+            this.nominalSchemas = NominalRuntimeContracts.from(ir);
             this.plan = plan;
             this.mapper = plan.mapper();
             this.chunkedMetadata = chunkedMetadata;
@@ -1861,7 +1863,7 @@ final class JvmBytecodeEmitter {
                 // contract, including a top-level @nil on function values.
                 String contractSpelling = export.valueType().canonicalLyraType();
                 io.mindspice.lyra.runtime.LyraType contract =
-                        io.mindspice.lyra.runtime.LyraType.parse(contractSpelling);
+                        io.mindspice.lyra.runtime.LyraType.parse(contractSpelling, owner.nominalSchemas);
                 String getter = export.getterName().orElse("get$" + export.javaName());
                 String functionGetter = export.functionValueName()
                         .orElse("value$" + export.javaName());
@@ -1891,6 +1893,7 @@ final class JvmBytecodeEmitter {
                             io.mindspice.lyra.runtime.RuntimeProfile.CURRENT,
                             io.mindspice.lyra.runtime.PackagingMode.CLASSES, false,
                             owner.plan.basePackage(), runtimeSources, java.util.Optional.empty());
+            revision = io.mindspice.lyra.runtime.ArtifactRevision.bindNominalSchemas(revision, owner.nominalSchemas);
             io.mindspice.lyra.runtime.ModuleId runtimeRoot = owner.rootModuleId().isUri()
                     ? io.mindspice.lyra.runtime.ModuleId.uri(owner.rootModuleId().asUri())
                     : io.mindspice.lyra.runtime.ModuleId.path(owner.rootModuleId().value());
@@ -1910,6 +1913,7 @@ final class JvmBytecodeEmitter {
                     .rootModuleRevision(root.revision())
                     .modules(runtimeModules)
                     .sources(runtimeSources)
+                    .nominalSchemas(owner.nominalSchemas)
                     .javaPackage(owner.plan.basePackage())
                     .exports(runtimeExports)
                     .javaNameMap(javaNames)

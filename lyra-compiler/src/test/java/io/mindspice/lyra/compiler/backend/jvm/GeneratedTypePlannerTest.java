@@ -41,6 +41,55 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** Structural planner tests; no generated class bytes are produced. */
 public final class GeneratedTypePlannerTest {
     @Test
+    void seededNominalProjectionPreservesIndependentFieldContracts() {
+        int cases = Integer.getInteger("lyra.nominal.projection.cases", Integer.getInteger("lyra.fuzz.cases", 24));
+        for (long seed : new long[] { 109, 20260911 }) {
+            var random = new java.util.Random(seed);
+            for (int index = 0; index < cases; index++) {
+                boolean mutable = random.nextBoolean();
+                boolean array = random.nextBoolean();
+                String field = array ? "Array<@nil I64>" : "I32";
+                String source = "struct Node { let " + (mutable ? "@mut " : "")
+                        + "data :" + field + " let @nil next :Node }";
+                var runtime = NominalRuntimeContracts.from(ir(source));
+                var schema = runtime.schemas().getFirst();
+                var expected = array ? io.mindspice.lyra.runtime.ArrayType.of(io.mindspice.lyra.runtime.LyraType.I64.nilable())
+                        : io.mindspice.lyra.runtime.LyraType.I32;
+                String replay = "seed=" + seed + ", index=" + index + "\n" + source;
+                assertEquals(expected, schema.members().getFirst().type(), replay);
+                assertEquals(mutable, schema.members().getFirst().mutable(), replay);
+                assertEquals(List.of(expected, schema.type().nilable()), schema.constructorParameters(), replay);
+            }
+        }
+    }
+
+    @Test
+    void nominalRuntimeProjectionPreservesSourceSchemasWithoutReparsingUnknownNames() {
+        TypedIr ir = ir("""
+                struct Node { let @mut @nil next :Node = #NIL let data :Array<I32> }
+                class Holder {
+                    let @mut @nil node :Node = #NIL
+                    let @pub @mut read :Fn<;@nil Node> = (=> || self:.node)
+                }
+                """);
+        var runtime = NominalRuntimeContracts.from(ir);
+        assertEquals(2, runtime.schemas().size());
+        var node = runtime.schemas().stream().filter(schema -> schema.type().id().name().equals("Node")).findFirst().orElseThrow();
+        var holder = runtime.schemas().stream().filter(schema -> schema.type().id().name().equals("Holder")).findFirst().orElseThrow();
+        assertEquals(io.mindspice.lyra.runtime.NominalSchema.Kind.STRUCT, node.kind());
+        assertEquals(List.of("next", "data"), node.members().stream().map(io.mindspice.lyra.runtime.NominalSchema.Member::name).toList());
+        assertEquals(node.type().nilable(), node.members().getFirst().type());
+        assertTrue(node.members().getFirst().mutable());
+        assertEquals(List.of(io.mindspice.lyra.runtime.ArrayType.of(io.mindspice.lyra.runtime.LyraType.I32)), node.constructorParameters());
+        assertFalse(holder.members().getFirst().publicAccess());
+        assertTrue(holder.members().get(1).publicAccess());
+        assertTrue(holder.members().get(1).mutable());
+        assertEquals(io.mindspice.lyra.runtime.FunctionType.of(List.of(), node.type().nilable()), holder.members().get(1).type());
+        for (var schema : runtime.schemas()) assertEquals(schema.type(),
+                io.mindspice.lyra.runtime.LyraType.parse(schema.type().canonicalSpelling(), runtime));
+    }
+
+    @Test
     void plansAllReachableGeneratedTypesAndTypedFacadeMembers() {
         TypedIr ir = ir("let @pub value :Tuple<I32,@nil String> = Tuple[1 #NIL] "
                 + "let @pub apply :Fn<Tuple<I32,@nil String>;@nil String> = "

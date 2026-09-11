@@ -186,11 +186,12 @@ public final class ArtifactAssembly implements ArtifactSource {
                 : Optional.empty();
         Map<String, String> reproducibleOptions = artifactProfile == ArtifactProfile.NORMAL
                 && !options.replCapable() ? Map.of() : bytecode.reproducibleOptions();
-        ArtifactRevision revision = ArtifactRevision.compute(
+        ArtifactRevision baseRevision = ArtifactRevision.compute(
                 options.compilerBuild(), modules, names, options.profile(),
                 options.packagingMode(), previewRequired, bytecode.javaBasePackage(), sources, requirement,
                 artifactProfile, hooks, dependencies, attachmentContext, imports, reproducibleOptions,
                 options.replCapable());
+        ArtifactRevision revision = ArtifactRevision.bindNominalSchemas(baseRevision, bytecode.nominalSchemas());
         String artifactId = options.artifactId().orElseGet(() -> MessageDigests.sha256Hex(
                 "LYRA-ARTIFACT-ID", options.compilerBuild(),
                 root.id().canonicalSpelling(), revision.value()));
@@ -207,6 +208,7 @@ public final class ArtifactAssembly implements ArtifactSource {
                 .rootModuleRevision(root.revision())
                 .modules(modules)
                 .sources(sources)
+                .nominalSchemas(bytecode.nominalSchemas())
                 .javaPackage(bytecode.javaBasePackage())
                 .exports(exports)
                 .javaNameMap(names)
@@ -452,7 +454,7 @@ public final class ArtifactAssembly implements ArtifactSource {
         for (JvmBytecodeArtifact.EmittedExport export : artifact.emittedExports()) {
             io.mindspice.lyra.runtime.ModuleId module = runtimeModuleId(export.moduleId());
             io.mindspice.lyra.runtime.LyraType contract =
-                    io.mindspice.lyra.runtime.LyraType.parse(export.canonicalSignature());
+                    io.mindspice.lyra.runtime.LyraType.parse(export.canonicalSignature(), artifact.nominalSchemas());
             if (!contract.canonicalSpelling().equals(export.canonicalSignature())) {
                 throw new ArtifactAssemblyException("export contract is not canonical: "
                         + export.sourceName());
