@@ -104,5 +104,4 @@ nominal-schema work).
 - Keep full per-call authentication for genuinely first-class targets (parameters,
   aggregate slots, mutable cells, session/imported bindings).
 - Add a performance regression test comparing both fib forms once fixed.
-- Mirror this report to GitHub Issues per repository policy (requires user authorization;
-  not performed).
+- Mirrored to GitHub: https://github.com/dhickel/lyra/issues/6 (created 2026-09-11).
