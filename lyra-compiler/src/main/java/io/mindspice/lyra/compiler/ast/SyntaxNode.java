@@ -40,6 +40,8 @@ public sealed interface SyntaxNode
                 SyntaxNode.ArgumentList,
                 SyntaxNode.TypeArgumentList,
                 SyntaxNode.PredicateBinding,
+                SyntaxNode.MemberDeclaration,
+                SyntaxNode.ConstructorDeclaration,
                 SyntaxNode.MatchArm {
 
     SourceSpan span();
@@ -51,7 +53,7 @@ public sealed interface SyntaxNode
     }
 
     /** A declaration or rebinding form. */
-    sealed interface Statement extends Form permits LetBinding, Reassignment {
+    sealed interface Statement extends Form permits LetBinding, Reassignment, NominalDeclaration {
     }
 
     /** An expression form. */
@@ -72,6 +74,7 @@ public sealed interface SyntaxNode
                     NamespaceMemberAccess,
                     NamespaceDirectCall,
                     IndexAccess,
+                    BracketApplication,
                     OperatorSExpression,
                     OperatorBracket,
                     ArrayLiteral,
@@ -94,7 +97,7 @@ public sealed interface SyntaxNode
 
     /** A syntax type, before semantic type construction. */
     sealed interface Type extends SyntaxNode
-            permits TypeContract, PrimitiveType, ArrayType, RangeType, TupleType, FunctionType {
+            permits TypeContract, PrimitiveType, ArrayType, RangeType, TupleType, FunctionType, NamedType {
     }
 
     enum UnitForm {
@@ -523,6 +526,103 @@ public sealed interface SyntaxNode
         @Override
         public <R> R accept(SyntaxVisitor<R> visitor) {
             return Objects.requireNonNull(visitor, "visitor").visitPredicateBinding(this);
+        }
+    }
+
+    enum NominalKind { STRUCT, CLASS }
+
+    /** A nominal type reference; qualification is resolved, never lexically guessed. */
+    record NamedType(NamespacePath path, SourceSpan span) implements Type {
+        public NamedType {
+            Objects.requireNonNull(path, "path");
+            requireSpan(span);
+        }
+
+        @Override
+        public <R> R accept(SyntaxVisitor<R> visitor) {
+            return Objects.requireNonNull(visitor, "visitor").visitNamedType(this);
+        }
+    }
+
+    record NominalDeclaration(
+            NominalKind kind, List<Modifier> modifiers, Identifier name,
+            List<MemberDeclaration> members, Optional<ConstructorDeclaration> constructor,
+            SourceSpan keywordSpan, SourceSpan openingBraceSpan, SourceSpan closingBraceSpan,
+            SourceSpan span) implements Statement {
+        public NominalDeclaration {
+            Objects.requireNonNull(kind, "kind");
+            modifiers = copy(modifiers, "modifiers");
+            Objects.requireNonNull(name, "name");
+            members = copy(members, "members");
+            Objects.requireNonNull(constructor, "constructor");
+            requireSpan(keywordSpan, "keywordSpan");
+            requireSpan(openingBraceSpan, "openingBraceSpan");
+            requireSpan(closingBraceSpan, "closingBraceSpan");
+            requireSpan(span);
+            if (kind == NominalKind.STRUCT && constructor.isPresent()) {
+                throw new IllegalArgumentException("structs cannot declare constructors");
+            }
+            if (constructor.isPresent() && !constructor.orElseThrow().name().name().equals(name.name())) {
+                throw new IllegalArgumentException("constructor name must match its class");
+            }
+        }
+
+        @Override
+        public <R> R accept(SyntaxVisitor<R> visitor) {
+            return Objects.requireNonNull(visitor, "visitor").visitNominalDeclaration(this);
+        }
+    }
+
+    record MemberDeclaration(
+            List<Modifier> modifiers, Identifier name, TypeAnnotation annotation,
+            Optional<Expression> initializer, SourceSpan letKeywordSpan,
+            Optional<SourceSpan> equalsSpan, SourceSpan span) implements SyntaxNode {
+        public MemberDeclaration {
+            modifiers = copy(modifiers, "modifiers");
+            Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(annotation, "annotation");
+            Objects.requireNonNull(initializer, "initializer");
+            requireSpan(letKeywordSpan, "letKeywordSpan");
+            Objects.requireNonNull(equalsSpan, "equalsSpan");
+            requireSpan(span);
+            if (initializer.isPresent() != equalsSpan.isPresent()) {
+                throw new IllegalArgumentException("member initializer and equals span must agree");
+            }
+        }
+
+        @Override
+        public <R> R accept(SyntaxVisitor<R> visitor) {
+            return Objects.requireNonNull(visitor, "visitor").visitMemberDeclaration(this);
+        }
+    }
+
+    record ConstructorDeclaration(Identifier name, Lambda initializer,
+                                  SourceSpan equalsSpan, SourceSpan span) implements SyntaxNode {
+        public ConstructorDeclaration {
+            Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(initializer, "initializer");
+            requireSpan(equalsSpan, "equalsSpan");
+            requireSpan(span);
+        }
+
+        @Override
+        public <R> R accept(SyntaxVisitor<R> visitor) {
+            return Objects.requireNonNull(visitor, "visitor").visitConstructorDeclaration(this);
+        }
+    }
+
+    /** Non-unary bracket syntax, before resolving construction versus invalid indexing. */
+    record BracketApplication(Expression target, ArgumentList arguments, SourceSpan span)
+            implements Expression {
+        public BracketApplication {
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(arguments, "arguments");
+            requireSpan(span);
+        }
+
+        @Override
+        public <R> R accept(SyntaxVisitor<R> visitor) {
+            return Objects.requireNonNull(visitor, "visitor").visitBracketApplication(this);
         }
     }
 

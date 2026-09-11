@@ -37,6 +37,11 @@ public interface SyntaxVisitor<R> {
     R visitMatchArm(SyntaxNode.MatchArm node);
 
     R visitLetBinding(SyntaxNode.LetBinding node);
+    R visitNominalDeclaration(SyntaxNode.NominalDeclaration node);
+    R visitMemberDeclaration(SyntaxNode.MemberDeclaration node);
+    R visitConstructorDeclaration(SyntaxNode.ConstructorDeclaration node);
+    R visitNamedType(SyntaxNode.NamedType node);
+    R visitBracketApplication(SyntaxNode.BracketApplication node);
     R visitReassignment(SyntaxNode.Reassignment node);
 
     R visitBooleanLiteral(SyntaxNode.BooleanLiteral node);

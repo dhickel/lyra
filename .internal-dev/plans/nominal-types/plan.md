@@ -14,11 +14,12 @@ Java 25 direct-bytecode pipeline with exact typing, ownership and diagnostics.
 
 ## Status
 
-WIP: intended contracts and the standalone `NominalTypeId` identity foundation are
-implemented. No lexer/parser, semantic, IR, runtime or backend integration has been
-added. This plan must not be archived or reported complete until every required gate
-below passes. Existing execution tests establish a baseline only; `NominalTypeIdTest`
-tests identity, not executable nominal features.
+WIP: intended contracts, standalone `NominalTypeId`, and lexical/grammar/AST support
+are implemented. Nominal declaration/type resolution, initialization/flow, typed IR,
+runtime and backend support remain unfinished. Nominal declarations deliberately
+fail closed at resolution with LYC-RESOLVE-026; this is not positive executable
+coverage. This plan must not be archived or reported complete until every gate below
+passes. `NominalSyntaxTest` tests syntax/replay and invalid value-index arity only.
 
 ## Implementation sequence
 

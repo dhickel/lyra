@@ -76,13 +76,13 @@ public final class LexerTest {
     }
 
     private static void currentVocabularyAndDeferredWords() {
-        String source = "let import as match iter while when ?? I32 Array Tuple Fn Bool Char String Unit "
+        String source = "let struct class import as match iter while when ?? I32 Array Tuple Fn Bool Char String Unit "
                 + "@pub @mut @nil #T #F #NIL + - * / ^ % < <= > >= == != eq? !eq? "
                 + "and or xor not ++ -- := -> :. :: => = ( ) { } [ ] : ; | , .";
         LexedSource lexed = success(source);
         List<TokenKind> actual = lexed.tokens().stream().map(Token::kind).toList();
         List<TokenKind> expected = List.of(
-                TokenKind.LET, TokenKind.IMPORT, TokenKind.AS,
+                TokenKind.LET, TokenKind.STRUCT, TokenKind.CLASS, TokenKind.IMPORT, TokenKind.AS,
                 TokenKind.MATCH, TokenKind.ITER, TokenKind.WHILE, TokenKind.WHEN, TokenKind.DOUBLE_QUESTION,
                 TokenKind.TYPE_NAME, TokenKind.TYPE_NAME, TokenKind.TYPE_NAME, TokenKind.TYPE_NAME,
                 TokenKind.TYPE_NAME, TokenKind.TYPE_NAME, TokenKind.TYPE_NAME,
@@ -114,7 +114,7 @@ public final class LexerTest {
         check(lexed.tokens().stream().noneMatch(token -> token.kind().name().contains("UNIT")),
                 "Unit is not invented as an empty-collection token");
 
-        LexedSource deferredWords = success("class struct func nor nand xnor Match Iter While meanwhile whileLoop");
+        LexedSource deferredWords = success("Class Struct func nor nand xnor Match Iter While meanwhile whileLoop");
         check(deferredWords.tokens().stream()
                         .filter(token -> token.kind() != TokenKind.EOF)
                         .allMatch(token -> token.kind() == TokenKind.IDENTIFIER),

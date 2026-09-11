@@ -31,6 +31,8 @@ public final class Lexer {
             Map.entry("match", TokenKind.MATCH),
             Map.entry("iter", TokenKind.ITER),
             Map.entry("while", TokenKind.WHILE),
+            Map.entry("struct", TokenKind.STRUCT),
+            Map.entry("class", TokenKind.CLASS),
             Map.entry("when", TokenKind.WHEN),
             Map.entry("and", TokenKind.AND),
             Map.entry("or", TokenKind.OR),

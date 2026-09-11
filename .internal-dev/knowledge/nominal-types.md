@@ -2,7 +2,7 @@
 
 ## Topic
 
-Accepted struct/class behavior and integration boundaries, before implementation.
+Accepted struct/class behavior and integration boundaries during implementation.
 
 ## Source References
 
@@ -30,8 +30,23 @@ Accepted struct/class behavior and integration boundaries, before implementation
 ## Project Relevance
 
 These corrections prevent semantic drift during the requested full-pipeline feature.
-Only the standalone `NominalTypeId` identity foundation is implemented at this
-checkpoint; there is no nominal syntax or execution integration yet.
+`NominalTypeId` and lexical/grammar/AST support are implemented. Nominal semantic
+declaration/type resolution and all execution integration remain unfinished.
+
+- Unary brackets retain IndexAccess syntax; non-unary brackets retain
+  BracketApplication. Both must resolve the target's type/value role later. An
+  uppercase array variable must remain indexable, and a lowercase type alias must
+  not be rejected by lexical capitalization guesses.
+- Named type annotations retain namespace segments/arrows. Qualified construction
+  uses existing `model->:.Counter[args]`, avoiding ambiguity with conditional arrows.
+- Former unknown-type and multi-index grammar failures now belong to resolution;
+  negative compile tests still require real unresolved-name/value-index diagnostics.
+- The Java-name mangling fixture now uses the Java keyword `public` because `class`
+  is a reserved Lyra keyword. All descriptor/invocation assertions are preserved.
+- The old excluded-class conformance fixture now rejects inheritance. Empty class
+  syntax is positive parser coverage, not a claim of executable class conformance.
+- LYC-RESOLVE-026 is an explicit temporary semantic boundary. It must be removed
+  from valid nominal execution paths before declaring the requested feature complete.
 
 ## Open Questions
 

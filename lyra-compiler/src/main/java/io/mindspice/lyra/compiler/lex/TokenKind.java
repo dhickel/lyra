@@ -12,6 +12,8 @@ public enum TokenKind {
 
     IDENTIFIER,
     LET,
+    STRUCT,
+    CLASS,
     IMPORT,
     AS,
     MATCH,

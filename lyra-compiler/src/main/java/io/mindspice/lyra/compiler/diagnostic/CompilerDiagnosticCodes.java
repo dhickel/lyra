@@ -125,6 +125,9 @@ public final class CompilerDiagnosticCodes {
             DiagnosticCode.of(Phase.RESOLVE, 24);
     public static final DiagnosticCode RESOLVE_IMPORT_HEADER =
             DiagnosticCode.of(Phase.RESOLVE, 25);
+    /** Temporary fail-closed boundary while nominal semantic/IR support is being implemented. */
+    public static final DiagnosticCode RESOLVE_NOMINAL_NOT_IMPLEMENTED =
+            DiagnosticCode.of(Phase.RESOLVE, 26);
 
     public static final DiagnosticCode TYPE_MISMATCH =
             DiagnosticCode.of(Phase.TYPE, 1);
@@ -276,6 +279,7 @@ public final class CompilerDiagnosticCodes {
             RESOLVE_DUPLICATE_EXPORT,
             RESOLVE_FUNCTION_LINKAGE,
             RESOLVE_IMPORT_HEADER,
+            RESOLVE_NOMINAL_NOT_IMPLEMENTED,
             TYPE_MISMATCH,
             TYPE_UNRESOLVED_LINK,
             TYPE_UNTYPED_EXPRESSION,

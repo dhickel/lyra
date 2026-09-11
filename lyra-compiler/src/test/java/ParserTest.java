@@ -357,7 +357,9 @@ public final class ParserTest {
         expectGrammarFailure("let value = |x :I32| x", CompilerDiagnosticCodes.PARSE_INVALID_FORM);
         expectGrammarFailure("let value = Array[1,]", CompilerDiagnosticCodes.PARSE_INVALID_COMMA);
         expectGrammarFailure("let value = (foo", CompilerDiagnosticCodes.PARSE_MISSING_DELIMITER);
-        expectGrammarFailure("let value = a[0,1]", CompilerDiagnosticCodes.PARSE_INVALID_FORM);
+        check(let(parse("let value = a[0,1]").syntax(), "value").initializer()
+                        instanceof SyntaxNode.BracketApplication,
+                "non-unary brackets retain arguments for type-versus-value resolution");
         expectGrammarFailure("let value : I32 = 1",
                 CompilerDiagnosticCodes.PARSE_INVALID_ANNOTATION_SPACING);
         expectGrammarFailure("let value = (not 1 2)", CompilerDiagnosticCodes.PARSE_INVALID_OPERATOR_ARITY);
@@ -572,6 +574,11 @@ public final class ParserTest {
         @Override public Void visitTypeArgumentList(SyntaxNode.TypeArgumentList node) { return hit(); }
         @Override public Void visitPredicateBinding(SyntaxNode.PredicateBinding node) { return hit(); }
         @Override public Void visitLetBinding(SyntaxNode.LetBinding node) { return hit(); }
+        @Override public Void visitNominalDeclaration(SyntaxNode.NominalDeclaration node) { return hit(); }
+        @Override public Void visitMemberDeclaration(SyntaxNode.MemberDeclaration node) { return hit(); }
+        @Override public Void visitConstructorDeclaration(SyntaxNode.ConstructorDeclaration node) { return hit(); }
+        @Override public Void visitNamedType(SyntaxNode.NamedType node) { return hit(); }
+        @Override public Void visitBracketApplication(SyntaxNode.BracketApplication node) { return hit(); }
         @Override public Void visitReassignment(SyntaxNode.Reassignment node) { return hit(); }
 
         @Override

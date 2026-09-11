@@ -3,11 +3,13 @@ package io.mindspice.lyra.compiler.grammar;
 import io.mindspice.lyra.compiler.diagnostic.ImmutablePhaseArtifact;
 import io.mindspice.lyra.compiler.lex.LexedSource;
 import io.mindspice.lyra.compiler.lex.LiteralValue;
+import io.mindspice.lyra.compiler.lex.ModifierKind;
 import io.mindspice.lyra.compiler.lex.NumericSuffix;
 import io.mindspice.lyra.compiler.lex.Token;
 import io.mindspice.lyra.compiler.lex.TokenKind;
 import io.mindspice.lyra.compiler.source.SourceId;
 
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
 
@@ -169,7 +171,7 @@ public record GrammarProgram(
 
     private static void validateDelimitedMetadataShape(GrammarDescriptor descriptor) {
         boolean requiresDelimiters = switch (descriptor.kind()) {
-            case LAMBDA, CALLABLE_CALL, CONDITIONAL, COALESCE, MATCH, RANGE, PREFIX_ASSIGNMENT,
+            case NOMINAL_DECLARATION, LAMBDA, CALLABLE_CALL, CONDITIONAL, COALESCE, MATCH, RANGE, PREFIX_ASSIGNMENT,
                     OPERATOR_S_EXPRESSION, ARRAY_LITERAL, TUPLE_LITERAL, UNIT_LITERAL -> true;
             default -> false;
         };
@@ -179,7 +181,7 @@ public record GrammarProgram(
         int opening = descriptor.metadata().openingTokenIndex();
         int closing = descriptor.metadata().closingTokenIndex();
         boolean prefixMayPrecedeOpening = switch (descriptor.kind()) {
-            case ARRAY_LITERAL, TUPLE_LITERAL, UNIT_LITERAL, MATCH -> true;
+            case NOMINAL_DECLARATION, ARRAY_LITERAL, TUPLE_LITERAL, UNIT_LITERAL, MATCH -> true;
             default -> false;
         };
         if (opening < descriptor.startTokenIndex()
@@ -200,6 +202,12 @@ public record GrammarProgram(
         validateLeaf(descriptor, source);
         validateSequence(descriptor, source);
         for (GrammarDescriptor child : descriptor.children()) {
+            if (child.kind() == ProductionKind.NOMINAL_DECLARATION && descriptor.kind() != ProductionKind.PROGRAM
+                    || (child.kind() == ProductionKind.MEMBER_DECLARATION
+                    || child.kind() == ProductionKind.CONSTRUCTOR_DECLARATION)
+                    && descriptor.kind() != ProductionKind.NOMINAL_DECLARATION) {
+                throw new IllegalArgumentException("nominal declaration/member appears outside its syntactic scope");
+            }
             if (child.kind() == ProductionKind.IDENTIFIER
                     && source.tokens().get(child.startTokenIndex()).kind().isCallbackLoopKeyword()
                     && !(descriptor.kind() == ProductionKind.CALL_TARGET
@@ -234,7 +242,9 @@ public record GrammarProgram(
     private static void validateProductionMetadata(
             GrammarDescriptor descriptor, LexedSource source) {
         TokenKind expectedPrimary = switch (descriptor.kind()) {
-            case LET_BINDING -> TokenKind.LET;
+            case LET_BINDING, MEMBER_DECLARATION -> TokenKind.LET;
+            case NOMINAL_DECLARATION -> source.tokens().get(descriptor.startTokenIndex()).kind();
+            case CONSTRUCTOR_DECLARATION -> TokenKind.EQUAL;
             case IMPORT_DECLARATION -> TokenKind.IMPORT;
             case IMPORT_ALIAS -> TokenKind.AS;
             case REASSIGNMENT, PREFIX_ASSIGNMENT -> TokenKind.COLON_EQUAL;
@@ -270,12 +280,13 @@ public record GrammarProgram(
             throw new IllegalArgumentException(descriptor.kind() + " must not record a primary token");
         }
         int exactPrimary = switch (descriptor.kind()) {
-            case LET_BINDING, IMPORT_DECLARATION, IMPORT_ALIAS,
+            case NOMINAL_DECLARATION, MEMBER_DECLARATION, LET_BINDING, IMPORT_DECLARATION, IMPORT_ALIAS,
                     TYPE_ANNOTATION, RETURN_ANNOTATION,
                     ARRAY_LITERAL, TUPLE_LITERAL, OPERATOR_BRACKET -> descriptor.startTokenIndex();
             case LAMBDA, PREFIX_ASSIGNMENT, OPERATOR_S_EXPRESSION ->
                     descriptor.metadata().openingTokenIndex() + 1;
             case REASSIGNMENT, COALESCE, RANGE -> descriptor.children().getFirst().endTokenIndex();
+            case CONSTRUCTOR_DECLARATION -> descriptor.children().getFirst().endTokenIndex();
             case CONDITIONAL -> conditionalArrowIndex(descriptor);
             case MATCH -> descriptor.startTokenIndex() == descriptor.metadata().openingTokenIndex()
                     ? descriptor.metadata().openingTokenIndex() + 1 : descriptor.startTokenIndex() + 1;
@@ -322,6 +333,7 @@ public record GrammarProgram(
             throw new IllegalArgumentException(descriptor.kind() + " must record both delimiters or neither");
         }
         boolean allowsDelimiters = switch (descriptor.kind()) {
+            case NOMINAL_DECLARATION -> true;
             case LAMBDA, CALLABLE_CALL, CONDITIONAL, COALESCE, MATCH, RANGE, PREFIX_ASSIGNMENT,
                     OPERATOR_S_EXPRESSION, ARRAY_LITERAL, TUPLE_LITERAL, UNIT_LITERAL,
                     BLOCK, PARAMETER_LIST, ARGUMENT_LIST, IMPORT_SELECTION,
@@ -343,7 +355,7 @@ public record GrammarProgram(
         }
 
         List<Integer> expectedModifiers = switch (descriptor.kind()) {
-            case LET_BINDING, IMPORT_DECLARATION, LAMBDA, PARAMETER, TYPE_CONTRACT ->
+            case NOMINAL_DECLARATION, MEMBER_DECLARATION, LET_BINDING, IMPORT_DECLARATION, LAMBDA, PARAMETER, TYPE_CONTRACT ->
                     childTokenIndices(descriptor, ProductionKind.MODIFIER);
             case PARAMETER_LIST -> descriptor.children().stream()
                     .filter(child -> child.kind() == ProductionKind.PARAMETER)
@@ -357,7 +369,7 @@ public record GrammarProgram(
         }
 
         List<Integer> expectedOperators = switch (descriptor.kind()) {
-            case IMPORT_PATH, NAMESPACE_PATH -> separatingArrowIndices(descriptor);
+            case NAMED_TYPE, IMPORT_PATH, NAMESPACE_PATH -> separatingArrowIndices(descriptor);
             case IMPORT_DECLARATION -> importSelectionArrowIndices(descriptor);
             case MATCH_ARM -> List.of(descriptor.children().getLast().startTokenIndex() - 1);
             case NAMESPACE_DIRECT_CALL, NAMESPACE_MEMBER_ACCESS ->
@@ -398,6 +410,33 @@ public record GrammarProgram(
     private static void validateProductionChildShape(
             GrammarDescriptor descriptor, LexedSource source) {
         switch (descriptor.kind()) {
+            case NOMINAL_DECLARATION -> validateNominalDeclaration(descriptor, source);
+            case MEMBER_DECLARATION -> validateMemberDeclaration(descriptor, source);
+            case CONSTRUCTOR_DECLARATION -> {
+                requireChildCount(descriptor, 2);
+                var name = descriptor.children().getFirst();
+                var lambda = descriptor.children().getLast();
+                if (name.kind() != ProductionKind.IDENTIFIER || lambda.kind() != ProductionKind.LAMBDA
+                        || name.startTokenIndex() != descriptor.startTokenIndex()
+                        || lambda.startTokenIndex() != name.endTokenIndex() + 1
+                        || lambda.endTokenIndex() != descriptor.endTokenIndex()) {
+                    throw new IllegalArgumentException("constructor must contain a name, '=' and lambda");
+                }
+            }
+            case INDEX_ACCESS, BRACKET_APPLICATION -> {
+                requireChildCount(descriptor, 2);
+                var target = descriptor.children().getFirst();
+                var arguments = descriptor.children().getLast();
+                long arity = arguments.children().stream()
+                        .filter(child -> child.kind() == ProductionKind.ARGUMENT).count();
+                if (arguments.kind() != ProductionKind.ARGUMENT_LIST
+                        || target.startTokenIndex() != descriptor.startTokenIndex()
+                        || target.endTokenIndex() != arguments.startTokenIndex()
+                        || arguments.endTokenIndex() != descriptor.endTokenIndex()
+                        || (descriptor.kind() == ProductionKind.INDEX_ACCESS) != (arity == 1)) {
+                    throw new IllegalArgumentException("bracket application has invalid target/argument roles");
+                }
+            }
             case REASSIGNMENT -> validateReassignmentShape(descriptor);
             case PREFIX_ASSIGNMENT -> validatePrefixAssignmentShape(descriptor);
             case CONDITIONAL -> validateConditionalShape(descriptor);
@@ -422,7 +461,7 @@ public record GrammarProgram(
             case NAMESPACE_DIRECT_CALL -> validateNamespaceAccessShape(descriptor, source, true);
             case NAMESPACE_MEMBER_ACCESS -> validateNamespaceAccessShape(descriptor, source, false);
             case IMPORT_DECLARATION -> validateImportDeclarationShape(descriptor);
-            case IMPORT_PATH, NAMESPACE_PATH -> validateArrowPathShape(descriptor);
+            case NAMED_TYPE, IMPORT_PATH, NAMESPACE_PATH -> validateArrowPathShape(descriptor);
             case ARRAY_LITERAL -> validateAggregateLiteralShape(descriptor, source, "Array");
             case TUPLE_LITERAL -> validateAggregateLiteralShape(descriptor, source, "Tuple");
             case ARRAY_TYPE -> validateCompositeTypeShape(descriptor, source, "Array");
@@ -433,6 +472,89 @@ public record GrammarProgram(
             default -> {
                 // Other production layouts are validated by their sequence and role checks.
             }
+        }
+    }
+
+    private static void validateNominalDeclaration(GrammarDescriptor descriptor, LexedSource source) {
+        TokenKind keyword = source.tokens().get(descriptor.startTokenIndex()).kind();
+        if (keyword != TokenKind.STRUCT && keyword != TokenKind.CLASS) {
+            throw new IllegalArgumentException("nominal declaration must begin with struct or class");
+        }
+        int index = 0;
+        int position = descriptor.startTokenIndex() + 1;
+        var children = descriptor.children();
+        while (index < children.size() && children.get(index).kind() == ProductionKind.MODIFIER) {
+            var modifier = children.get(index++);
+            if (index > 1 || modifier.startTokenIndex() != position++
+                    || !source.tokens().get(modifier.startTokenIndex()).lexeme().equals("@pub")) {
+                throw new IllegalArgumentException("nominal declaration permits only one @pub modifier");
+            }
+        }
+        if (index >= children.size()) throw new IllegalArgumentException("nominal declaration lacks a name");
+        var name = children.get(index++);
+        String spelling = source.tokens().get(name.startTokenIndex()).lexeme();
+        if (name.kind() != ProductionKind.IDENTIFIER || name.startTokenIndex() != position
+                || !spelling.matches("[A-Z][A-Za-z0-9_]*")
+                || name.endTokenIndex() != descriptor.metadata().openingTokenIndex()) {
+            throw new IllegalArgumentException("nominal declaration has invalid name/opening roles");
+        }
+        position = descriptor.metadata().openingTokenIndex() + 1;
+        boolean constructorSeen = false;
+        for (; index < children.size(); index++) {
+            var member = children.get(index);
+            if (member.startTokenIndex() != position) {
+                throw new IllegalArgumentException("nominal members must be contiguous");
+            }
+            if (member.kind() == ProductionKind.CONSTRUCTOR_DECLARATION) {
+                if (keyword == TokenKind.STRUCT || constructorSeen
+                        || !source.tokens().get(member.startTokenIndex()).lexeme().equals(spelling)) {
+                    throw new IllegalArgumentException("invalid or duplicate same-name class constructor");
+                }
+                constructorSeen = true;
+            } else if (member.kind() != ProductionKind.MEMBER_DECLARATION) {
+                throw new IllegalArgumentException("nominal body contains a non-member");
+            }
+            position = member.endTokenIndex();
+        }
+        if (position != descriptor.metadata().closingTokenIndex()) {
+            throw new IllegalArgumentException("nominal declaration has trailing unaccounted tokens");
+        }
+    }
+
+    private static void validateMemberDeclaration(GrammarDescriptor descriptor, LexedSource source) {
+        var children = descriptor.children();
+        int index = 0;
+        int position = descriptor.startTokenIndex() + 1;
+        var modifiers = EnumSet.noneOf(ModifierKind.class);
+        while (index < children.size() && children.get(index).kind() == ProductionKind.MODIFIER) {
+            var child = children.get(index++);
+            var modifier = source.tokens().get(child.startTokenIndex()).modifier().orElse(null);
+            if (child.startTokenIndex() != position++ || modifier == null || !modifiers.add(modifier)) {
+                throw new IllegalArgumentException("member modifiers must be unique and follow let");
+            }
+        }
+        if (children.size() - index < 2 || children.size() - index > 3) {
+            throw new IllegalArgumentException("member needs a name, type and optional initializer");
+        }
+        var name = children.get(index++);
+        var annotation = children.get(index++);
+        if (name.kind() != ProductionKind.IDENTIFIER || name.startTokenIndex() != position
+                || annotation.kind() != ProductionKind.TYPE_ANNOTATION
+                || annotation.startTokenIndex() != name.endTokenIndex()) {
+            throw new IllegalArgumentException("invalid member name/type roles");
+        }
+        position = annotation.endTokenIndex();
+        if (index < children.size()) {
+            var initializer = children.get(index);
+            requireToken(source.tokens().get(position), TokenKind.EQUAL, descriptor.kind());
+            if (initializer.startTokenIndex() != position + 1
+                    || initializer.kind() == ProductionKind.COMPACT_LAMBDA) {
+                throw new IllegalArgumentException("invalid member initializer role");
+            }
+            position = initializer.endTokenIndex();
+        }
+        if (position != descriptor.endTokenIndex()) {
+            throw new IllegalArgumentException("member contains unaccounted tokens");
         }
     }
 
@@ -924,6 +1046,10 @@ public record GrammarProgram(
         TokenKind openingKind = source.tokens().get(opening).kind();
         TokenKind closingKind = source.tokens().get(closing).kind();
         switch (descriptor.kind()) {
+            case NOMINAL_DECLARATION -> {
+                requireToken(source.tokens().get(opening), TokenKind.LEFT_BRACE, descriptor.kind());
+                requireToken(source.tokens().get(closing), TokenKind.RIGHT_BRACE, descriptor.kind());
+            }
             case LAMBDA, CALLABLE_CALL, CONDITIONAL, COALESCE, RANGE, PREFIX_ASSIGNMENT,
                     OPERATOR_S_EXPRESSION, REASSIGNMENT -> {
                 requireToken(source.tokens().get(opening), TokenKind.LEFT_PAREN, descriptor.kind());

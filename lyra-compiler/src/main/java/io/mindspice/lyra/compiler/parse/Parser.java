@@ -99,6 +99,9 @@ public final class Parser {
                 case IMPORT_ITEM -> replayImportItem(descriptor);
 
                 case LET_BINDING -> replayLetBinding(descriptor);
+                case NOMINAL_DECLARATION -> replayNominalDeclaration(descriptor);
+                case MEMBER_DECLARATION -> replayMemberDeclaration(descriptor);
+                case CONSTRUCTOR_DECLARATION -> replayConstructorDeclaration(descriptor);
                 case REASSIGNMENT -> replayReassignment(descriptor);
                 case PREFIX_ASSIGNMENT -> replayPrefixAssignment(descriptor);
                 case BLOCK -> replayBlock(descriptor);
@@ -123,6 +126,8 @@ public final class Parser {
                 case RETURN_ANNOTATION -> replayReturnAnnotation(descriptor);
                 case TYPE_CONTRACT -> replayTypeContract(descriptor);
                 case PRIMITIVE_TYPE -> replayPrimitiveType(descriptor);
+                case NAMED_TYPE -> new SyntaxNode.NamedType(
+                        (SyntaxNode.NamespacePath) replayNamespacePath(descriptor), sourceView.span(descriptor));
                 case ARRAY_TYPE -> replayArrayType(descriptor);
                 case RANGE_TYPE -> replayCompositeType(descriptor, "Range");
                 case TUPLE_TYPE -> replayTupleType(descriptor);
@@ -139,6 +144,7 @@ public final class Parser {
                 case NAMESPACE_DIRECT_CALL -> replayNamespaceDirectCall(descriptor);
                 case NAMESPACE_PATH -> replayNamespacePath(descriptor);
                 case INDEX_ACCESS -> replayIndexAccess(descriptor);
+                case BRACKET_APPLICATION -> replayBracketApplication(descriptor);
 
                 case ARGUMENT_LIST -> replayArgumentList(descriptor);
                 case ARGUMENT -> replayArgument(descriptor);
@@ -296,6 +302,70 @@ public final class Parser {
             }
             return new SyntaxNode.ImportItem(
                     name, Optional.ofNullable(alias), sourceView.span(descriptor));
+        }
+
+        private Object replayNominalDeclaration(GrammarDescriptor descriptor) {
+            TokenKind keyword = source.tokens().get(descriptor.startTokenIndex()).kind();
+            SourceSpan keywordSpan = cursor.consume(keyword, descriptor);
+            var children = descriptor.children();
+            int index = 0;
+            List<SyntaxNode.Modifier> modifiers = new ArrayList<>();
+            while (index < children.size() && children.get(index).kind() == ProductionKind.MODIFIER) {
+                var child = children.get(index++);
+                modifiers.add(asModifier(replay(child), child));
+            }
+            var nameDescriptor = children.get(index++);
+            var name = asIdentifier(replay(nameDescriptor), nameDescriptor);
+            SourceSpan opening = cursor.consume(TokenKind.LEFT_BRACE, descriptor);
+            List<SyntaxNode.MemberDeclaration> members = new ArrayList<>();
+            SyntaxNode.ConstructorDeclaration constructor = null;
+            for (; index < children.size(); index++) {
+                var child = children.get(index);
+                Object value = replay(child);
+                if (value instanceof SyntaxNode.MemberDeclaration member) members.add(member);
+                else if (value instanceof SyntaxNode.ConstructorDeclaration declaration && constructor == null) {
+                    constructor = declaration;
+                } else throw invariant("invalid nominal body child", child);
+            }
+            SourceSpan closing = cursor.consume(TokenKind.RIGHT_BRACE, descriptor);
+            return new SyntaxNode.NominalDeclaration(keyword == TokenKind.STRUCT
+                    ? SyntaxNode.NominalKind.STRUCT : SyntaxNode.NominalKind.CLASS,
+                    modifiers, name, members, Optional.ofNullable(constructor), keywordSpan,
+                    opening, closing, sourceView.span(descriptor));
+        }
+
+        private Object replayMemberDeclaration(GrammarDescriptor descriptor) {
+            SourceSpan let = cursor.consume(TokenKind.LET, descriptor);
+            var children = descriptor.children();
+            int index = 0;
+            List<SyntaxNode.Modifier> modifiers = new ArrayList<>();
+            while (index < children.size() && children.get(index).kind() == ProductionKind.MODIFIER) {
+                var child = children.get(index++);
+                modifiers.add(asModifier(replay(child), child));
+            }
+            var nameDescriptor = children.get(index++);
+            var name = asIdentifier(replay(nameDescriptor), nameDescriptor);
+            var annotationDescriptor = children.get(index++);
+            var annotation = asTypeAnnotation(replay(annotationDescriptor), annotationDescriptor);
+            SourceSpan equals = null;
+            SyntaxNode.Expression initializer = null;
+            if (index < children.size()) {
+                equals = cursor.consume(TokenKind.EQUAL, descriptor);
+                var child = children.get(index);
+                initializer = asExpression(replay(child), child);
+            }
+            return new SyntaxNode.MemberDeclaration(modifiers, name, annotation,
+                    Optional.ofNullable(initializer), let, Optional.ofNullable(equals), sourceView.span(descriptor));
+        }
+
+        private Object replayConstructorDeclaration(GrammarDescriptor descriptor) {
+            var nameDescriptor = descriptor.children().getFirst();
+            var name = asIdentifier(replay(nameDescriptor), nameDescriptor);
+            SourceSpan equals = cursor.consume(TokenKind.EQUAL, descriptor);
+            var lambda = descriptor.children().getLast();
+            return new SyntaxNode.ConstructorDeclaration(name,
+                    cast(replay(lambda), SyntaxNode.Lambda.class, lambda, "constructor lambda"),
+                    equals, sourceView.span(descriptor));
         }
 
         private Object replayLetBinding(GrammarDescriptor descriptor) {
@@ -1000,6 +1070,13 @@ public final class Parser {
                 }
             }
             return new SyntaxNode.NamespacePath(segments, arrows, sourceView.span(descriptor));
+        }
+
+        private Object replayBracketApplication(GrammarDescriptor descriptor) {
+            var target = descriptor.children().getFirst();
+            var arguments = descriptor.children().getLast();
+            return new SyntaxNode.BracketApplication(asExpression(replay(target), target),
+                    asArgumentList(replay(arguments), arguments), sourceView.span(descriptor));
         }
 
         private Object replayIndexAccess(GrammarDescriptor descriptor) {

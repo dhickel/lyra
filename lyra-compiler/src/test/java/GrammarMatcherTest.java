@@ -323,7 +323,8 @@ public final class GrammarMatcherTest {
         expectFailure("let x = Array[1,]", CompilerDiagnosticCodes.PARSE_INVALID_COMMA);
         expectFailure("let x = Array[,1]", CompilerDiagnosticCodes.PARSE_INVALID_COMMA);
         expectFailure("let x = Array[1,,2]", CompilerDiagnosticCodes.PARSE_INVALID_COMMA);
-        expectFailure("let x = a[0,1]", CompilerDiagnosticCodes.PARSE_INVALID_FORM);
+        check(collectKinds(success("let x = a[0,1]").root()).contains(ProductionKind.BRACKET_APPLICATION),
+                "non-unary brackets defer construction-versus-indexing legality to resolution");
         expectFailure("let x = ::f", CompilerDiagnosticCodes.PARSE_INVALID_ACCESSOR);
         expectFailure("let x = receiver::f", CompilerDiagnosticCodes.PARSE_INVALID_ACCESSOR);
         expectFailure("let x = (f", CompilerDiagnosticCodes.PARSE_MISSING_DELIMITER);
@@ -344,7 +345,7 @@ public final class GrammarMatcherTest {
         expectFailure("import game->math {name}", CompilerDiagnosticCodes.PARSE_UNEXPECTED_TOKEN);
         expectFailure("import game->math->{name,other}", CompilerDiagnosticCodes.PARSE_INVALID_COMMA);
         expectFailure("let x = 1 import game->math", CompilerDiagnosticCodes.PARSE_IMPORT_HEADER);
-        expectFailure("let x :Unknown = 1", CompilerDiagnosticCodes.PARSE_UNEXPECTED_TOKEN);
+        success("let x :Unknown = 1"); // Named type validity now belongs to resolution.
         expectFailure("let x = Array<I32", CompilerDiagnosticCodes.PARSE_MISSING_DELIMITER);
         expectFailure("let x = Tuple<>[1]", CompilerDiagnosticCodes.PARSE_INVALID_TYPE_FORM);
         expectFailure("let x = Fn<;I32>", CompilerDiagnosticCodes.PARSE_INVALID_TYPE_FORM);
@@ -769,7 +770,7 @@ public final class GrammarMatcherTest {
 
     private static void deferredProductionsAreAbsent() {
         GrammarProgram program = success(
-                "let className = class let matchName = Match let iterName = Iter "
+                "let className = Class let matchName = Match let iterName = Iter "
                         + "let notOperator = (nor 1 2)");
         Set<ProductionKind> kinds = collectKinds(program.root());
         check(kinds.stream().noneMatch(kind -> kind.name().equals("MATCH") || kind.name().equals("ITER")),

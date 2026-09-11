@@ -723,6 +723,11 @@ public final class SemanticResolver {
                 Optional<DeclarationId> ownerFunction) {
             if (form instanceof SyntaxNode.LetBinding let) {
                 collectLet(let, scope, work, topLevel, ownerFunction);
+            } else if (form instanceof SyntaxNode.NominalDeclaration declaration) {
+                // A syntax checkpoint must fail closed, not publish an incomplete graph
+                // or report a valid declaration as a compiler invariant violation.
+                fail(CompilerDiagnosticCodes.RESOLVE_NOMINAL_NOT_IMPLEMENTED, declaration.span(),
+                        "nominal declaration syntax is implemented; nominal semantic and backend support is unfinished");
             } else if (form instanceof SyntaxNode.Expression expression) {
                 collectExpression(expression, scope, work, Optional.empty());
             } else {
@@ -920,6 +925,11 @@ public final class SemanticResolver {
             } else if (expression instanceof SyntaxNode.IndexAccess access) {
                 collectExpression(access.receiver(), scope, work, Optional.empty());
                 collectExpression(access.index(), scope, work, Optional.empty());
+            } else if (expression instanceof SyntaxNode.BracketApplication application) {
+                collectExpression(application.target(), scope, work, Optional.empty());
+                for (var argument : application.arguments().expressions()) {
+                    collectExpression(argument, scope, work, Optional.empty());
+                }
             } else if (expression instanceof SyntaxNode.OperatorSExpression operator) {
                 for (SyntaxNode.Expression operand : operator.operands()) {
                     collectExpression(operand, scope, work, Optional.empty());
@@ -1217,6 +1227,11 @@ public final class SemanticResolver {
                                 primitive.span(), "unknown primitive type: " + primitive.name());
                         return PrimitiveType.UNIT;
                     }
+                } else if (syntax instanceof SyntaxNode.NamedType named) {
+                    fail(CompilerDiagnosticCodes.RESOLVE_UNRESOLVED_NAME, named.span(),
+                            "unresolved type: " + named.path().segments().stream()
+                                    .map(SyntaxNode.Identifier::name).collect(java.util.stream.Collectors.joining("->")));
+                    return PrimitiveType.UNIT;
                 } else if (syntax instanceof SyntaxNode.ArrayType array) {
                     type = ArrayType.of(resolveType(array.elementType(), TypePosition.NESTED_VALUE));
                 } else if (syntax instanceof SyntaxNode.RangeType range) {
@@ -2005,6 +2020,14 @@ public final class SemanticResolver {
                 resolveExpression(access.index(), scope, work, lambda, currentDeclaration, Optional.empty());
                 addLink(new SyntaxLink(access.span(), SyntaxLinkKind.ACCESS));
                 return indexUse(receiver, access.index());
+            }
+            if (expression instanceof SyntaxNode.BracketApplication application) {
+                resolveExpression(application.target(), scope, work, lambda, currentDeclaration, Optional.empty());
+                if (!failed()) {
+                    fail(CompilerDiagnosticCodes.RESOLVE_INVALID_SIGNATURE, application.arguments().span(),
+                            "value indexing requires exactly one index expression");
+                }
+                return Use.empty();
             }
             if (expression instanceof SyntaxNode.OperatorSExpression operator) {
                 List<Use> operands = resolveOperatorOperands(

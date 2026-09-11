@@ -24,7 +24,7 @@ Outside current scope are variants, destructuring and type patterns, inheritance
 
 - Identifiers are case-sensitive ASCII names matching `[A-Za-z_][A-Za-z0-9_]*`.
 - Punctuation is never part of an identifier.
-- `iter`, `while`, `match` and `when` are reserved keywords. `_` remains an ordinary identifier except in the explicit match wildcard positions below; it is not a value or an `Any` type in those positions.
+- `iter`, `while`, `match`, `when`, `struct` and `class` are reserved keywords. `_` remains an ordinary identifier except in the explicit match wildcard positions below; it is not a value or an `Any` type in those positions.
 - Whitespace separates tokens and is otherwise insignificant except for type annotations.
 - Commas are optional separators only inside delimited parameter, argument, type-argument, tuple, and array lists. They are not globally ignored.
 - `//` begins a line comment.
@@ -140,6 +140,12 @@ Closures capture bindings. Immutable captures retain their selected value/refere
 The owner accepted the following extension on 2026-09-11. Completion requires the
 corresponding backend and session gates; parsing alone does not complete it.
 
+Implementation status: lexical/grammar/AST support is implemented. Nominal
+resolution, initialization/flow certification, typed IR, JVM and session support
+remain unfinished. The resolver fails closed with `LYC-RESOLVE-026` for nominal
+declarations rather than publishing a partial artifact. That diagnostic is a
+temporary implementation boundary, not conformance for a valid nominal program.
+
 ```lyra
 struct Vec2 {
     let @mut x :F64
@@ -192,6 +198,11 @@ Construction and initialization:
 
 - `Type[arguments]` constructs a new instance. Arguments are exact positional
   arguments, evaluated once left-to-right before instance initialization.
+  A qualified constructor uses existing namespace value access, e.g.
+  `model->:.Counter[0]`; a qualified type annotation uses `:model->Counter`.
+  Syntax alone does not distinguish a unary constructor application from indexing,
+  or determine whether a type name/alias exists. Invalid value-index arity and
+  unknown named types are resolution errors, not capitalization-based parse errors.
 - A struct's uninitialized fields are constructor parameters in declaration order.
   Fields with initializers initialize themselves and are not optional arguments.
 - A class may contain one `Name = (=> |typed parameters| body)` constructor, using

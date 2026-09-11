@@ -68,6 +68,15 @@ class LanguageServiceTest {
                     style.css().equals("syntax-keyword") && style.start() == offset));
         }
     }
+    @Test void nominalKeywordsAreHighlightedEvenBeforeSemanticSupportIsComplete() {
+        String source = "struct Data { let value :I32 } class Counter {}";
+        var result = analyze(source, Map.of());
+        for (String keyword : List.of("struct", "class")) {
+            assertTrue(result.styles().stream().anyMatch(style -> style.css().equals("syntax-keyword")
+                    && style.start() == source.indexOf(keyword)));
+        }
+        // Highlighting is syntax evidence, not a claim that these declarations execute.
+    }
     @Test void aggregatesContainingFunctionsAreListedAsDataBindings() {
         var result = analyze("let answer :Fn<;I32> = (=> || 42)\nlet functions :Array<Fn<;I32>> = Array<Fn<;I32>>[answer]", Map.of());
         assertTrue(result.valid(), result.diagnostics().toString());

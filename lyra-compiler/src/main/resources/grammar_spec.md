@@ -44,7 +44,7 @@ written `:Type`; whitespace remains forbidden after the colon.
 ## Compilation units and imports
 
 ```ebnf
-program            ::= import-declaration* form* EOF ;
+program            ::= import-declaration* (nominal-declaration | form)* EOF ;
 form               ::= let-binding | reassignment | expression ;
 
 import-declaration ::= 'import' ['@pub'] import-path
@@ -57,6 +57,26 @@ import-item        ::= identifier [ 'as' identifier ] ;
 Imports must form the initial header.  `@pub` is accepted only on the
 selective-import alternative.  A selective import has at least one item.
 The grammar does not decide whether a module, export, alias, or member exists.
+
+## Nominal declarations (syntax implemented; execution incomplete)
+
+```ebnf
+nominal-declaration ::= 'struct' ['@pub'] capitalized-identifier
+                        '{' member-declaration* '}'
+                      | 'class' ['@pub'] capitalized-identifier
+                        '{' (member-declaration | constructor-declaration)* '}' ;
+member-declaration  ::= 'let' modifier* identifier named-annotation ['=' expression] ;
+constructor-declaration ::= enclosing-class-name '=' lambda ;
+named-type          ::= identifier ('->' identifier)* ;
+```
+
+`struct` and `class` are reserved; declarations are module-level only. Members
+require explicit types; ordinary let bindings still require initializers. A class
+has at most one same-name constructor. Structs have none. Constructor parameter/
+return contracts, member uniqueness, privacy, data-only restrictions and definite
+initialization belong to semantics. The current semantic pipeline explicitly
+rejects nominal declarations pending its implementation; this syntax is not an
+executable feature claim.
 
 ## Bindings, assignment, blocks, and lambdas
 
@@ -114,7 +134,7 @@ parenthesized-expression
                      | expression ('..' | '...') expression ':' expression ')'
                      | expression expression* ')' ) ;
 
-postfix            ::= '[' expression ']'
+postfix            ::= argument-list
                      | ':.' member-name
                      | '::' identifier argument-list
                      | namespace-suffix ;
@@ -200,7 +220,8 @@ type-base           ::= primitive-type
                        | array-type
                        | range-type
                        | tuple-type
-                       | function-type ;
+                       | function-type
+                       | named-type ;
 ```
 
 `Array[]` and `Tuple[]` are the Unit spellings.  `Array<T>[]` is an empty
@@ -211,12 +232,19 @@ applications are explicit conversions; their value/type legality is semantic.
 occur in nested contracts exactly as specified by the living language
 contract; `@pub` is not a nested contract modifier.
 
+Unary postfix brackets retain an index-shaped syntax node until type/value
+resolution; zero/multiple arguments retain a bracket-application node. Capitalization
+does not distinguish construction from indexing. Qualified construction uses the
+existing namespace value accessor, e.g. `model->:.Counter[0]`, while a named type
+annotation uses `:model->Counter`. Unknown type names are resolution failures.
+
 ## Excluded syntax
 
-There are no grammar productions for classes, records, variants, destructuring
-or type patterns, dedicated iteration, user generics, macros, `throw`, `try`, `catch`, `finally`, `Any`,
+There are no grammar productions for variants, destructuring
+or type patterns, dedicated iteration statements, user generics, macros, `throw`, `try`, `catch`, `finally`,
 varargs/default/named arguments, bitwise or shift operators, or `nor`/`nand`/
 `xnor`.  Their current lexical spellings either remain ordinary identifiers or
 produce the ordinary lexical/syntax diagnostic required by the living
 specifications; they are never represented by a deferred-production
-placeholder.
+placeholder. `Any` has no special meaning; as with any undeclared named type,
+attempting to use it as a type fails resolution.

@@ -52,7 +52,7 @@ final class Phase17SmokeTest {
     void facadeSurfaceIsTypedReservedAndOptionsAware() throws Exception {
         TypedIr ir = lower("let @pub close :Fn<;I32> = (=> | | 7) "
                 + "let @pub equals :Fn<;I32> = (=> | | 9) "
-                + "let @pub class :Fn<;I32> = (=> | | 8) "
+                + "let @pub public :Fn<;I32> = (=> | | 8) "
                 + "let @pub @mut answer :I32 = 1");
         GeneratedTypePlan plan = GeneratedTypePlanner.plan(ir);
         ClassLoader loader = defineAll(JvmBytecodeEmitter.emit(ir, plan));
@@ -64,10 +64,10 @@ final class Phase17SmokeTest {
         assertTrue(Arrays.stream(facade.getDeclaredFields())
                 .allMatch(field -> Modifier.isPrivate(field.getModifiers())));
         assertNotNull(facade.getMethod("invoke$close"));
-        assertNotNull(facade.getMethod("lyra$class"));
+        assertNotNull(facade.getMethod("lyra$public"));
         assertNotNull(facade.getMethod("get$answer"));
         assertNotNull(facade.getMethod("set$answer", int.class));
-        assertThrows(NoSuchMethodException.class, () -> facade.getMethod("set$class", int.class));
+        assertThrows(NoSuchMethodException.class, () -> facade.getMethod("set$public", int.class));
         assertEquals(facade, facade.getMethod("$lyra$create").getReturnType());
         assertEquals(facade, facade.getMethod("$lyra$create", RuntimeOptions.class).getReturnType());
 
@@ -76,15 +76,15 @@ final class Phase17SmokeTest {
         assertEquals(4, metadata.exports().size());
         assertEquals(metadata, io.mindspice.lyra.runtime.ArtifactMetadataReader
                 .read(metadata.canonicalUtf8()));
-        assertEquals("lyra$class", metadata.exports().stream()
-                .filter(export -> export.name().equals("class"))
+        assertEquals("lyra$public", metadata.exports().stream()
+                .filter(export -> export.name().equals("public"))
                 .findFirst().orElseThrow().javaName());
 
         Object instance = withOptions.invoke(null, RuntimeOptions.defaults());
         assertEquals(1, facade.getMethod("get$answer").invoke(instance));
         assertEquals(7, facade.getMethod("invoke$close").invoke(instance));
         assertEquals(9, facade.getMethod("invoke$equals").invoke(instance));
-        assertEquals(8, facade.getMethod("lyra$class").invoke(instance));
+        assertEquals(8, facade.getMethod("lyra$public").invoke(instance));
         facade.getMethod("set$answer", int.class).invoke(instance, 9);
         assertEquals(9, facade.getMethod("get$answer").invoke(instance));
         facade.getMethod("close").invoke(instance);

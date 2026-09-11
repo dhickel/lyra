@@ -108,6 +108,14 @@ public final class GrammarMatcher {
         }
 
         private GrammarDescriptor parseForm(boolean inTopLevel) {
+            if (at(TokenKind.STRUCT) || at(TokenKind.CLASS)) {
+                if (!inTopLevel) {
+                    fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, current,
+                            "struct and class declarations are module-level forms");
+                    return null;
+                }
+                return parseNominalDeclaration();
+            }
             if (at(TokenKind.IMPORT)) {
                 fail(
                         CompilerDiagnosticCodes.PARSE_IMPORT_HEADER,
@@ -140,6 +148,69 @@ public final class GrammarMatcher {
         }
 
         private GrammarDescriptor parseLet(boolean inTopLevel) {
+            return parseLet(inTopLevel, false);
+        }
+
+        private GrammarDescriptor parseNominalDeclaration() {
+            int keyword = advance();
+            boolean struct = token(keyword).kind() == TokenKind.STRUCT;
+            List<Integer> modifiers = readModifiers(EnumSet.of(ModifierKind.PUBLIC), true, "type declaration");
+            if (modifiers == null) return null;
+            if (!at(TokenKind.IDENTIFIER) || !token(current).lexeme().matches("[A-Z][A-Za-z0-9_]*")) {
+                failExpected("a capitalized type name");
+                return null;
+            }
+            GrammarDescriptor name = leaf(ProductionKind.IDENTIFIER, advance());
+            if (!at(TokenKind.LEFT_BRACE)) {
+                failExpected("'{' after a type name");
+                return null;
+            }
+            int opening = advance();
+            List<GrammarDescriptor> children = new ArrayList<>();
+            modifiers.forEach(index -> children.add(leaf(ProductionKind.MODIFIER, index)));
+            children.add(name);
+            boolean constructorSeen = false;
+            while (!at(TokenKind.RIGHT_BRACE)) {
+                if (at(TokenKind.EOF)) {
+                    failMissingDelimiter("'}' to close a type declaration");
+                    return null;
+                }
+                if (at(TokenKind.LET)) {
+                    GrammarDescriptor member = parseLet(true, true);
+                    if (member == null) return null;
+                    children.add(member);
+                } else if (!struct && !constructorSeen && at(TokenKind.IDENTIFIER)
+                        && token(current).lexeme().equals(token(name.startTokenIndex()).lexeme())) {
+                    int start = current;
+                    GrammarDescriptor constructorName = leaf(ProductionKind.IDENTIFIER, advance());
+                    if (!at(TokenKind.EQUAL)) {
+                        failExpected("'=' after the constructor name");
+                        return null;
+                    }
+                    int equals = advance();
+                    GrammarDescriptor lambda = parseExpression();
+                    if (lambda == null) return null;
+                    if (lambda.kind() != ProductionKind.LAMBDA) {
+                        fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, lambda.startTokenIndex(),
+                                "a constructor must be a full lambda expression");
+                        return null;
+                    }
+                    children.add(descriptor(ProductionKind.CONSTRUCTOR_DECLARATION, start,
+                            lambda.endTokenIndex(), List.of(constructorName, lambda),
+                            metadata(-1, -1, equals, List.of(), List.of(), List.of())));
+                    constructorSeen = true;
+                } else {
+                    fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, current,
+                            "expected a let member or the single same-name class constructor");
+                    return null;
+                }
+            }
+            int closing = advance();
+            return descriptor(ProductionKind.NOMINAL_DECLARATION, keyword, closing + 1, children,
+                    metadata(opening, closing, keyword, List.of(), modifiers, List.of()));
+        }
+
+        private GrammarDescriptor parseLet(boolean inTopLevel, boolean member) {
             int start = current;
             int letToken = advance();
             List<Integer> modifierIndices = readModifiers(
@@ -161,6 +232,19 @@ public final class GrammarMatcher {
                 if (annotation == null) {
                     return null;
                 }
+            }
+            if (member && annotation == null) {
+                fail(CompilerDiagnosticCodes.PARSE_INVALID_TYPE_FORM, name.startTokenIndex(),
+                        "a member requires an explicit type annotation");
+                return null;
+            }
+            if (member && !at(TokenKind.EQUAL)) {
+                List<GrammarDescriptor> children = new ArrayList<>();
+                modifierIndices.forEach(index -> children.add(leaf(ProductionKind.MODIFIER, index)));
+                children.add(name);
+                children.add(annotation);
+                return descriptor(ProductionKind.MEMBER_DECLARATION, start, annotation.endTokenIndex(), children,
+                        metadata(-1, -1, letToken, List.of(), modifierIndices, List.of()));
             }
             if (!at(TokenKind.EQUAL)) {
                 failExpected("'=' after a binding name");
@@ -189,7 +273,7 @@ public final class GrammarMatcher {
             }
             children.add(initializer);
             return descriptor(
-                    ProductionKind.LET_BINDING,
+                    member ? ProductionKind.MEMBER_DECLARATION : ProductionKind.LET_BINDING,
                     start,
                     initializer.endTokenIndex(),
                     children,
@@ -1164,14 +1248,28 @@ public final class GrammarMatcher {
             if (modifiers == null) {
                 return null;
             }
-            if (!at(TokenKind.TYPE_NAME)) {
-                failExpected("a built-in type name");
+            if (!at(TokenKind.TYPE_NAME) && !at(TokenKind.IDENTIFIER)) {
+                failExpected("a type name");
                 return null;
             }
             int baseToken = advance();
             String spelling = tokens.get(baseToken).lexeme();
             GrammarDescriptor base;
-            if (spelling.equals("Array") || spelling.equals("Range")
+            if (token(baseToken).kind() == TokenKind.IDENTIFIER) {
+                List<GrammarDescriptor> segments = new ArrayList<>();
+                List<Integer> arrows = new ArrayList<>();
+                segments.add(leaf(ProductionKind.IDENTIFIER, baseToken));
+                while (at(TokenKind.ARROW)) {
+                    arrows.add(advance());
+                    if (!at(TokenKind.IDENTIFIER)) {
+                        failExpected("a type namespace segment after '->'");
+                        return null;
+                    }
+                    segments.add(leaf(ProductionKind.IDENTIFIER, advance()));
+                }
+                base = descriptor(ProductionKind.NAMED_TYPE, baseToken, current, segments,
+                        metadata(-1, -1, -1, List.of(), List.of(), arrows));
+            } else if (spelling.equals("Array") || spelling.equals("Range")
                     || spelling.equals("Tuple") || spelling.equals("Fn")) {
                 if (!at(TokenKind.LESS)) {
                     fail(
@@ -1545,15 +1643,9 @@ public final class GrammarMatcher {
                     if (arguments == null) {
                         return null;
                     }
-                    if (countKind(arguments.children(), ProductionKind.ARGUMENT) != 1) {
-                        fail(
-                                CompilerDiagnosticCodes.PARSE_INVALID_FORM,
-                                arguments.metadata().openingTokenIndex(),
-                                "index access requires exactly one index expression");
-                        return null;
-                    }
                     base = descriptor(
-                            ProductionKind.INDEX_ACCESS,
+                            countKind(arguments.children(), ProductionKind.ARGUMENT) == 1
+                                    ? ProductionKind.INDEX_ACCESS : ProductionKind.BRACKET_APPLICATION,
                             base.startTokenIndex(),
                             arguments.endTokenIndex(),
                             List.of(base, arguments),
@@ -1919,7 +2011,7 @@ public final class GrammarMatcher {
         }
 
         private boolean typeStart() {
-            return at(TokenKind.TYPE_NAME) || at(TokenKind.MODIFIER);
+            return at(TokenKind.TYPE_NAME) || at(TokenKind.IDENTIFIER) || at(TokenKind.MODIFIER);
         }
 
         private TokenKind peekKind(int lookahead) {

@@ -1,2 +1,2 @@
-// excluded	reject	-	LYC-RESOLVE-013	class
-class Thing {}
+// excluded	reject	-	LYC-PARSE-001	inheritance
+class Thing :Parent {}
