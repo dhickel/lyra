@@ -51,6 +51,14 @@ final class SnapshotReader {
         if (value == null) return leaf(type, new ValueSnapshot.Nil());
         LyraType base = type.baseType();
         if (base instanceof PrimitiveType primitive) return scalar(type, primitive, value);
+        if (base instanceof io.mindspice.lyra.runtime.RangeType rangeType) {
+            if (!(value instanceof io.mindspice.lyra.runtime.LyraRange range)
+                    || range.bits() != ((PrimitiveType) rangeType.elementType()).bitWidth()) {
+                throw new LyraLinkException("range result does not match its element width");
+            }
+            return leaf(type, new ValueSnapshot.Scalar(ScalarKind.RANGE,
+                    "(" + range.start() + (range.inclusive() ? "..." : "..") + range.end() + ":" + range.step() + ")"));
+        }
         if (base instanceof FunctionType function) {
             if (!(value instanceof LyraClosure closure) || !generatedClasses.contains(value.getClass().getName())) {
                 throw new LyraLinkException("result is not a generated Lyra closure");

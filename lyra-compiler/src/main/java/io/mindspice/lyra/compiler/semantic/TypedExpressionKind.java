@@ -11,6 +11,8 @@ public enum TypedExpressionKind {
     COALESCE,
     MATCH,
     RANGE,
+    ITER,
+    WHILE,
     LAMBDA,
     CALLABLE_CALL,
     DIRECT_CALL,

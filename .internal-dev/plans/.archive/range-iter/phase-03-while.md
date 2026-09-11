@@ -2,7 +2,8 @@
 
 The owner authorized while with the same function/callback approach as iter.
 Reserved keyword, both call spellings and parser boundaries are implemented.
-The repeated-effect machinery described in phase-02 remains unfinished.
+The shared repeated-effect machinery and executable JVM integration described
+in phase-02 are complete as of 2026-09-11; see the backend closeout records.
 
 # Goal
 
@@ -45,5 +46,5 @@ prove these execution contracts.
 
 # Exit Criteria
 
-All semantic, emitted execution, failure and persistence tests pass alongside the
-shared iter implementation. Until then this is an explicitly unfinished phase.
+All semantic, emitted execution, failure and persistence tests must pass alongside
+the shared iter implementation. This criterion is met in the backend closeout.

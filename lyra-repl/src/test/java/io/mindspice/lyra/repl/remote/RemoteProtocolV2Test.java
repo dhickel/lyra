@@ -206,6 +206,15 @@ class RemoteProtocolV2Test {
     }
 
     @Test
+    void rangeSnapshotsRoundTripWithoutTraversingTheirElements() throws Exception {
+        var snapshot = new ProtocolMessage.ValueSnapshot("Range<I64>", new ProtocolMessage.Scalar(
+                "RANGE", "(-9223372036854775808...9223372036854775807:1)"));
+        var result = new ProtocolMessage.Result(UUID.randomUUID(), 1, ProtocolMessage.RemoteStatus.SUCCESS,
+                0, 0, List.of(), Optional.of(snapshot), Optional.empty(), Optional.empty());
+        assertEquals(result, ProtocolCodec.decode(ProtocolCodec.encode(result)));
+    }
+
+    @Test
     void positiveSubMillisecondClientTimeoutsBecomeFiniteSocketTimeouts() {
         RemoteClientOptions options = RemoteClientOptions.builder()
                 .connectTimeout(Duration.ofNanos(1))

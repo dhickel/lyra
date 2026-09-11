@@ -2220,6 +2220,7 @@ public final class TypeChecker {
         }
 
         private ExprResult checkCallableCall(SyntaxNode.CallableCall call, ModuleId moduleId) {
+            if (CallbackLoop.of(call).isPresent()) return checkLoop(call, moduleId);
             ExprResult target = checkExpression(call.target(), Optional.empty(), moduleId);
             if (target == null) {
                 return null;
@@ -2247,6 +2248,7 @@ public final class TypeChecker {
         }
 
         private ExprResult checkDirectCall(SyntaxNode.DirectCall call, ModuleId moduleId) {
+            if (CallbackLoop.of(call).isPresent()) return checkLoop(call, moduleId);
             if (call.receiver().isPresent()) {
                 ExprResult receiver = checkExpression(call.receiver().orElseThrow(), Optional.empty(), moduleId);
                 if (receiver == null) {
@@ -2285,6 +2287,39 @@ public final class TypeChecker {
                     reference.targetDeclaration(), Optional.empty(), Optional.empty(), Optional.empty(),
                     List.of(), Optional.empty()));
         }
+        private ExprResult checkLoop(SyntaxNode.Expression syntax, ModuleId moduleId) {
+            CallbackLoop loop = CallbackLoop.of(syntax).orElseThrow();
+            List<SyntaxNode.Expression> arguments = CallbackLoop.arguments(syntax);
+            if (arguments.size() != 2) {
+                fail(CompilerDiagnosticCodes.TYPE_MISMATCH, syntax.span(), "callback loops require two arguments");
+                return null;
+            }
+            ExprResult first = checkExpression(arguments.getFirst(), loop == CallbackLoop.WHILE
+                    ? Optional.of(CallbackLoop.predicateType()) : Optional.empty(), moduleId);
+            if (first == null) return null;
+            Optional<LyraType> expected = Optional.empty();
+            if (loop == CallbackLoop.WHILE || CallbackLoop.anonymousArity(arguments.getLast()) == 0) {
+                expected = Optional.of(CallbackLoop.actionType());
+            } else if (CallbackLoop.anonymousArity(arguments.getLast()) > 0
+                    && first.type() instanceof RangeType range) {
+                expected = Optional.of(new FunctionType(List.of(range.elementType()), PrimitiveType.UNIT));
+            }
+            ExprResult action = checkExpression(arguments.getLast(), expected, moduleId);
+            if (action == null) return null;
+            TypedExpressionKind kind = loop == CallbackLoop.ITER ? TypedExpressionKind.ITER : TypedExpressionKind.WHILE;
+            if (!CallbackLoop.valid(kind, PrimitiveType.UNIT, List.of(first.type(), action.type()))) {
+                fail(CompilerDiagnosticCodes.TYPE_MISMATCH, syntax.span(), loop == CallbackLoop.WHILE
+                        ? "while requires Fn<;Bool> and Fn<;Unit>"
+                        : "iter requires Range<T> and Fn<T;Unit> or Fn<;Unit>");
+                return null;
+            }
+            return result(node(kind, syntax.span(), PrimitiveType.UNIT,
+                    List.of(first.expression(), action.expression()),
+                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                    List.of(), Optional.empty()));
+        }
+
         private ExprResult checkNamespaceMemberAccess(
                 SyntaxNode.NamespaceMemberAccess access,
                 ModuleId moduleId) {

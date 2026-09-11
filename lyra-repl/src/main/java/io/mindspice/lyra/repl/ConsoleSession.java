@@ -422,7 +422,7 @@ public interface ConsoleSession extends AutoCloseable {
             return switch (scalar.kind()) {
                 case STRING -> "\"" + escape(scalar.value(), '"') + "\"";
                 case CHARACTER -> "'" + escape(scalar.value(), '\'') + "'";
-                case BOOLEAN, SIGNED_INTEGER, UNSIGNED_INTEGER, FLOAT -> scalar.value();
+                case BOOLEAN, SIGNED_INTEGER, UNSIGNED_INTEGER, FLOAT, RANGE -> scalar.value();
             };
         }
 

@@ -195,9 +195,13 @@ public final class TypedIrBuilder {
                 case CONDITIONAL -> lowerConditional(expression, site);
                 case COALESCE -> lowerCoalesce(expression, site);
                 case MATCH -> lowerMatch(expression, site);
-                case RANGE -> new IrNode.Range(expression.span(), expression.type(), child(expression, 0),
+                case RANGE -> new IrNode.RuntimeCheck(expression.span(), expression.type(), IrCheckKind.ARITHMETIC,
+                        "LYR-ARITH", new IrNode.Range(expression.span(), expression.type(), child(expression, 0),
                         child(expression, 1), child(expression, 2),
-                        expression.operator().filter("..."::equals).isPresent(), Optional.of(site));
+                        expression.operator().filter("..."::equals).isPresent(), Optional.empty()), Optional.of(site), Optional.of(site));
+                case ITER, WHILE -> new IrNode.Loop(expression.span(), expression.type(),
+                        expression.kind() == TypedExpressionKind.WHILE,
+                        child(expression, 0), child(expression, 1), findCallId(site), Optional.of(site));
                 case LAMBDA -> lowerLambda(expression, site);
                 case CALLABLE_CALL -> lowerCallableCall(expression, site);
                 case DIRECT_CALL, NAMESPACE_DIRECT_CALL -> lowerDirectCall(expression, site);

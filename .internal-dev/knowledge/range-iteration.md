@@ -1,15 +1,12 @@
 # Topic
 
-First-class range implementation and pending iter integration.
-
-While now shares the reserved callback-loop syntax infrastructure. Its semantic
-and execution integration is still pending alongside iter.
+First-class signed ranges and executable reserved iter/while callback loops.
 
 ## Source References
 
 - Owner conversation accepting enclosed range values and a built-in higher-order
   function named `iter`, supporting zero- and one-parameter Unit callbacks.
-- `.internal-dev/plans/range-iter/plan.md` (active work and validation status).
+- `.internal-dev/plans/.archive/range-iter/plan.md` (completed implementation).
 - `language-core.md`, ranges and iteration.
 - GrammarMatcher.parsePostfix, SemanticResolver, TypeChecker,
   CallableSummaryCompiler, CallableSummarySolver and CallableSummarySet.
@@ -38,15 +35,47 @@ and execution integration is still pending alongside iter.
 - The existing backend optimizes direct self-tail calls, but simply adding a
   recursive source rewrite would require explicit source/provenance certification;
   it is not a free substitute for the shared callback-loop integration.
+- Resolver range values must carry the range type, not merge the scalar bound
+  ownership contracts into their result. Provisional numeric inference mirrors
+  literal representability and known operand widths; do not default every
+  inferred range to I64. Restrict ownership-projection inference fallback to
+  the numeric/range cases it supports, or unrelated diagnostic ordering changes.
+- Repeated callable summaries retain the selected function identities and solve
+  shared-cell/capture/aggregate effects to a bounded monotone fixed point. Their
+  symbolic post-loop tuple carries updated binding facts into the continuation;
+  it is not a runtime allocation. Source/repetition and projection validators
+  must certify this metadata, not treat the loop as a single ordinary call.
+- Mutable function self-rebinding requires a real shared-cell capture for the
+  rebinding target. Ordinary recursive self references retain the existing self
+  path. Capturing all mutable self references instead causes recursive callable
+  fact construction and breaks escaped recursive functions. Seed the lazy
+  self-cell identity before constructing the self-rebinding closure's captures.
+- Conditional/match branches returning different generated closure classes need
+  casts to their declared Fn interface at the verifier merge. Casting every
+  lambda changes unrelated artifact bytes and is unnecessary.
+- JVM lowering retains evaluated arguments and authenticates selected callbacks
+  before repetition. Iter uses primitive long cursor/step locals, with narrow
+  argument adaptation; hasSuccessor is checked before adding the step. Both
+  loops emit owner safe points and keep a constant stack. No iterator or
+  per-iteration Unit result allocation is needed; callback allocations remain
+  ordinary language behavior.
+- Range values use exact width checks at host/session/traversal boundaries and
+  immutable atomic RANGE snapshots, including inside aggregates. Display text
+  uses signed decimal values and is not a source-replay format. Dynamic zero
+  steps must be checked after all bounds evaluate and report a source-mapped
+  LYR-ARITH failure.
 
 ## Project Relevance
 
-The current worktree has executable range construction and Java export tests.
-It does not yet implement iter or range persistence/snapshots. Do not mistake
-passing range construction tests for completion of the owner request.
+Range construction, iter and while now execute through the validated compiler,
+typed IR and Java 25 backend, including persistent sessions. Integration tests
+exercise reused/nested ranges, callback identity and ownership, fresh invocation
+captures, callback failures, zero-step failures and cancellation. The source fuzz
+worker's loops mode uses an independent traversal/predicate-count oracle; extended
+range/loop campaigns cover every signed width.
 
 ## Open Questions
 
-The iter reserved-name decision is settled; execution integration remains open.
-Initial signed domains are the announced default; unsigned descending ranges
-would require a separate signed-step contract.
+Unsigned descending ranges would require a separate signed-step contract and
+are not part of this implementation. No release/ABI migration claim follows
+from this feature commit; the release audit remains a separate mandatory gate.

@@ -286,6 +286,7 @@ public final class SemanticResolver {
         private final Map<ModuleId, LinkedHashMap<String, ResolvedExport>> exportsByModule = new LinkedHashMap<>();
         private final Map<ModuleId, List<ResolvedReference>> referencesByModule = new LinkedHashMap<>();
         private final IdentityHashMap<SyntaxNode.Expression, LyraType> expectedTypes = new IdentityHashMap<>();
+        private final Set<SourceSpan> rebindingTargets = new java.util.HashSet<>();
         /** Bounded pre-typing aggregate-ownership projection. */
         private BindingFlowState ownershipProjectionState = BindingFlowState.empty();
         /** False after an opaque call until canonical typed flow takes authority. */
@@ -1688,6 +1689,10 @@ public final class SemanticResolver {
                 Optional<LyraSignature> expected) {
             expected.ifPresent(signature -> expectedTypes.put(expression, signature.asFunctionType()));
             Optional<LyraType> contextualExpected = Optional.ofNullable(expectedTypes.get(expression));
+            Optional<CallbackLoop> loop = CallbackLoop.of(expression);
+            if (loop.isPresent()) {
+                return resolveLoop(expression, loop.orElseThrow(), scope, work, lambda, currentDeclaration);
+            }
             if (expression instanceof SyntaxNode.Identifier identifier) {
                 return resolveIdentifier(
                         identifier,
@@ -1710,12 +1715,10 @@ public final class SemanticResolver {
                     rememberExpected(bound, elementExpected);
                     bounds.add(resolveExpression(bound, scope, work, lambda, currentDeclaration, Optional.empty()));
                 }
-                Optional<LyraType> element = elementExpected.or(() ->
-                        io.mindspice.lyra.compiler.types.TypeRules.commonNumericType(
-                                bounds.stream().map(use -> use.type.orElse(PrimitiveType.I64)).toList())
-                                .map(value -> (LyraType) value));
+                Optional<LyraType> element = resolvedNumericType(
+                        List.of(range.start(), range.end(), range.step()), bounds, elementExpected);
                 try {
-                    return element.map(value -> Use.mergedValue(RangeType.of(value), bounds)).orElseGet(Use::empty);
+                    return element.map(value -> Use.value(RangeType.of(value))).orElseGet(Use::empty);
                 } catch (IllegalArgumentException invalid) {
                     // The type checker owns invalid range domains and reports the source diagnostic.
                     return Use.empty();
@@ -1801,6 +1804,11 @@ public final class SemanticResolver {
                         && thenUse.type.orElseThrow().equals(elseUse.type.orElseThrow())) {
                     return Use.mergedValue(
                             thenUse.type.orElseThrow(), List.of(thenUse, elseUse));
+                }
+                if (thenUse.type.isPresent() && elseUse.type.isPresent()) {
+                    Optional<LyraType> numeric = io.mindspice.lyra.compiler.types.TypeRules.commonNumericType(
+                            List.of(thenUse.type.orElseThrow(), elseUse.type.orElseThrow()));
+                    if (numeric.isPresent()) return Use.value(numeric.orElseThrow());
                 }
                 // Resolution intentionally does not infer every branch type.  It
                 // must still retain aggregate identity when the branch's type is
@@ -1919,6 +1927,7 @@ public final class SemanticResolver {
             }
             if (expression instanceof SyntaxNode.Reassignment assignment) {
                 addLink(new SyntaxLink(assignment.span(), SyntaxLinkKind.EXPRESSION));
+                rebindingTargets.add(assignment.target().span());
                 Use target = resolveExpression(
                         assignment.target(), scope, work, lambda, currentDeclaration, Optional.empty());
                 authorizeMutation(target, assignment.target(), work);
@@ -1998,18 +2007,18 @@ public final class SemanticResolver {
                 return indexUse(receiver, access.index());
             }
             if (expression instanceof SyntaxNode.OperatorSExpression operator) {
-                resolveOperatorOperands(
+                List<Use> operands = resolveOperatorOperands(
                         operator.operands(), operator.operator().tokenKind(),
                         scope, work, lambda, currentDeclaration);
                 addLink(new SyntaxLink(operator.span(), SyntaxLinkKind.EXPRESSION));
-                return Use.empty();
+                return resolvedOperatorUse(operator.operands(), operands, operator.operator().tokenKind(), contextualExpected);
             }
             if (expression instanceof SyntaxNode.OperatorBracket operator) {
-                resolveOperatorOperands(
+                List<Use> operands = resolveOperatorOperands(
                         operator.operands(), operator.operator().tokenKind(),
                         scope, work, lambda, currentDeclaration);
                 addLink(new SyntaxLink(operator.span(), SyntaxLinkKind.EXPRESSION));
-                return Use.empty();
+                return resolvedOperatorUse(operator.operands(), operands, operator.operator().tokenKind(), contextualExpected);
             }
             if (expression instanceof SyntaxNode.ArrayLiteral array) {
                 Optional<LyraType> elementExpected = array.explicitType()
@@ -2081,7 +2090,85 @@ public final class SemanticResolver {
             throw new IllegalStateException("unrecognized expression node: " + expression.getClass());
         }
 
-        private void resolveOperatorOperands(
+        private Use resolveLoop(SyntaxNode.Expression expression, CallbackLoop loop,
+                                ScopeDraft scope, ModuleWork work, Optional<LambdaId> lambda,
+                                Optional<DeclarationId> currentDeclaration) {
+            addLink(new SyntaxLink(expression.span(), SyntaxLinkKind.EXPRESSION));
+            ownershipProjectionAuthoritative = false;
+            List<SyntaxNode.Expression> arguments = CallbackLoop.arguments(expression);
+            if (arguments.size() != 2) {
+                fail(CompilerDiagnosticCodes.RESOLVE_INVALID_SIGNATURE, expression.span(),
+                        loop.name().toLowerCase(java.util.Locale.ROOT) + " requires exactly two arguments");
+                return Use.empty();
+            }
+            Optional<LyraSignature> firstExpected = loop == CallbackLoop.WHILE
+                    ? Optional.of(CallbackLoop.predicateType().signature()) : Optional.empty();
+            Use first = resolveExpression(arguments.getFirst(), scope, work, lambda,
+                    currentDeclaration, firstExpected);
+            Optional<LyraSignature> actionExpected = Optional.empty();
+            if (loop == CallbackLoop.WHILE || CallbackLoop.anonymousArity(arguments.getLast()) == 0) {
+                actionExpected = Optional.of(CallbackLoop.actionType().signature());
+            } else if (CallbackLoop.anonymousArity(arguments.getLast()) > 0) {
+                if (first.type.orElse(null) instanceof RangeType range) {
+                    actionExpected = Optional.of(new LyraSignature(List.of(range.elementType()), PrimitiveType.UNIT));
+                } else {
+                    fail(CompilerDiagnosticCodes.RESOLVE_INVALID_SIGNATURE, arguments.getFirst().span(),
+                            "iter requires a statically known Range element type");
+                    return Use.empty();
+                }
+            }
+            resolveExpression(arguments.getLast(), scope, work, lambda, currentDeclaration, actionExpected);
+            return Use.value(PrimitiveType.UNIT);
+        }
+
+        private Use resolvedOperatorUse(List<SyntaxNode.Expression> syntax, List<Use> values,
+                                        TokenKind operator, Optional<LyraType> expected) {
+            return switch (operator) {
+                case PLUS, MINUS, ASTERISK, PERCENT, CARET, INCREMENT, DECREMENT -> resolvedNumericType(syntax, values, expected)
+                        .map(Use::value).orElseGet(Use::empty);
+                default -> Use.empty();
+            };
+        }
+
+        private Optional<LyraType> resolvedNumericType(List<SyntaxNode.Expression> syntax,
+                                                       List<Use> values, Optional<LyraType> expected) {
+            List<PrimitiveType> candidates = List.of(PrimitiveType.I8, PrimitiveType.U8,
+                    PrimitiveType.I16, PrimitiveType.U16, PrimitiveType.I32, PrimitiveType.U32,
+                    PrimitiveType.I64, PrimitiveType.U64, PrimitiveType.F32, PrimitiveType.F64);
+            List<PrimitiveType> fits = new ArrayList<>();
+            boolean allUnforcedLiterals = true;
+            boolean decimal = false;
+            for (SyntaxNode.Expression operand : syntax) {
+                allUnforcedLiterals &= operand instanceof SyntaxNode.IntegerLiteral integer && integer.suffix() == io.mindspice.lyra.compiler.lex.NumericSuffix.NONE
+                        || operand instanceof SyntaxNode.FloatLiteral floating && floating.suffix() == io.mindspice.lyra.compiler.lex.NumericSuffix.NONE;
+                decimal |= operand instanceof SyntaxNode.FloatLiteral;
+            }
+            for (PrimitiveType candidate : candidates) {
+                boolean fitsAll = true;
+                for (int index = 0; index < syntax.size(); index++) {
+                    SyntaxNode.Expression operand = syntax.get(index);
+                    ExactNumericLiteral literal = operand instanceof SyntaxNode.IntegerLiteral integer
+                            ? ExactNumericLiteral.integer(integer.value(), integer.suffix())
+                            : operand instanceof SyntaxNode.FloatLiteral floating
+                            ? ExactNumericLiteral.decimal(floating.value(), floating.suffix()) : null;
+                    if (literal != null) {
+                        fitsAll &= LiteralTyping.representableAs(literal, candidate)
+                                && literal.forcedType().map(forced -> io.mindspice.lyra.compiler.types.TypeRules.canImplicitlyWiden(forced, candidate)).orElse(true);
+                    } else {
+                        Optional<LyraType> type = values.get(index).type;
+                        fitsAll &= type.isPresent() && type.orElseThrow() instanceof PrimitiveType primitive
+                                && primitive.isNumeric() && io.mindspice.lyra.compiler.types.TypeRules.canImplicitlyWiden(primitive, candidate);
+                    }
+                }
+                if (fitsAll) fits.add(candidate);
+            }
+            if (fits.isEmpty()) return Optional.empty();
+            if (expected.isPresent() && fits.contains(expected.orElseThrow())) return expected;
+            PrimitiveType defaultType = decimal ? PrimitiveType.F64 : PrimitiveType.I64;
+            return Optional.of(allUnforcedLiterals && fits.contains(defaultType) ? defaultType : fits.getFirst());
+        }
+
+        private List<Use> resolveOperatorOperands(
                 List<SyntaxNode.Expression> operands,
                 TokenKind tokenKind,
                 ScopeDraft scope,
@@ -2094,12 +2181,13 @@ public final class SemanticResolver {
             boolean continuingAuthority = ownershipProjectionAuthoritative;
             boolean resultAuthority = ownershipProjectionAuthoritative;
             boolean first = true;
+            List<Use> values = new ArrayList<>();
             for (SyntaxNode.Expression operand : operands) {
                 ownershipProjectionState = continuing;
                 ownershipProjectionAuthoritative = continuingAuthority;
-                resolveExpression(
+                values.add(resolveExpression(
                         operand, scope, work, lambda,
-                        currentDeclaration, Optional.empty());
+                        currentDeclaration, Optional.empty()));
                 continuing = ownershipProjectionState;
                 continuingAuthority = ownershipProjectionAuthoritative;
                 if (first || !shortCircuit) {
@@ -2113,6 +2201,7 @@ public final class SemanticResolver {
             }
             ownershipProjectionState = result == null ? continuing : result;
             ownershipProjectionAuthoritative = resultAuthority;
+            return List.copyOf(values);
         }
 
         private boolean isShortCircuit(TokenKind tokenKind) {
@@ -2783,7 +2872,10 @@ public final class SemanticResolver {
                     Optional.empty(),
                     target.functionSignature,
                     Optional.of(referenceId),
-                    target.effectiveContract.map(BindingContract::valueType),
+                    target.effectiveContract.map(BindingContract::valueType).or(() ->
+                            ownershipProjectionState.binding(target.id).map(BindingFlowValue::contract)
+                                    .map(BindingContract::valueType)
+                                    .filter(type -> type instanceof RangeType || type instanceof PrimitiveType primitive && primitive.isNumeric())),
                     ownershipValues,
                     List.of());
         }
@@ -3140,7 +3232,8 @@ public final class SemanticResolver {
                 throw new IllegalStateException("reference has an unknown lambda context");
             }
             if (current.ownerDeclaration.isPresent()
-                    && current.ownerDeclaration.orElseThrow().equals(target.id)) {
+                    && current.ownerDeclaration.orElseThrow().equals(target.id)
+                    && !rebindingTargets.contains(useSpan)) {
                 return Optional.empty();
             }
             if (target.kind == DeclarationKind.EXTERNAL) {
@@ -3175,7 +3268,8 @@ public final class SemanticResolver {
             while (cursor != null
                     && (targetOwner.isEmpty() || !cursor.id.equals(targetOwner.orElseThrow()))) {
                 if (!(cursor.ownerDeclaration.isPresent()
-                        && cursor.ownerDeclaration.orElseThrow().equals(target.id))) {
+                        && cursor.ownerDeclaration.orElseThrow().equals(target.id)
+                        && !rebindingTargets.contains(useSpan))) {
                     CaptureId capture = ensureCapture(cursor, target, useSpan);
                     if (directCapture.isEmpty()) {
                         directCapture = Optional.of(capture);

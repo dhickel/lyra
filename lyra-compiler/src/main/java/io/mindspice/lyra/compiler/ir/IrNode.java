@@ -57,6 +57,7 @@ public sealed interface IrNode extends ImmutablePhaseArtifact
                 IrNode.Coalesce,
                 IrNode.Match,
                 IrNode.Range,
+                IrNode.Loop,
                 IrNode.DirectCall,
                 IrNode.CallableCall,
                 IrNode.Lambda,
@@ -102,6 +103,7 @@ public sealed interface IrNode extends ImmutablePhaseArtifact
             case ArrayLiteral array -> array.elements();
             case TupleLiteral tuple -> tuple.elements();
             case Range range -> List.of(range.start(), range.end(), range.step());
+            case Loop loop -> List.of(loop.input(), loop.action());
             case IndexAccess index -> List.of(index.receiver(), index.index());
             case Operator operator -> operator.operands();
             case ShortCircuit shortCircuit -> shortCircuit.operands();
@@ -398,6 +400,25 @@ public sealed interface IrNode extends ImmutablePhaseArtifact
         @Override
         public <R> R accept(IrVisitor<R> visitor) {
             return Objects.requireNonNull(visitor, "visitor").visitRange(this);
+        }
+    }
+
+    /** Two callback-loop arguments, evaluated once before repetition. */
+    record Loop(SourceSpan span, LyraType type, boolean conditionControlled,
+                IrNode input, IrNode action,
+                Optional<io.mindspice.lyra.compiler.semantic.flow.SummaryCallId> callId,
+                Optional<FlowSiteId> siteId) implements IrNode {
+        public Loop {
+            requireSpanAndType(span, type);
+            Objects.requireNonNull(input, "input");
+            Objects.requireNonNull(action, "action");
+            Objects.requireNonNull(callId, "callId");
+            requireSite(siteId);
+        }
+
+        @Override
+        public <R> R accept(IrVisitor<R> visitor) {
+            return Objects.requireNonNull(visitor, "visitor").visitLoop(this);
         }
     }
 

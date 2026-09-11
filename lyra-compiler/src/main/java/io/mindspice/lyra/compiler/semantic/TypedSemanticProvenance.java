@@ -349,6 +349,22 @@ final class TypedSemanticProvenance {
         require(expression.span().equals(syntax.span()),
                 "typed expression does not retain its exact originating source span");
 
+        if (CallbackLoop.of(syntax).isPresent()) {
+            TypedExpressionKind kind = CallbackLoop.of(syntax).orElseThrow() == CallbackLoop.ITER
+                    ? TypedExpressionKind.ITER : TypedExpressionKind.WHILE;
+            require(expression.kind() == kind && CallbackLoop.valid(kind, expression.type(),
+                    expression.children().stream().map(TypedExpression::type).toList()),
+                    "typed callback loop differs from its reserved source contract");
+            List<SyntaxNode.Expression> arguments = CallbackLoop.arguments(syntax);
+            require(arguments.size() == 2, "callback loop source arity changed");
+            for (int index = 0; index < 2; index++) {
+                TypedExpression child = expression.children().get(index);
+                validateSourceExpression(arguments.get(index), child, moduleId,
+                        index == 1 || kind == TypedExpressionKind.WHILE ? Optional.of(child.type()) : Optional.empty());
+            }
+            return;
+        }
+
         if (syntax instanceof SyntaxNode.Identifier identifier) {
             require(expression.kind() == TypedExpressionKind.REFERENCE
                             && expression.children().isEmpty(),
@@ -1714,9 +1730,11 @@ final class TypedSemanticProvenance {
             return Optional.empty();
         }
         if (syntax instanceof SyntaxNode.CallableCall call) {
+            if (CallbackLoop.of(call).isPresent()) return Optional.of(PrimitiveType.UNIT);
             return synthesizedTypeWithoutContext(call.target()).flatMap(this::callResultType);
         }
         if (syntax instanceof SyntaxNode.DirectCall call) {
+            if (CallbackLoop.of(call).isPresent()) return Optional.of(PrimitiveType.UNIT);
             ResolvedReference reference = findReference(
                     call.name().span(), call.name().name(), ReferenceKind.DIRECT_CALL_TARGET);
             return sourceValueType(reference).flatMap(this::callResultType);
@@ -2474,7 +2492,7 @@ final class TypedSemanticProvenance {
             case BLOCK -> EnumSet.of(Metadata.SCOPE);
             case CONDITIONAL -> EnumSet.of(Metadata.PREDICATE_BINDING);
             case MATCH -> EnumSet.of(Metadata.MATCH);
-            case COALESCE, CALLABLE_CALL, ARRAY_LITERAL, TUPLE_LITERAL,
+            case COALESCE, CALLABLE_CALL, ITER, WHILE, ARRAY_LITERAL, TUPLE_LITERAL,
                     INDEX_ACCESS, NARROWING -> EnumSet.noneOf(Metadata.class);
             case LAMBDA -> EnumSet.of(Metadata.LAMBDA, Metadata.SIGNATURE, Metadata.CAPTURES);
             case DIRECT_CALL, NAMESPACE_DIRECT_CALL -> EnumSet.of(Metadata.LINK, Metadata.DECLARATION);

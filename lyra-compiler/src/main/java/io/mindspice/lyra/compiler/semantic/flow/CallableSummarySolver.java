@@ -296,6 +296,10 @@ public final class CallableSummarySolver {
         }
         for (CallableCallReference call : summary.callReferences()) {
             validateCallResultDependencies(call.target(), call, calls);
+            call.repeat().ifPresent(repeat -> {
+                repeat.predicate().ifPresent(value -> validateCallResultDependencies(value, call, calls));
+                repeat.environment().values().forEach(value -> validateCallResultDependencies(value, call, calls));
+            });
             for (FormulaAlternatives argument : call.arguments()) {
                 validateCallResultDependencies(argument, call, calls);
             }
@@ -692,7 +696,7 @@ public final class CallableSummarySolver {
                     target, externalCallableDeclarations)
                     || arguments.stream().anyMatch(argument ->
                     containsExternalDeclaration(argument, externalCallableDeclarations));
-            if (!deferredCallResult
+            if (call.repeat().isEmpty() && !deferredCallResult
                     && !deferredComputedDeclaration
                     && !deferredCallerCallable
                     && !deferredExternalCallable

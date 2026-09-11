@@ -647,6 +647,7 @@ public final class CallableSummaryCompiler {
                 case CONDITIONAL -> conditional(expression, state);
                 case COALESCE -> coalesce(expression, state);
                 case MATCH -> match(expression, state);
+                case ITER, WHILE -> loop(expression, state);
                 case LAMBDA -> lambdaValue(expression, state);
                 case CALLABLE_CALL -> callableCall(expression, state);
                 case DIRECT_CALL -> directCall(expression, state, CallableCallReference.Kind.DIRECT);
@@ -1015,6 +1016,31 @@ public final class CallableSummaryCompiler {
                         Optional.of(site), List.of(site)));
             }
             return List.copyOf(new TreeSet<>(effects));
+        }
+
+        private Eval loop(TypedExpression expression, Map<DeclarationId, FormulaAlternatives> state) {
+            Sequence selected = evaluateSequential(expression.children(), state);
+            FormulaAlternatives target = selected.values().getLast();
+            FunctionType action = (FunctionType) target.rootType();
+            List<FormulaAlternatives> arguments = action.arity() == 0 ? List.of()
+                    : List.of(FormulaAlternatives.singleton(new ValueFormula.Scalar(action.parameterType(0))));
+            SummaryCallId id = nextCall();
+            CallableCallReference call = new CallableCallReference(id, CallableCallReference.Kind.CALLABLE,
+                    expression.span(), Optional.empty(), singleDeclaration(target), targetModule(target),
+                    Optional.empty(), singleLambda(target), targetParameters(target), targetCaptures(target),
+                    target, arguments, Optional.of(context.site(expression)),
+                    Optional.of(new CallableCallReference.Repeat(expression.kind() == TypedExpressionKind.WHILE
+                            ? Optional.of(selected.values().getFirst()) : Optional.empty(), selected.state())));
+            ArrayList<CallableCallReference> calls = new ArrayList<>(selected.calls());
+            calls.add(call);
+            Map<DeclarationId, FormulaAlternatives> after = copyState(selected.state());
+            int index = 1;
+            for (var entry : call.repeat().orElseThrow().environment().entrySet()) {
+                after.put(entry.getKey(), FormulaAlternatives.singleton(new ValueFormula.CallResult(id,
+                        entry.getValue().rootType(), ProjectionPath.tupleMember(index++), ProjectionPath.root())));
+            }
+            return new Eval(scalar(expression.type()).value(), after, selected.writes(),
+                    calls, concat(selected.effects(), callEffects(call)));
         }
 
         private Eval callableCall(

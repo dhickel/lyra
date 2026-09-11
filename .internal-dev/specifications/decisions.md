@@ -414,5 +414,34 @@
 - **Tradeoff:** user declarations, bare function-value references and qualified
   member names cannot use `iter`. Callback values remain ordinary functions.
 - **Affected specifications:** language-core.md and the readable grammar.
-- **Caveat:** keyword/grammar support is a checkpoint, not executable iteration.
-- **Review timing:** before closing the active range-iter implementation plan.
+- **Caveat:** the original keyword/grammar change was a checkpoint; executable
+  iteration is completed by the 2026-09-11 backend implementation below.
+- **Review timing:** reviewed during the range-iter implementation closeout.
+
+## 2026-09-11 — Certified callback-loop execution
+
+- **Source:** owner authorization to complete iter and while backend execution
+  and apply low-risk performance improvements.
+- **Decision:** represent both reserved forms explicitly in typed semantics/IR.
+  Repeated-call summaries retain selected callback identities, solve capture and
+  aggregate effects to the existing bounded fixed point, and expose a symbolic
+  post-loop binding snapshot to subsequent expressions. While includes predicate
+  effects on its zero-action and terminal paths.
+- **Decision:** emit constant-stack JVM loops, primitive range cursors and
+  successor-before-addition checks. Evaluate arguments once in source order,
+  authenticate callbacks outside the backedge, and retain generated invocation
+  lifecycle checks and cooperative safe points.
+- **Decision:** persist immutable ranges as exact-width data and render bounded
+  RANGE scalar snapshots rather than enumerating them.
+- **Justification:** a single abstract callback invocation loses later-iteration
+  ownership/callable changes; recursive rewriting complicates provenance and
+  stack guarantees. The symbolic snapshot allocates no runtime tuple. Primitive
+  traversal avoids iterator/counter allocation without changing callback meaning.
+- **Tradeoffs/caveats:** conservative joins may retain unreachable alternatives;
+  fixed-point budgets still reject unsupported analysis complexity. No implicit
+  callback result dropping, unsigned ranges or additional control forms are added.
+  Existing legacy artifact compatibility tests remain intact; release ABI and
+  packaging qualification still require the release audit. No benchmark speedup
+  is claimed from these structural optimizations.
+- **Affected specifications:** language-core.md, backend-runtime.md and repl.md.
+- **Review timing:** on extending iterable domains, control flow or summary limits.

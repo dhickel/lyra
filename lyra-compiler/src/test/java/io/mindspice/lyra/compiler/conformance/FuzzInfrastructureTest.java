@@ -90,7 +90,7 @@ class FuzzInfrastructureTest {
     }
 
     @Test void minimumCampaignBudgetBalancesEveryModeAndNumericKind() {
-        assertEquals(100, LanguageFuzzWorker.MINIMUM_CASES);
+        assertEquals(110, LanguageFuzzWorker.MINIMUM_CASES);
         int[] modeCounts = new int[LanguageFuzzWorker.MODES.size()];
         EnumSet<NumericModel> numericKinds = EnumSet.noneOf(NumericModel.class);
         for (int index = 0; index < LanguageFuzzWorker.MINIMUM_CASES; index++) {

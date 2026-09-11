@@ -393,6 +393,7 @@ public final class SessionStorageDomain implements AutoCloseable {
     }
 
     static Class<?> storageClass(LyraType type, ClassLoader loader, String javaPackage) {
+        if (type.baseType() instanceof RangeType) return LyraRange.class;
         if (type.baseType() instanceof ArrayType array) {
             return storageClass(array.elementType(), loader, javaPackage).arrayType();
         }

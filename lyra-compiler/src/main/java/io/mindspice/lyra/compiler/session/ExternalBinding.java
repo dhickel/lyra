@@ -119,6 +119,7 @@ public record ExternalBinding(
     public static boolean supportsDataStorage(LyraType type) {
         return switch (type.withoutQualifiers()) {
             case io.mindspice.lyra.compiler.types.PrimitiveType ignored -> true;
+            case io.mindspice.lyra.compiler.types.RangeType ignored -> true;
             case io.mindspice.lyra.compiler.types.ArrayType array -> supportsDataStorage(array.elementType());
             case io.mindspice.lyra.compiler.types.TupleType tuple -> tuple.memberTypes().stream()
                     .allMatch(ExternalBinding::supportsDataStorage);

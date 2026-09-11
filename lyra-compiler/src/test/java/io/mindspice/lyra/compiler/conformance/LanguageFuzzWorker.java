@@ -27,7 +27,7 @@ import static io.mindspice.lyra.compiler.conformance.LanguageTestSupport.*;
 
 /** Test-only process entry point. Fuzzed execution never runs on the Maven/JUnit owner thread. */
 public final class LanguageFuzzWorker {
-    static final List<String> MODES = List.of("numeric", "state", "mutation", "grammar", "modules", "bytes", "runtime", "artifact", "io", "match");
+    static final List<String> MODES = List.of("numeric", "state", "mutation", "grammar", "modules", "bytes", "runtime", "artifact", "io", "match", "loops");
     static final int MINIMUM_CASES = MODES.size() * NumericModel.values().length;
     private static final String[] TOKENS = {"let", "@pub", "@mut", "@nil", "a", "b", "I32", "Array", "Tuple",
             "Fn", "#T", "#F", "#NIL", "0", "255U8", "18446744073709551615U64", "1.0e-99", "'x'",
@@ -77,6 +77,7 @@ public final class LanguageFuzzWorker {
             FuzzCase test = switch (mode) {
                 case "numeric" -> numeric(random, numericTypeAt(index));
                 case "match" -> match(random);
+                case "loops" -> loops(random);
                 case "state" -> state(random);
                 case "mutation" -> new FuzzCase(mode, mutate(random, corpus.get(random.nextInt(corpus.size())).source()));
                 case "grammar" -> new FuzzCase(mode, grammar(random, 4));
@@ -140,6 +141,39 @@ public final class LanguageFuzzWorker {
             catch (NumericModel.Trap trap) { test.put("conversionFailure." + i, trap.code); }
         }
         return test;
+    }
+
+    static FuzzCase loops(SplittableRandom random) {
+        int start = random.nextInt(-20, 21);
+        int end = random.nextInt(-20, 21);
+        int step = random.nextInt(1, 6) * (random.nextBoolean() ? 1 : -1);
+        boolean inclusive = random.nextBoolean();
+        boolean binding = random.nextBoolean();
+        boolean bracket = random.nextBoolean();
+        int actions = 0;
+        int sum = 0;
+        for (int x = start; step > 0 ? inclusive ? x <= end : x < end : inclusive ? x >= end : x > end; x += step) {
+            actions++;
+            sum += binding ? x : 1;
+        }
+        String range = "(" + signedLoopLiteral(start) + (inclusive ? "..." : "..")
+                + signedLoopLiteral(end) + ":" + signedLoopLiteral(step) + ")";
+        String callback = binding ? "|x| { sum := (+ sum x) }" : "|| { sum := (+ sum 1) }";
+        String iter = bracket ? "::iter[range " + callback + "]" : "(iter range " + callback + ")";
+        int count = random.nextInt(0, 21);
+        String source = "let @pub run :Fn<;I64> = (=> || { let range = " + range
+                + " let @mut sum :I64 = 0 " + iter
+                + " let @mut n :I64 = 0 let @mut tests :I64 = 0 "
+                + "::while[|| { tests := (+ tests 1) (< n " + count + ") } || { n := (+ n 1) }] "
+                + "(+ (* sum 10000) (* tests 100) n) })";
+        FuzzCase result = new FuzzCase("loops", source);
+        result.put("expected", sum * 10000L + (count + 1) * 100L + count);
+        result.put("actions", actions);
+        return result;
+    }
+
+    private static String signedLoopLiteral(int value) {
+        return value < 0 ? "(- " + (-value) + ")" : Integer.toString(value);
     }
 
     static FuzzCase match(SplittableRandom random) {
@@ -398,6 +432,12 @@ public final class LanguageFuzzWorker {
                         equal(Integer.parseInt(test.get("expected." + i)), actual, "Match oracle mismatch, input " + i);
                         equal(actual, fixture.call("alternate", signature, a, b), "Equivalent match spelling mismatch, input " + i);
                     }
+                }
+            }
+            case "loops" -> {
+                var artifact = compile(test.get("source"));
+                try (var fixture = new Fixture(artifact)) {
+                    equal(Long.parseLong(test.get("expected")), fixture.call("run", "Fn<;I64>"), test.get("source"));
                 }
             }
             case "state" -> {

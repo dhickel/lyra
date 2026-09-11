@@ -53,6 +53,10 @@ public record TypedFailureSite(
 
     private static TypedFailureSite fromExpression(TypedExpression expression) {
         Objects.requireNonNull(expression, "expression");
+        if (expression.kind() == TypedExpressionKind.RANGE) {
+            return new TypedFailureSite(expression.span(), FailureSiteKind.ARITHMETIC,
+                    "LYR-ARITH", expression.kind());
+        }
         if (expression.kind() == TypedExpressionKind.INDEX_ACCESS) {
             return new TypedFailureSite(
                     expression.span(), FailureSiteKind.BOUNDS, "LYR-BOUNDS", expression.kind());

@@ -994,6 +994,25 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
             callArguments.add(substituted.orElseThrow());
             callWriteArguments.add(writeTarget.orElseThrow());
         }
+        if (call.repeat().isPresent()) {
+            Optional<FormulaAlternatives> predicate = Optional.empty();
+            if (call.repeat().orElseThrow().predicate().isPresent()) {
+                predicate = substituteAlternatives(call.repeat().orElseThrow().predicate().orElseThrow(),
+                        arguments, writeArguments, captures, declarationResolver, owner, callSpan, active,
+                        writes, ownershipRequirements, effects, appliedCalls);
+                if (predicate.isEmpty()) return Optional.empty();
+            }
+            Map<DeclarationId, FormulaAlternatives> environment = new TreeMap<>();
+            for (var entry : call.repeat().orElseThrow().environment().entrySet()) {
+                Optional<FormulaAlternatives> value = substituteAlternatives(entry.getValue(), arguments,
+                        writeArguments, captures, declarationResolver, owner, callSpan, active,
+                        writes, ownershipRequirements, effects, appliedCalls);
+                if (value.isEmpty()) return Optional.empty();
+                environment.put(entry.getKey(), value.orElseThrow());
+            }
+            return applyRepeatedCall(call, target.orElseThrow(), predicate, callArguments, environment,
+                    declarationResolver, owner, active, writes, ownershipRequirements, effects);
+        }
         TargetResolution resolution = targetAlternatives(target.orElseThrow());
         if (!resolution.complete() || resolution.alternatives().isEmpty()) {
             return Optional.empty();
@@ -1060,6 +1079,218 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
         return Optional.ofNullable(joined);
     }
 
+    private Optional<FormulaAlternatives> applyRepeatedCall(
+            CallableCallReference call, FormulaAlternatives action, Optional<FormulaAlternatives> predicate,
+            List<FormulaAlternatives> arguments, Map<DeclarationId, FormulaAlternatives> environment,
+            Function<ValueFormula.Declaration, Optional<FormulaAlternatives>> resolver,
+            CallableSummary owner, LinkedHashSet<LambdaId> active,
+            List<CapturedCellWrite> writes, List<OwnershipRequirement> requirements,
+            List<EagerEffectWitness> effects) {
+        RepeatState state = new RepeatState(resolver);
+        state.cells.putAll(environment);
+        environment.values().forEach(state::seed);
+        state.seed(action);
+        predicate.ifPresent(state::seed);
+        Map<String, CapturedCellWrite> repeatedWrites = new TreeMap<>();
+        TreeSet<OwnershipRequirement> repeatedRequirements = new TreeSet<>();
+        TreeSet<EagerEffectWitness> repeatedEffects = new TreeSet<>();
+        for (int iteration = 1; ; iteration++) {
+            limits.requireFixedPointIteration(iteration);
+            String before = state.key();
+            ArrayList<FormulaAlternatives> callbacks = new ArrayList<>();
+            predicate.ifPresent(callbacks::add);
+            callbacks.add(action);
+            for (int index = 0; index < callbacks.size(); index++) {
+                FormulaAlternatives selected = state.refresh(callbacks.get(index), new LinkedHashSet<>());
+                TargetResolution resolution = targetAlternatives(selected);
+                if (!resolution.complete() || resolution.alternatives().isEmpty()) return Optional.empty();
+                for (TargetAlternative candidate : resolution.alternatives()) {
+                    if (candidate.isIntrinsic()) {
+                        addCandidateCallWitness(effects, owner, call, Optional.empty(), candidate.moduleId().orElseThrow());
+                        continue;
+                    }
+                    LambdaId id = candidate.lambdaId().orElseThrow();
+                    CallableSummary callee = summaries.get(id);
+                    if (callee == null) return Optional.empty();
+                    List<FormulaAlternatives> actual = index == callbacks.size() - 1 ? arguments : List.of();
+                    SummaryTransferResult result = applySummary(callee, actual, actual, candidate.captures(),
+                            call.span(), state::resolve, active);
+                    if (result instanceof SummaryTransferResult.Failure failed) throw new NestedTransferFailure(failed);
+                    SummaryTransferResult.Success success = (SummaryTransferResult.Success) result;
+                    addCandidateCallWitness(effects, owner, call, Optional.of(id), callee.moduleId());
+                    for (CapturedCellWrite write : success.writes()) {
+                        CapturedCellWrite joined = state.apply(write);
+                        String key = write.operationSite() + "/" + write.declarationId() + "/" + write.kind() + "/" + write.route();
+                        CapturedCellWrite previous = repeatedWrites.get(key);
+                        if (previous != null) joined = new CapturedCellWrite(joined.sequence(), joined.captureId(),
+                                joined.parameterIndex(), joined.declarationId(), joined.sharedCellId(), joined.kind(),
+                                joined.route(), previous.value().join(joined.value()), joined.span(), joined.operationSite());
+                        repeatedWrites.put(key, joined);
+                    }
+                    repeatedRequirements.addAll(success.ownershipRequirements());
+                    repeatedEffects.addAll(success.effects());
+                }
+            }
+            limits.requireWrites(repeatedWrites.size());
+            limits.requireOwnershipRequirements(repeatedRequirements.size());
+            limits.requireEffects(repeatedEffects.size());
+            if (before.equals(state.key())) break;
+        }
+        int writeIndex = 0;
+        for (CapturedCellWrite write : repeatedWrites.values()) {
+            writes.add(write.withSequence(CapturedCellWrite.sequenceAtEvent(call.id().sequence(), writeIndex++, limits)));
+        }
+        int requirementIndex = 0;
+        for (OwnershipRequirement requirement : repeatedRequirements) {
+            requirements.add(requirement.withSequence(CapturedCellWrite.sequenceAtEvent(
+                    call.id().sequence(), requirementIndex++, limits)));
+        }
+        for (EagerEffectWitness effect : repeatedEffects) addEffect(effects, effect.through(owner.moduleId(), call, limits));
+        var snapshotType = call.repeat().orElseThrow().snapshotType();
+        ArrayList<ValueFormula> snapshot = new ArrayList<>();
+        snapshot.add(new ValueFormula.Scalar(snapshotType));
+        snapshot.add(new ValueFormula.Scalar(io.mindspice.lyra.compiler.types.PrimitiveType.UNIT,
+                ProjectionPath.tupleMember(0)));
+        int snapshotIndex = 1;
+        for (var entry : environment.entrySet()) {
+            var route = ProjectionPath.tupleMember(snapshotIndex++);
+            var value = state.refresh(state.cells.getOrDefault(entry.getKey(), entry.getValue()), new LinkedHashSet<>());
+            snapshot.addAll(value.formulas().stream().map(formula -> formula.prefixedBy(route)).toList());
+        }
+        return Optional.of(new FormulaAlternatives(snapshotType, snapshot));
+    }
+
+    /** Monotone closure/cell environment for the zero-or-more repetition boundary. */
+    private final class RepeatState {
+        private final Function<ValueFormula.Declaration, Optional<FormulaAlternatives>> resolver;
+        private final Map<DeclarationId, FormulaAlternatives> cells = new TreeMap<>();
+        private final Map<io.mindspice.lyra.compiler.identity.CaptureId, FormulaAlternatives> captured = new TreeMap<>();
+        private final Map<io.mindspice.lyra.compiler.identity.CaptureId, CallableSummary.CapturePlaceholder> metadata = new TreeMap<>();
+
+        RepeatState(Function<ValueFormula.Declaration, Optional<FormulaAlternatives>> resolver) {
+            this.resolver = resolver;
+        }
+
+        String key() { return cells.toString() + captured; }
+
+        void seed(FormulaAlternatives values) {
+            for (ValueFormula formula : values.formulas()) {
+                if (!(formula instanceof ValueFormula.Lambda lambda)) continue;
+                CallableSummary summary = summaries.get(lambda.lambdaId());
+                if (summary == null) continue;
+                for (CallableSummary.CapturePlaceholder capture : summary.captures()) {
+                    FormulaAlternatives value = lambda.captures().get(capture.captureId());
+                    if (value == null) continue;
+                    metadata.put(capture.captureId(), capture);
+                    FormulaAlternatives previous = captured.get(capture.captureId());
+                    captured.merge(capture.captureId(), value, FormulaAlternatives::join);
+                    if (capture.isSharedCell()) cells.merge(capture.sharedCellId().orElseThrow(), value, FormulaAlternatives::join);
+                    if (previous == null || !previous.join(value).equals(previous)) seed(value);
+                }
+            }
+        }
+
+        Optional<FormulaAlternatives> resolve(ValueFormula.Declaration declaration) {
+            FormulaAlternatives value = cells.get(declaration.declarationId());
+            if (value == null) {
+                Optional<FormulaAlternatives> selected = resolver.apply(declaration);
+                if (selected.isEmpty()) return selected;
+                value = selected.orElseThrow();
+                if (declaration.declarationRoute().isRoot()) cells.put(declaration.declarationId(), value);
+                seed(value);
+            } else if (!declaration.declarationRoute().isRoot()) {
+                value = value.select(declaration.declarationRoute()).asType(declaration.type());
+            }
+            return Optional.of(refresh(value, new LinkedHashSet<>()));
+        }
+
+        FormulaAlternatives refresh(FormulaAlternatives values, Set<io.mindspice.lyra.compiler.identity.CaptureId> activeCaptures) {
+            ArrayList<ValueFormula> updated = new ArrayList<>();
+            for (ValueFormula formula : values.formulas()) {
+                if (!(formula instanceof ValueFormula.Lambda lambda)) { updated.add(formula); continue; }
+                seed(FormulaAlternatives.singleton(lambda));
+                var replacements = new TreeMap<io.mindspice.lyra.compiler.identity.CaptureId, FormulaAlternatives>();
+                for (var entry : lambda.captures().entrySet()) {
+                    var info = metadata.get(entry.getKey());
+                    FormulaAlternatives value = info != null && info.isSharedCell()
+                            ? cells.getOrDefault(info.sharedCellId().orElseThrow(), entry.getValue())
+                            : captured.getOrDefault(entry.getKey(), entry.getValue());
+                    if (activeCaptures.add(entry.getKey())) {
+                        value = refresh(value, activeCaptures);
+                        activeCaptures.remove(entry.getKey());
+                    }
+                    replacements.put(entry.getKey(), value);
+                }
+                updated.add(lambda.withCaptures(replacements));
+            }
+            FormulaAlternatives result = new FormulaAlternatives(values.rootType(), updated, values.exactOverrides());
+            limits.requireFormulaAlternatives(result.size());
+            requireProjectionDepth(result);
+            return result;
+        }
+
+        CapturedCellWrite apply(CapturedCellWrite write) {
+            DeclarationId identity = write.sharedCellId().orElse(write.declarationId());
+            FormulaAlternatives original = cells.get(identity);
+            if (original == null && write.captureId().isPresent()) original = captured.get(write.captureId().orElseThrow());
+            if (original == null) {
+                // A declaration may only be read by a nested callback; retrieve its exact caller fact.
+                for (CallableSummary summary : summaries.values()) {
+                    for (var capture : summary.captures()) {
+                        if (capture.declarationId().equals(write.declarationId())) {
+                            original = resolver.apply(new ValueFormula.Declaration(write.declarationId(),
+                                    capture.type())).orElse(null);
+                            if (original != null) break;
+                        }
+                    }
+                    if (original != null) break;
+                }
+            }
+            FormulaAlternatives value = write.value();
+            seed(value);
+            if (original != null) {
+                FormulaAlternatives old = write.route().isRoot() ? original : original.select(write.route()).asType(value.rootType());
+                value = old.join(value);
+                FormulaAlternatives next = write.route().isRoot() ? value
+                        : write.route().containsWildcard() ? original.replaceUnknown(write.route(), value)
+                        : original.replaceExact(write.route(), value);
+                cells.put(identity, next);
+                if (!write.route().isRoot()) {
+                    FormulaAlternatives before = original;
+                    FormulaAlternatives replacement = value;
+                    captured.replaceAll((id, existing) -> updateAliases(existing, before, write.route(), replacement));
+                    cells.replaceAll((id, existing) -> updateAliases(existing, before, write.route(), replacement));
+                }
+            } else {
+                if (!write.route().isRoot()) throw new NestedTransferFailure(failure(
+                        CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                        "repeated aggregate write has no caller identity", write.span()));
+                cells.merge(identity, value, FormulaAlternatives::join);
+            }
+            return new CapturedCellWrite(write.sequence(), write.captureId(), write.parameterIndex(),
+                    write.declarationId(), write.sharedCellId(), write.kind(), write.route(), value,
+                    write.span(), write.operationSite());
+        }
+
+        private FormulaAlternatives updateAliases(FormulaAlternatives existing, FormulaAlternatives target,
+                                                   ProjectionPath route, FormulaAlternatives replacement) {
+            FormulaAlternatives result = existing;
+            for (ValueFormula source : target.formulas()) {
+                if (!(source.type().withoutQualifiers() instanceof ArrayType)
+                        || source.resultRoute().depth() >= route.depth()
+                        || !route.steps().subList(0, source.resultRoute().depth()).equals(source.resultRoute().steps())) continue;
+                for (ValueFormula candidate : existing.formulas()) {
+                    if (!candidate.withResultRoute(ProjectionPath.root()).equals(source.withResultRoute(ProjectionPath.root()))) continue;
+                    ProjectionPath selected = candidate.resultRoute().compose(route.suffix(source.resultRoute().depth()));
+                    FormulaAlternatives old = result.select(selected).asType(replacement.rootType());
+                    result = selected.containsWildcard() ? result.replaceUnknown(selected, old.join(replacement))
+                            : result.replaceExact(selected, old.join(replacement));
+                }
+            }
+            return result;
+        }
+    }
+
     private void addCandidateCallWitness(
             List<EagerEffectWitness> effects,
             CallableSummary owner,
@@ -1095,6 +1326,7 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
     }
 
     private boolean isMaterializedStaticCall(CallableCallReference call) {
+        if (call.repeat().isPresent()) return false;
         if (containsCallResult(call.target())
                 || call.arguments().stream().anyMatch(this::containsCallResult)
                 || containsCallerResolvedCallable(call.target())

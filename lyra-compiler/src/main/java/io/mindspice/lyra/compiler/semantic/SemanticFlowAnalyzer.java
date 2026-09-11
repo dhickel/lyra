@@ -813,6 +813,18 @@ public final class SemanticFlowAnalyzer {
                             "retained producer has no initialized boundary value: " + declarationId, useSpan);
                 }
                 if (isLazyFunctionSlot(declarationId)) {
+                    // A mutable recursive function owns a real shared cell.
+                    // Publish its exact identity internally before resolving
+                    // captures so the cell edge closes without recursive construction.
+                    LambdaId id = declaration.initializerLambda().orElseThrow();
+                    if (lambdas.get(id).captures().stream().map(captures::get)
+                            .anyMatch(capture -> capture.mode() == CaptureMode.SHARED_MUTABLE_CELL
+                                    && capture.declarationId().equals(declarationId))) {
+                        ValueAlternatives identity = ValueAlternatives.singleton(ValueAlternative.callable(
+                                contractType(declarationId, useSpan), CallableFlow.atRoot(id, Map.of(), Map.of(),
+                                        Objects.requireNonNull(lambdaCreationSites.get(id)))));
+                        ownerFrame.state = bind(ownerFrame.state, declarationId, identity, useSpan);
+                    }
                     Eval lambda = lambdaValueForDeclaration(declaration, ownerFrame, ownerFrame.state, useSpan);
                     ownerFrame.state = bind(ownerFrame.state, declarationId, lambda.value, useSpan);
                     ownerFrame.values.put(declarationId, lambda.value);
@@ -976,6 +988,7 @@ public final class SemanticFlowAnalyzer {
                     case CONDITIONAL -> conditional(expression, frame, state);
                     case COALESCE -> coalesce(expression, frame, state);
                     case MATCH -> match(expression, frame, state);
+                    case ITER, WHILE -> loop(expression, frame, state);
                     case LAMBDA -> lambdaExpression(expression, frame, state);
                     case CALLABLE_CALL -> callableCall(expression, frame, state);
                     case DIRECT_CALL, NAMESPACE_DIRECT_CALL -> directCall(expression, frame, state);
@@ -1476,6 +1489,71 @@ public final class SemanticFlowAnalyzer {
                 ValueAlternatives value = ValueAlternatives.singleton(
                         ValueAlternative.of(expression.type(), List.of(), List.of(callable)));
                 return new Eval(value, state, events, distinctEffects(effects));
+            }
+
+            private Eval loop(TypedExpression expression, Frame frame,
+                              io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state) {
+                Eval input = evaluate(expression.children().getFirst(), frame, state);
+                Eval action = evaluate(expression.children().getLast(), frame, input.state);
+                var head = action.state;
+                var exits = action.state;
+                ArrayList<SemanticFlowEvent> events = new ArrayList<>(input.events);
+                events.addAll(action.events);
+                ArrayList<EagerEffectWitness> effects = new ArrayList<>(input.effects);
+                effects.addAll(action.effects);
+                boolean conditionControlled = expression.kind() == TypedExpressionKind.WHILE;
+                FunctionType actionType = (FunctionType) expression.children().getLast().type();
+                List<ValueAlternatives> arguments = actionType.arity() == 0 ? List.of()
+                        : List.of(scalarValue(actionType.parameterType(0)));
+                for (int iteration = 1; ; iteration++) {
+                    if (iteration > limits.maxFixedPointIterations()) throw failure(
+                            CallableSummaryResult.InternalFailure.Kind.DOMAIN_LIMIT,
+                            "callback loop exceeds the finite flow fixed-point budget", expression.span());
+                    var continuing = head;
+                    if (conditionControlled) {
+                        Eval predicate = invokeLoopCallback(expression, input.value,
+                                (FunctionType) expression.children().getFirst().type(), List.of(), frame, continuing);
+                        continuing = predicate.state;
+                        exits = iteration == 1 ? continuing : exits.join(continuing);
+                        events.addAll(predicate.events);
+                        effects.addAll(predicate.effects);
+                    }
+                    Eval body = invokeLoopCallback(expression, action.value, actionType, arguments, frame, continuing);
+                    events.addAll(body.events);
+                    effects.addAll(body.effects);
+                    var next = head.join(body.state);
+                    if (!conditionControlled) exits = next;
+                    if (next.equals(head)) break;
+                    head = next;
+                }
+                return new Eval(scalarValue(expression.type()), exits,
+                        List.copyOf(new java.util.LinkedHashSet<>(events)), distinctEffects(effects));
+            }
+
+            private Eval invokeLoopCallback(TypedExpression expression, ValueAlternatives target,
+                                            FunctionType function, List<ValueAlternatives> arguments, Frame frame,
+                                            io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state) {
+                var candidates = callableCandidates(refresh(target, state));
+                if (candidates.isEmpty()) throw failure(
+                        CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                        "callback loop has no recoverable callable fact", expression.span());
+                FormulaAlternatives[] formulas = arguments.stream()
+                        .map(value -> toFormulas(value, frame.module.moduleId(), expression.span()))
+                        .toArray(FormulaAlternatives[]::new);
+                io.mindspice.lyra.compiler.semantic.flow.BindingFlowState joined = null;
+                ValueAlternatives values = ValueAlternatives.empty();
+                ArrayList<SemanticFlowEvent> events = new ArrayList<>();
+                ArrayList<EagerEffectWitness> effects = new ArrayList<>();
+                for (CallableFlow candidate : candidates) {
+                    // Range parameters are immutable primitives and cannot be write targets.
+                    CallBranch branch = invokeCandidate(candidate, expression, List.of(), arguments,
+                            formulas, frame, state, function, List.of());
+                    joined = joined == null ? branch.state : joined.join(branch.state);
+                    values = values.join(branch.value);
+                    events.addAll(branch.events);
+                    effects.addAll(branch.effects);
+                }
+                return new Eval(values, joined, events, distinctEffects(effects));
             }
 
             private Eval callableCall(

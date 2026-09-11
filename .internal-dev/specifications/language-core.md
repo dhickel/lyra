@@ -383,8 +383,9 @@ function. No `return`, `break`, `continue`, or separate `do while` form is added
 `::while[...]` has the same fresh-expression boundary as `::iter[...]`; `while`
 cannot be shadowed, referenced as a bare value or used as a qualified member.
 
-Implementation status: reserved call syntax is implemented; callback-loop
-semantic certification and execution for both `iter` and `while` remain in progress.
+Implementation status: both callback loops have contextual type checking,
+repeated-effect certification, explicit typed IR and direct JVM execution.
+Signed ranges also support live session storage and bounded value snapshots.
 
 ### Tuples
 

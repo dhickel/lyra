@@ -687,6 +687,18 @@ public final class IrValidator {
                         validateNode(bound, range.span(), false);
                     }
                 }
+                case IrNode.Loop loop -> {
+                    validateCallIdentity(loop.callId(), loop.siteId(), loop.span());
+                    if (!io.mindspice.lyra.compiler.semantic.CallbackLoop.valid(
+                            loop.conditionControlled()
+                                    ? io.mindspice.lyra.compiler.semantic.TypedExpressionKind.WHILE
+                                    : io.mindspice.lyra.compiler.semantic.TypedExpressionKind.ITER,
+                            loop.type(), List.of(loop.input().type(), loop.action().type()))) {
+                        add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, loop.span(), "invalid callback loop contract");
+                    }
+                    validateNode(loop.input(), loop.span(), false);
+                    validateNode(loop.action(), loop.span(), false);
+                }
                 case IrNode.IndexAccess index -> validateIndexAccess(index);
                 case IrNode.Operator operator -> validateOperator(operator);
                 case IrNode.ShortCircuit shortCircuit -> validateShortCircuit(shortCircuit);
@@ -2089,7 +2101,7 @@ public final class IrValidator {
                         "source-owned runtime checks must use their failure site as their source site");
             }
             boolean validSite = switch (node.checkKind()) {
-                case ARITHMETIC -> node.operand() instanceof IrNode.Operator operator
+                case ARITHMETIC -> node.operand() instanceof IrNode.Range || node.operand() instanceof IrNode.Operator operator
                         && isCheckedArithmeticOperator(operator.operator())
                         && operator.type().isNumeric() && !operator.type().isNilable();
                 case DIVISION -> node.operand() instanceof IrNode.Operator operator

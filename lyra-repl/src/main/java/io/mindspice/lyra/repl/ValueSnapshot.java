@@ -23,6 +23,8 @@ import java.util.Set;
  * against the root's limits so a complete tree remains bounded.</p>
  */
 public record ValueSnapshot(LyraType type, Data data, SnapshotLimits limits) {
+    private static final java.util.regex.Pattern RANGE_TEXT = java.util.regex.Pattern.compile(
+            "\\((-?[0-9]+)\\.\\.(\\.?)(-?[0-9]+):(-?[0-9]+)\\)");
     public ValueSnapshot {
         type = Objects.requireNonNull(type, "type");
         data = Objects.requireNonNull(data, "data");
@@ -229,6 +231,17 @@ public record ValueSnapshot(LyraType type, Data data, SnapshotLimits limits) {
     }
 
     private static void validateScalar(LyraType type, Scalar scalar) {
+        if (scalar.kind() == ScalarKind.RANGE) {
+            if (!(type.baseType() instanceof io.mindspice.lyra.runtime.RangeType range)) {
+                throw new IllegalArgumentException("range snapshot requires a Range type");
+            }
+            var matcher = RANGE_TEXT.matcher(scalar.value());
+            if (!matcher.matches()) throw new IllegalArgumentException("invalid range snapshot data");
+            PrimitiveType element = (PrimitiveType) range.elementType();
+            for (int group : new int[]{1, 3, 4}) validateInteger(matcher.group(group), element, true);
+            if (matcher.group(4).equals("0")) throw new IllegalArgumentException("zero range snapshot step");
+            return;
+        }
         if (!(type.baseType() instanceof PrimitiveType primitive)) {
             throw new IllegalArgumentException(
                     "scalar snapshot requires a primitive type: " + type);

@@ -158,9 +158,20 @@ final class SemanticFlowFactValidator {
                     require(call.id().ownerLambda().equals(lambda.id()),
                             "callable call belongs to another lambda");
                     requireSite(call.siteId(), call.span(), "callable call");
+                    TypedExpression source = graph.expressionsAt(call.span()).stream()
+                            .filter(expression -> graph.flowSiteId(expression).equals(call.siteId().orElseThrow()))
+                            .findFirst().orElseThrow(() -> invalid("call has no originating typed expression"));
+                    boolean loop = source.kind() == TypedExpressionKind.ITER || source.kind() == TypedExpressionKind.WHILE;
+                    require(loop == call.repeat().isPresent(), "call repetition metadata changed from source");
+                    call.repeat().ifPresent(repeat -> require(repeat.predicate().isPresent()
+                            == (source.kind() == TypedExpressionKind.WHILE), "loop predicate mode changed from source"));
                 }
                 for (CallableCallReference call : summary.callReferences()) {
                     validateFormulaAlternatives(call.target(), summary, calls);
+                    call.repeat().flatMap(CallableCallReference.Repeat::predicate)
+                            .ifPresent(value -> validateFormulaAlternatives(value, summary, calls));
+                    call.repeat().ifPresent(repeat -> repeat.environment().values().forEach(
+                            value -> validateFormulaAlternatives(value, summary, calls)));
                     call.arguments().forEach(value ->
                             validateFormulaAlternatives(value, summary, calls));
                 }
@@ -263,6 +274,9 @@ final class SemanticFlowFactValidator {
                 } else if (formula instanceof ValueFormula.CallResult result) {
                     require(calls.containsKey(result.callId()),
                             "formula call result names a foreign call");
+                    calls.get(result.callId()).repeat().ifPresent(repeat -> require(
+                            ValueAlternative.typeAt(repeat.snapshotType(), result.callRoute()).withoutQualifiers()
+                                    .equals(result.type().withoutQualifiers()), "loop snapshot projection changed type"));
                 } else if (formula instanceof ValueFormula.FreshAllocation fresh) {
                     require(lambdas.containsKey(fresh.allocationSite().ownerLambda()),
                             "fresh allocation belongs to a foreign lambda");
@@ -303,7 +317,7 @@ final class SemanticFlowFactValidator {
                         SemanticFlowEvent.Kind.DECLARATION, site, Optional.empty()));
                 case REBINDING -> destination.add(new EventRequirement(
                         SemanticFlowEvent.Kind.MUTATION, site, Optional.empty()));
-                case CALLABLE_CALL, DIRECT_CALL, NAMESPACE_DIRECT_CALL ->
+                case CALLABLE_CALL, DIRECT_CALL, NAMESPACE_DIRECT_CALL, ITER, WHILE ->
                         destination.add(new EventRequirement(
                                 SemanticFlowEvent.Kind.CALL, site, Optional.empty()));
                 case LAMBDA -> {
@@ -746,6 +760,8 @@ final class SemanticFlowFactValidator {
 
         private static boolean isCall(TypedExpression expression) {
             return expression.kind() == TypedExpressionKind.CALLABLE_CALL
+                    || expression.kind() == TypedExpressionKind.ITER
+                    || expression.kind() == TypedExpressionKind.WHILE
                     || expression.kind() == TypedExpressionKind.DIRECT_CALL
                     || expression.kind() == TypedExpressionKind.NAMESPACE_DIRECT_CALL;
         }

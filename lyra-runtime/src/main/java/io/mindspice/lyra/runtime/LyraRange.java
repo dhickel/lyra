@@ -27,6 +27,14 @@ public record LyraRange(long start, long end, long step, boolean inclusive, int 
         return !containsPosition(start);
     }
 
+    /** Exact logical element width is not encoded by the shared JVM class. */
+    public static LyraRange requireWidth(LyraRange value, int bits, boolean nilable) {
+        if (value == null ? !nilable : value.bits != bits) {
+            throw new LyraLinkException("range value does not match its declared element width");
+        }
+        return value;
+    }
+
     /** Tests before adding, including when the mathematical successor exceeds signed long. */
     public boolean hasSuccessor(long value) {
         if (step > 0 && value > Long.MAX_VALUE - step

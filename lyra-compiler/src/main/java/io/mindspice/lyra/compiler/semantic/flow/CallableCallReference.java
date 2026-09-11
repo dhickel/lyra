@@ -37,7 +37,8 @@ public record CallableCallReference(
         List<CaptureId> targetCaptureIds,
         FormulaAlternatives target,
         List<FormulaAlternatives> arguments,
-        Optional<FlowSiteId> siteId)
+        Optional<FlowSiteId> siteId,
+        Optional<Repeat> repeat)
         implements Comparable<CallableCallReference> {
     public enum Kind {
         DIRECT,
@@ -45,6 +46,35 @@ public record CallableCallReference(
         CALLABLE,
         PARAMETER,
         CAPTURE
+    }
+
+    /** Repetition retains its selected action and optional pre-test predicate. */
+    public record Repeat(Optional<FormulaAlternatives> predicate,
+                         java.util.Map<DeclarationId, FormulaAlternatives> environment) {
+        public Repeat {
+            Objects.requireNonNull(predicate, "predicate");
+            environment = java.util.Collections.unmodifiableMap(new java.util.TreeMap<>(environment));
+            if (predicate.isPresent() && !predicate.orElseThrow().rootType().equals(
+                    io.mindspice.lyra.compiler.semantic.CallbackLoop.predicateType())) {
+                throw new IllegalArgumentException("loop predicate contract differs from Fn<;Bool>");
+            }
+        }
+
+        public io.mindspice.lyra.compiler.types.TupleType snapshotType() {
+            java.util.ArrayList<io.mindspice.lyra.compiler.types.LyraType> types = new java.util.ArrayList<>();
+            types.add(io.mindspice.lyra.compiler.types.PrimitiveType.UNIT);
+            environment.values().forEach(value -> types.add(value.rootType()));
+            return new io.mindspice.lyra.compiler.types.TupleType(types);
+        }
+    }
+
+    public CallableCallReference(SummaryCallId id, Kind kind, SourceSpan span,
+            Optional<ReferenceId> referenceId, Optional<DeclarationId> targetDeclaration,
+            Optional<ModuleId> targetModule, Optional<ExportId> targetExport, Optional<LambdaId> targetLambda,
+            List<Integer> targetParameterIndexes, List<CaptureId> targetCaptureIds,
+            FormulaAlternatives target, List<FormulaAlternatives> arguments, Optional<FlowSiteId> siteId) {
+        this(id, kind, span, referenceId, targetDeclaration, targetModule, targetExport, targetLambda,
+                targetParameterIndexes, targetCaptureIds, target, arguments, siteId, Optional.empty());
     }
 
     /** Compatibility constructor before capture-target identity was explicit. */
@@ -118,6 +148,7 @@ public record CallableCallReference(
         Objects.requireNonNull(target, "target");
         arguments = copy(arguments, "arguments");
         Objects.requireNonNull(siteId, "siteId");
+        Objects.requireNonNull(repeat, "repeat");
         if (!targetParameterIndexes.equals(symbolicParameterIndexes(
                 target, OptionalInt.empty()))) {
             throw new IllegalArgumentException(
@@ -181,7 +212,7 @@ public record CallableCallReference(
                 targetExport, targetLambda,
                 symbolicParameterIndexes(materializedTarget, OptionalInt.empty()),
                 symbolicCaptureIds(materializedTarget, Optional.empty()),
-                materializedTarget, materializedArguments, siteId);
+                materializedTarget, materializedArguments, siteId, repeat);
     }
 
     public boolean isDirect() {
@@ -250,6 +281,7 @@ public record CallableCallReference(
                 value -> result.append("/capture=").append(value));
         referenceId.ifPresent(value -> result.append("/reference=").append(value));
         siteId.ifPresent(value -> result.append("/site=").append(value));
+        repeat.ifPresent(value -> result.append("/repeat=").append(value));
         for (FormulaAlternatives argument : arguments) {
             result.append("/arg=").append(argument.canonicalKey());
         }

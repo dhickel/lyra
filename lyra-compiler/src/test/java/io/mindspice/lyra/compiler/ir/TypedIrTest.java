@@ -103,7 +103,8 @@ public final class TypedIrTest {
                         + "let @nil maybe :I32 = 1 let coalesced = (maybe : 4) "
                         + "let converted = I64[value] let guard = (and #T #F) "
                         + "let branch = (#T -> direct : callable) let matched = (match value ?? 0 -> 1 ?? _ -> 2) "
-                        + "let range = (0..10:1) let block = { 1 } let changed = (value := (++ value))")));
+                        + "let range = (0..10:1) ::iter[range || {}] ::while[|| #F || {}] "
+                        + "let block = { 1 } let changed = (value := (++ value))")));
         Set<Class<?>> variants = new HashSet<>();
         IrTraversal.preOrder(ir.rootModule().body()).forEach(node -> variants.add(node.getClass()));
         assertEquals(Set.of(IrNode.class.getPermittedSubclasses()), variants,
@@ -246,6 +247,7 @@ public final class TypedIrTest {
             public Void visitCoalesce(IrNode.Coalesce node) { return add(node); }
             public Void visitMatch(IrNode.Match node) { return add(node); }
             public Void visitRange(IrNode.Range node) { return add(node); }
+            public Void visitLoop(IrNode.Loop node) { return add(node); }
             public Void visitDirectCall(IrNode.DirectCall node) { return add(node); }
             public Void visitCallableCall(IrNode.CallableCall node) { return add(node); }
             public Void visitLambda(IrNode.Lambda node) { return add(node); }

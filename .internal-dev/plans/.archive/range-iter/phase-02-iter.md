@@ -1,5 +1,7 @@
 # Context
 
+Completed 2026-09-11; see the callback-loop backend changelog and review.
+
 Range values now have a source-to-JVM foundation. Iteration must preserve the
 existing complete lambda-contract, callback identity and ownership semantics.
 The owner confirmed that iter is a reserved built-in like match.

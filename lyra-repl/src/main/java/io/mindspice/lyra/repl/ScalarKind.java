@@ -7,5 +7,6 @@ public enum ScalarKind {
     STRING,
     SIGNED_INTEGER,
     UNSIGNED_INTEGER,
-    FLOAT
+    FLOAT,
+    RANGE
 }

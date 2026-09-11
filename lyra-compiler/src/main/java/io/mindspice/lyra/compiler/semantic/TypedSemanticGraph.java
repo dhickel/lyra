@@ -580,6 +580,12 @@ public final class TypedSemanticGraph implements ImmutablePhaseArtifact, TypedSe
                     throw new IllegalArgumentException("typed range construction is incomplete");
                 }
             }
+            case ITER, WHILE -> {
+                if (!CallbackLoop.valid(expression.kind(), expression.type(),
+                        expression.children().stream().map(TypedExpression::type).toList())) {
+                    throw new IllegalArgumentException("typed callback loop has an invalid contract");
+                }
+            }
             case TUPLE_LITERAL -> {
                 if (expression.type().isNilable()
                         || !(expression.type().withoutQualifiers() instanceof TupleType)

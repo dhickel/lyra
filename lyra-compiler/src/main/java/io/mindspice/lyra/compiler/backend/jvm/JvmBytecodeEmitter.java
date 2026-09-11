@@ -920,6 +920,11 @@ final class JvmBytecodeEmitter {
 
         private boolean authenticateFunctionParameter(int index, LyraType logical,
                                                       JvmTypePlan physical) {
+            if (logical.withoutQualifiers() instanceof io.mindspice.lyra.compiler.types.RangeType) {
+                loadParameter(index);
+                authenticateRange(logical);
+                return true;
+            }
             if (!(logical.withoutQualifiers() instanceof FunctionType function)) {
                 return false;
             }
@@ -1610,6 +1615,10 @@ final class JvmBytecodeEmitter {
         private void authenticateSessionValue(LyraType logical) {
             LyraType base = logical.withoutQualifiers();
             if (base instanceof PrimitiveType) return;
+            if (base instanceof io.mindspice.lyra.compiler.types.RangeType) {
+                authenticateRange(logical);
+                return;
+            }
             JvmTypePlan physical = owner.mapper.map(logical, JvmMappingContext.JAVA_VALUE);
             int slot = allocateLocal(physical);
             storePhysical(physical.physicalComponents().getFirst(), slot);
@@ -2351,6 +2360,14 @@ final class JvmBytecodeEmitter {
             adapt(source, target);
         }
 
+        private void authenticateRange(LyraType logical) {
+            var range = (io.mindspice.lyra.compiler.types.RangeType) logical.withoutQualifiers();
+            emitInt(((PrimitiveType) range.elementType()).numericDomain().orElseThrow().bitWidth());
+            emitInt(logical.isNilable() ? 1 : 0);
+            code.invokestatic(cd("io.mindspice.lyra.runtime.LyraRange"), "requireWidth",
+                    method("(L" + RUNTIME + "LyraRange;IZ)L" + RUNTIME + "LyraRange;"));
+        }
+
         private void loadFacadeState() {
             GeneratedMemberPlan state = classPlan.members().stream()
                     .filter(value -> value.kind() == GeneratedMemberKind.FACADE_STATE_FIELD)
@@ -2547,6 +2564,9 @@ final class JvmBytecodeEmitter {
             if (node instanceof IrNode.Range range) {
                 return emitRange(range);
             }
+            if (node instanceof IrNode.Loop loop) {
+                return emitLoop(loop);
+            }
             if (node instanceof IrNode.IndexAccess index) {
                 return emitIndexAccess(index);
             }
@@ -2603,6 +2623,10 @@ final class JvmBytecodeEmitter {
                 code.lstore(slot);
                 slots.add(slot);
             }
+            Label nonzero = code.newLabel();
+            code.lload(slots.get(2)).lconst_0().lcmp().ifne(nonzero);
+            throwFailure(range.span(), "LYR-ARITH", "a range step must not be zero");
+            code.labelBinding(nonzero);
             code.new_(cd("io.mindspice.lyra.runtime.LyraRange"));
             code.dup();
             for (int slot : slots) {
@@ -2612,6 +2636,67 @@ final class JvmBytecodeEmitter {
             emitInt(bits);
             code.invokespecial(cd("io.mindspice.lyra.runtime.LyraRange"), "<init>", method("(JJJZI)V"));
             return owner.mapper.map(range.type(), JvmMappingContext.INTERNAL_VALUE);
+        }
+
+        private JvmTypePlan emitLoop(IrNode.Loop loop) {
+            // Retain both argument values before entering the loop. Authentication
+            // belongs to the selected value, not to every repeated invocation.
+            JvmTypePlan inputPlan = emitNode(loop.input());
+            if (!loop.conditionControlled()) authenticateRange(loop.input().type());
+            int input = allocateLocal(inputPlan.physicalComponents().getFirst());
+            code.astore(input);
+            FunctionType actionType = functionBase(loop.action().type());
+            JvmTypePlan actionPlan = emitNode(loop.action());
+            int action = allocateLocal(actionPlan.physicalComponents().getFirst());
+            code.astore(action);
+            code.aload(action);
+            recordCallFailureFrame(loop.span(), () -> authenticateGeneratedFunctionValue(actionType));
+            code.astore(action);
+            var start = code.newLabel();
+            var done = code.newLabel();
+            if (loop.conditionControlled()) {
+                FunctionType predicate = functionBase(loop.input().type());
+                code.aload(input);
+                recordCallFailureFrame(loop.span(), () -> authenticateGeneratedFunctionValue(predicate));
+                code.astore(input);
+                code.labelBinding(start);
+                emitOwnerSafePoint();
+                code.aload(input);
+                emitLoopInvocation(predicate, loop.span());
+                code.ifeq(done);
+                code.aload(action);
+                emitLoopInvocation(actionType, loop.span());
+                code.goto_(start);
+            } else {
+                ClassDesc rangeClass = cd("io.mindspice.lyra.runtime.LyraRange");
+                int cursor = allocateLocal(JvmType.primitive("J"));
+                int step = allocateLocal(JvmType.primitive("J"));
+                code.aload(input).invokevirtual(rangeClass, "start", method("()J")).lstore(cursor);
+                code.aload(input).invokevirtual(rangeClass, "step", method("()J")).lstore(step);
+                code.aload(input).invokevirtual(rangeClass, "isEmpty", method("()Z")).ifne(done);
+                code.labelBinding(start);
+                emitOwnerSafePoint();
+                code.aload(action);
+                if (actionType.arity() == 1) {
+                    code.lload(cursor);
+                    if (actionType.parameterType(0) != PrimitiveType.I64) code.l2i();
+                }
+                emitLoopInvocation(actionType, loop.span());
+                code.aload(input).lload(cursor)
+                        .invokevirtual(rangeClass, "hasSuccessor", method("(J)Z")).ifeq(done);
+                code.lload(cursor).lload(step).ladd().lstore(cursor);
+                code.goto_(start);
+            }
+            code.labelBinding(done);
+            emitUnit();
+            return owner.mapper.map(loop.type(), JvmMappingContext.INTERNAL_VALUE);
+        }
+
+        private void emitLoopInvocation(FunctionType function, SourceSpan span) {
+            JvmSignaturePlan signature = owner.mapper.mapSignature(function.signature(), JvmAbiBoundary.JAVA_VISIBLE);
+            recordCallFailureFrame(span, () -> code.invokeinterface(
+                    cd(owner.plan.functionInterfaces().get(function.canonicalSpelling())),
+                    "invoke", method(signature.descriptor())));
         }
 
         private JvmTypePlan emitArrayLiteral(IrNode.ArrayLiteral array) {
@@ -4114,6 +4199,9 @@ final class JvmBytecodeEmitter {
                 emitUnit();
             } else {
                 adapt(thenValue, target);
+                if (branch.type().withoutQualifiers() instanceof FunctionType function) {
+                    code.checkcast(cd(owner.plan.functionInterfaces().get(function.canonicalSpelling())));
+                }
             }
             code.goto_(end);
             locals.clear();
@@ -4124,6 +4212,9 @@ final class JvmBytecodeEmitter {
             if (branch.elseBranch().isPresent()) {
                 JvmTypePlan elseValue = emitNode(branch.elseBranch().orElseThrow());
                 adapt(elseValue, target);
+                if (branch.type().withoutQualifiers() instanceof FunctionType function) {
+                    code.checkcast(cd(owner.plan.functionInterfaces().get(function.canonicalSpelling())));
+                }
             } else {
                 emitUnit();
                 adapt(owner.mapper.map(PrimitiveType.UNIT, JvmMappingContext.INTERNAL_VALUE), target);
@@ -4233,6 +4324,9 @@ final class JvmBytecodeEmitter {
                 }
                 line(arm.result().span());
                 adapt(emitNode(arm.result()), target);
+                if (match.type().withoutQualifiers() instanceof FunctionType function) {
+                    code.checkcast(cd(owner.plan.functionInterfaces().get(function.canonicalSpelling())));
+                }
                 code.goto_(end);
                 code.labelBinding(next);
             }
@@ -4337,6 +4431,9 @@ final class JvmBytecodeEmitter {
                 line(arm.span());
                 line(arm.result().span());
                 adapt(emitNode(arm.result()), target);
+                if (match.type().withoutQualifiers() instanceof FunctionType function) {
+                    code.checkcast(cd(owner.plan.functionInterfaces().get(function.canonicalSpelling())));
+                }
                 code.goto_(end);
             }
             IrNode.MatchArm defaultArm = match.arms().getLast();
@@ -4344,6 +4441,9 @@ final class JvmBytecodeEmitter {
             line(defaultArm.span());
             line(defaultArm.result().span());
             adapt(emitNode(defaultArm.result()), target);
+            if (match.type().withoutQualifiers() instanceof FunctionType function) {
+                code.checkcast(cd(owner.plan.functionInterfaces().get(function.canonicalSpelling())));
+            }
             code.labelBinding(end);
             return true;
         }

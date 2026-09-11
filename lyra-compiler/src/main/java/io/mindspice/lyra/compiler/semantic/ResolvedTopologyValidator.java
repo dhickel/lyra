@@ -771,7 +771,9 @@ final class ResolvedTopologyValidator {
         ResolvedDeclaration target = resolved.declaration(
                 reference.targetDeclaration().orElseThrow()).orElseThrow(() -> invalid(
                 "source reference names an absent declaration"));
-        if (current.ownerDeclaration().filter(target.id()::equals).isPresent()
+        boolean rebindingTarget = resolved.mutations().stream()
+                .anyMatch(mutation -> mutation.rootReference().filter(reference.id()::equals).isPresent());
+        if (current.ownerDeclaration().filter(target.id()::equals).isPresent() && !rebindingTarget
                 || target.kind() == DeclarationKind.IMPORT_MODULE
                 || target.kind() == DeclarationKind.EXTERNAL
                 || current.ownerDeclaration().isPresent() && isModuleLinkedFunction(target)) {
@@ -789,7 +791,7 @@ final class ResolvedTopologyValidator {
         List<CaptureKey> result = new ArrayList<>();
         while (current != null
                 && (targetOwner.isEmpty() || !current.id().equals(targetOwner.orElseThrow()))) {
-            if (current.ownerDeclaration().filter(target.id()::equals).isEmpty()) {
+            if (current.ownerDeclaration().filter(target.id()::equals).isEmpty() || rebindingTarget) {
                 result.add(new CaptureKey(current.id(), target.id()));
             }
             current = parentLambda(current).orElse(null);

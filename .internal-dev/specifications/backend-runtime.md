@@ -73,6 +73,8 @@ A separate closed immutable typed IR isolates semantics from parser records and 
 - strict left-to-right evaluation and short-circuit control flow, including subject-once value matching and ordered conditional-match arms;
 - direct calls, callable-value calls, namespace/value/direct-call access distinctions, and module accesses;
 - immutable captures, specialized shared cells for captured `@mut` bindings, and recursive closure initialization;
+- callback loops with two source-ordered, once-evaluated arguments, certified
+  repeated callback effects, primitive range cursors and pre-test while dispatch;
 - checked integer operations, non-finite float checks, bounds checks, invalid conversions, and all runtime-failure sites;
 - arrays, tuples, equality, identity, module state, and eager initialization order.
 
@@ -125,6 +127,21 @@ Java receives live arrays, not defensive copies. It can therefore mutate a retur
 - Every exported/returned closure retains its module instance. Invocation checks OPEN state and owner thread; closing the module invalidates later closure invocation.
 - Direct self-tail calls, including calls in match-arm result positions, lower to loops and use constant JVM stack. Mutual/non-tail recursion uses JVM calls. `StackOverflowError` crossing a generated Lyra invocation boundary is the sole `VirtualMachineError` translated to `LYR-STACK`; all other `VirtualMachineError` instances escape unchanged.
 - MethodHandles support exact dynamic export lookup, not whole-program control flow.
+
+`iter` and `while` emit constant-stack bytecode loops. The selected callback
+interfaces are authenticated once per traversal; normal closure invocation still
+checks lifecycle/ownership, and loop backedges use the existing owner safe point.
+Range traversal stores a primitive long cursor and step, tests successor existence
+before addition, and allocates neither an iterator nor boxed cursor values.
+Range element-width tags are validated at range parameter and traversal boundaries.
+Dynamic zero-step construction has an explicit source-linked arithmetic failure site.
+
+Callable summaries retain repetition as an ordered operation, not a single call.
+Its finite monotone environment includes zero iterations and shared-cell/aggregate
+changes, and its symbolic post-loop snapshot carries those changes into subsequent
+expressions and function returns. The while predicate participates in each transfer,
+including the initial/terminal test. Summary limits remain enforced without dropping
+alternatives or replacing missing callable identities with arbitrary candidates.
 
 ### Generated classes and Java facade
 

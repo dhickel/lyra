@@ -9,6 +9,25 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class ExecutedSnapshotTest {
     @Test
+    void rangesRemainBoundedDataAndPersistInsideAggregates() {
+        var type = new io.mindspice.lyra.runtime.RangeType(PrimitiveType.I8);
+        assertEquals("(127...-128:-1)", scalar(ValueSnapshot.scalar(type, ScalarKind.RANGE, "(127...-128:-1)")));
+        for (String invalid : List.of("(0..3:0)", "(0..128:1)", "(00..3:1)", "(-0..3:1)", "(0....3:1)")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> ValueSnapshot.scalar(type, ScalarKind.RANGE, invalid), invalid);
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> ValueSnapshot.scalar(PrimitiveType.I8, ScalarKind.RANGE, "(0..3:1)"));
+        try (var session = LyraSession.open()) {
+            success(session, "let ranges = Array[(0I8..3I8:1I8)]");
+            var aggregate = assertInstanceOf(ValueSnapshot.Aggregate.class, value(session, "ranges").data());
+            assertEquals("(0..3:1)", scalar(aggregate.elements().getFirst()));
+            assertEquals("3", scalar(value(session,
+                    "let @mut n :I32 = 0 ::iter[ranges[0] || { n := (++ n) }] n")));
+        }
+    }
+
+    @Test
     void resultsComeFromExecutedExpressionsAndDeclarationsHaveNoSeparateResult() {
         try (var session = LyraSession.open()) {
             assertTrue(success(session, "let @mut count :I32 = 1").value().isEmpty());

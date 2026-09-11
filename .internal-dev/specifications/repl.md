@@ -60,6 +60,14 @@ The public Java API is limited to opening a session, submitting source, receivin
 
 Snapshots retain canonical Lyra types, bounded scalar/aggregate display data, ordering, unsigned mathematical values, UTF-16 content, nil/Unit distinctions, function descriptions, aliases, references, and explicit truncation markers. Formatting never executes user code. Default budgets are depth 6, 100 aggregate elements, and 16 KiB rendered output.
 
+Immutable `Range<T>` values use exact live data storage and the data-only scalar
+snapshot kind `RANGE`: `(start..end:step)` or `(start...end:step)`, with canonical
+signed decimal components. This is display data, not source replay (negative
+source operands still use unary forms). Snapshot validation checks element widths
+and nonzero step without traversing the range. Both callback loops execute across
+submissions, share prior mutable cells, preserve completed writes on failure, and
+honor session cancellation at backedges.
+
 ### Console
 
 `lyra repl [ROOT]` supports source search directories, optional `--source-root DIR`, `--history PATH`, `--keymap emacs|vi` and `--plain`; it opens an empty workspace and never invokes `main`. `lyra attach HOST:PORT` connects to an explicitly enabled localhost service without a token file. `run ROOT --repl` enables the attachable instrumentation and the gated listener for that run, with run-only `--repl-port PORT` (0..65535, default 0) and `--repl-wait`. `compile ROOT --repl` builds the same capability but never listens; compiled artifacts activate only through the explicit `lyra.repl.enabled` (plus optional `lyra.repl.port` and `lyra.repl.wait`) runtime properties, default disabled.

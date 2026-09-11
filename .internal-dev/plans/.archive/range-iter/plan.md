@@ -13,7 +13,8 @@ with a zero-argument Bool predicate and zero-argument Unit action.
 
 Complete source-to-JVM support with reusable range values, exact callback
 contracts, safe termination, lifecycle/cancellation integration and regression
-coverage. This plan is in progress; no implementation completion is claimed.
+coverage. Implementation is complete as of 2026-09-11; validation and review
+evidence is recorded in the callback-loop backend closeout records.
 
 ## Implementation steps
 
@@ -44,16 +45,14 @@ The current implementation uses signed domains as the announced default.
 The owner confirmed that `iter` is reserved like `match` on 2026-09-10.
 `::iter[...]` begins a new expression, including after a range initializer and
 across a newline. It cannot be a user binding, bare value or namespace member.
-Implementation of iter is not complete.
+Both iter and while now execute through the typed JVM backend.
 
 ## Progress
 
-- While keyword/grammar boundaries, parser replay and editor highlighting are
-  implemented. Exact callbacks, predicate effects and execution remain pending;
-  see phase-03-while.md. Both loops need the shared repeated-effect machinery.
-- Reserved iter lexical/grammar boundaries, parser replay and editor keyword
-  highlighting are implemented, with generated whitespace/endpoint/callback
-  boundary regressions. Semantic callback specialization is still unfinished.
+- While keyword/grammar boundaries, parser replay, editor highlighting, exact
+  callbacks, predicate effects and JVM execution are implemented.
+- Reserved iter boundaries, contextual callback specialization, repeated-effect
+  analysis, IR certification and primitive JVM traversal are implemented.
 - Range tokens, grammar/AST, signed type contracts, typed IR and concrete runtime
   representation are implemented in the worktree.
 - Focused grammar/parser tests and RangeIntegrationTest pass, including Java
@@ -66,10 +65,12 @@ Implementation of iter is not complete.
 - Extended LanguageFuzzTest passed four seeds at 1,800 cases each. The corrected
   range property campaign also passed at 1,800 samples per signed width (7,200
   range cases), including the latest nested-bound test.
-- Remaining: complete callback specialization and repeated
-  effect/capture analysis, bytecode loop and safe points, persistence/snapshots,
-  broader range nesting/provenance and source failure checks, source fuzz
-  integration, extended campaign, documentation review and final completion.
+- Completed backend closeout adds fixed-point callable/capture/aggregate transfer,
+  post-loop binding facts, constant-stack bytecode and cooperative safe points,
+  exact-width host arguments, range storage/snapshots, source-mapped failures,
+  source loop fuzz/oracles, and execution/cancellation regressions. The extended
+  campaign includes four source seeds at 1,800 cases each, 1,800 range samples
+  per signed width and 1,800 executed loop samples per signed width.
 
 ## Validation
 
