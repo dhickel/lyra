@@ -31,6 +31,9 @@ import io.mindspice.lyra.compiler.semantic.flow.ProjectionStep;
 import io.mindspice.lyra.compiler.semantic.flow.ValueAlternative;
 import io.mindspice.lyra.compiler.semantic.flow.ValueAlternatives;
 import io.mindspice.lyra.compiler.types.ArrayType;
+import io.mindspice.lyra.compiler.types.NominalType;
+import io.mindspice.lyra.compiler.types.NominalSchema;
+import io.mindspice.lyra.compiler.types.NominalTypeEnvironment;
 import io.mindspice.lyra.compiler.types.RangeType;
 import io.mindspice.lyra.compiler.types.BindingContract;
 import io.mindspice.lyra.compiler.types.BindingMutability;
@@ -267,6 +270,10 @@ public final class SemanticResolver {
         private final Map<SyntaxNode, ScopeDraft> scopeBySyntax = new IdentityHashMap<>();
         private final Map<SyntaxNode, DeclDraft> declarationBySyntax = new IdentityHashMap<>();
         private final Map<SyntaxNode.LetBinding, DeclDraft> letDeclarations = new IdentityHashMap<>();
+        private final Map<SyntaxNode.NominalDeclaration, DeclDraft> nominalDeclarations = new IdentityHashMap<>();
+        private final Map<DeclarationId, ResolvedNominal> nominals = new LinkedHashMap<>();
+        private final Map<ScopeId, NominalType> lexicalNominals = new HashMap<>();
+        private final Map<SourceSpan, DeclDraft> selectedMembers = new HashMap<>();
         private final Map<SyntaxNode.Parameter, DeclDraft> parameterDeclarations = new IdentityHashMap<>();
         private final Map<SyntaxNode.PredicateBinding, DeclDraft> predicateDeclarations = new IdentityHashMap<>();
         private final Map<SyntaxNode.Conditional, ScopeDraft> predicateScopes = new IdentityHashMap<>();
@@ -367,6 +374,11 @@ public final class SemanticResolver {
                 scopesById.get(source.scopeId()).add(draft);
             }
             ModuleWork work = new ModuleWork(node, scopesById.get(record.resolvedModule().rootScope()));
+            for (ResolvedNominal nominal : producer.nominals()) {
+                if (!nominal.schema().type().id().module().moduleId().equals(node.moduleId())) continue;
+                nominals.put(nominal.declaration(), nominal);
+                lexicalNominals.put(declarationsById.get(nominal.self()).scopeId, nominal.schema().type());
+            }
             modules.put(node.moduleId(), work);
             var refs = producer.references().stream().filter(value -> value.moduleId().equals(node.moduleId())).toList();
             references.addAll(refs);
@@ -406,6 +418,8 @@ public final class SemanticResolver {
         }
 
         private void collectDeclarations() {
+            predeclareNominals();
+            if (failed()) return;
             for (ModuleWork work : modules.values()) {
                 if (retained(work.node.moduleId())) continue;
                 if (work.node.moduleId().equals(graph.rootModule())) {
@@ -434,6 +448,10 @@ public final class SemanticResolver {
                 if (isIntrinsicStdIo(work.node.moduleId())) {
                     collectIntrinsicExports(work);
                 }
+            }
+            // Every namespace/import exists before complete member signatures are read.
+            for (ModuleWork work : modules.values()) {
+                if (retained(work.node.moduleId())) continue;
                 for (SyntaxNode.Form form : work.node.program().forms()) {
                     collectForm(form, work.root, work, true, Optional.empty());
                     if (failed()) {
@@ -441,6 +459,143 @@ public final class SemanticResolver {
                     }
                 }
             }
+            if (!failed()) {
+                try {
+                    new NominalTypeEnvironment(nominals.values().stream().map(ResolvedNominal::schema).toList());
+                } catch (IllegalArgumentException failure) {
+                    fail(CompilerDiagnosticCodes.RESOLVE_INVALID_SIGNATURE, graph.module(graph.rootModule()).orElseThrow().program().span(),
+                            failure.getMessage());
+                }
+            }
+        }
+
+        private void predeclareNominals() {
+            for (ModuleWork work : modules.values()) {
+                if (retained(work.node.moduleId())) continue;
+                Map<String, Long> occurrences = new HashMap<>();
+                for (SyntaxNode.Form form : work.node.program().forms()) {
+                    if (!(form instanceof SyntaxNode.NominalDeclaration syntax)) continue;
+                    String name = syntax.name().name();
+                    long occurrence = occurrences.merge(name, 1L, Long::sum) - 1;
+                    var id = new io.mindspice.lyra.compiler.identity.NominalTypeId(
+                            io.mindspice.lyra.compiler.identity.ModuleIdentity.of(work.node.moduleId()),
+                            work.node.revision(), name, occurrence);
+                    ModifierInfo modifiers = modifiers(syntax.modifiers(), EnumSet.of(ModifierKind.PUBLIC),
+                            syntax.span(), "type declaration");
+                    if (modifiers == null) return;
+                    DeclDraft declaration = newDeclaration(name, syntax.name().span(), syntax.span(), work.root,
+                            DeclarationKind.NOMINAL, modifiers.publicModifier
+                                    ? DeclarationVisibility.PUBLIC : DeclarationVisibility.PRIVATE,
+                            BindingMutability.IMMUTABLE);
+                    declaration.declaredContract = Optional.of(BindingContract.immutable(new NominalType(id)));
+                    declaration.effectiveContract = declaration.declaredContract;
+                    nominalDeclarations.put(syntax, declaration);
+                    declarationBySyntax.put(syntax, declaration);
+                    work.root.add(declaration);
+                }
+            }
+        }
+
+        private void collectNominal(SyntaxNode.NominalDeclaration syntax, ScopeDraft parent, ModuleWork work) {
+            DeclDraft declaration = nominalDeclarations.get(syntax);
+            DeclDraft previous = parent.previous(syntax.name().name(), syntax.name().span().startOffset());
+            if (previous != null && (declaration.visibility == DeclarationVisibility.PUBLIC
+                    || previous.visibility == DeclarationVisibility.PUBLIC || previous.reExported)) {
+                fail(CompilerDiagnosticCodes.RESOLVE_PUBLIC_REDECLARATION, syntax.name().span(),
+                        "public name cannot be redeclared: " + syntax.name().name(),
+                        List.of(RelatedSpan.of(previous.nameSpan, "previous public declaration")));
+                return;
+            }
+            declaration.replacementOf = Optional.ofNullable(previous).map(value -> value.id);
+            NominalType type = (NominalType) declaration.effectiveContract.orElseThrow().valueType();
+            ScopeDraft scope = childScope(parent, work, ScopeKind.NOMINAL, Optional.empty(), syntax.span());
+            scopeBySyntax.put(syntax, scope);
+            lexicalNominals.put(scope.id, type);
+            DeclDraft self = newDeclaration("self", syntax.name().span(), syntax.span(), scope,
+                    DeclarationKind.SELF, DeclarationVisibility.PRIVATE, BindingMutability.IMMUTABLE);
+            self.declaredContract = Optional.of(BindingContract.immutable(type));
+            self.effectiveContract = self.declaredContract;
+            scope.add(self);
+            List<NominalSchema.Member> contracts = new ArrayList<>();
+            List<DeclarationId> memberIds = new ArrayList<>();
+            Set<String> names = new HashSet<>();
+            for (SyntaxNode.MemberDeclaration member : syntax.members()) {
+                if (!names.add(member.name().name()) || member.name().name().equals("self")) {
+                    fail(CompilerDiagnosticCodes.RESOLVE_DUPLICATE_NAME, member.name().span(),
+                            "duplicate or reserved member name: " + member.name().name());
+                    return;
+                }
+                ModifierInfo modifiers = modifiers(member.modifiers(), EnumSet.allOf(ModifierKind.class),
+                        member.span(), "member");
+                if (modifiers == null) return;
+                LyraType memberType = resolveType(member.annotation().type(), TypePosition.BINDING, scope);
+                if (failed()) return;
+                if (modifiers.nilable) {
+                    if (memberType.isNilable()) {
+                        fail(CompilerDiagnosticCodes.RESOLVE_INVALID_MODIFIER, member.span(), "duplicate @nil");
+                        return;
+                    }
+                    memberType = memberType.nilable();
+                }
+                boolean publicAccess = syntax.kind() == SyntaxNode.NominalKind.STRUCT || modifiers.publicModifier;
+                var contract = new NominalSchema.Member(member.name().name(), memberType, publicAccess,
+                        modifiers.mutable ? BindingMutability.MUTABLE : BindingMutability.IMMUTABLE,
+                        member.initializer().isPresent());
+                contracts.add(contract);
+                DeclDraft field = newDeclaration(member.name().name(), member.name().span(), member.span(), scope,
+                        DeclarationKind.MEMBER, publicAccess ? DeclarationVisibility.PUBLIC : DeclarationVisibility.PRIVATE,
+                        contract.mutability());
+                field.declaredContract = Optional.of(new BindingContract(memberType, contract.mutability()));
+                field.effectiveContract = field.declaredContract;
+                declarationBySyntax.put(member, field);
+                memberIds.add(field.id);
+                scope.add(field);
+                if (member.initializer().isPresent()) {
+                    var initializer = member.initializer().orElseThrow();
+                    collectExpression(initializer, scope, work, Optional.of(field.id));
+                    if (failed()) return;
+                    LambdaDraft lambda = lambdaBySyntax.get(initializer);
+                    if (lambda != null) {
+                        var expected = functionType(memberType);
+                        if (expected.isEmpty()) {
+                            fail(CompilerDiagnosticCodes.RESOLVE_INVALID_SIGNATURE, initializer.span(),
+                                    "a lambda member requires a function contract");
+                            return;
+                        }
+                        LyraSignature signature = extractLambdaSignature(lambda, expected, member.span());
+                        if (failed()) return;
+                        setLambdaSignature(lambda, signature);
+                        field.functionSignature = Optional.of(signature);
+                    }
+                }
+            }
+            List<LyraType> parameters = new ArrayList<>();
+            Optional<LambdaId> constructor = Optional.empty();
+            if (syntax.constructor().isPresent()) {
+                var initializer = syntax.constructor().orElseThrow().initializer();
+                collectExpression(initializer, scope, work, Optional.empty());
+                if (failed()) return;
+                LambdaDraft lambda = lambdaBySyntax.get(initializer);
+                for (DeclDraft parameter : lambda.parameterDeclarations) {
+                    if (parameter.effectiveContract.isEmpty()) {
+                        fail(CompilerDiagnosticCodes.RESOLVE_SIGNATURE_REQUIRED, parameter.span,
+                                "constructor parameters require complete types");
+                        return;
+                    }
+                    LyraType parameterType = parameter.effectiveContract.orElseThrow().valueType();
+                    parameters.add(parameter.bindingMutability.isMutable() ? parameterType.mutable() : parameterType);
+                }
+                LyraSignature signature = extractLambdaSignature(lambda, Optional.of(FunctionType.of(parameters, PrimitiveType.UNIT)), initializer.span());
+                if (failed()) return;
+                setLambdaSignature(lambda, signature);
+                constructor = Optional.of(lambda.id);
+            } else if (syntax.kind() == SyntaxNode.NominalKind.STRUCT) {
+                contracts.stream().filter(member -> !member.hasInitializer())
+                        .map(NominalSchema.Member::type).forEach(parameters::add);
+            }
+            NominalSchema schema = new NominalSchema(type, syntax.kind() == SyntaxNode.NominalKind.STRUCT
+                    ? NominalSchema.Kind.STRUCT : NominalSchema.Kind.CLASS, contracts, parameters);
+            nominals.put(declaration.id, new ResolvedNominal(declaration.id, self.id, schema, memberIds, constructor));
         }
 
         private void collectRetainedImports(ModuleWork work) {
@@ -724,10 +879,7 @@ public final class SemanticResolver {
             if (form instanceof SyntaxNode.LetBinding let) {
                 collectLet(let, scope, work, topLevel, ownerFunction);
             } else if (form instanceof SyntaxNode.NominalDeclaration declaration) {
-                // A syntax checkpoint must fail closed, not publish an incomplete graph
-                // or report a valid declaration as a compiler invariant violation.
-                fail(CompilerDiagnosticCodes.RESOLVE_NOMINAL_NOT_IMPLEMENTED, declaration.span(),
-                        "nominal declaration syntax is implemented; nominal semantic and backend support is unfinished");
+                collectNominal(declaration, scope, work);
             } else if (form instanceof SyntaxNode.Expression expression) {
                 collectExpression(expression, scope, work, Optional.empty());
             } else {
@@ -752,7 +904,7 @@ public final class SemanticResolver {
                 return;
             }
 
-            DeclDraft previous = scope.latest(syntax.name().name());
+            DeclDraft previous = scope.previous(syntax.name().name(), syntax.name().span().startOffset());
             if (previous != null && (modifiers.publicModifier
                     || previous.visibility == DeclarationVisibility.PUBLIC
                     || previous.reExported)) {
@@ -1193,6 +1345,16 @@ public final class SemanticResolver {
         }
 
         private LyraType resolveType(SyntaxNode.Type syntax, TypePosition position) {
+            ScopeDraft scope = scopes.stream().filter(candidate ->
+                            candidate.span.sourceId().equals(syntax.span().sourceId())
+                            && candidate.span.startOffset() <= syntax.span().startOffset()
+                            && candidate.span.endOffset() >= syntax.span().endOffset())
+                    .min(Comparator.comparingInt(candidate -> candidate.span.endOffset() - candidate.span.startOffset()))
+                    .orElseThrow(() -> new IllegalStateException("type annotation has no lexical scope"));
+            return resolveType(syntax, position, scope);
+        }
+
+        private LyraType resolveType(SyntaxNode.Type syntax, TypePosition position, ScopeDraft scope) {
             syntaxLinks.add(new SyntaxLink(syntax.span(), SyntaxLinkKind.TYPE));
             try {
                 LyraType type;
@@ -1203,7 +1365,7 @@ public final class SemanticResolver {
                     if (modifiers == null) {
                         return PrimitiveType.UNIT;
                     }
-                    type = resolveType(contract.baseType(), position);
+                    type = resolveType(contract.baseType(), position, scope);
                     if (failed()) {
                         return PrimitiveType.UNIT;
                     }
@@ -1228,26 +1390,49 @@ public final class SemanticResolver {
                         return PrimitiveType.UNIT;
                     }
                 } else if (syntax instanceof SyntaxNode.NamedType named) {
-                    fail(CompilerDiagnosticCodes.RESOLVE_UNRESOLVED_NAME, named.span(),
-                            "unresolved type: " + named.path().segments().stream()
-                                    .map(SyntaxNode.Identifier::name).collect(java.util.stream.Collectors.joining("->")));
-                    return PrimitiveType.UNIT;
+                    List<SyntaxNode.Identifier> segments = named.path().segments();
+                    DeclDraft target = lookup(segments.getFirst().name(), scope, segments.getFirst().span(), Optional.empty());
+                    for (int index = 1; target != null && index < segments.size(); index++) {
+                        if (target.kind != DeclarationKind.IMPORT_MODULE || target.importedModule.isEmpty()) {
+                            fail(CompilerDiagnosticCodes.RESOLVE_INVALID_MODULE_ACCESS, named.span(), "type path requires a module namespace");
+                            return PrimitiveType.UNIT;
+                        }
+                        ModuleWork module = modules.get(target.importedModule.orElseThrow());
+                        target = module == null ? null : module.root.latest(segments.get(index).name());
+                        if (target != null && target.visibility != DeclarationVisibility.PUBLIC) {
+                            fail(CompilerDiagnosticCodes.RESOLVE_UNRESOLVED_NAME, named.span(), "type is not exported");
+                            return PrimitiveType.UNIT;
+                        }
+                    }
+                    Set<DeclarationId> aliases = new HashSet<>();
+                    while (target != null && target.kind == DeclarationKind.IMPORT_VALUE && aliases.add(target.id)) {
+                        ModuleWork module = target.importedModule.map(modules::get).orElse(null);
+                        target = module == null ? null : module.root.latest(target.importedName.orElseThrow());
+                        if (target != null && target.visibility != DeclarationVisibility.PUBLIC) target = null;
+                    }
+                    if (target == null || target.kind != DeclarationKind.NOMINAL) {
+                        fail(CompilerDiagnosticCodes.RESOLVE_UNRESOLVED_NAME, named.span(), "name does not denote an accessible type");
+                        return PrimitiveType.UNIT;
+                    }
+                    type = target.effectiveContract.orElseThrow().valueType();
+                    addLink(new SyntaxLink(named.span(), SyntaxLinkKind.TYPE, Optional.empty(), Optional.of(target.id),
+                            Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()));
                 } else if (syntax instanceof SyntaxNode.ArrayType array) {
-                    type = ArrayType.of(resolveType(array.elementType(), TypePosition.NESTED_VALUE));
+                    type = ArrayType.of(resolveType(array.elementType(), TypePosition.NESTED_VALUE, scope));
                 } else if (syntax instanceof SyntaxNode.RangeType range) {
-                    type = RangeType.of(resolveType(range.elementType(), TypePosition.NESTED_VALUE));
+                    type = RangeType.of(resolveType(range.elementType(), TypePosition.NESTED_VALUE, scope));
                 } else if (syntax instanceof SyntaxNode.TupleType tuple) {
                     List<LyraType> members = new ArrayList<>();
                     for (SyntaxNode.Type member : tuple.elementTypes()) {
-                        members.add(resolveType(member, TypePosition.NESTED_VALUE));
+                        members.add(resolveType(member, TypePosition.NESTED_VALUE, scope));
                     }
                     type = TupleType.of(members);
                 } else if (syntax instanceof SyntaxNode.FunctionType function) {
                     List<LyraType> parameters = new ArrayList<>();
                     for (SyntaxNode.Type parameter : function.parameterTypes()) {
-                        parameters.add(resolveType(parameter, TypePosition.PARAMETER));
+                        parameters.add(resolveType(parameter, TypePosition.PARAMETER, scope));
                     }
-                    LyraType returnType = resolveType(function.returnType(), TypePosition.RETURN);
+                    LyraType returnType = resolveType(function.returnType(), TypePosition.RETURN, scope);
                     type = FunctionType.of(parameters, returnType);
                 } else {
                     throw new IllegalStateException("unrecognized syntax type: " + syntax.getClass());
@@ -1454,6 +1639,7 @@ public final class SemanticResolver {
                         continue;
                     }
                     if (declaration.kind != DeclarationKind.LET
+                            && declaration.kind != DeclarationKind.NOMINAL
                             && declaration.kind != DeclarationKind.INTRINSIC_EXPORT) {
                         continue;
                     }
@@ -1688,6 +1874,25 @@ public final class SemanticResolver {
                 Use initializer = resolveExpression(
                         let.initializer(), scope, work, lambda, Optional.of(declaration.id), expected);
                 replaceBindingOwnershipProjection(declaration, initializer);
+            } else if (form instanceof SyntaxNode.NominalDeclaration syntax) {
+                DeclDraft declaration = nominalDeclarations.get(syntax);
+                addLink(SyntaxLink.declaration(syntax.name().span(), declaration.id));
+                ScopeDraft memberScope = scopeBySyntax.get(syntax);
+                for (SyntaxNode.MemberDeclaration member : syntax.members()) {
+                    DeclDraft field = declarationBySyntax.get(member);
+                    addLink(SyntaxLink.declaration(member.name().span(), field.id));
+                    if (member.initializer().isPresent()) {
+                        var initializer = member.initializer().orElseThrow();
+                        LyraType memberType = field.effectiveContract.orElseThrow().valueType();
+                        rememberExpected(initializer, Optional.of(memberType));
+                        resolveExpression(initializer, memberScope, work, Optional.empty(), Optional.of(field.id),
+                                expectedLambdaSignature(memberType));
+                        if (failed()) return;
+                    }
+                }
+                syntax.constructor().ifPresent(constructor -> resolveExpression(constructor.initializer(),
+                        memberScope, work, Optional.empty(), Optional.empty(),
+                        lambdaBySyntax.get(constructor.initializer()).signature));
             } else if (form instanceof SyntaxNode.Expression expression) {
                 resolveExpression(expression, scope, work, lambda, currentDeclaration, Optional.empty());
             } else {
@@ -1934,7 +2139,7 @@ public final class SemanticResolver {
                 addLink(new SyntaxLink(assignment.span(), SyntaxLinkKind.EXPRESSION));
                 Use target = resolveExpression(
                         assignment.target(), scope, work, lambda, currentDeclaration, Optional.empty());
-                authorizeMutation(target, assignment.target(), work);
+                authorizeMutation(target, assignment.target(), work, lambda);
                 Use value = resolveExpression(
                         assignment.value(), scope, work, lambda, currentDeclaration, Optional.empty());
                 applyOwnershipProjectionUpdate(target, assignment.target(), value.ownershipValues, scope);
@@ -1945,7 +2150,7 @@ public final class SemanticResolver {
                 rebindingTargets.add(assignment.target().span());
                 Use target = resolveExpression(
                         assignment.target(), scope, work, lambda, currentDeclaration, Optional.empty());
-                authorizeMutation(target, assignment.target(), work);
+                authorizeMutation(target, assignment.target(), work, lambda);
                 Use value = resolveExpression(
                         assignment.value(), scope, work, lambda, currentDeclaration, Optional.empty());
                 applyOwnershipProjectionUpdate(target, assignment.target(), value.ownershipValues, scope);
@@ -1972,10 +2177,11 @@ public final class SemanticResolver {
                 ownershipProjectionAuthoritative = false;
                 Use target;
                 if (call.receiver().isPresent()) {
-                    resolveExpression(call.receiver().orElseThrow(), scope, work, lambda, currentDeclaration, Optional.empty());
+                    Use receiver = resolveExpression(call.receiver().orElseThrow(), scope, work, lambda, currentDeclaration, Optional.empty());
                     addLink(SyntaxLink.access(
                             call.span(), AccessKind.MEMBER_CALL, Optional.empty(), Optional.empty()));
-                    target = Use.empty();
+                    target = memberUse(receiver, SyntaxNode.MemberName.identifier(call.name().name(), call.name().span()),
+                            scope, call.span());
                 } else {
                     target = resolveIdentifier(
                             call.name(), scope, work, ReferenceKind.DIRECT_CALL_TARGET,
@@ -1993,7 +2199,7 @@ public final class SemanticResolver {
                         access.receiver(), scope, work, lambda, currentDeclaration, Optional.empty());
                 addLink(SyntaxLink.access(
                         access.span(), AccessKind.MEMBER_VALUE, Optional.empty(), Optional.empty()));
-                return memberUse(receiver, access.member());
+                return memberUse(receiver, access.member(), scope, access.span());
             }
             if (expression instanceof SyntaxNode.NamespaceMemberAccess access) {
                 return resolveNamespaceAccess(
@@ -2017,12 +2223,22 @@ public final class SemanticResolver {
             if (expression instanceof SyntaxNode.IndexAccess access) {
                 Use receiver = resolveExpression(
                         access.receiver(), scope, work, lambda, currentDeclaration, Optional.empty());
+                Optional<ResolvedNominal> constructor = constructorTarget(receiver);
+                if (constructor.isPresent()) {
+                    return resolveConstruction(constructor.orElseThrow(), List.of(access.index()), access.span(),
+                            scope, work, lambda, currentDeclaration);
+                }
                 resolveExpression(access.index(), scope, work, lambda, currentDeclaration, Optional.empty());
                 addLink(new SyntaxLink(access.span(), SyntaxLinkKind.ACCESS));
                 return indexUse(receiver, access.index());
             }
             if (expression instanceof SyntaxNode.BracketApplication application) {
-                resolveExpression(application.target(), scope, work, lambda, currentDeclaration, Optional.empty());
+                Use target = resolveExpression(application.target(), scope, work, lambda, currentDeclaration, Optional.empty());
+                Optional<ResolvedNominal> constructor = constructorTarget(target);
+                if (constructor.isPresent()) {
+                    return resolveConstruction(constructor.orElseThrow(), application.arguments().expressions(),
+                            application.span(), scope, work, lambda, currentDeclaration);
+                }
                 if (!failed()) {
                     fail(CompilerDiagnosticCodes.RESOLVE_INVALID_SIGNATURE, application.arguments().span(),
                             "value indexing requires exactly one index expression");
@@ -2234,10 +2450,55 @@ public final class SemanticResolver {
             return use.signature.or(() -> use.type.flatMap(this::expectedLambdaSignature));
         }
 
-        private Use memberUse(Use receiver, SyntaxNode.MemberName member) {
+        private Optional<ResolvedNominal> constructorTarget(Use target) {
+            return target.declaration.map(value -> value.originDeclaration.orElse(value.id)).map(nominals::get);
+        }
+
+        private Use resolveConstruction(ResolvedNominal constructor, List<SyntaxNode.Expression> arguments,
+                SourceSpan span, ScopeDraft scope, ModuleWork work, Optional<LambdaId> lambda,
+                Optional<DeclarationId> currentDeclaration) {
+            var signature = FunctionType.of(constructor.schema().constructorParameters(), constructor.schema().type()).signature();
+            if (arguments.size() != signature.parameterTypes().size()) {
+                fail(CompilerDiagnosticCodes.RESOLVE_INVALID_SIGNATURE, span, "constructor argument count does not match required parameters");
+                return Use.empty();
+            }
+            resolveArguments(arguments, Optional.of(signature), scope, work, lambda, currentDeclaration);
+            addLink(SyntaxLink.call(span, Optional.empty(), Optional.of(constructor.declaration()), Optional.empty(), Optional.empty()));
+            return Use.value(constructor.schema().type());
+        }
+
+        private Use memberUse(Use receiver, SyntaxNode.MemberName member, ScopeDraft scope, SourceSpan span) {
             if (member.isIdentifier()) {
                 if (receiver.type.isPresent()) {
                     LyraType base = receiver.type.orElseThrow().withoutQualifiers();
+                    if (base instanceof NominalType nominal) {
+                        ResolvedNominal definition = nominals.values().stream()
+                                .filter(value -> value.schema().type().equals(nominal)).findFirst().orElseThrow();
+                        int index = -1;
+                        for (int candidate = 0; candidate < definition.schema().members().size(); candidate++) {
+                            if (definition.schema().members().get(candidate).name().equals(member.name())) index = candidate;
+                        }
+                        if (index < 0) {
+                            fail(CompilerDiagnosticCodes.RESOLVE_UNRESOLVED_NAME, member.span(), "unknown member: " + member.name());
+                            return Use.empty();
+                        }
+                        var contract = definition.schema().members().get(index);
+                        boolean privateAuthority = false;
+                        for (ScopeDraft lexical = scope; lexical != null; lexical = lexical.parent.map(scopesById::get).orElse(null)) {
+                            if (nominal.equals(lexicalNominals.get(lexical.id))) privateAuthority = true;
+                        }
+                        if (!contract.publicAccess() && !privateAuthority) {
+                            fail(CompilerDiagnosticCodes.RESOLVE_UNRESOLVED_NAME, member.span(), "member is private: " + member.name());
+                            return Use.empty();
+                        }
+                        DeclDraft field = declarationsById.get(definition.members().get(index));
+                        selectedMembers.put(span, field);
+                        addLink(new SyntaxLink(span, SyntaxLinkKind.ACCESS, Optional.empty(), Optional.of(field.id),
+                                Optional.empty(), Optional.empty(), Optional.empty(), Optional.of(AccessKind.MEMBER_VALUE)));
+                        return new Use(receiver.declaration, receiver.module, receiver.export,
+                                functionType(contract.type()).map(FunctionType::signature), receiver.reference,
+                                Optional.of(contract.type()), ValueAlternatives.singleton(ValueAlternative.scalar(contract.type())), List.of());
+                    }
                     if (member.name().equals("length")
                             && (base == PrimitiveType.STRING || base instanceof ArrayType)) {
                         return Use.value(PrimitiveType.I32);
@@ -2862,6 +3123,10 @@ public final class SemanticResolver {
                         List.of(RelatedSpan.of(target.nameSpan, "module import")));
                 return Use.empty();
             }
+            if (target.kind == DeclarationKind.MEMBER) {
+                fail(CompilerDiagnosticCodes.RESOLVE_UNRESOLVED_NAME, syntax.span(), "member access requires a receiver: self:." + syntax.name());
+                return Use.empty();
+            }
             Optional<CaptureId> capture = captureFor(lambda, scope, target, syntax.span());
             ReferenceId referenceId = allocateReferenceId();
             ResolvedReference reference = new ResolvedReference(
@@ -2898,7 +3163,7 @@ public final class SemanticResolver {
                     target.effectiveContract.map(BindingContract::valueType).or(() ->
                             ownershipProjectionState.binding(target.id).map(BindingFlowValue::contract)
                                     .map(BindingContract::valueType)
-                                    .filter(type -> type instanceof RangeType || type instanceof PrimitiveType primitive && primitive.isNumeric())),
+                                    .filter(type -> type instanceof NominalType || type instanceof RangeType || type instanceof PrimitiveType primitive && primitive.isNumeric())),
                     ownershipValues,
                     List.of());
         }
@@ -3162,7 +3427,7 @@ public final class SemanticResolver {
             return result.stream().sorted(AggregateIdentityFact.comparator()).toList();
         }
 
-        private void authorizeMutation(Use target, SyntaxNode.Expression targetSyntax, ModuleWork work) {
+        private void authorizeMutation(Use target, SyntaxNode.Expression targetSyntax, ModuleWork work, Optional<LambdaId> lambda) {
             SourceSpan targetSpan = targetSyntax.span();
             if (failed()) {
                 return;
@@ -3189,6 +3454,18 @@ public final class SemanticResolver {
                 return;
             }
             DeclDraft declaration = target.declaration.orElseThrow();
+            if (declaration.kind == DeclarationKind.SELF && targetSyntax instanceof SyntaxNode.Identifier) {
+                fail(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED, targetSpan, "self cannot be rebound");
+                return;
+            }
+            DeclDraft field = selectedMembers.get(targetSpan);
+            boolean constructorInitialization = field != null && declaration.kind == DeclarationKind.SELF
+                    && nominals.values().stream().anyMatch(value -> value.self().equals(declaration.id)
+                            && lambda.isPresent() && value.constructor().equals(lambda));
+            if (field != null && !field.bindingMutability.isMutable() && !constructorInitialization) {
+                fail(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED, targetSpan, "member is immutable: " + field.name);
+                return;
+            }
             // This deliberately bounded pre-typing projection handles only
             // source-local aggregate construction, aliases, assignments, and
             // branch/coalesce joins. Callable results are opaque here; the
@@ -3225,7 +3502,7 @@ public final class SemanticResolver {
                     return;
                 }
             }
-            if (declaration.bindingMutability != BindingMutability.MUTABLE) {
+            if (declaration.bindingMutability != BindingMutability.MUTABLE && declaration.kind != DeclarationKind.SELF) {
                 fail(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
                         targetSpan,
                         "mutation requires an @mut binding or parameter",
@@ -3235,7 +3512,7 @@ public final class SemanticResolver {
             mutations.add(new ResolvedMutation(
                     work.node.moduleId(),
                     targetSpan,
-                    targetSyntax instanceof SyntaxNode.IndexAccess
+                    field != null ? MutationKind.MEMBER_FIELD : targetSyntax instanceof SyntaxNode.IndexAccess
                             ? MutationKind.ARRAY_ELEMENT
                             : MutationKind.REBINDING,
                     declaration.id,
@@ -3618,7 +3895,7 @@ public final class SemanticResolver {
                     graph.modules().stream()
                             .filter(node -> retained(node.moduleId()))
                             .map(ModuleGraph.Node::moduleId)
-                            .collect(java.util.stream.Collectors.toUnmodifiableSet()));
+                            .collect(java.util.stream.Collectors.toUnmodifiableSet()), List.copyOf(nominals.values()));
         }
 
         private List<FunctionScc> functionSccs(
@@ -3761,12 +4038,20 @@ public final class SemanticResolver {
 
         private void add(DeclDraft declaration) {
             declarations.add(declaration);
-            bindings.computeIfAbsent(declaration.name, ignored -> new ArrayList<>()).add(declaration);
+            var named = bindings.computeIfAbsent(declaration.name, ignored -> new ArrayList<>());
+            named.add(declaration);
+            named.sort(Comparator.comparingInt(value -> value.nameSpan.startOffset()));
         }
 
         private DeclDraft latest(String name) {
             List<DeclDraft> values = bindings.get(name);
             return values == null || values.isEmpty() ? null : values.getLast();
+        }
+
+        private DeclDraft previous(String name, int offset) {
+            return bindings.getOrDefault(name, List.of()).stream()
+                    .filter(value -> value.nameSpan.startOffset() < offset)
+                    .max(Comparator.comparingInt(value -> value.nameSpan.startOffset())).orElse(null);
         }
 
         private ResolvedScope freeze() {

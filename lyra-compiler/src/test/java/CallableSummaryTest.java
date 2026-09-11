@@ -1809,6 +1809,7 @@ public final class CallableSummaryTest {
             String name) {
         TypedDeclaration declaration = graph.declarations().stream()
                 .filter(value -> value.name().equals(name))
+                .filter(value -> value.kind() == io.mindspice.lyra.compiler.semantic.DeclarationKind.LET)
                 .findFirst().orElseThrow();
         LambdaId lambda = declaration.initializerLambda().orElseThrow();
         return summaries.summary(lambda).orElseThrow();

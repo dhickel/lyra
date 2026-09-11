@@ -30,8 +30,9 @@ Accepted struct/class behavior and integration boundaries during implementation.
 ## Project Relevance
 
 These corrections prevent semantic drift during the requested full-pipeline feature.
-`NominalTypeId` and lexical/grammar/AST support are implemented. Nominal semantic
-declaration/type resolution and all execution integration remain unfinished.
+`NominalTypeId`, lexical/grammar/AST support and initial semantic declaration/member
+resolution are implemented. Complete initialization/flow and execution integration
+remain in progress.
 
 - Unary brackets retain IndexAccess syntax; non-unary brackets retain
   BracketApplication. Both must resolve the target's type/value role later. An
@@ -45,8 +46,23 @@ declaration/type resolution and all execution integration remain unfinished.
   is a reserved Lyra keyword. All descriptor/invocation assertions are preserved.
 - The old excluded-class conformance fixture now rejects inheritance. Empty class
   syntax is positive parser coverage, not a claim of executable class conformance.
-- LYC-RESOLVE-026 is an explicit temporary semantic boundary. It must be removed
-  from valid nominal execution paths before declaring the requested feature complete.
+- Declaration collection now issues NominalTypeId from the actual module revision.
+  NominalType contains only that identity; NominalSchema holds ordered fields and
+  constructor contracts. NominalTypeEnvironment checks exact recursive references
+  and data-only struct closure without traversing class implementation fields.
+- Self is an immutable receiver reference with special member mutation permission,
+  not a rebindable variable/shared-cell capture. Member lambda ownership is sealed
+  against the declaring schema separately from ordinary let ownership.
+- Named member mutation uses MEMBER_FIELD. Positional tuple writes must retain their
+  existing rejection path: treating every MemberAccess as nominal broke the tuple
+  conformance fixture and fuzz seed 8675309, case seed 1995688059202936941, index 46.
+  The minimized source is `let @mut x = Tuple[1 2] x:.0 := 3`; the permanent existing
+  aggregates/tuple-write.lyra fixture asserts its TYPE012 rejection.
+- Constructor/member resolution is not definite initialization or callable flow
+  certification. Do not treat these resolver-only positives as backend coverage.
+- Namespace collection now precedes source signature collection across modules.
+  Tests selecting the original callable must distinguish LET from IMPORT_VALUE;
+  graph-local declaration allocation order is not an origin-selection contract.
 
 ## Open Questions
 

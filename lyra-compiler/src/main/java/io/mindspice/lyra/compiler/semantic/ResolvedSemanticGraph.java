@@ -51,6 +51,11 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
     private final IdentityAllocator allocator;
     private final io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules;
     private final Set<ModuleId> retainedModuleIds;
+    private final List<ResolvedNominal> nominals;
+    private final io.mindspice.lyra.compiler.types.NominalTypeEnvironment nominalTypes;
+
+    public List<ResolvedNominal> nominals() { return nominals; }
+    public io.mindspice.lyra.compiler.types.NominalTypeEnvironment nominalTypes() { return nominalTypes; }
 
     public ResolvedSemanticGraph(
             ModuleGraph moduleGraph,
@@ -177,13 +182,27 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
             Optional<SessionFlowCertificate> sessionFlowCertificate, IdentityAllocator allocator,
             boolean sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules,
             Set<ModuleId> retainedModuleIds) {
+        return publish(moduleGraph, scopeTree, modules, declarations, references, lambdas, imports, exports,
+                captures, mutations, syntaxLinks, functionLinkage, referenceTopology, sessionFlowCertificate,
+                allocator, sessionGraph, retainedModules, retainedModuleIds, List.of());
+    }
+
+    static ResolvedSemanticGraph publish(ModuleGraph moduleGraph, ScopeTree scopeTree,
+            List<ResolvedModule> modules, List<ResolvedDeclaration> declarations,
+            List<ResolvedReference> references, List<ResolvedLambda> lambdas,
+            List<ResolvedImportBinding> imports, List<ResolvedExport> exports,
+            List<ResolvedCapture> captures, List<ResolvedMutation> mutations, List<SyntaxLink> syntaxLinks,
+            FunctionSignatureLinkage functionLinkage, ResolvedReferenceTopology referenceTopology,
+            Optional<SessionFlowCertificate> sessionFlowCertificate, IdentityAllocator allocator,
+            boolean sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules,
+            Set<ModuleId> retainedModuleIds, List<ResolvedNominal> nominals) {
         ResolvedReferenceTopology authority = Objects.requireNonNull(
                 referenceTopology, "referenceTopology");
         ResolvedSemanticGraph graph = new ResolvedSemanticGraph(
                 moduleGraph, scopeTree, modules, declarations, references, lambdas,
                 imports, exports, captures, mutations, syntaxLinks, functionLinkage,
                 Optional.of(authority), sessionFlowCertificate, allocator, sessionGraph, retainedModules,
-                retainedModuleIds);
+                retainedModuleIds, nominals);
         authority.bind(graph);
         return graph;
     }
@@ -220,6 +239,20 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
             Optional<SessionFlowCertificate> sessionFlowCertificate, IdentityAllocator allocator,
             boolean sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules,
             Set<ModuleId> retainedModuleIds) {
+        this(moduleGraph, scopeTree, modules, declarations, references, lambdas, imports, exports, captures,
+                mutations, syntaxLinks, functionLinkage, referenceTopology, sessionFlowCertificate, allocator,
+                sessionGraph, retainedModules, retainedModuleIds, List.of());
+    }
+
+    private ResolvedSemanticGraph(ModuleGraph moduleGraph, ScopeTree scopeTree,
+            List<ResolvedModule> modules, List<ResolvedDeclaration> declarations,
+            List<ResolvedReference> references, List<ResolvedLambda> lambdas,
+            List<ResolvedImportBinding> imports, List<ResolvedExport> exports,
+            List<ResolvedCapture> captures, List<ResolvedMutation> mutations, List<SyntaxLink> syntaxLinks,
+            FunctionSignatureLinkage functionLinkage, Optional<ResolvedReferenceTopology> referenceTopology,
+            Optional<SessionFlowCertificate> sessionFlowCertificate, IdentityAllocator allocator,
+            boolean sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules,
+            Set<ModuleId> retainedModuleIds, List<ResolvedNominal> nominals) {
         this.retainedModules = Objects.requireNonNull(retainedModules, "retainedModules");
         Objects.requireNonNull(retainedModuleIds, "retainedModuleIds");
         if (!retainedModules.modulesById().keySet().containsAll(retainedModuleIds)
@@ -251,6 +284,52 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
         this.referencesById = indexReferences(this.references);
         this.lambdasById = indexLambdas(this.lambdas);
         this.capturesById = indexCaptures(this.captures);
+        this.nominals = List.copyOf(nominals);
+        this.nominalTypes = new io.mindspice.lyra.compiler.types.NominalTypeEnvironment(
+                this.nominals.stream().map(ResolvedNominal::schema).toList());
+        Set<DeclarationId> nominalIds = new HashSet<>();
+        for (ResolvedNominal nominal : this.nominals) {
+            ResolvedDeclaration declaration = this.declarationsById.get(nominal.declaration());
+            ResolvedDeclaration self = this.declarationsById.get(nominal.self());
+            if (!nominalIds.add(nominal.declaration()) || declaration == null || self == null
+                    || declaration.kind() != DeclarationKind.NOMINAL || self.kind() != DeclarationKind.SELF
+                    || !declaration.moduleId().equals(nominal.schema().type().id().module().moduleId())
+                    || !moduleGraph.module(declaration.moduleId()).orElseThrow().revision()
+                            .equals(nominal.schema().type().id().revision())
+                    || !declaration.effectiveContract().orElseThrow().valueType().equals(nominal.schema().type())
+                    || !self.effectiveContract().orElseThrow().valueType().equals(nominal.schema().type())) {
+                throw new IllegalArgumentException("nominal schema has inconsistent declaration links");
+            }
+            for (int index = 0; index < nominal.members().size(); index++) {
+                var member = this.declarationsById.get(nominal.members().get(index));
+                var contract = nominal.schema().members().get(index);
+                if (member == null || member.kind() != DeclarationKind.MEMBER
+                        || !member.scopeId().equals(self.scopeId()) || !member.name().equals(contract.name())
+                        || member.isPublic() != contract.publicAccess()
+                        || member.bindingMutability() != contract.mutability()
+                        || !member.effectiveContract().orElseThrow().valueType().equals(contract.type())) {
+                    throw new IllegalArgumentException("nominal member has inconsistent contract links");
+                }
+            }
+            nominal.constructor().ifPresent(id -> {
+                var constructor = this.lambdasById.get(id);
+                if (constructor == null || !constructor.moduleId().equals(declaration.moduleId())) {
+                    throw new IllegalArgumentException("nominal constructor has inconsistent lambda link");
+                }
+            });
+        }
+        Set<DeclarationId> nominalMembers = this.nominals.stream().flatMap(value -> value.members().stream())
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        Set<DeclarationId> nominalReceivers = this.nominals.stream().map(ResolvedNominal::self)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        for (ResolvedDeclaration declaration : this.declarations) {
+            if ((declaration.kind() == DeclarationKind.NOMINAL) != nominalIds.contains(declaration.id())
+                    || (declaration.kind() == DeclarationKind.MEMBER) != nominalMembers.contains(declaration.id())
+                    || (declaration.kind() == DeclarationKind.SELF) != nominalReceivers.contains(declaration.id())) {
+                throw new IllegalArgumentException("nominal declaration inventory is not reciprocal");
+            }
+            declaration.effectiveContract().ifPresent(contract -> nominalTypes.validateReferences(contract.valueType()));
+        }
         validateMembership();
     }
 
@@ -494,7 +573,9 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
         for (ResolvedDeclaration declaration : declarations) {
             declaration.initializerLambda().ifPresent(lambdaId -> {
                 ResolvedLambda lambda = lambdasById.get(lambdaId);
-                if (declaration.kind() != DeclarationKind.LET
+                if (!(declaration.kind() == DeclarationKind.LET
+                        || declaration.kind() == DeclarationKind.MEMBER
+                        && nominals.stream().anyMatch(nominal -> nominal.members().contains(declaration.id())))
                         || lambda == null
                         || !lambda.moduleId().equals(declaration.moduleId())
                         || lambda.ownerDeclaration().filter(declaration.id()::equals).isEmpty()

@@ -10,15 +10,16 @@ Parser replay and syntax visitors deliberately enforce a closed node inventory.
 Progress: `NominalTypeId` now validates revision/name/occurrence inputs and provides
 length-prefixed canonical identity, deterministic hashes and consistent ordering.
 Fixed-vector, negative and four-seed independent identity models cover it. It is
-not wired into declaration collection or either compiler/runtime value-type model.
+now wired into source declaration collection and the compiler nominal value-type model.
 Lexical/grammar/AST support now includes nominal/member/constructor declarations,
 named and qualified type references, and non-unary bracket applications. Descriptor
 roles, source spans and exhaustive visitor dispatch are covered by NominalSyntaxTest;
 its independent source generator runs by default and in tools/fuzz-language.sh.
 Module-level syntax restriction, same-name constructor count, mandatory member types,
 reserved keyword highlighting and console delimiter completeness are covered.
-Semantic declaration collection/identity issuance remains unfinished, so Phase 1 is
-not complete as a whole. Do not turn the temporary resolver boundary into conformance.
+Semantic collection now publishes exact schemas, required constructor parameters,
+receiver/member identities and named/imported contracts. Runtime schema encoding
+and complete typed/flow/backend integration still belong to subsequent phases.
 
 Represent nominal declarations, named types, members and constructors explicitly
 without confusing names with runtime values or introducing dynamic member lookup.

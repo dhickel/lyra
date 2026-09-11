@@ -3,6 +3,9 @@ package io.mindspice.lyra.compiler.semantic;
 
 public enum DeclarationKind {
     LET,
+    NOMINAL,
+    MEMBER,
+    SELF,
     /** A typed value supplied by the persistent session namespace. */
     EXTERNAL,
     PARAMETER,

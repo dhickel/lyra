@@ -172,6 +172,7 @@ final class ResolvedTopologyValidator {
             if (!export.reExport()) {
                 if (declaration.imported()
                         || declaration.kind() != DeclarationKind.LET
+                        && declaration.kind() != DeclarationKind.NOMINAL
                         && declaration.kind() != DeclarationKind.INTRINSIC_EXPORT
                         || declaration.effectiveContract().filter(export.contract()::equals).isEmpty()
                         || !export.originModule().equals(export.moduleId())
@@ -190,6 +191,7 @@ final class ResolvedTopologyValidator {
         for (ResolvedDeclaration declaration : resolved.declarations()) {
             boolean mustExport = declaration.visibility() == DeclarationVisibility.PUBLIC
                     && (declaration.kind() == DeclarationKind.LET
+                    || declaration.kind() == DeclarationKind.NOMINAL
                     || declaration.kind() == DeclarationKind.INTRINSIC_EXPORT
                     || declaration.kind() == DeclarationKind.IMPORT_VALUE
                     && declaration.reExported());
@@ -877,8 +879,27 @@ final class ResolvedTopologyValidator {
                     || !rootReference.span().equals(site.rootReferenceSpan())
                     || !rootDeclaration.moduleId().equals(site.moduleId())
                     || rootDeclaration.imported()
-                    || rootDeclaration.bindingMutability() != BindingMutability.MUTABLE) {
+                    || rootDeclaration.bindingMutability() != BindingMutability.MUTABLE
+                    && !(mutation.kind() == MutationKind.MEMBER_FIELD
+                    && rootDeclaration.kind() == DeclarationKind.SELF
+                    && resolved.nominals().stream().anyMatch(value -> value.self().equals(rootDeclaration.id())))) {
                 throw invalid("mutation root/reference/source assignment linkage is inconsistent");
+            }
+            if (mutation.kind() == MutationKind.MEMBER_FIELD) {
+                var members = resolved.syntaxLinks().stream().filter(link -> link.span().equals(mutation.span())
+                        && link.kind() == SyntaxLinkKind.ACCESS && link.declarationId().isPresent())
+                        .map(link -> resolved.declaration(link.declarationId().orElseThrow()).orElseThrow()).toList();
+                if (members.size() != 1 || members.getFirst().kind() != DeclarationKind.MEMBER) {
+                    throw invalid("member mutation lacks one exact member link");
+                }
+                var field = members.getFirst();
+                var definition = resolved.nominals().stream().filter(value -> value.members().contains(field.id()))
+                        .findFirst().orElseThrow(() -> invalid("member mutation has no declaring schema"));
+                if (!field.isMutable() && !(definition.self().equals(rootDeclaration.id())
+                        && definition.constructor().isPresent()
+                        && definition.constructor().equals(rootReference.fromLambda()))) {
+                    throw invalid("immutable member mutation is not constructor initialization");
+                }
             }
             rootDeclaration.externalBinding().ifPresent(binding -> {
                 boolean allowed = mutation.kind() == MutationKind.REBINDING
@@ -894,6 +915,13 @@ final class ResolvedTopologyValidator {
             List<SourceMutationSite> destination) {
         if (form instanceof SyntaxNode.LetBinding declaration) {
             collectMutationSites(declaration.initializer(), moduleId, destination);
+            return;
+        }
+        if (form instanceof SyntaxNode.NominalDeclaration declaration) {
+            declaration.members().forEach(member -> member.initializer().ifPresent(initializer ->
+                    collectMutationSites(initializer, moduleId, destination)));
+            declaration.constructor().ifPresent(constructor ->
+                    collectMutationSites(constructor.initializer(), moduleId, destination));
             return;
         }
         collectMutationSites((SyntaxNode.Expression) form, moduleId, destination);
@@ -985,6 +1013,11 @@ final class ResolvedTopologyValidator {
             collectMutationSites(access.index(), moduleId, destination);
             return;
         }
+        if (expression instanceof SyntaxNode.BracketApplication application) {
+            collectMutationSites(application.target(), moduleId, destination);
+            application.arguments().expressions().forEach(argument -> collectMutationSites(argument, moduleId, destination));
+            return;
+        }
         if (expression instanceof SyntaxNode.OperatorSExpression operator) {
             for (SyntaxNode.Expression operand : operator.operands()) {
                 collectMutationSites(operand, moduleId, destination);
@@ -1027,7 +1060,8 @@ final class ResolvedTopologyValidator {
         if (root == null) {
             throw invalid("source mutation has no canonical identifier root");
         }
-        MutationKind kind = target instanceof SyntaxNode.IndexAccess
+        MutationKind kind = target instanceof SyntaxNode.MemberAccess access && access.member().isIdentifier()
+                ? MutationKind.MEMBER_FIELD : target instanceof SyntaxNode.IndexAccess
                 ? MutationKind.ARRAY_ELEMENT : MutationKind.REBINDING;
         return new SourceMutationSite(moduleId, target.span(), kind, root.span());
     }

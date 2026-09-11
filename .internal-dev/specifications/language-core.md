@@ -140,11 +140,12 @@ Closures capture bindings. Immutable captures retain their selected value/refere
 The owner accepted the following extension on 2026-09-11. Completion requires the
 corresponding backend and session gates; parsing alone does not complete it.
 
-Implementation status: lexical/grammar/AST support is implemented. Nominal
-resolution, initialization/flow certification, typed IR, JVM and session support
-remain unfinished. The resolver fails closed with `LYC-RESOLVE-026` for nominal
-declarations rather than publishing a partial artifact. That diagnostic is a
-temporary implementation boundary, not conformance for a valid nominal program.
+Implementation status: lexical/grammar/AST support and initial nominal declaration/
+member resolution are implemented. Exact declaration schemas, named contracts,
+constructor signatures, lexical member privacy and receiver capture links are
+published by resolution. Definite initialization, complete field-sensitive flow,
+contextual replacement receivers, typed IR, JVM and session support remain in
+progress. Resolver success alone is not executable nominal conformance.
 
 ```lyra
 struct Vec2 {

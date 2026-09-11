@@ -7,13 +7,13 @@ import java.util.Set;
  * A complete immutable Lyra value type.
  *
  * <p>This model deliberately contains only current language types.  In
- * particular, there is no universal, dynamic, user-defined, or user-generic
+ * particular, there is no universal, dynamic, or user-generic
  * type implementation.  The methods are abstract rather than default methods
  * so primitive enum initialization cannot recursively observe null interface
  * constants.</p>
  */
 public sealed interface LyraType
-        permits PrimitiveType, ArrayType, RangeType, TupleType, FunctionType, QualifiedType {
+        permits PrimitiveType, ArrayType, RangeType, TupleType, FunctionType, QualifiedType, NominalType {
     PrimitiveType I8 = PrimitiveType.I8;
     PrimitiveType I16 = PrimitiveType.I16;
     PrimitiveType I32 = PrimitiveType.I32;

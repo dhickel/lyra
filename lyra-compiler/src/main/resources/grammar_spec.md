@@ -74,9 +74,9 @@ named-type          ::= identifier ('->' identifier)* ;
 require explicit types; ordinary let bindings still require initializers. A class
 has at most one same-name constructor. Structs have none. Constructor parameter/
 return contracts, member uniqueness, privacy, data-only restrictions and definite
-initialization belong to semantics. The current semantic pipeline explicitly
-rejects nominal declarations pending its implementation; this syntax is not an
-executable feature claim.
+initialization belong to semantics. Initial declaration/member resolution exists;
+complete initialization/flow, typed IR, JVM and session execution remain in progress.
+Syntax or resolver success is not an executable feature claim.
 
 ## Bindings, assignment, blocks, and lambdas
 

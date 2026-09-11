@@ -44,7 +44,8 @@ final class LexicalBindingLookup {
                 return visible;
             }
             D predeclared = candidates.stream()
-                    .filter(signaturePredeclared)
+                    .filter(candidate -> signaturePredeclared.test(candidate)
+                            || declarationKind.apply(candidate) == DeclarationKind.NOMINAL)
                     .min(Comparator.comparingInt(declarationOffset))
                     .orElse(null);
             if (predeclared != null) {
