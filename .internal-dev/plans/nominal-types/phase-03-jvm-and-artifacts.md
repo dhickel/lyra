@@ -61,6 +61,8 @@ binds their complete canonical contracts into artifact revisions, and resolves
 nominal exports only after schema decoding. Schema-1 bytes remain unchanged.
 The compiler schema projection is now wired into embedded facade metadata and
 artifact assembly with schema-aware export parsing and revision binding.
+Producer artifact keys now carry those contracts for generated callable signature
+resolution, with per-producer lifecycle checks ahead of shared metadata caching.
 These are contract/mapping/metadata tests, not emitted object execution. Object
 artifact publication, class/member plans, direct emission, authorities, equality,
 Java factories and persistent sessions remain unfinished.

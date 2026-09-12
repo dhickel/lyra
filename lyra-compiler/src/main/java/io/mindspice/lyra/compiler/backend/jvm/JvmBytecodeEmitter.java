@@ -838,9 +838,7 @@ final class JvmBytecodeEmitter {
                     ? functionBase(intrinsicFunction.contract().orElseThrow().valueType())
                     .signature().canonicalSpelling()
                     : lambda.signature().canonicalSpelling();
-            code.ldc(signature);
-            code.invokestatic(CD_SIGNATURE, "parse",
-                    method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+            emitSignatureOverAuthority(signature);
             code.invokespecial(CD_CLOSURE, "<init>",
                     method("(L" + RUNTIME + "LyraClosureAuthority;L" + RUNTIME
                             + "LyraSignature;)V"));
@@ -942,9 +940,7 @@ final class JvmBytecodeEmitter {
                 Label authenticated = code.newLabel();
                 code.ifnull(nil);
                 emitCurrentAuthority();
-                code.ldc(signature);
-                code.invokestatic(CD_SIGNATURE, "parse",
-                        method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+                emitSignatureOverAuthority(signature);
                 code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT,
                         "requireAuthenticatedForGeneratedInvocation",
                         method("(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
@@ -956,9 +952,7 @@ final class JvmBytecodeEmitter {
             } else {
                 loadParameter(index);
                 emitCurrentAuthority();
-                code.ldc(signature);
-                code.invokestatic(CD_SIGNATURE, "parse",
-                        method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+                emitSignatureOverAuthority(signature);
                 code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT,
                         "requireAuthenticatedForGeneratedInvocation",
                         method("(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
@@ -1632,8 +1626,7 @@ final class JvmBytecodeEmitter {
             if (base instanceof FunctionType function) {
                 code.aload(slot);
                 emitIoAuthority();
-                code.ldc(function.signature().canonicalSpelling());
-                code.invokestatic(CD_SIGNATURE, "parse", method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+                emitSignatureOverAuthority(function.signature().canonicalSpelling());
                 code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "requireAuthenticated", method(
                         "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L" + RUNTIME
                                 + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
@@ -1729,9 +1722,15 @@ final class JvmBytecodeEmitter {
             Map<ModuleId, Integer> stateSlots = new TreeMap<>();
             int artifactKey = code.allocateLocal(TypeKind.REFERENCE);
             code.aload(options);
-            code.invokestatic(CD_LIFECYCLE, "newArtifactKey",
-                    method("(L" + RUNTIME + "RuntimeOptions;)L" + RUNTIME
-                            + "LyraArtifactKey;"));
+            if (owner.nominalSchemas.schemas().isEmpty()) {
+                code.invokestatic(CD_LIFECYCLE, "newArtifactKey",
+                        method("(L" + RUNTIME + "RuntimeOptions;)L" + RUNTIME + "LyraArtifactKey;"));
+            } else {
+                code.invokestatic(cd(classPlan.binaryName()), "$lyra$metadata",
+                        method("()L" + RUNTIME + "ArtifactMetadata;"));
+                code.invokestatic(CD_LIFECYCLE, "newArtifactKey",
+                        method("(L" + RUNTIME + "RuntimeOptions;L" + RUNTIME + "ArtifactMetadata;)L" + RUNTIME + "LyraArtifactKey;"));
+            }
             code.astore(artifactKey);
             for (ModuleId moduleId : owner.plan.initializationOrder()) {
                 GeneratedClassPlan state = owner.plan.classPlan(owner.plan.moduleStates()
@@ -2022,9 +2021,7 @@ final class JvmBytecodeEmitter {
                 code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
                         "$lyra$closureAuthority",
                         method("()L" + RUNTIME + "LyraClosureAuthority;"));
-                code.ldc(signature.canonicalLyraSignature());
-                code.invokestatic(CD_SIGNATURE, "parse", method(
-                        "(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+                emitSignatureOverAuthority(signature.canonicalLyraSignature());
                 code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "requireAuthenticated", method(
                         "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L" + RUNTIME
                                 + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
@@ -2107,9 +2104,7 @@ final class JvmBytecodeEmitter {
                 loadPhysical(stateType, stateSlot);
                 code.invokevirtual(cd(stateName), "$lyra$closureAuthority",
                         method("()L" + RUNTIME + "LyraClosureAuthority;"));
-                code.ldc(export.functionSignature().orElseThrow().canonicalLyraSignature());
-                code.invokestatic(CD_SIGNATURE, "parse", method(
-                        "(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+                emitSignatureOverAuthority(export.functionSignature().orElseThrow().canonicalLyraSignature());
                 code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "requireAuthenticated", method(
                         "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L" + RUNTIME
                                 + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
@@ -2187,9 +2182,7 @@ final class JvmBytecodeEmitter {
             code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
                     "$lyra$closureAuthority",
                     method("()L" + RUNTIME + "LyraClosureAuthority;"));
-            code.ldc(export.functionSignature().orElseThrow().canonicalLyraSignature());
-            code.invokestatic(CD_SIGNATURE, "parse", method(
-                    "(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+            emitSignatureOverAuthority(export.functionSignature().orElseThrow().canonicalLyraSignature());
             code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "requireAuthenticated", method(
                     "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
                             + RUNTIME + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
@@ -2320,9 +2313,7 @@ final class JvmBytecodeEmitter {
                 code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
                         "$lyra$closureAuthority",
                         method("()L" + RUNTIME + "LyraClosureAuthority;"));
-                code.ldc(export.functionSignature().orElseThrow().canonicalLyraSignature());
-                code.invokestatic(CD_SIGNATURE, "parse", method(
-                        "(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+                emitSignatureOverAuthority(export.functionSignature().orElseThrow().canonicalLyraSignature());
                 code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "requireAuthenticated", method(
                         "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L" + RUNTIME
                                 + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
@@ -4569,9 +4560,7 @@ final class JvmBytecodeEmitter {
 
         private void authenticateGeneratedFunctionValue(FunctionType function) {
             emitCurrentAuthority();
-            code.ldc(function.signature().canonicalSpelling());
-            code.invokestatic(CD_SIGNATURE, "parse", method(
-                    "(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+            emitSignatureOverAuthority(function.signature().canonicalSpelling());
             code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT,
                     "requireAuthenticatedForGeneratedInvocation", method(
                             "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
@@ -4655,6 +4644,20 @@ final class JvmBytecodeEmitter {
                 return;
             }
             throw unsupported(module.span(), "intrinsic I/O requires a Lyra-owned invocation context");
+        }
+
+        /** Leaves the existing authority below the resolved exact signature. */
+        private void emitSignatureOverAuthority(String canonical) {
+            if (canonical.contains("Nominal<")) {
+                code.dup();
+                code.ldc(canonical);
+                code.invokevirtual(CD_AUTHORITY, "resolveSignature",
+                        method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+            } else {
+                code.ldc(canonical);
+                code.invokestatic(CD_SIGNATURE, "parse",
+                        method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+            }
         }
 
         private DeclarationId targetDeclaration(IrNode node) {

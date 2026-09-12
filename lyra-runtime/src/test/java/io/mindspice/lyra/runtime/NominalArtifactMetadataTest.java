@@ -6,6 +6,79 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NominalArtifactMetadataTest {
+    @Test void supportedSchemaVersionsRemainAnExplicitClosedSet() {
+        assertDoesNotThrow(() -> LyraRuntimeConstants.requireArtifactSchema(1));
+        assertDoesNotThrow(() -> LyraRuntimeConstants.requireArtifactSchema(2));
+        for (int version : new int[] { Integer.MIN_VALUE, -1, 0, 3, Integer.MAX_VALUE }) {
+            assertThrows(LyraCompatibilityException.class,
+                    () -> LyraRuntimeConstants.requireArtifactSchema(version));
+        }
+    }
+
+    @Test void seededSharedSignatureCachePreservesIndividualProducerLifetimes() {
+        int cases = Integer.getInteger("lyra.fuzz.cases", 60);
+        for (long seed : new long[] { 521, 20260912 }) {
+            var random = new java.util.Random(seed);
+            var key = ModuleLifecycle.newArtifactKey(RuntimeOptions.defaults(), builder(schemas()).build());
+            String canonical = "Fn<;" + type("First") + ">";
+            var expected = LyraSignature.of(List.of(), type("First"));
+            for (int index = 0; index < cases; index++) {
+                String replay = "seed=" + seed + ", index=" + index;
+                var retired = ModuleLifecycle.forArtifact(MODULE, key);
+                var live = ModuleLifecycle.forArtifact(MODULE, key);
+                var retiredAuthority = retired.closureAuthority();
+                var liveAuthority = live.closureAuthority();
+                assertEquals(expected, retiredAuthority.resolveSignature(canonical), replay);
+                assertSame(retiredAuthority.resolveSignature(canonical), liveAuthority.resolveSignature(canonical), replay);
+                boolean failed = random.nextBoolean();
+                if (failed) retired.fail(new IllegalStateException("model initialization failure"));
+                else { retired.open(); retired.close(); }
+                Class<? extends RuntimeException> expectedFailure = failed
+                        ? LyraInitializationException.class : LyraClosedException.class;
+                assertThrows(expectedFailure,
+                        () -> retiredAuthority.resolveSignature(canonical), replay);
+                assertEquals(expected, liveAuthority.resolveSignature(canonical), replay);
+                live.open();
+                assertEquals(expected, liveAuthority.resolveSignature(canonical), replay);
+                live.close();
+                assertThrows(LyraClosedException.class, () -> liveAuthority.resolveSignature(canonical), replay);
+            }
+        }
+    }
+
+    @Test void producerScopedSignaturesKeepOwnerLifecycleAndSchemaChecks() throws Exception {
+        var environment = schemas();
+        var metadata = builder(environment).build();
+        var options = RuntimeOptions.defaults();
+        var key = ModuleLifecycle.newArtifactKey(options, metadata);
+        var lifecycle = ModuleLifecycle.forArtifact(MODULE, key);
+        var authority = lifecycle.closureAuthority();
+        String canonical = "Fn<" + type("First") + ";@nil" + type("Second") + ">";
+        var expected = LyraSignature.of(List.of(type("First")), type("Second").nilable());
+        assertEquals(expected, authority.resolveSignature(canonical));
+        lifecycle.open();
+        assertSame(authority.resolveSignature(canonical), authority.resolveSignature(canonical));
+        assertThrows(LyraLinkException.class, () -> authority.resolveSignature("Fn<;" + type("Missing") + ">"));
+        var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread thread = new Thread(() -> {
+            try { authority.resolveSignature(canonical); }
+            catch (Throwable thrown) { failure.set(thrown); }
+        });
+        thread.start();
+        thread.join();
+        assertInstanceOf(LyraThreadException.class, failure.get());
+        var linkedOptions = new RuntimeOptions(options.owner(), options.ioEnvironment(), options.profile(),
+                options.runtimeAbi(), options.previewEnabled(), key);
+        assertSame(key, ModuleLifecycle.newArtifactKey(linkedOptions, metadata));
+        assertThrows(LyraLinkException.class, () -> ModuleLifecycle.newArtifactKey(linkedOptions, builder().build()));
+        lifecycle.close();
+        assertThrows(LyraClosedException.class, () -> authority.resolveSignature(canonical));
+        var otherLifecycle = new ModuleLifecycle();
+        assertThrows(LyraLinkException.class, () -> otherLifecycle.closureAuthority().resolveSignature(canonical));
+        otherLifecycle.open();
+        otherLifecycle.close();
+    }
+
     @Test void seededSchemaPublicationsRejectIndependentMetadataMutations() {
         int cases = Integer.getInteger("lyra.fuzz.cases", 60);
         for (long seed : new long[] { 379, 20260911 }) {

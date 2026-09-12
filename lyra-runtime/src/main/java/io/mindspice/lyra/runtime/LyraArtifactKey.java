@@ -15,6 +15,8 @@ public final class LyraArtifactKey {
     private final SessionStorageDomain.Linkage sessionLinkage;
     private final SessionStorageDomain.RootLifetime rootLifetime;
     private final boolean deferredSubmission;
+    private final NominalTypeEnvironment nominalSchemas;
+    private final java.util.concurrent.ConcurrentMap<String, LyraSignature> signatures = new java.util.concurrent.ConcurrentHashMap<>();
     /** One prepared session graph's actual state shells, never ordinary instances. */
     private final Map<ModuleId, Object> preparedStates = new HashMap<>();
     /** Lifecycles for the same prepared graph, used for exact progress reporting. */
@@ -49,6 +51,12 @@ public final class LyraArtifactKey {
     LyraArtifactKey(OwnerThread owner, RuntimeIoEnvironment ioEnvironment,
                     SessionStorageDomain.Linkage linkage, boolean deferredSubmission,
                     SessionStorageDomain.RootLifetime rootLifetime) {
+        this(owner, ioEnvironment, linkage, deferredSubmission, rootLifetime, NominalTypeEnvironment.empty());
+    }
+
+    LyraArtifactKey(OwnerThread owner, RuntimeIoEnvironment ioEnvironment,
+                    SessionStorageDomain.Linkage linkage, boolean deferredSubmission,
+                    SessionStorageDomain.RootLifetime rootLifetime, NominalTypeEnvironment nominalSchemas) {
         if (deferredSubmission && linkage == null) {
             throw new IllegalArgumentException("deferred submission requires authenticated linkage");
         }
@@ -60,6 +68,24 @@ public final class LyraArtifactKey {
         this.sessionLinkage = linkage;
         this.rootLifetime = rootLifetime;
         this.deferredSubmission = deferredSubmission;
+        this.nominalSchemas = Objects.requireNonNull(nominalSchemas, "nominalSchemas");
+    }
+
+    NominalTypeEnvironment nominalSchemas() { return nominalSchemas; }
+
+    void requireNominalSchemas(NominalTypeEnvironment expected) {
+        if (!nominalSchemas.schemas().equals(expected.schemas())) {
+            throw new LyraLinkException("artifact authority has different nominal schema contracts");
+        }
+    }
+
+    LyraSignature resolveSignature(String canonical) {
+        try {
+            return signatures.computeIfAbsent(Objects.requireNonNull(canonical, "canonical"),
+                    spelling -> LyraSignature.parse(spelling, nominalSchemas));
+        } catch (IllegalArgumentException failure) {
+            throw new LyraLinkException("signature is not in the producer's exact type environment", java.util.List.of(), failure);
+        }
     }
 
     boolean deferredSubmission() {

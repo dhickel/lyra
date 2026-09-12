@@ -66,6 +66,19 @@ public final class ModuleLifecycle implements AutoCloseable {
                 : new LyraArtifactKey(value.owner(), value.ioEnvironment());
     }
 
+    /** Creates or verifies the producer scope for a schema-bearing generated artifact. */
+    public static LyraArtifactKey newArtifactKey(RuntimeOptions options, ArtifactMetadata metadata) {
+        RuntimeOptions value = Objects.requireNonNull(options, "options");
+        value.requireCompatible(Objects.requireNonNull(metadata, "metadata"));
+        value.owner().check();
+        LyraArtifactKey existing = value.artifactKey();
+        if (existing != null) {
+            existing.requireNominalSchemas(metadata.nominalSchemas());
+            return existing;
+        }
+        return new LyraArtifactKey(value.owner(), value.ioEnvironment(), null, false, null, metadata.nominalSchemas());
+    }
+
     /**
      * Creates lifecycle state for generated modules that belong to one loaded
      * artifact.  Sharing the opaque key lets closures move between module

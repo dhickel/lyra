@@ -113,6 +113,16 @@ final class LyraOwnershipToken {
         checkSession();
     }
 
+    LyraSignature resolveSignature(String canonical) {
+        ensureCreationAllowed();
+        if (artifactKey instanceof LyraArtifactKey key) return key.resolveSignature(canonical);
+        try {
+            return LyraSignature.parse(canonical);
+        } catch (IllegalArgumentException failure) {
+            throw new LyraLinkException("signature has no producer schema environment", java.util.List.of(), failure);
+        }
+    }
+
     boolean sameArtifact(LyraOwnershipToken other) {
         return other != null && artifactKey == other.artifactKey;
     }

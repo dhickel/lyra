@@ -116,6 +116,15 @@ remain in progress.
 
 ## Open Questions
 
+Producer-scoped signature resolution must update both loaded-artifact keys and
+direct generated-facade key creation. A closure constructor already has its
+authority argument on the operand stack before its superclass constructor runs;
+duplicate that authority for nominal signature resolution rather than reading
+uninitialized instance capture fields. Schema-2 compatibility must also reach
+RuntimeOptions through LyraRuntimeConstants, not only the metadata reader gate.
+The cache contains immutable signatures only; individual lifecycle checks must
+precede lookup even when another still-open instance shares the same artifact key.
+
 No additional owner decision blocks starting implementation. Exact internal schema
 encoding and typed factory naming must be resolved and tested in the ABI phase;
 they must not silently weaken existing compatibility or producer authority.

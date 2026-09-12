@@ -156,6 +156,13 @@ or ABI changes require explicit versioning and compatibility tests. Existing art
 encodings without nominal types remain unchanged unless a tested compatibility
 revision is required.
 
+Generated callable signatures containing nominal types resolve against the exact
+schema environment on their producer artifact key. Cached signature metadata may
+be shared by instances of that artifact, but each resolution checks the requesting
+producer's owner thread and lifecycle first, including cache hits. Initialization
+may resolve contracts; failed or closed producers may not. This metadata operation
+does not authenticate a live object or grant private member access.
+
 Nominal publications use artifact schema 2; schema-1 publications contain no nominal
 contracts and retain their existing bytes and revisions. Schema 2 requires a nonempty
 `nominalSchemas` section between `sources` and `exports`, sorted by canonical nominal

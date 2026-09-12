@@ -32,7 +32,7 @@ public final class LyraRuntimeConstants {
     }
 
     public static void requireArtifactSchema(int version) {
-        if (version != ARTIFACT_SCHEMA_VERSION) {
+        if (version != ARTIFACT_SCHEMA_VERSION && version != ArtifactMetadata.NOMINAL_SCHEMA_VERSION) {
             throw new LyraCompatibilityException("unsupported artifact schema version: " + version);
         }
     }

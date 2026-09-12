@@ -1567,7 +1567,8 @@ public final class LyraRuntime {
             // is likewise shared, while each generated state
             // still captures its own caller/owner thread.
             this.artifactKey = sharedStructuralDomain == null
-                    ? new LyraArtifactKey(null, options.ioEnvironment(), linkage) : null;
+                    ? new LyraArtifactKey(null, options.ioEnvironment(), linkage, false,
+                            linkage == null ? null : linkage.rootLifetime(), metadata.nominalSchemas()) : null;
         }
 
         @Override
@@ -1609,10 +1610,10 @@ public final class LyraRuntime {
                 if (linkage != null) linkage.validate(metadata);
                 LyraArtifactKey instanceKey = deferredSubmission
                         ? new LyraArtifactKey(OwnerThread.of(owner), options.ioEnvironment(),
-                                linkage, true)
+                                linkage, true, linkage.rootLifetime(), metadata.nominalSchemas())
                         : rootLifetime != null
                         ? new LyraArtifactKey(rootLifetime.owner(), options.ioEnvironment(),
-                                linkage, false, rootLifetime)
+                                linkage, false, rootLifetime, metadata.nominalSchemas())
                         : artifactKey;
                 if (deferredSubmission) {
                     synchronized (this) {
