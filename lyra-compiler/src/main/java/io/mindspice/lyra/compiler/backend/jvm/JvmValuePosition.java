@@ -11,6 +11,7 @@ enum JvmValuePosition {
     FUNCTION_RETURN("function-return", false, false),
     EXPORTED_VALUE("exported-value", false, false),
     TUPLE_FIELD("tuple-field", false, false),
+    NOMINAL_FIELD("nominal-field", false, false),
     CAPTURE("capture", false, true),
     CELL_VALUE("cell-value", false, true),
     ARRAY_ELEMENT("array-element", false, false),

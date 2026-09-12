@@ -16,10 +16,11 @@ record GeneratedClassDependency(
         JvmNames.requireBinaryName(targetBinaryName, "dependency target");
         Objects.requireNonNull(kind, "kind");
         boolean linkageOnly = kind == GeneratedDependencyKind.MODULE_IMPORT_LINKAGE
+                || kind == GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE
                 || kind == GeneratedDependencyKind.RECURSIVE_FUNCTION_LINKAGE;
         if (linkageOnly ? orderingRequired : !orderingRequired) {
             throw new IllegalArgumentException(
-                    "only module-import and recursive-function linkage edges may be ordering-free");
+                    "only module-import, recursive-function and nominal-type linkage edges may be ordering-free");
         }
         if (Objects.requireNonNull(reason, "reason").isBlank()) {
             throw new IllegalArgumentException("dependency reason must not be blank");

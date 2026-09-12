@@ -89,6 +89,10 @@ final class GeneratedTypePlanner {
         JvmTypeNameTable typeNames = new JvmTypeNameTable(
                 basePackage, names.tupleNames(), names.functionNames());
         JvmAbiMapper mapper = new JvmAbiMapper(typeNames);
+        var nominalLayouts = new TreeMap<String, NominalClassLayout>();
+        for (var schema : ir.semanticGraph().resolvedGraph().nominalTypes().schemas()) {
+            nominalLayouts.put(schema.type().canonicalSpelling(), NominalClassLayout.plan(schema, mapper));
+        }
 
         List<IrExport> emittedExports = ir.exports().stream()
                 .filter(export -> ir.module(export.moduleId()).isPresent()).toList();
@@ -121,6 +125,14 @@ final class GeneratedTypePlanner {
                         IrCapture::id, value -> value));
 
         ArrayList<GeneratedClassPlan> classes = new ArrayList<>();
+        for (var layout : nominalLayouts.values()) {
+            var dependencies = new LinkedHashSet<GeneratedClassDependency>();
+            for (var field : layout.fields()) addTypeDependencies(dependencies, field.member().type(),
+                    GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE, false, names, "nominal field type");
+            classes.add(new GeneratedClassPlan(layout.binaryName(), GeneratedClassKind.NOMINAL_VALUE,
+                    "nominal:" + layout.schema().type().canonicalSpelling(), Optional.empty(), true,
+                    false, List.of(), List.of(), List.copyOf(dependencies), layout.members(), Optional.of(layout)));
+        }
         addTupleClasses(classes, inventory, mapper, names,
                 emissionMode != EmissionMode.NORMAL);
         addFunctionInterfaces(classes, inventory, mapper, names);
@@ -146,7 +158,7 @@ final class GeneratedTypePlanner {
         GeneratedTypePlan result = new GeneratedTypePlan(basePackage, typeNames, ordered,
                 names.tupleNames(), names.functionNames(), closureClasses, cellClasses,
                 moduleStates, moduleFacades, new ArrayList<>(exportPlans.values()),
-                ir.initializationOrder(), intrinsicFunctionClasses, ir.sessionExecution(), emissionMode);
+                ir.initializationOrder(), intrinsicFunctionClasses, ir.sessionExecution(), emissionMode, nominalLayouts);
         // Descriptor/signature parity is a publication gate for the plan; no
         // later class-body phase may start from a partially audited shape.
         JvmAbiParity.require(ir, result);
@@ -187,9 +199,12 @@ final class GeneratedTypePlanner {
                             + dependency.targetBinaryName());
                 }
                 if (dependency.targetBinaryName().equals(value.binaryName())) {
-                    if (value.kind() != GeneratedClassKind.CLOSURE
+                    boolean nominalSelf = value.kind() == GeneratedClassKind.NOMINAL_VALUE
+                            && dependency.kind() == GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE
+                            && !dependency.orderingRequired();
+                    if (!nominalSelf && (value.kind() != GeneratedClassKind.CLOSURE
                             || dependency.kind() != GeneratedDependencyKind.RECURSIVE_FUNCTION_LINKAGE
-                            || dependency.orderingRequired()) {
+                            || dependency.orderingRequired())) {
                         throw cycle(List.of(value.binaryName()));
                     }
                     continue;
@@ -672,7 +687,7 @@ final class GeneratedTypePlanner {
                 if (!declaration.scopeId().equals(module.state().rootScope())) {
                     continue;
                 }
-                if (declaration.kind() == DeclarationKind.EXTERNAL) continue;
+                if (declaration.kind() == DeclarationKind.EXTERNAL || declaration.kind() == DeclarationKind.NOMINAL) continue;
                 String prefix = "$lyra$binding$" + declarationId.value();
                 IrImportBinding importBinding = importsByDeclaration.get(declarationId);
                 if (importBinding != null) {
@@ -921,6 +936,12 @@ final class GeneratedTypePlanner {
             NameAssignment names,
             String reason) {
         LyraType base = type.withoutQualifiers();
+        if (base instanceof io.mindspice.lyra.compiler.types.NominalType nominal) {
+            String target = names.nominalNames().get(nominal.canonicalSpelling());
+            if (target == null) throw new IllegalArgumentException("nominal type has no generated class: " + nominal);
+            addTypeDependency(dependencies, target, GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE, false, reason);
+            return;
+        }
         if (base instanceof ArrayType array) {
             addTypeDependencies(dependencies, array.elementType(), kind, orderingRequired, names, reason);
             return;
@@ -1212,6 +1233,10 @@ final class GeneratedTypePlanner {
     private static Inventory inventory(TypedIr ir) {
         TreeMap<String, TupleType> tuples = new TreeMap<>();
         TreeMap<String, FunctionType> functions = new TreeMap<>();
+        for (var schema : ir.semanticGraph().resolvedGraph().nominalTypes().schemas()) {
+            schema.members().forEach(member -> collectType(member.type(), tuples, functions));
+            schema.constructorParameters().forEach(parameter -> collectType(parameter, tuples, functions));
+        }
         for (IrDeclaration declaration : ir.declarations()) {
             declaration.contract().ifPresent(contract -> collectType(
                     contract.valueType(), tuples, functions));
@@ -1380,8 +1405,14 @@ final class GeneratedTypePlanner {
             states.put(module.moduleId(), assigned.get("state:" + moduleKey(module.moduleId())));
             facades.put(module.moduleId(), assigned.get("facade:" + moduleKey(module.moduleId())));
         }
+        var nominalNames = new TreeMap<String, String>();
+        var nominalTable = JvmTypeNameTable.forPackage(basePackage);
+        for (var schema : ir.semanticGraph().resolvedGraph().nominalTypes().schemas()) {
+            String canonical = schema.type().canonicalSpelling();
+            nominalNames.put(canonical, nominalTable.nominalBinaryName(canonical));
+        }
         return new NameAssignment(tupleNames, functionNames, closures, cells, intrinsicFunctions,
-                states, facades);
+                states, facades, nominalNames);
     }
 
     private static Map<String, String> assignNames(List<NameRequest> requests) {
@@ -1509,7 +1540,8 @@ final class GeneratedTypePlanner {
             Map<DeclarationId, String> cellClasses,
             Map<DeclarationId, String> intrinsicFunctionClasses,
             Map<ModuleId, String> moduleStates,
-            Map<ModuleId, String> moduleFacades) {
+            Map<ModuleId, String> moduleFacades,
+            Map<String, String> nominalNames) {
         private NameAssignment {
             tupleNames = immutableStringMap(tupleNames);
             functionNames = immutableStringMap(functionNames);
@@ -1518,6 +1550,7 @@ final class GeneratedTypePlanner {
             intrinsicFunctionClasses = Map.copyOf(intrinsicFunctionClasses);
             moduleStates = Map.copyOf(moduleStates);
             moduleFacades = Map.copyOf(moduleFacades);
+            nominalNames = immutableStringMap(nominalNames);
         }
 
         private static Map<String, String> immutableStringMap(Map<String, String> values) {

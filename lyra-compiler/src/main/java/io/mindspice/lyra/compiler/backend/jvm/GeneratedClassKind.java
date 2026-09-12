@@ -3,6 +3,7 @@ package io.mindspice.lyra.compiler.backend.jvm;
 /** Generated class categories and their default dependency rank. */
 enum GeneratedClassKind {
     TUPLE_VALUE(0),
+    NOMINAL_VALUE(0),
     FUNCTION_INTERFACE(1),
     CELL(2),
     CLOSURE(3),

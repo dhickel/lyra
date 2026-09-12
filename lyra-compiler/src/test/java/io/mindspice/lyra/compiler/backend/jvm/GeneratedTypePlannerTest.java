@@ -51,7 +51,8 @@ public final class GeneratedTypePlannerTest {
                 String field = array ? "Array<@nil I64>" : "I32";
                 String source = "struct Node { let " + (mutable ? "@mut " : "")
                         + "data :" + field + " let @nil next :Node }";
-                var runtime = NominalRuntimeContracts.from(ir(source));
+                var typed = ir(source);
+                var runtime = NominalRuntimeContracts.from(typed);
                 var schema = runtime.schemas().getFirst();
                 var expected = array ? io.mindspice.lyra.runtime.ArrayType.of(io.mindspice.lyra.runtime.LyraType.I64.nilable())
                         : io.mindspice.lyra.runtime.LyraType.I32;
@@ -59,6 +60,15 @@ public final class GeneratedTypePlannerTest {
                 assertEquals(expected, schema.members().getFirst().type(), replay);
                 assertEquals(mutable, schema.members().getFirst().mutable(), replay);
                 assertEquals(List.of(expected, schema.type().nilable()), schema.constructorParameters(), replay);
+                var layouts = GeneratedTypePlanner.plan(typed).nominalLayouts();
+                var layout = layouts.get(schema.type().canonicalSpelling());
+                String descriptor = array ? "[Ljava/lang/Long;" : "I";
+                assertEquals(descriptor, layout.fields().getFirst().value().descriptor(), replay);
+                assertEquals("(Lio/mindspice/lyra/runtime/LyraNominalConstruction;" + descriptor + ")V",
+                        layout.fields().getFirst().initializationSetterDescriptor(), replay);
+                assertEquals("(Lio/mindspice/lyra/runtime/LyraClosureAuthority;)" + descriptor,
+                        layout.fields().getFirst().generatedGetterDescriptor(), replay);
+                assertEquals(mutable, layout.fields().getFirst().member().mutability().isMutable(), replay);
             }
         }
     }
@@ -87,6 +97,70 @@ public final class GeneratedTypePlannerTest {
         assertEquals(io.mindspice.lyra.runtime.FunctionType.of(List.of(), node.type().nilable()), holder.members().get(1).type());
         for (var schema : runtime.schemas()) assertEquals(schema.type(),
                 io.mindspice.lyra.runtime.LyraType.parse(schema.type().canonicalSpelling(), runtime));
+        var generated = GeneratedTypePlanner.plan(ir);
+        assertEquals(2, generated.nominalLayouts().size());
+        for (var layout : generated.nominalLayouts().values()) {
+            var classPlan = generated.classPlan(layout.binaryName()).orElseThrow();
+            assertEquals(GeneratedClassKind.NOMINAL_VALUE, classPlan.kind());
+            assertTrue(classPlan.isFinal());
+            assertTrue(classPlan.isPublic());
+            assertTrue(classPlan.members().stream().filter(member -> member.kind() == GeneratedMemberKind.NOMINAL_FIELD)
+                    .allMatch(GeneratedMemberPlan::isPrivate));
+            assertEquals(layout.fields().size(), classPlan.members().stream()
+                    .filter(member -> member.kind() == GeneratedMemberKind.NOMINAL_INITIALIZE).count());
+            assertEquals(layout.fields().stream().filter(field -> field.member().mutability().isMutable()).count(),
+                    classPlan.members().stream().filter(member -> member.kind() == GeneratedMemberKind.NOMINAL_SET).count());
+            assertEquals(layout.fields().stream().filter(field -> field.member().publicAccess()).count(),
+                    classPlan.members().stream().filter(member -> member.kind() == GeneratedMemberKind.NOMINAL_PUBLIC_GET).count());
+        }
+    }
+
+    @Test
+    void nominalLayoutRejectsForgedOriginFieldOrderAndFactoryContracts() {
+        var generated = GeneratedTypePlanner.plan(ir("struct Pair { let first :I32 let @mut second :I64 }"));
+        var layout = generated.nominalLayouts().values().iterator().next();
+        var mapper = generated.mapper();
+        assertThrows(IllegalArgumentException.class, () -> new NominalClassLayout(
+                layout.binaryName() + "wrong", layout.schema(), layout.fields(), layout.factorySignature()));
+        assertThrows(IllegalArgumentException.class, () -> new NominalClassLayout(
+                layout.binaryName(), layout.schema(), layout.fields().reversed(), layout.factorySignature()));
+        assertThrows(IllegalArgumentException.class, () -> new NominalClassLayout(
+                layout.binaryName(), layout.schema(), List.of(), layout.factorySignature()));
+        assertThrows(IllegalArgumentException.class, () -> new NominalClassLayout.Field(0,
+                layout.fields().getFirst().member(), mapper.map(PrimitiveType.I32, JvmMappingContext.TUPLE_FIELD)));
+        assertThrows(IllegalArgumentException.class, () -> new NominalClassLayout.Field(0,
+                layout.fields().getFirst().member(), mapper.map(PrimitiveType.I64, JvmMappingContext.NOMINAL_FIELD)));
+        assertThrows(IllegalArgumentException.class, () -> new NominalClassLayout(
+                layout.binaryName(), layout.schema(), layout.fields(),
+                mapper.mapSignature(LyraSignature.of(List.of(), layout.schema().type()))));
+        var classPlan = generated.classPlan(layout.binaryName()).orElseThrow();
+        assertThrows(IllegalArgumentException.class, () -> new GeneratedClassPlan(classPlan.binaryName(), classPlan.kind(),
+                classPlan.stableKey(), classPlan.moduleId(), true, false, List.of(), List.of(),
+                classPlan.dependencies(), classPlan.members().subList(1, classPlan.members().size()), Optional.of(layout)));
+    }
+
+    @Test
+    void nominalFactoriesKeepConstructorParametersAndDoNotAllocateTypeNameStorage() {
+        var typed = ir("""
+                struct Empty { }
+                class Counter {
+                    let value :I32
+                    Counter = (=> |initial :I32| { self:.value := initial })
+                }
+                """);
+        var generated = GeneratedTypePlanner.plan(typed);
+        var counter = generated.nominalLayouts().values().stream()
+                .filter(layout -> layout.schema().type().id().name().equals("Counter")).findFirst().orElseThrow();
+        assertEquals("(I)L" + counter.binaryName().replace('.', '/') + ";", counter.factorySignature().descriptor());
+        var empty = generated.nominalLayouts().values().stream()
+                .filter(layout -> layout.schema().type().id().name().equals("Empty")).findFirst().orElseThrow();
+        assertTrue(empty.fields().isEmpty());
+        assertEquals("()L" + empty.binaryName().replace('.', '/') + ";", empty.factorySignature().descriptor());
+        var nominalDeclarations = typed.declarations().stream()
+                .filter(declaration -> declaration.kind() == io.mindspice.lyra.compiler.semantic.DeclarationKind.NOMINAL)
+                .map(declaration -> "$lyra$binding$" + declaration.id().value()).toList();
+        assertTrue(generated.classes().stream().filter(plan -> plan.kind() == GeneratedClassKind.MODULE_STATE)
+                .flatMap(plan -> plan.members().stream()).noneMatch(member -> nominalDeclarations.contains(member.name())));
     }
 
     @Test

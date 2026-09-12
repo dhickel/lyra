@@ -134,6 +134,14 @@ RuntimeOptions through LyraRuntimeConstants, not only the metadata reader gate.
 The cache contains immutable signatures only; individual lifecycle checks must
 precede lookup even when another still-open instance shares the same artifact key.
 
+Nominal class plans must enter the exact generated-class index before any descriptor
+may name them. Closed dependency checks independently exist in GeneratedClassDependency,
+GeneratedTypePlanner ordering, GeneratedTypePlan validation and JvmAbiParity; all need
+the explicit nominal linkage category. Nominal-to-tuple/function and all nominal
+targets are non-ordering links so recursive schemas remain complete without cycles.
+Field schemas still drive exact primitive/reference storage and source visibility;
+nominal declaration names are constructor roles, never module instance fields.
+
 ## Open Questions
 
 No additional owner decision blocks starting implementation. Exact internal schema

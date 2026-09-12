@@ -55,7 +55,7 @@ record GeneratedMemberPlan(
                 throw new IllegalArgumentException("field component index does not match its value plan");
             }
             String expected;
-            if (kind == GeneratedMemberKind.TUPLE_FIELD) {
+            if (kind == GeneratedMemberKind.TUPLE_FIELD || kind == GeneratedMemberKind.NOMINAL_FIELD) {
                 if (!plannedValue.isSingleValue()) {
                     throw new IllegalArgumentException("tuple fields cannot use split value plans");
                 }
@@ -95,6 +95,7 @@ record GeneratedMemberPlan(
                 || kind == GeneratedMemberKind.FUNCTION_VALUE_GETTER
                 || kind == GeneratedMemberKind.SETTER
                 || kind == GeneratedMemberKind.TUPLE_FIELD
+                || kind == GeneratedMemberKind.NOMINAL_FIELD
                 || kind == GeneratedMemberKind.CLOSURE_CAPTURE_PRESENCE_FIELD
                 || kind == GeneratedMemberKind.CLOSURE_CAPTURE_PAYLOAD_FIELD
                 || kind == GeneratedMemberKind.CELL_VALUE_FIELD
@@ -223,6 +224,8 @@ record GeneratedMemberPlan(
     /** Whether the later emitter must make this storage member final. */
     public GeneratedMemberVisibility visibility() {
         return switch (kind) {
+            case NOMINAL_CONSTRUCTOR, NOMINAL_INITIALIZE, NOMINAL_INITIALIZATION_GET,
+                    NOMINAL_GET, NOMINAL_SET, NOMINAL_PUBLIC_GET, NOMINAL_PUBLIC_SET -> GeneratedMemberVisibility.PUBLIC;
             case FUNCTION_INVOKE, CLOSURE_INVOKE, FUNCTION_INVOCATION,
                     VALUE_GETTER, FUNCTION_VALUE_GETTER, SETTER, FACTORY,
                     FACTORY_WITH_OPTIONS, METADATA, CLOSE, TUPLE_CONSTRUCTOR,
@@ -302,6 +305,7 @@ record GeneratedMemberPlan(
             GeneratedMemberKind kind, JvmTypePlan value) {
         JvmMappingContext expected = switch (kind) {
             case TUPLE_FIELD -> JvmMappingContext.TUPLE_FIELD;
+            case NOMINAL_FIELD -> JvmMappingContext.NOMINAL_FIELD;
             case CELL_VALUE_FIELD, CELL_PRESENCE_FIELD -> JvmMappingContext.INTERNAL_CELL;
             case CLOSURE_CAPTURE_PRESENCE_FIELD, CLOSURE_CAPTURE_PAYLOAD_FIELD ->
                     JvmMappingContext.INTERNAL_CAPTURE;
@@ -323,7 +327,7 @@ record GeneratedMemberPlan(
 
     private static boolean isConstructorKind(GeneratedMemberKind kind) {
         return switch (kind) {
-            case TUPLE_CONSTRUCTOR, CLOSURE_CONSTRUCTOR, CELL_CONSTRUCTOR,
+            case NOMINAL_CONSTRUCTOR, TUPLE_CONSTRUCTOR, CLOSURE_CONSTRUCTOR, CELL_CONSTRUCTOR,
                     STATE_CONSTRUCTOR, FACADE_CONSTRUCTOR -> true;
             default -> false;
         };

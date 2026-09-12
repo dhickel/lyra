@@ -2,6 +2,14 @@ package io.mindspice.lyra.compiler.backend.jvm;
 
 /** Exact generated member roles planned before any method body is emitted. */
 enum GeneratedMemberKind {
+    NOMINAL_FIELD(false),
+    NOMINAL_CONSTRUCTOR(true),
+    NOMINAL_INITIALIZE(true),
+    NOMINAL_INITIALIZATION_GET(true),
+    NOMINAL_GET(true),
+    NOMINAL_SET(true),
+    NOMINAL_PUBLIC_GET(true),
+    NOMINAL_PUBLIC_SET(true),
     TUPLE_FIELD(false),
     TUPLE_COMPONENT_GET(true),
     SESSION_TUPLE_COMPONENT_GET(true),

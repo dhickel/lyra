@@ -184,6 +184,7 @@ public final class JvmAbiMapperTest {
                 JvmMappingContext.JAVA_PARAMETER,
                 JvmMappingContext.JAVA_RETURN,
                 JvmMappingContext.TUPLE_FIELD,
+                JvmMappingContext.NOMINAL_FIELD,
                 JvmMappingContext.JAVA_ARRAY_ELEMENT,
                 JvmMappingContext.INTERNAL_ARRAY_ELEMENT,
                 JvmMappingContext.JAVA_FUNCTION_VALUE);

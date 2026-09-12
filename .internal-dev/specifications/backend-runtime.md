@@ -130,6 +130,13 @@ Generate deterministic final JVM reference classes with exact typed fields for
 both structs and classes. Mutable fields rule out Java records as the general
 representation. Do not replace nominal types with maps, `Object[]`, or structural
 tuples. Primitive fields remain primitive where the existing nilable ABI permits.
+Nominal fields use a distinct single-value ABI position: nonnil primitives are
+unboxed, nilable primitives use their established reference boundary, and no field
+uses split presence/payload storage. Class plans retain exact ordered schemas,
+field descriptors, initialization/access methods and constructor-to-instance
+factory signatures. Recursive nominal references are explicit non-ordering linkage
+edges, not missing dependency entries or false topological cycles. Type declaration
+names do not allocate module-state instance fields.
 Representation fields are private; public typed accessors preserve source visibility,
 mutation contracts and owner/lifecycle checks. Typed construction factories retain
 the originating module instance; Java cannot construct unauthenticated raw objects.

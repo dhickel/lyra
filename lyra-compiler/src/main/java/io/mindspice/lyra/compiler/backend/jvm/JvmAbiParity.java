@@ -42,6 +42,11 @@ final class JvmAbiParity {
         Objects.requireNonNull(plan, "plan");
         JvmAbiMapper mapper = plan.mapper();
         ArrayList<String> differences = new ArrayList<>();
+        var nominalLayouts = new TreeMap<String, NominalClassLayout>();
+        for (var schema : ir.semanticGraph().resolvedGraph().nominalTypes().schemas()) {
+            nominalLayouts.put(schema.type().canonicalSpelling(), NominalClassLayout.plan(schema, mapper));
+        }
+        if (!nominalLayouts.equals(plan.nominalLayouts())) differences.add("nominal storage/factory layouts differ from typed schemas");
 
         for (IrExport export : ir.exports()) {
             if (ir.module(export.moduleId()).isEmpty()) continue;
@@ -333,6 +338,7 @@ final class JvmAbiParity {
                     .map(declarations::get).filter(Objects::nonNull)
                     .filter(value -> value.scopeId().equals(module.state().rootScope()))
                     .filter(value -> value.externalBinding().isEmpty())
+                    .filter(value -> value.kind() != io.mindspice.lyra.compiler.semantic.DeclarationKind.NOMINAL)
                     .filter(value -> !imports.containsKey(value.id()) || ir.sessionExecution()
                             .filter(execution -> !execution.emits(imports.get(value.id()).targetModule())).isEmpty())
                     .filter(value -> value.contract().isPresent() || imports.containsKey(value.id()))
@@ -399,6 +405,12 @@ final class JvmAbiParity {
         Map<String, TupleType> tuples = new TreeMap<>();
         Map<String, FunctionType> functions = new TreeMap<>();
         collectTypeDefinitions(ir, tuples, functions);
+
+        for (var schema : ir.semanticGraph().resolvedGraph().nominalTypes().schemas()) {
+            var dependencies = expectedFor(expected, plan.typeNames().nominalBinaryName(schema.type().canonicalSpelling()));
+            for (var member : schema.members()) addExpectedTypeDependencies(dependencies, member.type(),
+                    GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE, false, plan.typeNames());
+        }
 
         for (Map.Entry<String, TupleType> entry : tuples.entrySet()) {
             Set<DependencyIdentity> dependencies = expectedFor(expected,
@@ -532,6 +544,7 @@ final class JvmAbiParity {
             for (DeclarationId declarationId : module.state().declarations()) {
                 IrDeclaration declaration = declarations.get(declarationId);
                 if (declaration == null || !declaration.scopeId().equals(module.state().rootScope())
+                        || declaration.kind() == io.mindspice.lyra.compiler.semantic.DeclarationKind.NOMINAL
                         || declaration.externalBinding().isPresent()) {
                     continue;
                 }
@@ -771,7 +784,10 @@ final class JvmAbiParity {
             boolean orderingRequired,
             JvmTypeNameTable names) {
         LyraType base = type.withoutQualifiers();
-        if (base instanceof ArrayType array) {
+        if (base instanceof io.mindspice.lyra.compiler.types.NominalType nominal) {
+            addExpectedDependency(dependencies, names.nominalBinaryName(nominal.canonicalSpelling()),
+                    GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE, false);
+        } else if (base instanceof ArrayType array) {
             addExpectedTypeDependencies(dependencies, array.elementType(), kind,
                     orderingRequired, names);
         } else if (base instanceof TupleType tuple) {
@@ -793,6 +809,10 @@ final class JvmAbiParity {
             TypedIr ir,
             Map<String, TupleType> tuples,
             Map<String, FunctionType> functions) {
+        for (var schema : ir.semanticGraph().resolvedGraph().nominalTypes().schemas()) {
+            schema.members().forEach(member -> collectTypeDefinitions(member.type(), tuples, functions));
+            schema.constructorParameters().forEach(parameter -> collectTypeDefinitions(parameter, tuples, functions));
+        }
         ir.declarations().forEach(declaration -> declaration.contract().ifPresent(contract ->
                 collectTypeDefinitions(contract.valueType(), tuples, functions)));
         ir.references().forEach(reference -> reference.type().ifPresent(type ->

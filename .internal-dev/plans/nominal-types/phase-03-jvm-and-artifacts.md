@@ -66,6 +66,10 @@ resolution, with per-producer lifecycle checks ahead of shared metadata caching.
 The runtime now has a single-use receiver construction capability, field
 initialization checks and nominal value/access authority boundaries. Tests use
 exact typed Java fixtures; generated source object classes remain to be wired.
+Generated plans now include final nominal classes, private exact typed fields,
+initialization/access members, constructor-to-instance signatures and recursive
+linkage inventories. ABI parity checks these against source schemas. Member bodies
+and source construction remain to be emitted; these are still planning tests.
 These are contract/mapping/metadata tests, not emitted object execution. Object
-artifact publication, class/member plans, direct emission, authority wiring, equality,
+artifact publication, direct emission, authority wiring, equality,
 Java factories and persistent sessions remain unfinished.

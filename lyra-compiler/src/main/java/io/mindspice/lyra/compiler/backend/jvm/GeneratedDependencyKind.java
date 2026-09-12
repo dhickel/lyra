@@ -2,6 +2,7 @@ package io.mindspice.lyra.compiler.backend.jvm;
 
 /** Why one generated class refers to another generated class. */
 enum GeneratedDependencyKind {
+    NOMINAL_TYPE_LINKAGE,
     TUPLE_MEMBER_TYPE,
     FUNCTION_SIGNATURE_TYPE,
     CELL_VALUE_TYPE,

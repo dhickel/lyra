@@ -33,6 +33,8 @@ record JvmMappingContext(JvmAbiBoundary boundary, JvmValuePosition position) {
             new JvmMappingContext(JvmAbiBoundary.JAVA_VISIBLE, JvmValuePosition.FUNCTION_RETURN);
     public static final JvmMappingContext TUPLE_FIELD =
             new JvmMappingContext(JvmAbiBoundary.JAVA_VISIBLE, JvmValuePosition.TUPLE_FIELD);
+    public static final JvmMappingContext NOMINAL_FIELD =
+            new JvmMappingContext(JvmAbiBoundary.JAVA_VISIBLE, JvmValuePosition.NOMINAL_FIELD);
     public static final JvmMappingContext JAVA_ARRAY_ELEMENT =
             new JvmMappingContext(JvmAbiBoundary.JAVA_VISIBLE, JvmValuePosition.ARRAY_ELEMENT);
     public static final JvmMappingContext INTERNAL_ARRAY_ELEMENT =

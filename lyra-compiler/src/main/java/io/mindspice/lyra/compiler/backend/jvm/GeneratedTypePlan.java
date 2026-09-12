@@ -23,6 +23,7 @@ import java.util.TreeMap;
 final class GeneratedTypePlan {
     private final String basePackage;
     private final JvmTypeNameTable typeNames;
+    private final Map<String, NominalClassLayout> nominalLayouts;
     private final List<GeneratedClassPlan> classes;
     private final Map<String, GeneratedClassPlan> classesByName;
     private final Map<String, String> tupleClasses;
@@ -98,7 +99,7 @@ final class GeneratedTypePlan {
         this(sessionExecution, EmissionMode.NORMAL, basePackage, typeNames, classes,
                 tupleClasses, functionInterfaces, closureClasses, cellClasses,
                 moduleStates, moduleFacades, exports, initializationOrder,
-                intrinsicFunctionClasses);
+                intrinsicFunctionClasses, Map.of());
     }
 
     GeneratedTypePlan(String basePackage, JvmTypeNameTable typeNames, List<GeneratedClassPlan> classes,
@@ -111,7 +112,20 @@ final class GeneratedTypePlan {
             EmissionMode emissionMode) {
         this(sessionExecution, Objects.requireNonNull(emissionMode, "emissionMode"), basePackage,
                 typeNames, classes, tupleClasses, functionInterfaces, closureClasses, cellClasses,
-                moduleStates, moduleFacades, exports, initializationOrder, intrinsicFunctionClasses);
+                moduleStates, moduleFacades, exports, initializationOrder, intrinsicFunctionClasses, Map.of());
+    }
+
+    GeneratedTypePlan(String basePackage, JvmTypeNameTable typeNames, List<GeneratedClassPlan> classes,
+            Map<String, String> tupleClasses, Map<String, String> functionInterfaces,
+            Map<LambdaId, String> closureClasses, Map<DeclarationId, String> cellClasses,
+            Map<ModuleId, String> moduleStates, Map<ModuleId, String> moduleFacades,
+            List<GeneratedExportPlan> exports, List<ModuleId> initializationOrder,
+            Map<DeclarationId, String> intrinsicFunctionClasses,
+            Optional<io.mindspice.lyra.compiler.ir.IrSessionExecution> sessionExecution,
+            EmissionMode emissionMode, Map<String, NominalClassLayout> nominalLayouts) {
+        this(sessionExecution, emissionMode, basePackage, typeNames, classes, tupleClasses,
+                functionInterfaces, closureClasses, cellClasses, moduleStates, moduleFacades,
+                exports, initializationOrder, intrinsicFunctionClasses, nominalLayouts);
     }
 
     private GeneratedTypePlan(
@@ -121,11 +135,21 @@ final class GeneratedTypePlan {
             Map<String, String> functionInterfaces, Map<LambdaId, String> closureClasses,
             Map<DeclarationId, String> cellClasses, Map<ModuleId, String> moduleStates,
             Map<ModuleId, String> moduleFacades, List<GeneratedExportPlan> exports,
-            List<ModuleId> initializationOrder, Map<DeclarationId, String> intrinsicFunctionClasses) {
+            List<ModuleId> initializationOrder, Map<DeclarationId, String> intrinsicFunctionClasses,
+            Map<String, NominalClassLayout> nominalLayouts) {
         this.sessionExecution = Objects.requireNonNull(sessionExecution, "sessionExecution");
         this.emissionMode = Objects.requireNonNull(emissionMode, "emissionMode");
         this.basePackage = Objects.requireNonNull(basePackage, "basePackage");
         this.typeNames = Objects.requireNonNull(typeNames, "typeNames");
+        var layouts = new TreeMap<String, NominalClassLayout>();
+        Objects.requireNonNull(nominalLayouts, "nominalLayouts").forEach((canonical, layout) -> {
+            if (!canonical.equals(layout.schema().type().canonicalSpelling())
+                    || !layout.binaryName().equals(typeNames.nominalBinaryName(canonical))) {
+                throw new IllegalArgumentException("nominal layout has the wrong type/name index");
+            }
+            layouts.put(canonical, layout);
+        });
+        this.nominalLayouts = Collections.unmodifiableMap(layouts);
         if (!this.basePackage.equals(typeNames.basePackage())) {
             throw new IllegalArgumentException("base package disagrees with type-name table");
         }
@@ -253,6 +277,8 @@ final class GeneratedTypePlan {
         return tupleClasses;
     }
 
+    public Map<String, NominalClassLayout> nominalLayouts() { return nominalLayouts; }
+
     public Map<String, String> functionInterfaces() {
         return functionInterfaces;
     }
@@ -311,6 +337,7 @@ final class GeneratedTypePlan {
         return this == other || other instanceof GeneratedTypePlan plan
                 && basePackage.equals(plan.basePackage)
                 && typeNames.equals(plan.typeNames)
+                && nominalLayouts.equals(plan.nominalLayouts)
                 && classes.equals(plan.classes)
                 && tupleClasses.equals(plan.tupleClasses)
                 && functionInterfaces.equals(plan.functionInterfaces)
@@ -329,11 +356,12 @@ final class GeneratedTypePlan {
     public int hashCode() {
         return Objects.hash(basePackage, typeNames, classes, tupleClasses, functionInterfaces,
                 closureClasses, cellClasses, intrinsicFunctionClasses, moduleStates,
-                moduleFacades, exports, javaNames, initializationOrder, emissionMode);
+                moduleFacades, exports, javaNames, initializationOrder, emissionMode, nominalLayouts);
     }
 
     public String canonicalSpelling() {
         return "package=" + basePackage
+                + (nominalLayouts.isEmpty() ? "" : "|nominalLayouts=" + nominalLayouts)
                 + "|tuples=" + tupleClasses
                 + "|functions=" + functionInterfaces
                 + "|classes=" + classNames()
@@ -354,6 +382,13 @@ final class GeneratedTypePlan {
     }
 
     private void validateClassIndexes() {
+        requireExactKindIndex(nominalLayouts.values().stream().map(NominalClassLayout::binaryName).toList(),
+                GeneratedClassKind.NOMINAL_VALUE, "nominalLayouts");
+        for (var layout : nominalLayouts.values()) {
+            if (!classesByName.get(layout.binaryName()).nominalLayout().equals(Optional.of(layout))) {
+                throw new IllegalArgumentException("nominal class and layout indexes disagree");
+            }
+        }
         requireExactKindIndex(tupleClasses.values(), GeneratedClassKind.TUPLE_VALUE, "tupleClasses");
         requireExactKindIndex(functionInterfaces.values(), GeneratedClassKind.FUNCTION_INTERFACE,
                 "functionInterfaces");
@@ -610,6 +645,9 @@ final class GeneratedTypePlan {
             GeneratedClassPlan target,
             GeneratedClassDependency dependency) {
         boolean targetKindMatches = switch (dependency.kind()) {
+            case NOMINAL_TYPE_LINKAGE -> target.kind() == GeneratedClassKind.NOMINAL_VALUE
+                    || (source.kind() == GeneratedClassKind.NOMINAL_VALUE
+                    && (target.kind() == GeneratedClassKind.TUPLE_VALUE || target.kind() == GeneratedClassKind.FUNCTION_INTERFACE));
             case TUPLE_MEMBER_TYPE, FUNCTION_SIGNATURE_TYPE, CELL_VALUE_TYPE,
                     CLOSURE_CAPTURE_TYPE, FACADE_EXPORT_TYPE ->
                     target.kind() == GeneratedClassKind.TUPLE_VALUE
@@ -629,6 +667,7 @@ final class GeneratedTypePlan {
                     + source.binaryName() + " -> " + target.binaryName());
         }
         boolean sourceKindMatches = switch (dependency.kind()) {
+            case NOMINAL_TYPE_LINKAGE -> true;
             case TUPLE_MEMBER_TYPE -> source.kind() == GeneratedClassKind.TUPLE_VALUE;
             case FUNCTION_SIGNATURE_TYPE -> source.kind() == GeneratedClassKind.FUNCTION_INTERFACE
                     || source.kind() == GeneratedClassKind.CLOSURE;
@@ -646,7 +685,9 @@ final class GeneratedTypePlan {
                     + source.binaryName() + " -> " + target.binaryName());
         }
         if (source.binaryName().equals(target.binaryName())
-                && dependency.kind() != GeneratedDependencyKind.RECURSIVE_FUNCTION_LINKAGE) {
+                && dependency.kind() != GeneratedDependencyKind.RECURSIVE_FUNCTION_LINKAGE
+                && !(source.kind() == GeneratedClassKind.NOMINAL_VALUE
+                && dependency.kind() == GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE)) {
             throw new IllegalArgumentException(
                     "only recursive function linkage may target its own generated class");
         }
@@ -678,6 +719,7 @@ final class GeneratedTypePlan {
                     "module import linkage cannot target its own module state");
         }
         boolean linkageOnly = dependency.kind() == GeneratedDependencyKind.MODULE_IMPORT_LINKAGE
+                || dependency.kind() == GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE
                 || dependency.kind() == GeneratedDependencyKind.RECURSIVE_FUNCTION_LINKAGE;
         if (dependency.orderingRequired() == linkageOnly) {
             throw new IllegalArgumentException("generated linkage dependency has invalid ordering policy: "

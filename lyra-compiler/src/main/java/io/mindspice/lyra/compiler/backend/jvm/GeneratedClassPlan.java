@@ -23,7 +23,16 @@ record GeneratedClassPlan(
         List<String> interfaces,
         List<String> annotations,
         List<GeneratedClassDependency> dependencies,
-        List<GeneratedMemberPlan> members) {
+        List<GeneratedMemberPlan> members,
+        Optional<NominalClassLayout> nominalLayout) {
+    GeneratedClassPlan(String binaryName, GeneratedClassKind kind, String stableKey,
+            Optional<ModuleId> moduleId, boolean finalClass, boolean functionalInterface,
+            List<String> interfaces, List<String> annotations,
+            List<GeneratedClassDependency> dependencies, List<GeneratedMemberPlan> members) {
+        this(binaryName, kind, stableKey, moduleId, finalClass, functionalInterface, interfaces,
+                annotations, dependencies, members, Optional.empty());
+    }
+
     public GeneratedClassPlan {
         JvmNames.requireBinaryName(binaryName, "generated class name");
         String simpleName = binaryName.substring(binaryName.lastIndexOf('.') + 1);
@@ -36,6 +45,7 @@ record GeneratedClassPlan(
         Objects.requireNonNull(kind, "kind");
         String requiredPrefix = switch (kind) {
             case TUPLE_VALUE -> "$lyra$tuple$";
+            case NOMINAL_VALUE -> "$lyra$nominal$";
             case FUNCTION_INTERFACE -> "$lyra$fn$";
             case CELL -> "$lyra$cell$";
             case CLOSURE -> "$lyra$closure$";
@@ -71,6 +81,18 @@ record GeneratedClassPlan(
         annotations = sortedBinaryNames(annotations, "annotations");
         dependencies = sortedDependencies(dependencies);
         members = copyMembers(members);
+        Objects.requireNonNull(nominalLayout, "nominalLayout");
+        if (nominalLayout.isPresent() != (kind == GeneratedClassKind.NOMINAL_VALUE)) {
+            throw new IllegalArgumentException("nominal class must carry exactly its typed layout");
+        }
+        if (nominalLayout.isPresent()) {
+            var layout = nominalLayout.orElseThrow();
+            if (!layout.binaryName().equals(binaryName)
+                    || !stableKey.equals("nominal:" + layout.schema().type().canonicalSpelling())
+                    || !members.equals(copyMembers(layout.members()))) {
+                throw new IllegalArgumentException("nominal class members differ from its exact layout");
+            }
+        }
         validateClassShape(kind, interfaces, annotations, members);
         if (kind == GeneratedClassKind.MODULE_FACADE) {
             validateFacadeMemberNames(binaryName, members);
@@ -108,7 +130,7 @@ record GeneratedClassPlan(
     /** Class-file access planned independently from member visibility. */
     public GeneratedMemberVisibility visibility() {
         return switch (kind) {
-            case TUPLE_VALUE, FUNCTION_INTERFACE, MODULE_FACADE ->
+            case NOMINAL_VALUE, TUPLE_VALUE, FUNCTION_INTERFACE, MODULE_FACADE ->
                     GeneratedMemberVisibility.PUBLIC;
             case CELL, CLOSURE, MODULE_STATE -> GeneratedMemberVisibility.PACKAGE;
         };
@@ -126,6 +148,11 @@ record GeneratedClassPlan(
         Set<GeneratedMemberKind> memberKinds = members.stream()
                 .map(GeneratedMemberPlan::kind).collect(java.util.stream.Collectors.toSet());
         switch (kind) {
+            case NOMINAL_VALUE -> {
+                if (!interfaces.isEmpty() || !annotations.isEmpty()) {
+                    throw new IllegalArgumentException("nominal class cannot have interfaces or annotations");
+                }
+            }
             case TUPLE_VALUE -> {
                 if (!interfaces.isEmpty() || !annotations.isEmpty()
                         || members.stream().noneMatch(value -> value.kind() == GeneratedMemberKind.TUPLE_FIELD)
