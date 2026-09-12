@@ -30,7 +30,8 @@ final class SessionWorkspace {
         }
         submission.stagedSnapshot().bindings().forEach((name, binding) -> bindings.put(name,
                 new BindingMetadata(name, new BindingIdentity(binding.declarationId().ordinal()),
-                        LyraType.parse(binding.type().canonicalSpelling()),
+                        LyraType.parse(binding.type().canonicalSpelling(),
+                                submission.artifact().metadata().nominalSchemas()),
                         BindingVisibility.valueOf(binding.visibility().name()),
                         binding.isMutable() ? BindingMutability.MUTABLE : BindingMutability.IMMUTABLE,
                         binding.storageIdentity().map(value -> new StorageIdentity(value.ordinal())))));

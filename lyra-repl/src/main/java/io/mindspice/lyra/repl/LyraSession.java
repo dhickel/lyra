@@ -55,6 +55,7 @@ public final class LyraSession implements AutoCloseable {
     private final SessionWorkspace workspace = new SessionWorkspace();
     private final io.mindspice.lyra.runtime.SessionStorageDomain storage = new io.mindspice.lyra.runtime.SessionStorageDomain();
     private final java.util.Map<Long, io.mindspice.lyra.runtime.SessionStorageDomain.Binding> storageBindings = new java.util.HashMap<>();
+    private final java.util.Map<Long, io.mindspice.lyra.runtime.SessionStorageDomain.NominalFactory> nominalFactories = new java.util.HashMap<>();
     private final java.util.List<Generation> generations = new java.util.ArrayList<>();
     /** Compiler-facing immutable namespace; publication follows execution. */
     private io.mindspice.lyra.compiler.session.SessionSnapshot compilerSnapshot =
@@ -400,6 +401,7 @@ public final class LyraSession implements AutoCloseable {
             closeGenerations();
             storage.reset();
             storageBindings.clear();
+            nominalFactories.clear();
             sourceRegistry.clear();
             workspace.reset();
             compilerSnapshot = new io.mindspice.lyra.compiler.session.SessionSnapshot(
@@ -430,6 +432,7 @@ public final class LyraSession implements AutoCloseable {
             closeGenerations();
             storage.close();
             storageBindings.clear();
+            nominalFactories.clear();
             lifecycle = SessionLifecycleState.CLOSED;
             workspace.close();
             sourceRegistry.clear();
@@ -532,7 +535,8 @@ public final class LyraSession implements AutoCloseable {
             }
 
             var resultType = io.mindspice.lyra.runtime.LyraType.parse(success.typedIr()
-                    .rootModule().submissionResult().orElseThrow().type().canonicalSpelling());
+                            .rootModule().submissionResult().orElseThrow().type().canonicalSpelling(),
+                    artifact.metadata().nominalSchemas());
             var forms = success.typedIr().rootModule().body().forms();
             boolean declarationOnly = forms.isEmpty()
                     || forms.getLast() instanceof io.mindspice.lyra.compiler.ir.IrNode.Declaration;
@@ -562,6 +566,19 @@ public final class LyraSession implements AutoCloseable {
                     .forEach(required -> requirementIndex.putIfAbsent(required.id(), required));
             var requirements = List.copyOf(requirementIndex.values());
             var capabilities = requirements.stream().map(required -> storageBindings.get(required.id())).toList();
+            var currentNominals = success.typedIr().modules().stream()
+                    .flatMap(irModule -> irModule.body().forms().stream())
+                    .filter(io.mindspice.lyra.compiler.ir.IrNode.NominalDeclaration.class::isInstance)
+                    .map(io.mindspice.lyra.compiler.ir.IrNode.NominalDeclaration.class::cast)
+                    .collect(java.util.stream.Collectors.toMap(
+                            value -> value.declarationId().ordinal(), value -> value));
+            var factoryRequirements = success.resolvedGraph().nominals().stream()
+                    .filter(nominal -> !currentNominals.containsKey(nominal.declaration().ordinal()))
+                    .map(nominal -> new io.mindspice.lyra.runtime.SessionStorageDomain.NominalFactoryRequirement(
+                            nominal.declaration().ordinal(), nominal.schema().type().canonicalSpelling()))
+                    .toList();
+            var factoryCapabilities = factoryRequirements.stream()
+                    .map(required -> nominalFactories.get(required.declarationId())).toList();
             List<io.mindspice.lyra.compiler.source.SourceSnapshot> graphSources = success.moduleGraph()
                     .modules().stream().map(io.mindspice.lyra.compiler.source.ModuleGraph.Node::snapshot)
                     .toList();
@@ -573,7 +590,8 @@ public final class LyraSession implements AutoCloseable {
             }
             io.mindspice.lyra.runtime.SessionStorageDomain.Linkage linkage;
             try {
-                linkage = storage.link(artifact, revision.value(), requirements, capabilities);
+                linkage = storage.link(artifact, revision.value(), requirements, capabilities,
+                        factoryRequirements, factoryCapabilities);
             } catch (LyraRuntimeException | NullPointerException failure) {
                 return completeCompilationFailure(operation, List.of(sessionDiagnostic(
                         operation.request.source(), operation.compilerSourceId,
@@ -625,8 +643,16 @@ public final class LyraSession implements AutoCloseable {
                                 toRuntimeModuleId(declaration.moduleId()), required));
                     }
                 }
+                java.util.Map<Long, io.mindspice.lyra.runtime.SessionStorageDomain.NominalFactory> stagedFactories =
+                        new java.util.LinkedHashMap<>();
+                for (var nominal : currentNominals.values()) {
+                    var required = new io.mindspice.lyra.runtime.SessionStorageDomain.NominalFactoryRequirement(
+                            nominal.declarationId().ordinal(), nominal.schema().type().canonicalSpelling());
+                    stagedFactories.put(required.declarationId(), storage.registerNominalFactory(
+                            module, toRuntimeModuleId(nominal.schema().type().id().module().moduleId()), required));
+                }
                 return completeSuccess(operation, pending, success.stagedSnapshot(),
-                        value, diagnostics, stagedStorage);
+                        value, diagnostics, stagedStorage, stagedFactories);
             } catch (LyraRuntimeException failure) {
                 return completeRuntimeFailure(operation, failure, diagnostics);
             } finally {
@@ -726,14 +752,17 @@ public final class LyraSession implements AutoCloseable {
             io.mindspice.lyra.compiler.session.SessionSnapshot stagedCompilerSnapshot,
             Optional<ValueSnapshot> value,
             List<Diagnostic> diagnostics,
-            java.util.Map<Long, io.mindspice.lyra.runtime.SessionStorageDomain.Binding> stagedStorage) {
+            java.util.Map<Long, io.mindspice.lyra.runtime.SessionStorageDomain.Binding> stagedStorage,
+            java.util.Map<Long, io.mindspice.lyra.runtime.SessionStorageDomain.NominalFactory> stagedFactories) {
         synchronized (admission) {
             ensureActive(operation);
             if (operation.isCancellationRequested()) {
                 return completeCancelledLocked(operation);
             }
-            storage.commit(revision.value(), List.copyOf(stagedStorage.values()));
+            storage.commit(revision.value(), List.copyOf(stagedStorage.values()),
+                    List.copyOf(stagedFactories.values()));
             storageBindings.putAll(stagedStorage);
+            nominalFactories.putAll(stagedFactories);
             workspace.commit(pending);
             compilerSnapshot = Objects.requireNonNull(stagedCompilerSnapshot,
                     "stagedCompilerSnapshot");

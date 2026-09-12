@@ -795,6 +795,8 @@ final class GeneratedTypePlanner {
             if (ir.sessionExecution().isPresent()) {
                 members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_SESSION_ACCESSOR,
                         "$lyra$sessionAccessor", "(JJLjava/lang/String;Z)Ljava/lang/invoke/MethodHandle;", false));
+                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_SESSION_NOMINAL_FACTORY,
+                        "$lyra$sessionNominalFactory", "(JLjava/lang/String;)Ljava/lang/invoke/MethodHandle;", false));
                 members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_MODULE_STATE_LOOKUP,
                         "$lyra$moduleState", "(Lio/mindspice/lyra/runtime/ModuleId;)Ljava/lang/Object;", false));
             }

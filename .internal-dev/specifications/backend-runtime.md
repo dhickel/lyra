@@ -118,7 +118,7 @@ JVM arrays preserve fixed length and identity. Non-nil primitive arrays are prim
 
 Java receives live arrays, not defensive copies. It can therefore mutate a returned array regardless of the Lyra binding's source-level `@mut` permission and can retain it after module close. This is an explicit trusted-Java ABI escape, not authority granted to another Lyra module. Facade and closure calls remain owner-thread checked, but raw array operations cannot be checked. Future untrusted/engine boundaries must wrap or copy arrays in their own specification. Other boxing is limited to unavoidable nilable, generic, reflection, or tooling boundaries.
 
-### Nominal objects (accepted; implementation in progress)
+### Nominal objects
 
 Struct/class support requires nominal declaration/member identities, exact field
 and callable contracts, lexical access decisions, constructor initialization facts,
@@ -224,7 +224,8 @@ leaves without copying arrays, tuples or object references. During initializatio
 only the active capability may admit its own incomplete receiver as an internal
 self-field value; ordinary generated and public boundaries require complete objects.
 Generated callable signatures resolve through the producer-scoped metadata cache.
-Complete artifact/Java surfaces and persistent sessions remain completion gates.
+Artifact/Java surfaces and persistent sessions retain these exact identities,
+schemas, representations, callable facts and producer-bound factories.
 
 ### Functions and closures
 
@@ -461,7 +462,19 @@ Later engine embedding should reuse compile artifacts, typed facades, explicit i
 
 The optional `repl.md` specification extends this backend with persistent submission compilation, typed session linkage, explicitly enabled trusted localhost application attachment, cooperative safe points, and debug-capable artifact/source-context inventories. It does not alter ordinary whole-graph compilation, AOT artifacts, imported-module mutation ownership, lifecycle checks, or the direct-bytecode production path. Normal artifacts remain uninstrumented and dependency-free with respect to the REPL distribution. REPL authentication, hostile-client isolation and automatic local-root initialization are not current requirements.
 
-The implemented session linkage profile shares only structural tuple/function-interface classes through a session-owned parent loader. It retains generation-local state/cell/closure/facade classes and distinct artifact keys. Tuple component getters cross that loader boundary through explicit session-only public methods; ordinary AOT visibility is unchanged. Structural inventory, definition equality, exact accessor MethodTypes and opaque storage capabilities are checked before source execution. Arrays/tuples containing callables are admitted when their callable elements carry compiler-issued summaries and exact generation authority. Imported and explicitly reloaded REPL-owned producers retain exact module contracts, original dependency edges and initialized storage rather than re-emitting old bodies.
+The implemented session linkage profile shares structural tuple/function-interface
+classes and exact identity-named nominal representation classes through a
+session-owned parent loader. It retains generation-local state/cell/closure/facade
+classes and distinct artifact keys. Tuple component getters cross that loader
+boundary through explicit session-only public methods; ordinary AOT visibility is
+unchanged. Retained nominal construction crosses generations only through an exact
+typed factory capability bound to the original initialized module state. Structural
+inventory, definition equality, exact accessor/factory MethodTypes and opaque
+capabilities are checked before source execution. Arrays/tuples/nominal fields
+containing callables are admitted when their callable elements carry compiler-issued
+summaries and exact generation authority. Imported and explicitly reloaded REPL-owned
+producers retain exact module contracts, original dependency edges and initialized
+storage rather than re-emitting old bodies.
 
 Compiler-issued session flow certificates and callable summaries retain exact callable targets, captures, shared-cell snapshots, writes, allocation provenance and operation-site spans across source-local generations. The trusted REPL extension carries those facts through imported and explicitly registered root generations using exact typed links and conservative mutable-state boundaries. Normal AOT artifact/closure compatibility remains unchanged; optional attachment does not add a security authority model. Producers remain OPEN while values are used, and enclosing session/root lifetime retires them. Application-root links and unsupported escaped-generation cases remain structured failures until their concrete producer/lifetime evidence exists.
 

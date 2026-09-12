@@ -221,6 +221,7 @@ record GeneratedClassPlan(
                 }
                 requireKinds(memberKinds, Set.of(
                         GeneratedMemberKind.STATE_SESSION_ACCESSOR,
+                        GeneratedMemberKind.STATE_SESSION_NOMINAL_FACTORY,
                         GeneratedMemberKind.STATE_MODULE_STATE_LOOKUP,
                         GeneratedMemberKind.SESSION_SAFE_POINT,
                         GeneratedMemberKind.ATTACHMENT_SAFE_POINT,

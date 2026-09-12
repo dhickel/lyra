@@ -3,6 +3,7 @@ package io.mindspice.lyra.repl;
 import io.mindspice.lyra.runtime.ArrayType;
 import io.mindspice.lyra.runtime.FunctionType;
 import io.mindspice.lyra.runtime.LyraType;
+import io.mindspice.lyra.runtime.NominalType;
 import io.mindspice.lyra.runtime.PrimitiveType;
 import io.mindspice.lyra.runtime.TupleType;
 import io.mindspice.lyra.runtime.TypeQualifier;
@@ -397,7 +398,7 @@ public record ValueSnapshot(LyraType type, Data data, SnapshotLimits limits) {
             for (ValueSnapshot element : aggregate.elements()) {
                 validateChild(element, arrayType.elementType(), limits, depth, active);
             }
-        } else {
+        } else if (aggregate.kind() == AggregateKind.TUPLE) {
             if (!(base instanceof TupleType tupleType)) {
                 throw new IllegalArgumentException("tuple snapshot requires a tuple type: " + type);
             }
@@ -412,6 +413,15 @@ public record ValueSnapshot(LyraType type, Data data, SnapshotLimits limits) {
             for (int index = 0; index < aggregate.elements().size(); index++) {
                 validateChild(elementAt(aggregate, index), tupleType.memberType(index),
                         limits, depth, active);
+            }
+        } else {
+            if (!(base instanceof NominalType)
+                    || aggregate.kind() != AggregateKind.STRUCT
+                    && aggregate.kind() != AggregateKind.CLASS) {
+                throw new IllegalArgumentException("nominal snapshot requires a nominal type: " + type);
+            }
+            for (ValueSnapshot element : aggregate.elements()) {
+                validateChild(element, element.type(), limits, depth, active);
             }
         }
     }

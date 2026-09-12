@@ -500,6 +500,12 @@ final class SemanticFlowFactValidator {
         private void validateObject(io.mindspice.lyra.compiler.semantic.flow.NominalObjectFact fact) {
             var identity = fact.identity();
             var witness = fact.ownership();
+            boolean inherited = graph.resolvedGraph().sessionFlowCertificate()
+                    .map(value -> value.certifiesObject(fact)).orElse(false);
+            if (inherited) {
+                graph.resolvedGraph().nominalTypes().require(identity.type());
+                return;
+            }
             var source = graph.expressions().stream().filter(value -> graph.flowSiteId(value).equals(identity.allocationSite()))
                     .findFirst().orElseThrow(() -> invalid("object allocation site is foreign and uncertified"));
             require(source.kind() == TypedExpressionKind.CONSTRUCTION && source.type().equals(identity.type()),

@@ -73,6 +73,7 @@ public sealed interface LyraType
         return LyraTypeParser.parse(canonicalSpelling);
     }
 
+    /** Parses an exact canonical type against a closed nominal schema environment. */
     static LyraType parse(String canonicalSpelling, NominalTypeEnvironment nominals) {
         return LyraTypeParser.parse(canonicalSpelling, nominals);
     }

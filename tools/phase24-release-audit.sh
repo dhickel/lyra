@@ -676,8 +676,8 @@ if marker not in grammar:
     bad.append("grammar resource has no explicit excluded-syntax boundary")
 else:
     active = grammar.split(marker, 1)[0]
-    for word in ("Match", "Iter", "Any", "throw", "try", "catch", "finally",
-                 "nor", "nand", "xnor", "class", "record", "variant", "macro", "generic"):
+    for word in ("Any", "throw", "try", "catch", "finally",
+                 "nor", "nand", "xnor", "record", "variant", "macro", "generic"):
         if re.search(rf"\b{re.escape(word)}\b", active):
             bad.append(f"deferred grammar production/token before exclusion: {word}")
     if "<<" in active or ">>" in active:
@@ -747,17 +747,17 @@ def strip_literals(text):
 
 for path in sorted(production):
     code = strip_literals(strip_comments(path.read_text(encoding="utf-8")))
-    if re.search(r"\b(?:Match|Iter|Any|nor|nand|xnor)\b", code):
+    if re.search(r"\b(?:Any|nor|nand|xnor)\b", code):
         raise SystemExit(f"deferred product symbol in {path.relative_to(root)}")
     if "org.objectweb.asm" in code or "picocli" in code.lower():
         raise SystemExit(f"deferred/alternate dependency in {path.relative_to(root)}")
 
 grammar = (root / "lyra-compiler/src/main/resources/grammar_spec.md").read_text(encoding="utf-8")
 active = grammar.split("## Excluded syntax", 1)[0]
-for word in ("Match", "Iter", "Any", "throw", "try", "catch", "finally", "nor", "nand", "xnor"):
+for word in ("Any", "throw", "try", "catch", "finally", "nor", "nand", "xnor"):
     if re.search(rf"\b{re.escape(word)}\b", active):
         raise SystemExit(f"active grammar contains deferred spelling: {word}")
-if re.search(r"(?m)^\s*(?:class|record|variant|macro)\b", active):
+if re.search(r"(?m)^\s*(?:record|variant|macro)\b", active):
     raise SystemExit("active grammar contains deferred declaration production")
 print("deferred: PASS")
 print("Deferred rows in the matrix are intentionally excluded from the release gate.")

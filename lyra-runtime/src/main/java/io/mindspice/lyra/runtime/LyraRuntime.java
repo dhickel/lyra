@@ -620,7 +620,8 @@ public final class LyraRuntime {
             }
             Method reader = facade.getMethod("$lyra$sessionRead$binding$" + requirement.id());
             LyraSessionBinding binding = reader.getAnnotation(LyraSessionBinding.class);
-            Class<?> expectedStorage = SessionStorageDomain.storageClass(LyraType.parse(requirement.type()),
+            Class<?> expectedStorage = SessionStorageDomain.storageClass(
+                    requirement.logicalType(handle.context.metadata.nominalSchemas()),
                     handle.context.loader, handle.context.metadata.javaPackage());
             boolean mutableStorage = requirement.storageIdentity() >= 0;
             if (binding == null || binding.id() != requirement.id()
@@ -634,7 +635,8 @@ public final class LyraRuntime {
             // A function field is a structural interface, not merely an
             // Object-shaped reference.  Validate its exact invoke descriptor
             // before any generated source can observe the accessor.
-            sessionFunctionMethodType(module, LyraType.parse(requirement.type()));
+            sessionFunctionMethodType(module,
+                    requirement.logicalType(handle.context.metadata.nominalSchemas()));
             Method accessor = write ? facade.getMethod("$lyra$sessionWrite$binding$" + requirement.id(),
                     reader.getReturnType()) : reader;
             if (write && (!binding.mutable() || accessor.getReturnType() != void.class
@@ -652,6 +654,44 @@ public final class LyraRuntime {
             return bound;
         } catch (ReflectiveOperationException failure) {
             throw new LyraLinkException("generated session storage accessor is absent", List.of(), failure);
+        }
+    }
+
+    static MethodHandle submissionNominalFactory(ModuleHandle module, ModuleId moduleId,
+            SessionStorageDomain.NominalFactoryRequirement requirement) {
+        if (!(Objects.requireNonNull(module, "module") instanceof ModuleHandleImpl handle)) {
+            throw new LyraLinkException("session nominal factory requires a runtime-owned generation");
+        }
+        handle.requireOwner();
+        if (handle.isClosed() || handle.context.isClosed()) {
+            throw new LyraClosedException("nominal factory generation is closed");
+        }
+        NominalSchema schema = requirement.schema(handle.context.metadata.nominalSchemas());
+        if (!schema.type().id().module().equals(moduleId)) {
+            throw new LyraLinkException("nominal factory module identity mismatch");
+        }
+        Object state = handle.instanceKey.moduleState(moduleId);
+        Class<?>[] parameters = schema.constructorParameters().stream()
+                .map(type -> SessionStorageDomain.storageClass(type, handle.context.loader,
+                        handle.context.metadata.javaPackage()))
+                .toArray(Class<?>[]::new);
+        Class<?> result = SessionStorageDomain.storageClass(schema.type(), handle.context.loader,
+                handle.context.metadata.javaPackage());
+        try {
+            Method factory = state.getClass().getDeclaredMethod(
+                    "$lyra$new$" + requirement.declarationId(), parameters);
+            if (Modifier.isStatic(factory.getModifiers()) || factory.getReturnType() != result) {
+                throw new LyraLinkException("generated nominal factory contract mismatch");
+            }
+            factory.setAccessible(true);
+            MethodHandle bound = MethodHandles.lookup().unreflect(factory).bindTo(state);
+            MethodType expected = MethodType.methodType(result, parameters);
+            if (!bound.type().equals(expected)) {
+                throw new LyraLinkException("generated nominal factory MethodType mismatch");
+            }
+            return bound;
+        } catch (ReflectiveOperationException failure) {
+            throw new LyraLinkException("generated nominal factory is absent", List.of(), failure);
         }
     }
 

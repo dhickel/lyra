@@ -421,6 +421,8 @@ public final class SemanticResolver {
         }
 
         private void collectDeclarations() {
+            restoreSessionNominals();
+            if (failed()) return;
             predeclareNominals();
             if (failed()) return;
             for (ModuleWork work : modules.values()) {
@@ -469,6 +471,59 @@ public final class SemanticResolver {
                     fail(CompilerDiagnosticCodes.RESOLVE_INVALID_SIGNATURE, graph.module(graph.rootModule()).orElseThrow().program().span(),
                             failure.getMessage());
                 }
+            }
+        }
+
+        private void restoreSessionNominals() {
+            if (!sessionGraph || sessionFlowCertificate.isEmpty()) return;
+            ModuleWork work = modules.get(graph.rootModule());
+            if (work == null) throw new IllegalStateException("session root module is absent");
+            SourceSpan at = SourceSpan.at(work.node.moduleId().sourceId(), 0);
+            var certificate = sessionFlowCertificate.orElseThrow();
+            for (var retained : certificate.retainedNominals().values()) {
+                ResolvedNominal source = retained.nominal();
+                NominalType type = source.schema().type();
+                DeclDraft declaration = new DeclDraft(source.declaration(), retained.name(), at, at,
+                        work.node.moduleId(), work.root.id, DeclarationKind.NOMINAL,
+                        retained.visibility(), BindingMutability.IMMUTABLE);
+                declaration.declaredContract = Optional.of(BindingContract.immutable(type));
+                declaration.effectiveContract = declaration.declaredContract;
+                declarationsById.put(declaration.id, declaration);
+                if (type.canonicalSpelling().equals(
+                        certificate.nominalNames().get(retained.name()))) {
+                    work.root.add(declaration);
+                }
+
+                ScopeDraft scope = childScope(work.root, work, ScopeKind.NOMINAL,
+                        Optional.empty(), at);
+                lexicalNominals.put(scope.id, type);
+                DeclDraft self = new DeclDraft(source.self(), "self", at, at,
+                        work.node.moduleId(), scope.id, DeclarationKind.SELF,
+                        DeclarationVisibility.PRIVATE, BindingMutability.IMMUTABLE);
+                self.declaredContract = Optional.of(BindingContract.immutable(type));
+                self.effectiveContract = self.declaredContract;
+                declarationsById.put(self.id, self);
+                scope.add(self);
+
+                List<DeclarationId> memberIds = new ArrayList<>();
+                for (int index = 0; index < source.schema().members().size(); index++) {
+                    NominalSchema.Member member = source.schema().members().get(index);
+                    DeclarationId id = source.members().get(index);
+                    DeclDraft field = new DeclDraft(id, member.name(), at, at,
+                            work.node.moduleId(), scope.id, DeclarationKind.MEMBER,
+                            member.publicAccess() ? DeclarationVisibility.PUBLIC
+                                    : DeclarationVisibility.PRIVATE,
+                            member.mutability());
+                    field.declaredContract = Optional.of(new BindingContract(
+                            member.type(), member.mutability()));
+                    field.effectiveContract = field.declaredContract;
+                    field.functionSignature = functionType(member.type()).map(FunctionType::signature);
+                    declarationsById.put(id, field);
+                    scope.add(field);
+                    memberIds.add(id);
+                }
+                nominals.put(declaration.id, new ResolvedNominal(declaration.id, self.id,
+                        source.schema(), memberIds, Optional.empty()));
             }
         }
 

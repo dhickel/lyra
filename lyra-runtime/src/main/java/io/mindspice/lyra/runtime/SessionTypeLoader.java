@@ -22,7 +22,8 @@ final class SessionTypeLoader extends ClassLoader {
 
     static boolean isShared(String name) {
         String simple = name.substring(name.lastIndexOf('.') + 1);
-        return simple.startsWith("$lyra$tuple$") || simple.startsWith("$lyra$fn$");
+        return simple.startsWith("$lyra$tuple$") || simple.startsWith("$lyra$fn$")
+                || simple.startsWith("$lyra$nominal$");
     }
 
     /** Stages definitions without changing the live domain before complete load validation. */
@@ -58,13 +59,16 @@ final class SessionTypeLoader extends ClassLoader {
     private static void validateStructure(String name, byte[] bytes) {
         try {
             var model = ClassFile.of().parse(bytes);
-            boolean function = name.substring(name.lastIndexOf('.') + 1).startsWith("$lyra$fn$");
+            String simple = name.substring(name.lastIndexOf('.') + 1);
+            boolean function = simple.startsWith("$lyra$fn$");
+            boolean nominal = simple.startsWith("$lyra$nominal$");
             int flags = function ? ClassFile.ACC_PUBLIC | ClassFile.ACC_INTERFACE | ClassFile.ACC_ABSTRACT
                     : ClassFile.ACC_PUBLIC | ClassFile.ACC_FINAL | ClassFile.ACC_SUPER;
             if (!model.thisClass().asSymbol().descriptorString().equals("L" + name.replace('.', '/') + ";")
                     || model.flags().flagsMask() != flags || !model.interfaces().isEmpty()
                     || model.superclass().isEmpty()
-                    || !model.superclass().orElseThrow().asInternalName().equals("java/lang/Object")
+                    || !model.superclass().orElseThrow().asInternalName().equals(nominal
+                    ? "io/mindspice/lyra/runtime/LyraNominalObject" : "java/lang/Object")
                     || model.findAttribute(java.lang.classfile.Attributes.sourceFile())
                             .map(SourceFileAttribute::sourceFile).map(value -> value.stringValue())
                             .filter("$lyra$session-types"::equals).isEmpty()) {
@@ -76,7 +80,7 @@ final class SessionTypeLoader extends ClassLoader {
                         || model.methods().getFirst().flags().flagsMask() != (ClassFile.ACC_PUBLIC | ClassFile.ACC_ABSTRACT)) {
                     throw new LyraLinkException("invalid session function interface: " + name);
                 }
-            } else {
+            } else if (!nominal) {
                 int fields = model.fields().size();
                 StringBuilder constructor = new StringBuilder("(");
                 for (int index = 0; index < fields; index++) {
@@ -99,9 +103,33 @@ final class SessionTypeLoader extends ClassLoader {
                             && method.flags().flagsMask() == ClassFile.ACC_PUBLIC)) {
                     throw new LyraLinkException("invalid session tuple constructor: " + name);
                 }
+            } else {
+                for (int index = 0; index < model.fields().size(); index++) {
+                    var field = model.fields().get(index);
+                    if (!field.fieldName().equalsString("$lyra$field$" + index)
+                            || (field.flags().flagsMask() & (ClassFile.ACC_PRIVATE
+                            | ClassFile.ACC_STATIC)) != ClassFile.ACC_PRIVATE) {
+                        throw new LyraLinkException(
+                                "invalid session nominal field inventory: " + name);
+                    }
+                }
+                if (model.methods().stream().noneMatch(method ->
+                        method.methodName().equalsString("<init>")
+                                && method.methodType().equalsString(
+                                "(Lio/mindspice/lyra/runtime/LyraNominalConstruction;)V")
+                                && method.flags().flagsMask() == ClassFile.ACC_PUBLIC)) {
+                    throw new LyraLinkException("invalid session nominal constructor: " + name);
+                }
             }
-            if (!ClassFile.of().verify(bytes).isEmpty()) {
-                throw new LyraLinkException("invalid session structural bytecode: " + name);
+            // The class-file verifier cannot resolve a nominal's self-typed accessor
+            // descriptors before this staged loader owns the definition. The JVM
+            // verifier performs that hierarchy-aware check when the staged class is
+            // loaded; retain the eager standalone check for tuples and functions.
+            var verificationErrors = nominal ? java.util.List.<VerifyError>of()
+                    : ClassFile.of().verify(bytes);
+            if (!verificationErrors.isEmpty()) {
+                throw new LyraLinkException("invalid session structural bytecode: " + name
+                        + ": " + verificationErrors);
             }
         } catch (LyraLinkException failure) {
             throw failure;

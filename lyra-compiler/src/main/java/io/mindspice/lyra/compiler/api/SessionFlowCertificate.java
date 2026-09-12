@@ -12,6 +12,8 @@ import io.mindspice.lyra.compiler.semantic.TypedExpression;
 import io.mindspice.lyra.compiler.semantic.TypedExpressionKind;
 import io.mindspice.lyra.compiler.semantic.TypedLambda;
 import io.mindspice.lyra.compiler.semantic.TypedSemanticGraph;
+import io.mindspice.lyra.compiler.semantic.DeclarationVisibility;
+import io.mindspice.lyra.compiler.semantic.ResolvedNominal;
 import io.mindspice.lyra.compiler.semantic.flow.AggregateIdentityFact;
 import io.mindspice.lyra.compiler.semantic.flow.ArrayIdentity;
 import io.mindspice.lyra.compiler.semantic.flow.BindingFlowState;
@@ -22,6 +24,7 @@ import io.mindspice.lyra.compiler.semantic.flow.CallableSummarySet;
 import io.mindspice.lyra.compiler.semantic.flow.EagerEffectWitness;
 import io.mindspice.lyra.compiler.semantic.flow.FormulaAlternatives;
 import io.mindspice.lyra.compiler.semantic.flow.FreshAllocationSite;
+import io.mindspice.lyra.compiler.semantic.flow.NominalObjectFact;
 import io.mindspice.lyra.compiler.semantic.flow.ValueFormula;
 import io.mindspice.lyra.compiler.semantic.flow.ValueAlternative;
 import io.mindspice.lyra.compiler.semantic.flow.ValueAlternatives;
@@ -64,6 +67,8 @@ public final class SessionFlowCertificate {
     private final Set<CallableProofKey> callableProofs;
     private final Set<AggregateProofKey> aggregateProofs;
     private final Map<FreshAllocationSite, AllocationProvenance> allocationProvenance;
+    private final Map<String, RetainedNominal> retainedNominals;
+    private final Map<String, String> nominalNames;
     private final Set<SourceId> sourceIds;
     private final int generationCount;
 
@@ -75,6 +80,8 @@ public final class SessionFlowCertificate {
             Set<CallableProofKey> callableProofs,
             Set<AggregateProofKey> aggregateProofs,
             Map<FreshAllocationSite, AllocationProvenance> allocationProvenance,
+            Map<String, RetainedNominal> retainedNominals,
+            Map<String, String> nominalNames,
             Set<SourceId> sourceIds,
             int generationCount) {
         this.allocator = Objects.requireNonNull(allocator, "allocator");
@@ -84,6 +91,8 @@ public final class SessionFlowCertificate {
         this.callableProofs = Set.copyOf(Objects.requireNonNull(callableProofs, "callableProofs"));
         this.aggregateProofs = Set.copyOf(Objects.requireNonNull(aggregateProofs, "aggregateProofs"));
         this.allocationProvenance = immutableAllocationProvenance(allocationProvenance);
+        this.retainedNominals = immutableRetainedNominals(retainedNominals);
+        this.nominalNames = immutableNominalNames(nominalNames, this.retainedNominals);
         this.sourceIds = Set.copyOf(Objects.requireNonNull(sourceIds, "sourceIds"));
         if (generationCount < 1) {
             throw new IllegalArgumentException("a session flow certificate needs a generation");
@@ -425,6 +434,16 @@ public final class SessionFlowCertificate {
                 || aggregateProofs.stream().anyMatch(candidate::sameOrigin);
     }
 
+    /** True only for an exact retained nominal allocation and current heap entry. */
+    public boolean certifiesObject(NominalObjectFact fact) {
+        Objects.requireNonNull(fact, "fact");
+        var state = boundaryState.objects().get(fact.identity());
+        return state != null && state.schema().type().equals(fact.identity().type())
+                && fact.ownership().ownerModule().equals(fact.identity().ownerModule())
+                && fact.ownership().originSite().equals(
+                Optional.of(fact.identity().allocationSite()));
+    }
+
     /** Exact certified binding metadata retained by this proof. */
     public Map<String, ExternalBinding> certifiedBindings() {
         return certifiedBindings;
@@ -433,6 +452,16 @@ public final class SessionFlowCertificate {
     /** Exact producer metadata for callable-local fresh allocations. */
     public Map<FreshAllocationSite, AllocationProvenance> allocationProvenances() {
         return allocationProvenance;
+    }
+
+    /** Exact nominal definitions retained for later member/type resolution. */
+    public Map<String, RetainedNominal> retainedNominals() {
+        return retainedNominals;
+    }
+
+    /** Current source names for retained session-local nominal definitions. */
+    public Map<String, String> nominalNames() {
+        return nominalNames;
     }
 
     /** Returns exact producer metadata for one retained fresh allocation site. */
@@ -501,7 +530,7 @@ public final class SessionFlowCertificate {
             currentBindings.put(id, binding.withAlternatives(current));
             return current;
         });
-        boundary = BindingFlowState.of(currentBindings, currentCells);
+        boundary = BindingFlowState.of(currentBindings, currentCells, boundary.objects());
         TreeMap<String, ExternalBinding> bindings = new TreeMap<>();
         if (predecessor != null) {
             bindings.putAll(predecessor.certifiedBindings);
@@ -549,9 +578,30 @@ public final class SessionFlowCertificate {
                         "generation allocation provenance disagrees about site: " + site);
             }
         });
+        TreeMap<String, RetainedNominal> nominals = new TreeMap<>();
+        TreeMap<String, String> nominalNames = new TreeMap<>();
+        if (predecessor != null) {
+            nominals.putAll(predecessor.retainedNominals);
+            nominalNames.putAll(predecessor.nominalNames);
+        }
+        ModuleId root = graph.resolvedGraph().moduleGraph().rootModule();
+        for (ResolvedNominal nominal : graph.resolvedGraph().nominals()) {
+            var declaration = graph.resolvedGraph().declaration(nominal.declaration()).orElseThrow();
+            if (!declaration.moduleId().equals(root)
+                    || !declaration.scopeId().equals(graph.resolvedGraph()
+                    .module(root).orElseThrow().rootScope())) {
+                continue;
+            }
+            String canonical = nominal.schema().type().canonicalSpelling();
+            nominals.put(canonical, new RetainedNominal(
+                    declaration.name(), nominal, declaration.visibility(),
+                    nominal.members().stream().map(member -> graph.resolvedGraph()
+                            .declaration(member).orElseThrow().initializerLambda()).toList()));
+            nominalNames.put(declaration.name(), canonical);
+        }
         return new SessionFlowCertificate(
                 graph.allocator(), boundary, summaries, bindings,
-                callableProofs, aggregateProofs, allocations, sourceIds,
+                callableProofs, aggregateProofs, allocations, nominals, nominalNames, sourceIds,
                 predecessor == null ? 1 : predecessor.generationCount + 1);
     }
 
@@ -566,6 +616,7 @@ public final class SessionFlowCertificate {
         }
         TreeMap<DeclarationId, BindingFlowValue> bindings = new TreeMap<>(predecessor.bindings());
         TreeMap<DeclarationId, ValueAlternatives> cells = new TreeMap<>(predecessor.sharedCells());
+        var objects = new TreeMap<>(predecessor.objects());
         // Dependencies precede the submission. Map iteration must never choose which producer write wins.
         var root = graph.resolvedGraph().moduleGraph().rootModule();
         List<ModuleId> order = new ArrayList<>(graph.initializationOrder().stream().filter(id -> !id.equals(root)).toList());
@@ -575,8 +626,9 @@ public final class SessionFlowCertificate {
             if (state == null) continue;
             bindings.putAll(state.bindings());
             cells.putAll(state.sharedCells());
+            objects.putAll(state.objects());
         }
-        return BindingFlowState.of(bindings, cells);
+        return BindingFlowState.of(bindings, cells, objects);
     }
 
     private static void collectProofs(
@@ -587,6 +639,8 @@ public final class SessionFlowCertificate {
                 value.alternatives(), callables, aggregates));
         state.sharedCells().values().forEach(value -> collectProofs(
                 value, callables, aggregates));
+        state.objects().values().forEach(object -> object.fields().values()
+                .forEach(value -> collectProofs(value, callables, aggregates)));
     }
 
     private static void collectProofs(
@@ -625,6 +679,15 @@ public final class SessionFlowCertificate {
                     values, lambda, capturedValues, sharedCells);
             if (found.isPresent()) {
                 return found;
+            }
+        }
+        for (var object : state.objects().values()) {
+            for (ValueAlternatives values : object.fields().values()) {
+                Optional<CallableFlow> found = findCallable(
+                        values, lambda, capturedValues, sharedCells);
+                if (found.isPresent()) {
+                    return found;
+                }
             }
         }
         return Optional.empty();
@@ -788,6 +851,53 @@ public final class SessionFlowCertificate {
             ordered.put(name, binding);
         });
         return Collections.unmodifiableMap(new LinkedHashMap<>(ordered));
+    }
+
+    private static Map<String, RetainedNominal> immutableRetainedNominals(
+            Map<String, RetainedNominal> values) {
+        Objects.requireNonNull(values, "retainedNominals");
+        TreeMap<String, RetainedNominal> ordered = new TreeMap<>();
+        values.forEach((canonical, nominal) -> {
+            RetainedNominal value = Objects.requireNonNull(nominal, "retained nominal");
+            if (!Objects.requireNonNull(canonical, "retained nominal key")
+                    .equals(value.nominal().schema().type().canonicalSpelling())) {
+                throw new IllegalArgumentException("retained nominal key differs from its schema");
+            }
+            ordered.put(canonical, value);
+        });
+        return Collections.unmodifiableMap(new LinkedHashMap<>(ordered));
+    }
+
+    private static Map<String, String> immutableNominalNames(
+            Map<String, String> values, Map<String, RetainedNominal> nominals) {
+        Objects.requireNonNull(values, "nominalNames");
+        TreeMap<String, String> ordered = new TreeMap<>();
+        values.forEach((name, canonical) -> {
+            if (name.isBlank() || !nominals.containsKey(canonical)
+                    || !nominals.get(canonical).name().equals(name)) {
+                throw new IllegalArgumentException("retained nominal name has no exact definition");
+            }
+            ordered.put(name, canonical);
+        });
+        return Collections.unmodifiableMap(new LinkedHashMap<>(ordered));
+    }
+
+    /** Compiler-only retained schema/member identity; never a runtime capability. */
+    public record RetainedNominal(
+            String name, ResolvedNominal nominal, DeclarationVisibility visibility,
+            List<Optional<LambdaId>> memberInitializerLambdas) {
+        public RetainedNominal {
+            Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(nominal, "nominal");
+            Objects.requireNonNull(visibility, "visibility");
+            memberInitializerLambdas = List.copyOf(memberInitializerLambdas);
+            if (memberInitializerLambdas.size() != nominal.members().size()) {
+                throw new IllegalArgumentException("retained nominal initializer inventory differs");
+            }
+            if (!name.equals(nominal.schema().type().id().name())) {
+                throw new IllegalArgumentException("retained nominal name differs from its identity");
+            }
+        }
     }
 
     /** Producer-owned metadata needed to lower a retained callable allocation. */

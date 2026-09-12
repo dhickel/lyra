@@ -55,6 +55,7 @@ counter->::next[]          // initialized module state is reused
 - Runtime-dependent display size is handled by explicit bounded truncation of snapshots, diagnostics and query lists; a large result is truncated, never rolled back. Default snapshot budgets are depth 6, 100 aggregate elements, and 16 KiB rendered output.
 - UTF-16 character limits (source/snapshots) are distinct from encoded UTF-8/JSON frame bytes (transport).
 - Live producer source is never evicted. Standalone sessions conservatively retain successful/attempted generations and old reload graphs until reset/close; attached roots pin producers, link tables, the structural type domain, semantic summaries and source data until root close.
+- Struct/class declarations and instances persist with their exact nominal identity. Later submissions may access or mutate public members, invoke or replace mutable methods, and construct additional instances through the original initialized factory. Snapshots label structs/classes, expand public members in declaration order, preserve aliases/cycles as references, and omit private class state without invoking user code.
 
 ## Attach: run and compile
 

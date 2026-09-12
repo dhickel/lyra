@@ -49,3 +49,11 @@ All four phases and required tests pass; no valid nominal source reaches an
 unsupported backend path; coverage and review artifacts are committed. Archive the
 plan only then. Run `tools/phase24-release-audit.sh` before a release claim; ordinary
 feature tests alone do not replace that release gate or graphical qualification.
+
+## Completion
+
+Implemented 2026-09-12. Exact type/schema names, object heap state, nested callable
+proofs and original factories persist across standalone and attached session
+generations. Nominal JVM classes share the identity-safe session type domain;
+generation-local state and executable capabilities remain producer-retained.
+Snapshots distinguish struct/class data and exclude private class members.

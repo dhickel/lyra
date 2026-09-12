@@ -291,11 +291,20 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
         for (ResolvedNominal nominal : this.nominals) {
             ResolvedDeclaration declaration = this.declarationsById.get(nominal.declaration());
             ResolvedDeclaration self = this.declarationsById.get(nominal.self());
+            boolean retainedSessionNominal = sessionGraph && sessionFlowCertificate
+                    .map(certificate -> certificate.retainedNominals().get(
+                            nominal.schema().type().canonicalSpelling()))
+                    .filter(retained -> retained.nominal().declaration().equals(nominal.declaration())
+                            && retained.nominal().self().equals(nominal.self())
+                            && retained.nominal().members().equals(nominal.members())
+                            && retained.nominal().schema().equals(nominal.schema()))
+                    .isPresent();
             if (!nominalIds.add(nominal.declaration()) || declaration == null || self == null
                     || declaration.kind() != DeclarationKind.NOMINAL || self.kind() != DeclarationKind.SELF
-                    || !declaration.moduleId().equals(nominal.schema().type().id().module().moduleId())
+                    || !retainedSessionNominal && (!declaration.moduleId().equals(
+                            nominal.schema().type().id().module().moduleId())
                     || !moduleGraph.module(declaration.moduleId()).orElseThrow().revision()
-                            .equals(nominal.schema().type().id().revision())
+                            .equals(nominal.schema().type().id().revision()))
                     || !declaration.effectiveContract().orElseThrow().valueType().equals(nominal.schema().type())
                     || !self.effectiveContract().orElseThrow().valueType().equals(nominal.schema().type())) {
                 throw new IllegalArgumentException("nominal schema has inconsistent declaration links");

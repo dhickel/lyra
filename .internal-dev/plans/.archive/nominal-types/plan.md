@@ -14,16 +14,13 @@ Java 25 direct-bytecode pipeline with exact typing, ownership and diagnostics.
 
 ## Status
 
-In progress: intended contracts, nominal identity/type/schema models, lexical/
-grammar/AST support and initial declaration/member resolution are implemented.
-Typed construction, a producer-bound initialization proof, nominal IR operations,
-and an initial field-sensitive heap/callable transfer now support focused semantic
-and IR tests. Constructor summaries now support transitive factories and ordered
-ambient callable writes. Complete contextual replacement, branch-sensitive/repeated
-constructor effects, cross-module/callback heap transfer, JVM/artifacts and session support remain
-unfinished. NominalSemanticsTest includes typed/IR positives but is not executable
-conformance. Work continues through the remaining gates;
-tested checkpoints are not completion or stopping points.
+Implementation complete: syntax, resolution, typing,
+field-sensitive flow, sealed IR, deterministic JVM classes/factories, artifact schema,
+Java facades, contextual method replacement, equality and persistent sessions are
+implemented. Session generations retain exact nominal classes, heap/callable facts
+and producer-bound constructor capabilities; bounded snapshots expose public nominal
+data without live handles or private state. Focused/full-suite tests, extended fuzz
+and the mandatory Phase 24 release audit pass.
 
 ## Implementation sequence
 

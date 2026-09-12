@@ -68,7 +68,7 @@ and nonzero step without traversing the range. Both callback loops execute acros
 submissions, share prior mutable cells, preserve completed writes on failure, and
 honor session cancellation at backedges.
 
-### Nominal objects (accepted; implementation in progress)
+### Nominal objects
 
 Successful submissions retain struct/class type environments alongside value
 bindings. Later submissions link the same initialized instances and exact schema/
@@ -82,14 +82,19 @@ and nested mutable data retain actual producer/capture dependencies. Member acce
 method replacement, lexical privacy, owner confinement and reset/close obey the
 same language/runtime rules across submissions as in AOT execution.
 
+Session-local nominal factories are retained as exact executable capabilities bound
+to their original initialized module state. Later construction invokes that cached
+typed MethodHandle; it never replays a declaration body or constructs from schema
+alone. Nominal representation classes join the session/root structural loading
+domain by exact declaration/revision identity, while object instances, factories,
+closures and mutable state retain their producer lifetime.
+
 Snapshots expose immutable bounded type/member display data, never live object
 handles. Formatting invokes no constructors, methods, equality or user stringification.
 Alias/cycle references and truncation budgets remain explicit. Public fields and
 public method descriptions appear in declaration order; private class members are
 not exposed through the public value snapshot. Snapshot/protocol extensions require
 explicit schema handling and malformed-input tests, not source-replay serialization.
-
-These are required acceptance gates, not implementation claims.
 
 ### Console
 

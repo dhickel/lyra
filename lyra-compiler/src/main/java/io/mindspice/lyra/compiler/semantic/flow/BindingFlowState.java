@@ -53,6 +53,15 @@ public final class BindingFlowState {
         return new BindingFlowState(bindings, sharedCells, updated);
     }
 
+    /** Removes one compiler-synthetic lexical binding after its bounded use. */
+    public BindingFlowState withoutBinding(DeclarationId declaration) {
+        Objects.requireNonNull(declaration, "declaration");
+        if (!bindings.containsKey(declaration)) return this;
+        var updated = new TreeMap<>(bindings);
+        updated.remove(declaration);
+        return new BindingFlowState(updated, sharedCells, objects);
+    }
+
     public static BindingFlowState empty() {
         return new BindingFlowState(Map.of(), Map.of());
     }

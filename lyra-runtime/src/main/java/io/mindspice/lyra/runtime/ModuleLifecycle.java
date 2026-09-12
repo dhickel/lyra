@@ -242,6 +242,14 @@ public final class ModuleLifecycle implements AutoCloseable {
         return sessionLinkage.accessor(id, storageIdentity, type, write);
     }
 
+    /** Generated exact retained-constructor accesses only. */
+    public java.lang.invoke.MethodHandle sessionNominalFactory(long declarationId, String type) {
+        owner.check();
+        if (state.get() != LifecycleState.INITIALIZING) requireOpenAfterOwnerCheck();
+        if (sessionLinkage == null) throw new LyraLinkException("submission has no authenticated storage domain");
+        return sessionLinkage.nominalFactory(declarationId, type);
+    }
+
     /** Generated session composition boundary for one prepared graph. */
     public Object moduleState(ModuleId target) {
         owner.check();

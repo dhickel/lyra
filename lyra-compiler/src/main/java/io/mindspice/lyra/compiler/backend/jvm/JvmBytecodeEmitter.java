@@ -258,7 +258,8 @@ final class JvmBytecodeEmitter {
         return type.withoutQualifiers();
     }
 
-    private record NominalFieldLocation(IrNode.NominalDeclaration declaration,
+    private record NominalFieldLocation(
+                                        io.mindspice.lyra.compiler.types.NominalSchema schema,
                                         NominalClassLayout layout, int index) { }
 
     private static final class Emitter {
@@ -310,6 +311,19 @@ final class JvmBytecodeEmitter {
                             io.mindspice.lyra.compiler.ir.IrImportBinding::declarationId, value -> value));
             var declarationsByNominal = new TreeMap<DeclarationId, IrNode.NominalDeclaration>();
             var fieldsByDeclaration = new TreeMap<DeclarationId, NominalFieldLocation>();
+            for (var nominal : ir.semanticGraph().resolvedGraph().nominals()) {
+                NominalClassLayout layout = plan.nominalLayouts().get(
+                        nominal.schema().type().canonicalSpelling());
+                if (layout == null) throw new IllegalArgumentException(
+                        "resolved nominal declaration has no generated layout");
+                for (int index = 0; index < nominal.members().size(); index++) {
+                    if (fieldsByDeclaration.put(nominal.members().get(index),
+                            new NominalFieldLocation(nominal.schema(), layout, index)) != null) {
+                        throw new IllegalArgumentException(
+                                "nominal member belongs to multiple declarations");
+                    }
+                }
+            }
             for (IrNode node : io.mindspice.lyra.compiler.ir.IrTraversal.preOrder(ir)) {
                 if (!(node instanceof IrNode.NominalDeclaration nominal)) continue;
                 if (declarationsByNominal.put(nominal.declarationId(), nominal) != null) {
@@ -317,12 +331,6 @@ final class JvmBytecodeEmitter {
                 }
                 NominalClassLayout layout = plan.nominalLayouts().get(nominal.schema().type().canonicalSpelling());
                 if (layout == null) throw new IllegalArgumentException("nominal declaration has no generated layout");
-                for (int index = 0; index < nominal.members().size(); index++) {
-                    if (fieldsByDeclaration.put(nominal.members().get(index),
-                            new NominalFieldLocation(nominal, layout, index)) != null) {
-                        throw new IllegalArgumentException("nominal member belongs to multiple declarations");
-                    }
-                }
             }
             this.nominalDeclarations = Map.copyOf(declarationsByNominal);
             this.nominalFields = Map.copyOf(fieldsByDeclaration);
@@ -554,7 +562,8 @@ final class JvmBytecodeEmitter {
 
         private boolean sharedSessionType(GeneratedClassPlan classPlan) {
             boolean structural = classPlan.kind() == GeneratedClassKind.TUPLE_VALUE
-                    || classPlan.kind() == GeneratedClassKind.FUNCTION_INTERFACE;
+                    || classPlan.kind() == GeneratedClassKind.FUNCTION_INTERFACE
+                    || classPlan.kind() == GeneratedClassKind.NOMINAL_VALUE;
             return structural && (ir.rootModule().submissionResult().isPresent()
                     || plan.emissionMode() == EmissionMode.ATTACHABLE);
         }
@@ -1241,6 +1250,12 @@ final class JvmBytecodeEmitter {
                     loadStateLifecycle();
                     loadParameter(0); loadParameter(1); loadParameter(2); loadParameter(3);
                     code.invokevirtual(CD_LIFECYCLE, "sessionAccessor", method(member.descriptor()));
+                    code.areturn();
+                }
+                case STATE_SESSION_NOMINAL_FACTORY -> {
+                    loadStateLifecycle();
+                    loadParameter(0); loadParameter(1);
+                    code.invokevirtual(CD_LIFECYCLE, "sessionNominalFactory", method(member.descriptor()));
                     code.areturn();
                 }
                 case STATE_MODULE_STATE_LOOKUP -> {
@@ -3013,7 +3028,9 @@ final class JvmBytecodeEmitter {
 
         private JvmTypePlan emitConstruction(IrNode.Construction construction) {
             IrNode.NominalDeclaration declaration = owner.nominalDeclarations.get(construction.declarationId());
-            if (declaration == null || !declaration.schema().type().equals(construction.type())) {
+            IrDeclaration metadata = declarations.get(construction.declarationId());
+            if (metadata == null || declaration != null
+                    && !declaration.schema().type().equals(construction.type())) {
                 throw invalidPlan(construction.span(), "construction has no exact nominal declaration");
             }
             NominalClassLayout layout = owner.plan.nominalLayouts().get(
@@ -3030,17 +3047,28 @@ final class JvmBytecodeEmitter {
                 storePhysical(parameter.physicalComponents().getFirst(), slot);
                 arguments.add(slot);
             }
-            IrDeclaration metadata = declarations.get(construction.declarationId());
-            if (metadata == null) throw invalidPlan(construction.span(), "nominal declaration metadata is absent");
-            emitLoadModuleState(metadata.moduleId());
+            emitLoadModuleState(declaration == null ? module.moduleId() : metadata.moduleId());
+            if (declaration == null) {
+                code.ldc(construction.declarationId().ordinal());
+                code.ldc(construction.type().canonicalSpelling());
+                code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
+                        "$lyra$sessionNominalFactory",
+                        method("(JLjava/lang/String;)Ljava/lang/invoke/MethodHandle;"));
+            }
             for (int index = 0; index < arguments.size(); index++) {
                 JvmTypePlan parameter = layout.factorySignature().parameters().get(index);
                 loadPhysical(parameter.physicalComponents().getFirst(), arguments.get(index));
             }
-            recordCallFailureFrame(construction.span(), () -> code.invokevirtual(
-                    cd(owner.plan.moduleStates().get(metadata.moduleId())),
-                    "$lyra$new$" + construction.declarationId().value(),
-                    method(layout.factorySignature().descriptor())));
+            if (declaration == null) {
+                recordCallFailureFrame(construction.span(), () -> code.invokevirtual(
+                        cd("java.lang.invoke.MethodHandle"), "invokeExact",
+                        method(layout.factorySignature().descriptor())));
+            } else {
+                recordCallFailureFrame(construction.span(), () -> code.invokevirtual(
+                        cd(owner.plan.moduleStates().get(metadata.moduleId())),
+                        "$lyra$new$" + construction.declarationId().value(),
+                        method(layout.factorySignature().descriptor())));
+            }
             JvmTypePlan desired = owner.mapper.map(construction.type(), JvmMappingContext.INTERNAL_VALUE);
             adapt(layout.factorySignature().returnValue(), desired);
             return desired;
@@ -3533,7 +3561,7 @@ final class JvmBytecodeEmitter {
                     : List.of();
             for (DeclarationId self : contextualSelf) {
                 BindingStorage previous = locals.put(self, BindingStorage.local(
-                        location.declaration().schema().type(), receiverPlan, List.of(receiver)));
+                        location.schema().type(), receiverPlan, List.of(receiver)));
                 if (previous != null) displacedSelf.put(self, previous);
             }
             JvmTypePlan value;
@@ -3550,7 +3578,7 @@ final class JvmBytecodeEmitter {
             Label generated = null;
             Label done = null;
             if (nominalFactory != null
-                    && nominalFactory.schema().type().equals(location.declaration().schema().type())) {
+                    && nominalFactory.schema().type().equals(location.schema().type())) {
                 generated = code.newLabel();
                 done = code.newLabel();
                 code.aload(receiver);
@@ -5295,7 +5323,7 @@ final class JvmBytecodeEmitter {
             Label generated = null;
             Label done = null;
             if (nominalFactory != null
-                    && nominalFactory.schema().type().equals(location.declaration().schema().type())) {
+                    && nominalFactory.schema().type().equals(location.schema().type())) {
                 generated = code.newLabel();
                 done = code.newLabel();
                 code.aload(receiver);

@@ -4,12 +4,16 @@ import io.mindspice.lyra.runtime.ArrayType;
 import io.mindspice.lyra.runtime.FunctionType;
 import io.mindspice.lyra.runtime.LyraClosure;
 import io.mindspice.lyra.runtime.LyraLinkException;
+import io.mindspice.lyra.runtime.LyraNominalObject;
 import io.mindspice.lyra.runtime.LyraRuntime;
 import io.mindspice.lyra.runtime.LyraType;
 import io.mindspice.lyra.runtime.LyraUnit;
 import io.mindspice.lyra.runtime.ModuleHandle;
 import io.mindspice.lyra.runtime.OwnerThread;
 import io.mindspice.lyra.runtime.PrimitiveType;
+import io.mindspice.lyra.runtime.NominalSchema;
+import io.mindspice.lyra.runtime.NominalType;
+import io.mindspice.lyra.runtime.NominalTypeEnvironment;
 import io.mindspice.lyra.runtime.TupleType;
 
 import java.lang.reflect.Array;
@@ -26,12 +30,15 @@ final class SnapshotReader {
     private final OwnerThread owner = OwnerThread.capture();
     private final SnapshotLimits limits;
     private final Set<String> generatedClasses;
+    private final NominalTypeEnvironment nominalSchemas;
     private final IdentityHashMap<Object, String> identities = new IdentityHashMap<>();
     private int remaining;
 
-    private SnapshotReader(SnapshotLimits limits, Set<String> generatedClasses) {
+    private SnapshotReader(SnapshotLimits limits, Set<String> generatedClasses,
+                           NominalTypeEnvironment nominalSchemas) {
         this.limits = limits;
         this.generatedClasses = Set.copyOf(generatedClasses);
+        this.nominalSchemas = nominalSchemas;
         remaining = limits.maxRenderedCharacters();
     }
 
@@ -42,7 +49,8 @@ final class SnapshotReader {
 
     static ValueSnapshot read(ModuleHandle module, LyraType type, SnapshotLimits limits,
                               Set<String> generatedClasses) {
-        SnapshotReader reader = new SnapshotReader(limits, generatedClasses);
+        SnapshotReader reader = new SnapshotReader(limits, generatedClasses,
+                module.metadata().nominalSchemas());
         return reader.value(type, LyraRuntime.readSubmissionResult(module, type), 0);
     }
 
@@ -70,15 +78,24 @@ final class SnapshotReader {
             identities.put(value, identity);
             return leaf(type, new ValueSnapshot.Function(identity));
         }
-        if (base instanceof ArrayType) {
+        if (base instanceof ArrayType || base instanceof NominalType) {
             String previous = identities.get(value);
             if (previous != null) return leaf(type, new ValueSnapshot.Reference(previous));
         }
         if (depth >= limits.maxDepth()) return leaf(type, new ValueSnapshot.Truncated(TruncationReason.DEPTH));
-        String identity = base instanceof ArrayType ? "array" + (identities.size() + 1) : "tuple";
-        if (base instanceof ArrayType) identities.put(value, identity);
-        AggregateKind kind = base instanceof ArrayType ? AggregateKind.ARRAY : AggregateKind.TUPLE;
-        int size = base instanceof ArrayType ? Array.getLength(value) : ((TupleType) base).arity();
+        NominalSchema nominal = base instanceof NominalType nominalType
+                ? nominalSchemas.require(nominalType) : null;
+        String identity = base instanceof ArrayType ? "array" + (identities.size() + 1)
+                : nominal != null ? nominal.kind().name().toLowerCase() + (identities.size() + 1) : "tuple";
+        if (base instanceof ArrayType || nominal != null) identities.put(value, identity);
+        AggregateKind kind = base instanceof ArrayType ? AggregateKind.ARRAY
+                : nominal == null ? AggregateKind.TUPLE
+                : nominal.kind() == NominalSchema.Kind.STRUCT ? AggregateKind.STRUCT : AggregateKind.CLASS;
+        List<Integer> visibleMembers = nominal == null ? List.of() : java.util.stream.IntStream
+                .range(0, nominal.members().size())
+                .filter(index -> nominal.members().get(index).publicAccess()).boxed().toList();
+        int size = base instanceof ArrayType ? Array.getLength(value)
+                : nominal != null ? visibleMembers.size() : ((TupleType) base).arity();
         // Reserve the largest aggregate suffix before descending. This prevents
         // wide/deep graphs from consuming an unbounded amount of traversal work.
         long overhead = ValueSnapshot.renderedLength(type, new ValueSnapshot.Aggregate(kind, identity,
@@ -92,7 +109,10 @@ final class SnapshotReader {
                 truncated = Optional.of(TruncationReason.AGGREGATE_ELEMENTS);
                 break;
             }
-            LyraType element = base instanceof ArrayType array ? array.elementType() : ((TupleType) base).memberType(index);
+            int memberIndex = nominal == null ? index : visibleMembers.get(index);
+            LyraType element = base instanceof ArrayType array ? array.elementType()
+                    : nominal != null ? nominal.members().get(memberIndex).type()
+                    : ((TupleType) base).memberType(index);
             long minimum = ValueSnapshot.renderedLength(element,
                     new ValueSnapshot.Truncated(TruncationReason.RENDERED_OUTPUT));
             if (minimum + 1 > remaining) {
@@ -100,10 +120,32 @@ final class SnapshotReader {
                 break;
             }
             remaining--; // inter-element separator
-            Object child = base instanceof ArrayType ? Array.get(value, index) : tupleField(value, index);
+            Object child = base instanceof ArrayType ? Array.get(value, index)
+                    : nominal != null ? nominalField(value, nominal, memberIndex) : tupleField(value, index);
             elements.add(value(element, child, depth + 1));
         }
-        return new ValueSnapshot(type, new ValueSnapshot.Aggregate(kind, identity, elements, truncated), limits);
+        return new ValueSnapshot(type, new ValueSnapshot.Aggregate(kind, identity,
+                nominal == null ? Optional.empty() : Optional.of(nominal.type().id().name()),
+                elements, truncated), limits);
+    }
+
+    private Object nominalField(Object object, NominalSchema schema, int index) {
+        owner.check();
+        if (!(object instanceof LyraNominalObject)
+                || !generatedClasses.contains(object.getClass().getName())
+                || !object.getClass().getSimpleName().equals(
+                "$lyra$nominal$" + schema.type().id().stableHash())) {
+            throw new LyraLinkException("result nominal is not its exact generated value class");
+        }
+        try {
+            var getter = object.getClass().getMethod("$lyra$public$get$" + index);
+            if (Modifier.isStatic(getter.getModifiers()) || getter.getParameterCount() != 0) {
+                throw new LyraLinkException("result nominal has an invalid public component accessor");
+            }
+            return getter.invoke(object);
+        } catch (ReflectiveOperationException failure) {
+            throw new LyraLinkException("result nominal public component is unavailable", List.of(), failure);
+        }
     }
 
     private Object tupleField(Object tuple, int index) {

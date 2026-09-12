@@ -123,6 +123,7 @@ public record ExternalBinding(
             case io.mindspice.lyra.compiler.types.ArrayType array -> supportsDataStorage(array.elementType());
             case io.mindspice.lyra.compiler.types.TupleType tuple -> tuple.memberTypes().stream()
                     .allMatch(ExternalBinding::supportsDataStorage);
+            case io.mindspice.lyra.compiler.types.NominalType ignored -> true;
             default -> false;
         };
     }

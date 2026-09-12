@@ -4,8 +4,8 @@ These capabilities are accepted as future work but are not valid current languag
 
 ## User-declared data and object types
 
-- Structs and classes have moved to the accepted, implementation-in-progress
-  contract in `language-core.md`; they are not yet executable features.
+- Structs and classes are implemented under the accepted contract in
+  `language-core.md`; they are not deferred syntax.
 - Variants, inheritance, interfaces, custom struct constructors and static/shared
   type members remain deferred. `@static` remains the preferred future spelling
   for shared type-level storage, possibly with `@mut`; it is not legal yet.

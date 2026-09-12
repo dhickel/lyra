@@ -35,6 +35,7 @@ public final class SessionStorageDomain implements AutoCloseable {
     private final RootLifetime rootLifetime;
     /** Current workspace registrations; link tables never consult this map. */
     private final Map<Long, Binding> bindings = new HashMap<>();
+    private final Map<Long, NominalFactory> nominalFactories = new HashMap<>();
     /** Kept as a field for the structural-domain admission boundary and diagnostics. */
     private SessionTypeLoader types;
     private long revision;
@@ -380,15 +381,52 @@ public final class SessionStorageDomain implements AutoCloseable {
             if (Objects.requireNonNull(name, "name").isBlank()) {
                 throw new IllegalArgumentException("empty binding name");
             }
-            LyraType value = LyraType.parse(Objects.requireNonNull(type, "type"));
-            if (value.isMutable()) {
-                throw new IllegalArgumentException(
-                        "session linkage requires an exact value type without binding mutability");
+            Objects.requireNonNull(type, "type");
+            try {
+                LyraType value = LyraType.parse(type);
+                if (value.isMutable()) {
+                    throw new IllegalArgumentException(
+                            "session linkage requires an exact value type without binding mutability");
+                }
+            } catch (IllegalArgumentException failure) {
+                // Nominal spellings require the exact producer schema and are
+                // therefore validated when a module/artifact is selected.
+                if (!failure.getMessage().startsWith("unknown nominal contract:")) throw failure;
             }
         }
 
         public LyraType logicalType() {
             return LyraType.parse(type);
+        }
+
+        LyraType logicalType(NominalTypeEnvironment nominals) {
+            LyraType value = LyraType.parse(type, Objects.requireNonNull(nominals, "nominals"));
+            if (value.isMutable()) {
+                throw new IllegalArgumentException(
+                        "session linkage requires an exact value type without binding mutability");
+            }
+            return value;
+        }
+    }
+
+    /** Exact identity and nominal contract required to invoke a retained constructor. */
+    public record NominalFactoryRequirement(long declarationId, String type) {
+        public NominalFactoryRequirement {
+            if (declarationId < 0) throw new IllegalArgumentException("negative nominal declaration identity");
+            Objects.requireNonNull(type, "type");
+        }
+
+        NominalSchema schema(NominalTypeEnvironment nominals) {
+            LyraType parsed = LyraType.parse(type, Objects.requireNonNull(nominals, "nominals"));
+            if (!(parsed instanceof NominalType nominal)) {
+                throw new LyraLinkException("nominal factory requirement has a non-nominal type");
+            }
+            try {
+                return nominals.require(nominal);
+            } catch (IllegalArgumentException failure) {
+                throw new LyraLinkException("nominal factory schema is absent: " + type,
+                        List.of(), failure);
+            }
         }
     }
 
@@ -532,30 +570,31 @@ public final class SessionStorageDomain implements AutoCloseable {
         if (bindings.containsKey(requirement.id())) {
             throw new LyraLinkException("storage identity already registered");
         }
-        if (!(requirement.logicalType().baseType() instanceof PrimitiveType)) {
+        LyraType logicalType = requirement.logicalType(module.metadata().nominalSchemas());
+        if (!(logicalType.baseType() instanceof PrimitiveType)) {
             LyraRuntime.requireSessionDataGeneration(module, this);
         }
 
         Retention retention = retainProducer(module, kind);
         try {
             MethodHandle reader = LyraRuntime.submissionStorageAccessor(module, moduleId, requirement, false);
-            MethodType readerType = LyraRuntime.sessionStorageReaderType(module, requirement.logicalType());
+            MethodType readerType = LyraRuntime.sessionStorageReaderType(module, logicalType);
             if (!reader.type().equals(readerType)) {
                 throw new LyraLinkException("generated session reader MethodType mismatch");
             }
             Optional<MethodType> functionType = LyraRuntime.sessionFunctionMethodType(
-                    module, requirement.logicalType());
+                    module, logicalType);
             verifyInitialized(reader);
             LyraRuntime.requireSubmissionPublication(module);
             MethodHandle writer = requirement.writable()
                     ? LyraRuntime.submissionStorageAccessor(module, moduleId, requirement, true) : null;
             MethodType writerType = writer == null ? null : writer.type();
             if (writer != null && !writerType.equals(
-                    LyraRuntime.sessionStorageWriterType(module, requirement.logicalType()))) {
+                    LyraRuntime.sessionStorageWriterType(module, logicalType))) {
                 throw new LyraLinkException("generated session writer MethodType mismatch");
             }
             retention.markInitialized();
-            Binding binding = new Binding(this, module, requirement, requirement.logicalType(),
+            Binding binding = new Binding(this, module, requirement, logicalType,
                     reader, writer, readerType, writerType, functionType, retention);
             return binding;
         } catch (RuntimeException | Error failure) {
@@ -570,6 +609,30 @@ public final class SessionStorageDomain implements AutoCloseable {
     /** Retains an attempted producer without claiming initialized storage. */
     public Retention retainAttempted(ModuleHandle producer) {
         return retainProducer(producer, RetentionKind.ATTEMPTED);
+    }
+
+    /** Stages the exact executable constructor owned by an initialized producer. */
+    public NominalFactory registerNominalFactory(ModuleHandle module, ModuleId moduleId,
+            NominalFactoryRequirement requirement) {
+        checkOpen();
+        Objects.requireNonNull(module, "module");
+        Objects.requireNonNull(moduleId, "moduleId");
+        Objects.requireNonNull(requirement, "requirement");
+        if (nominalFactories.containsKey(requirement.declarationId())) {
+            throw new LyraLinkException("nominal factory identity already registered");
+        }
+        Retention retention = retainProducer(module,
+                rootLifetime == null ? RetentionKind.OWNED : RetentionKind.ROOT_OWNED);
+        try {
+            NominalSchema schema = requirement.schema(module.metadata().nominalSchemas());
+            MethodHandle factory = LyraRuntime.submissionNominalFactory(
+                    module, moduleId, requirement);
+            retention.markInitialized();
+            return new NominalFactory(this, module, requirement, schema, factory, retention);
+        } catch (RuntimeException | Error failure) {
+            retention.retireInternal(false);
+            throw failure;
+        }
     }
 
     /**
@@ -600,14 +663,15 @@ public final class SessionStorageDomain implements AutoCloseable {
         }
         Retention retention = retainProducer(producer, RetentionKind.BORROWED);
         try {
-            Class<?> storage = storageClass(requirement.logicalType(), rootLifetime.typeDomain(),
+            LyraType logicalType = requirement.logicalType(producer.metadata().nominalSchemas());
+            Class<?> storage = storageClass(logicalType, rootLifetime.typeDomain(),
                     externalJavaPackage(producer));
             MethodType readerType = MethodType.methodType(storage);
             if (!reader.type().equals(readerType)) {
                 throw new LyraLinkException("external storage reader MethodType mismatch");
             }
             java.util.Optional<MethodType> functionType = externalFunctionType(
-                    requirement.logicalType(), rootLifetime.typeDomain(),
+                    logicalType, rootLifetime.typeDomain(),
                     externalJavaPackage(producer));
             verifyInitialized(reader);
             MethodType writerType = writer == null ? null
@@ -616,7 +680,7 @@ public final class SessionStorageDomain implements AutoCloseable {
                 throw new LyraLinkException("external storage writer MethodType mismatch");
             }
             retention.markInitialized();
-            Binding binding = new Binding(this, producer, requirement, requirement.logicalType(),
+            Binding binding = new Binding(this, producer, requirement, logicalType,
                     reader, writer, readerType, writerType, functionType, retention);
             // An external root link is a live admission, not a staged
             // namespace publication: the workspace may link it immediately
@@ -674,6 +738,14 @@ public final class SessionStorageDomain implements AutoCloseable {
     /** Validates every exact capability before loading or executing new source. */
     public Linkage link(ArtifactSource artifact, long baseRevision,
                         List<Requirement> requirements, List<Binding> capabilities) {
+        return link(artifact, baseRevision, requirements, capabilities, List.of(), List.of());
+    }
+
+    /** Validates data and retained-constructor capabilities as one immutable link table. */
+    public Linkage link(ArtifactSource artifact, long baseRevision,
+                        List<Requirement> requirements, List<Binding> capabilities,
+                        List<NominalFactoryRequirement> factoryRequirements,
+                        List<NominalFactory> factoryCapabilities) {
         checkOpen();
         Objects.requireNonNull(artifact, "artifact");
         List<Requirement> requested = List.copyOf(Objects.requireNonNull(requirements, "requirements"));
@@ -687,13 +759,31 @@ public final class SessionStorageDomain implements AutoCloseable {
             Requirement requirement = requested.get(index);
             Binding binding = Objects.requireNonNull(supplied.get(index), "binding");
             check(binding);
-            if (!binding.matches(requirement)
+            if (!binding.matches(requirement, artifact.metadata().nominalSchemas())
                     || selected.put(requirement.id(), binding.entry()) != null
                     || selectedRequirements.put(requirement.id(), requirement) != null) {
                 throw new LyraLinkException("foreign or incompatible submission storage capability");
             }
         }
-        return new Linkage(this, artifact.metadata(), baseRevision, selected, selectedRequirements);
+        List<NominalFactoryRequirement> requestedFactories = List.copyOf(
+                Objects.requireNonNull(factoryRequirements, "factoryRequirements"));
+        List<NominalFactory> suppliedFactories = List.copyOf(
+                Objects.requireNonNull(factoryCapabilities, "factoryCapabilities"));
+        if (requestedFactories.size() != suppliedFactories.size()) {
+            throw new LyraLinkException("incomplete nominal factory linkage");
+        }
+        Map<Long, FactoryEntry> selectedFactories = new HashMap<>();
+        for (int index = 0; index < requestedFactories.size(); index++) {
+            NominalFactoryRequirement requirement = requestedFactories.get(index);
+            NominalFactory factory = Objects.requireNonNull(suppliedFactories.get(index), "factory");
+            check(factory);
+            if (!factory.matches(requirement, artifact.metadata().nominalSchemas())
+                    || selectedFactories.put(requirement.declarationId(), factory.entry()) != null) {
+                throw new LyraLinkException("foreign or incompatible nominal factory capability");
+            }
+        }
+        return new Linkage(this, artifact.metadata(), baseRevision, selected, selectedRequirements,
+                selectedFactories);
     }
 
     public LyraOwnerController.EvaluationLease beginEvaluation() {
@@ -719,6 +809,11 @@ public final class SessionStorageDomain implements AutoCloseable {
     }
 
     public void commit(long baseRevision, List<Binding> staged) {
+        commit(baseRevision, staged, List.of());
+    }
+
+    /** Atomically publishes staged value storage and nominal constructors. */
+    public void commit(long baseRevision, List<Binding> staged, List<NominalFactory> stagedFactories) {
         checkOpen();
         if (revision != baseRevision) throw new LyraLinkException("stale namespace publication");
         List<Binding> requested = List.copyOf(Objects.requireNonNull(staged, "staged"));
@@ -732,8 +827,20 @@ public final class SessionStorageDomain implements AutoCloseable {
             }
             LyraRuntime.requireSubmissionPublication(binding.producer);
         }
+        Map<Long, NominalFactory> factoryAdditions = new HashMap<>();
+        for (NominalFactory factory : List.copyOf(stagedFactories)) {
+            Objects.requireNonNull(factory, "factory");
+            if (factory.domain != this || factory.epoch != epoch || !factory.retention.isUsable()
+                    || factory.producer.isClosed()
+                    || nominalFactories.containsKey(factory.requirement.declarationId())
+                    || factoryAdditions.put(factory.requirement.declarationId(), factory) != null) {
+                throw new LyraLinkException("invalid staged nominal factory publication");
+            }
+            LyraRuntime.requireSubmissionPublication(factory.producer);
+        }
         long next = Math.incrementExact(revision);
         bindings.putAll(additions);
+        nominalFactories.putAll(factoryAdditions);
         revision = next;
     }
 
@@ -743,6 +850,7 @@ public final class SessionStorageDomain implements AutoCloseable {
         epoch = Math.incrementExact(epoch);
         rootLifetimeRetireOwned();
         bindings.clear();
+        nominalFactories.clear();
         if (rootLifetime == null) {
             types.retire();
             types = new SessionTypeLoader();
@@ -774,6 +882,7 @@ public final class SessionStorageDomain implements AutoCloseable {
             rootLifetime.retireOwned();
         }
         bindings.clear();
+        nominalFactories.clear();
         if (rootLifetime == null) {
             epoch = Math.incrementExact(epoch);
             types.retire();
@@ -824,6 +933,15 @@ public final class SessionStorageDomain implements AutoCloseable {
         }
     }
 
+    private void check(NominalFactory factory) {
+        checkOpen();
+        if (factory.domain != this || factory.epoch != epoch
+                || nominalFactories.get(factory.requirement.declarationId()) != factory) {
+            throw new LyraLinkException("foreign or retired nominal factory capability");
+        }
+        factory.retention.requireUsable();
+    }
+
     private static void verifyInitialized(MethodHandle reader) {
         try {
             reader.asType(MethodType.methodType(void.class)).invokeExact();
@@ -865,11 +983,11 @@ public final class SessionStorageDomain implements AutoCloseable {
             this.retention = retention;
         }
 
-        private boolean matches(Requirement other) {
+        private boolean matches(Requirement other, NominalTypeEnvironment nominals) {
             return requirement.id() == other.id()
                     && requirement.storageIdentity() == other.storageIdentity()
                     && requirement.name().equals(other.name())
-                    && logicalType.equals(other.logicalType())
+                    && logicalType.equals(other.logicalType(nominals))
                     // A read-only consumer may use a producer's mutable
                     // accessor pair; the reverse is never admitted.
                     && (!other.writable() || requirement.writable())
@@ -904,6 +1022,55 @@ public final class SessionStorageDomain implements AutoCloseable {
 
         Retention retention() {
             return retention;
+        }
+    }
+
+    /** Opaque executable constructor capability retained with its producer. */
+    public static final class NominalFactory {
+        private final SessionStorageDomain domain;
+        private final ModuleHandle producer;
+        private final NominalFactoryRequirement requirement;
+        private final NominalSchema schema;
+        private final MethodHandle factory;
+        private final Retention retention;
+        private final long epoch;
+
+        private NominalFactory(SessionStorageDomain domain, ModuleHandle producer,
+                NominalFactoryRequirement requirement, NominalSchema schema,
+                MethodHandle factory, Retention retention) {
+            this.domain = domain;
+            this.producer = producer;
+            this.requirement = requirement;
+            this.schema = schema;
+            this.factory = factory;
+            this.retention = retention;
+            this.epoch = domain.epoch;
+        }
+
+        private boolean matches(NominalFactoryRequirement other,
+                NominalTypeEnvironment environment) {
+            return requirement.equals(other) && schema.equals(other.schema(environment));
+        }
+
+        private FactoryEntry entry() {
+            return new FactoryEntry(producer, requirement, schema, factory, retention);
+        }
+    }
+
+    private record FactoryEntry(ModuleHandle producer, NominalFactoryRequirement requirement,
+                                NominalSchema schema, MethodHandle factory, Retention retention) {
+        private FactoryEntry {
+            Objects.requireNonNull(producer, "producer");
+            Objects.requireNonNull(requirement, "requirement");
+            Objects.requireNonNull(schema, "schema");
+            Objects.requireNonNull(factory, "factory");
+            Objects.requireNonNull(retention, "retention");
+        }
+
+        private MethodHandle accessor() {
+            retention.requireUsable();
+            if (producer.isClosed()) throw new LyraClosedException("nominal factory producer is closed");
+            return factory;
         }
     }
 
@@ -1013,11 +1180,13 @@ public final class SessionStorageDomain implements AutoCloseable {
         private final long epoch;
         private final Map<Long, LinkEntry> entries;
         private final Map<Long, Requirement> requirements;
+        private final Map<Long, FactoryEntry> factories;
         private final boolean sourceLocal;
         private final RootLifetime rootLifetime;
 
         private Linkage(SessionStorageDomain domain, ArtifactMetadata artifactMetadata, long baseRevision,
-                        Map<Long, LinkEntry> entries, Map<Long, Requirement> requirements) {
+                        Map<Long, LinkEntry> entries, Map<Long, Requirement> requirements,
+                        Map<Long, FactoryEntry> factories) {
             this.domain = domain;
             this.artifactMetadata = Objects.requireNonNull(artifactMetadata, "artifactMetadata");
             long userModuleCount = artifactMetadata.modules().stream()
@@ -1033,6 +1202,7 @@ public final class SessionStorageDomain implements AutoCloseable {
             this.epoch = domain.epoch;
             this.entries = Map.copyOf(entries);
             this.requirements = Map.copyOf(requirements);
+            this.factories = Map.copyOf(factories);
             this.rootLifetime = domain.rootLifetime;
         }
 
@@ -1119,11 +1289,23 @@ public final class SessionStorageDomain implements AutoCloseable {
             Requirement required = requirements.get(id);
             if (entry == null || required == null
                     || entry.storageIdentity != storageIdentity
-                    || !entry.logicalType.equals(LyraType.parse(type))
+                    || !entry.logicalType.equals(LyraType.parse(type,
+                    artifactMetadata.nominalSchemas()))
                     || write && !required.writable()) {
                 throw new LyraLinkException("submission access exceeds its typed storage linkage");
             }
             return entry.accessor(write);
+        }
+
+        MethodHandle nominalFactory(long declarationId, String type) {
+            checkOpen();
+            FactoryEntry entry = factories.get(declarationId);
+            if (entry == null || !entry.requirement().type().equals(type)
+                    || !entry.schema().equals(new NominalFactoryRequirement(
+                    declarationId, type).schema(artifactMetadata.nominalSchemas()))) {
+                throw new LyraLinkException("submission exceeds its nominal factory linkage");
+            }
+            return entry.accessor();
         }
 
         RootLifetime rootLifetime() {

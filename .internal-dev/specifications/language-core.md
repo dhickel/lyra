@@ -135,23 +135,21 @@ Ordinary value declarations are source-ordered and cannot be read before initial
 
 Closures capture bindings. Immutable captures retain their selected value/reference. A captured `@mut` binding is one shared mutable cell visible to every capturing closure.
 
-### Structs and classes (accepted; implementation in progress)
+### Structs and classes
 
-The owner accepted the following extension on 2026-09-11. Completion requires the
-corresponding backend and session gates; parsing alone does not complete it.
-
-Implementation status: lexical/grammar/AST, resolution, typed construction/member
-operations, initial definite-initialization certification, field-sensitive heap/
-callable transfer and nominal IR are implemented. Source declarations now emit
+The owner accepted the following extension on 2026-09-11. Lexical/grammar/AST,
+resolution, typed construction/member operations, definite-initialization
+certification, field-sensitive heap/callable transfer and nominal IR are implemented.
+Source declarations emit
 deterministic final JVM representation classes with private typed fields and checked
 initialization/generated/public accessors. Host-driven integration tests load and
 exercise those source-produced classes. Lyra construction expressions now invoke
 origin-module factories, evaluate arguments once left-to-right, execute ordered
 defaults/constructors, and support source field access, mutation, current-slot calls,
 saved method references, contextual replacement receivers and equality through direct
-bytecode. Complete repeated/imported heap transfer, ergonomic Java construction and
-persistent sessions remain in progress; this executable slice alone is not full
-nominal conformance.
+bytecode. Persistent sessions retain exact nominal identities, object state, method
+captures and producer-bound constructor capabilities without source replay; bounded
+snapshots expose public nominal data without leaking private class members.
 
 ```lyra
 struct Vec2 {

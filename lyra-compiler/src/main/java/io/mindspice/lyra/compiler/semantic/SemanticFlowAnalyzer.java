@@ -656,7 +656,10 @@ public final class SemanticFlowAnalyzer {
                     bindings.replaceAll((id, value) -> boundary.bindings().getOrDefault(id, value));
                     var cells = new TreeMap<>(original.sharedCells());
                     cells.replaceAll((id, value) -> boundary.sharedCells().getOrDefault(id, value));
-                    created.state = io.mindspice.lyra.compiler.semantic.flow.BindingFlowState.of(bindings, cells);
+                    var objects = new TreeMap<>(original.objects());
+                    objects.putAll(boundary.objects());
+                    created.state = io.mindspice.lyra.compiler.semantic.flow.BindingFlowState.of(
+                            bindings, cells, objects);
                     created.state.bindings().forEach((id, value) -> created.values.put(id, value.alternatives()));
                     created.nextForm = created.forms.size();
                     var facts = record.producerGraph().semanticFlowFacts();
@@ -669,6 +672,13 @@ public final class SemanticFlowAnalyzer {
                     facts.declarationValues().forEach((id, value) -> {
                         if (record.resolvedModule().declarations().contains(id)) declarationValues.put(id, value);
                     });
+                }
+                if (graph.resolvedGraph().isSessionGraph()
+                        && module.equals(graph.resolvedGraph().moduleGraph().rootModule())) {
+                    graph.resolvedGraph().sessionFlowCertificate().ifPresent(certificate ->
+                            created.state = io.mindspice.lyra.compiler.semantic.flow.BindingFlowState.of(
+                                    created.state.bindings(), created.state.sharedCells(),
+                                    certificate.boundaryState().objects()));
                 }
                 // External declarations carry initialized type/ownership
                 // contracts, not old initializer or fresh allocation facts.
@@ -1123,8 +1133,11 @@ public final class SemanticFlowAnalyzer {
                 ResolvedNominal nominal = graph.resolvedGraph().nominals().stream()
                         .filter(value -> value.declaration().equals(expression.declarationId().orElseThrow()))
                         .findFirst().orElseThrow();
-                Frame owner = frame(nominal.schema().type().id().module().moduleId());
-                if (owner != caller) {
+                boolean retainedFactory = !modules.containsKey(
+                        nominal.schema().type().id().module().moduleId());
+                Frame owner = retainedFactory ? caller
+                        : frame(nominal.schema().type().id().module().moduleId());
+                if (!retainedFactory && owner != caller) {
                     Lookup initialized = ensure(owner, nominal.declaration(), expression.span());
                     effects.addAll(initialized.effects);
                     current = current.join(owner.state);
@@ -1148,13 +1161,19 @@ public final class SemanticFlowAnalyzer {
                 }
                 for (int index = 0; index < nominal.members().size(); index++) {
                     if (!nominal.schema().members().get(index).hasInitializer()) continue;
-                    var initializer = declarations.get(nominal.members().get(index)).initializer().orElseThrow();
-                    Eval evaluated = evaluate(initializer, owner, current);
-                    current = evaluated.state;
-                    current = current.withObject(identity, current.objects().get(identity).write(index, evaluated.value, true));
-                    events.addAll(evaluated.events); effects.addAll(evaluated.effects);
+                    if (retainedFactory) {
+                        current = current.withObject(identity, current.objects().get(identity).write(
+                                index, retainedNominalInitializer(
+                                        nominal, index, object, current, expression.span()), true));
+                    } else {
+                        var initializer = declarations.get(nominal.members().get(index)).initializer().orElseThrow();
+                        Eval evaluated = evaluate(initializer, owner, current);
+                        current = evaluated.state;
+                        current = current.withObject(identity, current.objects().get(identity).write(index, evaluated.value, true));
+                        events.addAll(evaluated.events); effects.addAll(evaluated.effects);
+                    }
                 }
-                if (nominal.constructor().isPresent()) {
+                if (nominal.constructor().isPresent() && !retainedFactory) {
                     TypedLambda constructor = lambdas.get(nominal.constructor().orElseThrow());
                     for (int index = 0; index < constructor.parameterIds().size(); index++) {
                         current = bind(current, constructor.parameterIds().get(index), arguments.get(index), expression.span());
@@ -1163,6 +1182,54 @@ public final class SemanticFlowAnalyzer {
                     current = body.state; events.addAll(body.events); effects.addAll(body.effects);
                 }
                 return new Eval(object, current, events, distinctEffects(effects));
+            }
+
+            private ValueAlternatives retainedNominalInitializer(
+                    ResolvedNominal nominal, int memberIndex, ValueAlternatives self,
+                    io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
+                    SourceSpan span) {
+                var certificate = graph.resolvedGraph().sessionFlowCertificate().orElseThrow(() ->
+                        failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                                "retained nominal factory has no session certificate", span));
+                var retained = certificate.retainedNominals().get(
+                        nominal.schema().type().canonicalSpelling());
+                if (retained == null) {
+                    throw failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                            "retained nominal factory has no exact definition", span);
+                }
+                Optional<LambdaId> initializer = retained.memberInitializerLambdas().get(memberIndex);
+                if (initializer.isEmpty()) {
+                    return scalarValue(nominal.schema().members().get(memberIndex).type());
+                }
+                LambdaId lambda = initializer.orElseThrow();
+                CallableSummary summary = certificate.callableSummaries().summary(lambda).orElseThrow(() ->
+                        failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                                "retained nominal initializer has no callable summary", span));
+                Map<DeclarationId, ValueAlternatives> captures = new TreeMap<>();
+                Map<DeclarationId, ValueAlternatives> cells = new TreeMap<>();
+                for (var capture : summary.captures()) {
+                    if (capture.declarationId().equals(nominal.self())) {
+                        captures.put(capture.declarationId(), self);
+                    } else if (capture.isSharedCell()) {
+                        DeclarationId cell = capture.sharedCellId().orElseThrow();
+                        ValueAlternatives value = state.sharedCell(cell)
+                                .or(() -> certificate.sharedCell(cell)).orElseThrow(() ->
+                                        failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                                                "retained nominal initializer lost a shared capture", span));
+                        cells.put(cell, value);
+                    } else {
+                        ValueAlternatives value = state.binding(capture.declarationId())
+                                .map(io.mindspice.lyra.compiler.semantic.flow.BindingFlowValue::alternatives)
+                                .or(() -> certificate.value(capture.declarationId())).orElseThrow(() ->
+                                        failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                                                "retained nominal initializer lost an immutable capture", span));
+                        captures.put(capture.declarationId(), value);
+                    }
+                }
+                CallableFlow callable = new CallableFlow(Optional.of(lambda), Optional.empty(),
+                        ProjectionPath.root(), captures, cells, Optional.empty());
+                return ValueAlternatives.singleton(ValueAlternative.callable(
+                        nominal.schema().members().get(memberIndex).type(), callable));
             }
 
             private Eval reference(
@@ -1239,8 +1306,26 @@ public final class SemanticFlowAnalyzer {
                 TypedExpression targetExpression = expression.children().getFirst();
                 if (targetExpression.kind() == TypedExpressionKind.MEMBER_ACCESS && targetExpression.declarationId().isPresent()) {
                     Eval receiver = evaluate(targetExpression.children().getFirst(), frame, state);
-                    Eval replacement = evaluate(expression.children().get(1), frame, receiver.state);
+                    var replacementInput = receiver.state;
+                    List<DeclarationId> contextualSelf = expression.children().get(1).lambdaId()
+                            .map(lambdas::get).stream().filter(Objects::nonNull)
+                            .flatMap(lambda -> lambda.captures().stream())
+                            .map(captures::get).filter(Objects::nonNull)
+                            .map(ResolvedCapture::declarationId)
+                            .filter(id -> Optional.ofNullable(resolvedDeclarations.get(id))
+                                    .map(ResolvedDeclaration::kind)
+                                    .filter(DeclarationKind.SELF::equals).isPresent())
+                            .distinct().toList();
+                    for (DeclarationId self : contextualSelf) {
+                        replacementInput = bindOrReplace(
+                                replacementInput, self, receiver.value, expression.span());
+                    }
+                    Eval replacement = evaluate(
+                            expression.children().get(1), frame, replacementInput);
                     var updated = replacement.state;
+                    for (DeclarationId self : contextualSelf) {
+                        updated = updated.withoutBinding(self);
+                    }
                     var fields = receiver.value.alternatives().stream().flatMap(value -> value.objects().stream())
                             .filter(fact -> fact.route().isRoot()).distinct().toList();
                     if (fields.isEmpty()) throw failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
