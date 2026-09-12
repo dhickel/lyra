@@ -63,6 +63,9 @@ The compiler schema projection is now wired into embedded facade metadata and
 artifact assembly with schema-aware export parsing and revision binding.
 Producer artifact keys now carry those contracts for generated callable signature
 resolution, with per-producer lifecycle checks ahead of shared metadata caching.
+The runtime now has a single-use receiver construction capability, field
+initialization checks and nominal value/access authority boundaries. Tests use
+exact typed Java fixtures; generated source object classes remain to be wired.
 These are contract/mapping/metadata tests, not emitted object execution. Object
-artifact publication, class/member plans, direct emission, authorities, equality,
+artifact publication, class/member plans, direct emission, authority wiring, equality,
 Java factories and persistent sessions remain unfinished.

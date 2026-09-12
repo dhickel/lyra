@@ -123,6 +123,19 @@ final class LyraOwnershipToken {
         }
     }
 
+    NominalSchema resolveNominalSchema(String canonical) {
+        ensureCreationAllowed();
+        if (!(artifactKey instanceof LyraArtifactKey key)) {
+            throw new LyraLinkException("nominal object has no producer schema environment");
+        }
+        try {
+            var environment = key.nominalSchemas();
+            return environment.require(environment.resolve(canonical));
+        } catch (IllegalArgumentException failure) {
+            throw new LyraLinkException("unknown producer nominal contract", java.util.List.of(), failure);
+        }
+    }
+
     boolean sameArtifact(LyraOwnershipToken other) {
         return other != null && artifactKey == other.artifactKey;
     }

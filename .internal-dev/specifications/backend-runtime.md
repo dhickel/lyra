@@ -134,6 +134,18 @@ Representation fields are private; public typed accessors preserve source visibi
 mutation contracts and owner/lifecycle checks. Typed construction factories retain
 the originating module instance; Java cannot construct unauthenticated raw objects.
 
+Generated representations extend a runtime authority/initialization base that
+stores no source field values. A declaring-producer factory issues a single-use
+construction capability bound to one exact final representation class and receiver.
+The generated constructor checks its embedded nominal contract against that
+capability. Required arguments/defaults and constructor assignments use checked
+initialization slots; only complete initialization publishes an ordinary usable
+object. Exceptional factory exits invalidate the partial receiver. Initialization
+checks never replace compile-time definite-initialization or lexical privacy proofs.
+Java-facing access requires OPEN producer state; generated access may run during
+module initialization but still requires a completely initialized object. Constructor
+reads of previously initialized fields use the exact active construction capability.
+
 Method slots store exact typed function interfaces initialized with receiver-capturing
 closures. Direct calls load the slot once before evaluating explicit arguments.
 Reading a slot neither allocates a new wrapper nor retargets a receiver. Replacing

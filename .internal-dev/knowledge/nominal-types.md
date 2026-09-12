@@ -114,7 +114,16 @@ remain in progress.
   revisions; neither may call the schema-free type parser for nominal exports.
   Generated object class plans/emission remain a separate gate.
 
-## Open Questions
+Nominal construction capabilities bind a single exact receiver and final class;
+the receiver constructor must also check its own embedded nominal contract.
+Checking only the caller-supplied class would let a ticket retype a representation.
+Source fields stay typed in the subclass; the runtime base holds only authority,
+schema and initialization bits, releasing the bits at completion/failure. Generated
+initialization must validate values before marking a slot and immediately emit its
+typed store; exceptional exits invalidate the partial receiver. Private access is
+lexical compiler evidence, not a property inferred from construction authority.
+The runtime module guard must permit separate instances of the same declaring
+module in the same authenticated domain, not require identical instance tokens.
 
 Producer-scoped signature resolution must update both loaded-artifact keys and
 direct generated-facade key creation. A closure constructor already has its
@@ -124,6 +133,8 @@ uninitialized instance capture fields. Schema-2 compatibility must also reach
 RuntimeOptions through LyraRuntimeConstants, not only the metadata reader gate.
 The cache contains immutable signatures only; individual lifecycle checks must
 precede lookup even when another still-open instance shares the same artifact key.
+
+## Open Questions
 
 No additional owner decision blocks starting implementation. Exact internal schema
 encoding and typed factory naming must be resolved and tested in the ABI phase;
