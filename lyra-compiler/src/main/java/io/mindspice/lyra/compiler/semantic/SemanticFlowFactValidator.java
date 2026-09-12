@@ -461,7 +461,11 @@ final class SemanticFlowFactValidator {
             for (ValueAlternative value : values) {
                 validateIdentityCoverage(value, value.type(), ProjectionPath.root());
                 for (NilProvenance nil : value.nilProvenance()) {
-                    requireSite(Optional.of(nil.sourceSite()), nil.sourceSpan(), "nil source");
+                    boolean inherited = sessionCertificate
+                            .map(certificate -> certificate.certifiesNil(nil)).orElse(false);
+                    if (!inherited) {
+                        requireSite(Optional.of(nil.sourceSite()), nil.sourceSpan(), "nil source");
+                    }
                     require(ValueAlternative.typeAt(value.type(), nil.route()).isNilable(),
                             "nil provenance route is not nilable");
                 }
@@ -527,6 +531,15 @@ final class SemanticFlowFactValidator {
                 // The producer already validated the allocation site, owner
                 // scope, and source provenance.  A later graph may not own
                 // those source objects, so do not reinterpret them as local.
+                // The consumer occurrence is still this graph's evidence, so a
+                // use site from an unrelated module stays rejected.
+                SourceSpan use = fact.witness().useSpan();
+                boolean consumerUse = modules.stream().anyMatch(module ->
+                        module.sourceId().equals(use.sourceId()));
+                require(consumerUse || graph.resolvedGraph().sessionFlowCertificate()
+                                .map(certificate -> certificate.certifiesAggregateUse(fact))
+                                .orElse(false),
+                        "certified aggregate use site belongs to an unrelated module");
                 return;
             }
             require(modules.contains(fact.identity().ownerModule()),
@@ -735,13 +748,20 @@ final class SemanticFlowFactValidator {
                             .anyMatch(effect -> effect.witness().equals(witness))).findFirst();
             boolean certificateOwned = sessionCertificate
                     .map(certificate -> certificate.certifiesEffect(witness)).orElse(false);
+            boolean certificateTarget = sessionCertificate
+                    .map(certificate -> certificate.certifiesEffectTarget(witness)).orElse(false);
             boolean producerCertified = certificateOwned || retainedProducer.isPresent();
+            boolean dynamicTarget = witness.kind() == EagerEffectWitness.Kind.CALLABLE_CALL
+                    || witness.kind() == EagerEffectWitness.Kind.PARAMETER_CALL
+                    || witness.kind() == EagerEffectWitness.Kind.CAPTURE_CALL;
             require((modules.contains(witness.fromModule())
                             || graph.resolvedGraph().retainedModules()
-                            .module(witness.fromModule()).isPresent())
+                            .module(witness.fromModule()).isPresent()
+                            || producerCertified)
                             && (modules.contains(witness.targetModule())
                             || graph.resolvedGraph().retainedModules()
-                            .module(witness.targetModule()).isPresent()),
+                            .module(witness.targetModule()).isPresent()
+                            || producerCertified && !dynamicTarget),
                     "eager effect names a foreign module");
             require(core.ownsFlowSite(witness.effectSite().orElseThrow(), witness.effectSpan())
                             || certificateOwned && sessionCertificate.orElseThrow()
@@ -749,7 +769,7 @@ final class SemanticFlowFactValidator {
                                     witness.effectSite().orElseThrow())
                             || retainedProducer.map(producer -> producer.sealingCore().ownsFlowSite(
                                     witness.effectSite().orElseThrow(), witness.effectSpan())).orElse(false),
-                    "eager effect flow-site identity does not match its source span");
+                    "eager effect flow-site identity does not match its source span: " + witness);
             require(witness.sourcePath().size() == witness.sourceSitePath().size(),
                     "eager effect site/span path lengths differ");
             for (int index = 0; index < witness.sourcePath().size(); index++) {
@@ -778,7 +798,11 @@ final class SemanticFlowFactValidator {
                     graph.resolvedGraph().reference(reference).isPresent() || producerCertified,
                     "eager effect reference is foreign"));
             witness.targetLambda().ifPresent(lambda -> require(
-                    lambdas.containsKey(lambda) || producerCertified
+                    lambdas.containsKey(lambda)
+                            || certificateTarget
+                            || sessionCertificate.map(certificate -> certificate.certifiesLambda(lambda))
+                            .orElse(false)
+                            || retainedProducer.isPresent()
                             || graph.resolvedGraph().retainedModules().module(witness.targetModule())
                             .flatMap(record -> record.producerGraph().lambda(lambda)).isPresent(),
                     "eager effect lambda is foreign"));

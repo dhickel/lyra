@@ -1,8 +1,13 @@
 package io.mindspice.lyra.repl;
 
+import io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes;
 import io.mindspice.lyra.runtime.NominalType;
+import io.mindspice.lyra.runtime.RuntimeIoEnvironment;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -121,6 +126,75 @@ class NominalSessionTest {
                     "callable-call-factory-3.lyra", "box::read[]")));
             assertEquals("14", assertInstanceOf(ValueSnapshot.Scalar.class,
                     result.value().orElseThrow().data()).value());
+        }
+    }
+
+    @Test
+    void retainedCallableSummariesResolveNestedProducerConstructions() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("nested-construction-1.lyra", """
+                    class Inner { let @pub value :I32 = 7 }
+                    let make :Fn<;Inner> = (=> || Inner[])
+                    class Outer { let @pub inner :Inner = ::make[] }
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "nested-construction-2.lyra", "let outer :Outer = Outer[]")));
+            EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
+                    "nested-construction-3.lyra", "outer:.inner:.value")));
+            assertEquals("7", assertInstanceOf(ValueSnapshot.Scalar.class,
+                    result.value().orElseThrow().data()).value());
+        }
+    }
+
+    @Test
+    void retainedNamespaceIntrinsicDefaultsResolveAndExecute() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        SessionOptions options = SessionOptions.builder()
+                .ioEnvironment(new RuntimeIoEnvironment(
+                        new ByteArrayInputStream(new byte[0]), output, output,
+                        StandardCharsets.UTF_8))
+                .build();
+        try (LyraSession session = LyraSession.open(options)) {
+            success(session.submit(EvaluationSource.of("intrinsic-default-1.lyra", """
+                    import std->io
+                    class Printer { let @pub printed :Unit = io->::println["retained"] }
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "intrinsic-default-2.lyra", "let printer :Printer = Printer[]")));
+            assertEquals("retained\n", output.toString(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    void retainedNilDefaultsKeepProducerCertifiedProvenance() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of(
+                    "nil-default-1.lyra", "class Maybe { let @pub @nil value :I32 = #NIL }")));
+            success(session.submit(EvaluationSource.of(
+                    "nil-default-2.lyra", "let maybe :Maybe = Maybe[]")));
+            EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
+                    "nil-default-3.lyra", "maybe:.value")));
+            assertInstanceOf(ValueSnapshot.Nil.class,
+                    result.value().orElseThrow().data());
+        }
+    }
+
+    @Test
+    void retainedAggregateDefaultsRemainForeignForConsumerMutation() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("foreign-default-1.lyra", """
+                    class Bag { let @pub values :Array<I32> = Array<I32>[1 2] }
+                    """)));
+
+            EvaluationResult.CompilationFailure failure = assertInstanceOf(
+                    EvaluationResult.CompilationFailure.class,
+                    session.submit(EvaluationSource.of("foreign-default-2.lyra", """
+                            let @mut bag :Bag = Bag[]
+                            bag:.values[0] := 3
+                            """)));
+
+            assertEquals(CompilerDiagnosticCodes.RESOLVE_IMPORTED_MUTATION,
+                    failure.diagnostics().getFirst().code());
         }
     }
 

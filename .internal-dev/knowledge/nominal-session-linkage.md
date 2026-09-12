@@ -34,6 +34,19 @@ session generations.
 - Snapshot inspection uses generated public field accessors only. It never calls
   source methods or `toString`, and it omits private class members.
 
+## Retained certificate transfer
+
+- A later generation re-registers retained nominals as declarations with no initializer
+  evidence. Retained-proof construction must load the predecessor certificate rather
+  than rebuild evidence from the current graph.
+- Callable-local fresh allocations must retain the producer's exact allocation
+  identity. Reconstructing a type-shaped or consumer-minted identity for a retained
+  summary result makes semantic flow validation fail with a foreign aggregate owner.
+- `AllocationProvenance` is the single carrier for those exact producer identities
+  in retained summaries.
+- Retained summary allocation conversion previously crashed when an owner typed
+  lambda was absent. Every owner-lambda lookup needs a certificate fallback.
+
 ## Project Relevance
 
 These rules preserve exact type identity, lexical privacy, method receiver capture
