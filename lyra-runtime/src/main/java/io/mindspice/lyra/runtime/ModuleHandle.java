@@ -13,7 +13,7 @@ public interface ModuleHandle extends AutoCloseable {
 
     /** Convenience overload for a canonical {@code Fn<...>} spelling. */
     default ExportHandle export(String name, String signature) {
-        return export(name, LyraSignature.parse(signature));
+        return export(name, LyraSignature.parse(signature, metadata().nominalSchemas()));
     }
 
     /** Looks up a callable export by its stable identity. */

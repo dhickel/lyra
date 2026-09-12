@@ -31,6 +31,8 @@ public final class LyraClosureAuthority {
     /** Exact metadata resolution scoped to this producer, with owner/lifecycle checks. */
     public LyraSignature resolveSignature(String canonical) { return token.resolveSignature(canonical); }
 
+    public NominalType resolveNominalType(String canonical) { return token.resolveNominalSchema(canonical).type(); }
+
     public boolean sameArtifact(LyraClosureAuthority other) {
         return other != null && token.sameArtifact(other.token);
     }

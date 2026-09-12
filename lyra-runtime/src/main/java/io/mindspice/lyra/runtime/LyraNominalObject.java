@@ -28,6 +28,12 @@ public abstract class LyraNominalObject {
 
     public final NominalType nominalType() { return schema.type(); }
 
+    /** Authority used only by final generated subclasses at typed value boundaries. */
+    protected final LyraClosureAuthority nominalAuthority() {
+        authority.ensureCreationAllowed();
+        return authority;
+    }
+
     private NominalSchema.Member field(int index) {
         if (index < 0 || index >= schema.members().size()) {
             throw new LyraLinkException("nominal field index is outside its exact schema");

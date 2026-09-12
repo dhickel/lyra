@@ -203,7 +203,18 @@ separate mandatory boundaries.
 Struct equality traverses current typed fields with visited object pairs for cycles;
 class equality uses identity. Equality does not invoke user code. Java-facing access,
 source-mapped failures, deterministic packaging, CLI execution and persistent sessions
-are completion gates. No nominal backend support is claimed by this checkpoint.
+are completion gates.
+
+Source declarations already emit deterministic final representation classes with
+private exact fields and typed initialization, generated and public access methods.
+Every reference-bearing boundary recursively authenticates nominal and callable
+leaves without copying arrays, tuples or object references. During initialization,
+only the active capability may admit its own incomplete receiver as an internal
+self-field value; ordinary generated and public boundaries require complete objects.
+Generated callable signatures resolve through the producer-scoped metadata cache.
+This emitted representation support does not itself execute a Lyra construction
+expression: module factories, source member operations and method-slot behavior
+remain separate completion gates.
 
 ### Functions and closures
 

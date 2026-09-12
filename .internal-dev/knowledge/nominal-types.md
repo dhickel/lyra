@@ -142,6 +142,16 @@ targets are non-ordering links so recursive schemas remain complete without cycl
 Field schemas still drive exact primitive/reference storage and source visibility;
 nominal declaration names are constructor roles, never module instance fields.
 
+Emitted nominal accessors must validate a reference value before marking an
+initialization slot or changing a mutable field. The validated value is then stored
+immediately and unchanged, preserving array/object alias identity. Recursive nominal
+and callable contracts resolve through the owning artifact authority; generated
+nominal methods must use the scoped signature cache even for an otherwise ordinary
+function field. The definite-initialization proof permits an object to store its own
+incomplete receiver internally, so only the matching active construction ticket may
+authenticate that exact self value. It must not admit another incomplete object or
+make the receiver usable through an ordinary public/generated boundary.
+
 ## Open Questions
 
 No additional owner decision blocks starting implementation. Exact internal schema

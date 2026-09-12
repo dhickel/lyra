@@ -386,6 +386,8 @@ final class JvmBytecodeEmitter {
             if (base instanceof PrimitiveType || base instanceof io.mindspice.lyra.compiler.types.RangeType) {
                 return;
             }
+            if (base instanceof io.mindspice.lyra.compiler.types.NominalType nominal
+                    && plan.nominalLayouts().containsKey(nominal.canonicalSpelling())) return;
             if (base instanceof ArrayType array) {
                 requireSupportedType(array.elementType(), span);
                 return;
@@ -490,6 +492,7 @@ final class JvmBytecodeEmitter {
         private ClassDesc superclass(GeneratedClassPlan classPlan) {
             return switch (classPlan.kind()) {
                 case CLOSURE -> CD_CLOSURE;
+                case NOMINAL_VALUE -> cd(RUNTIME + "LyraNominalObject");
                 default -> CD_OBJECT;
             };
         }
@@ -597,6 +600,7 @@ final class JvmBytecodeEmitter {
         private void emit() {
             if (!owner.sharedSessionType(classPlan)) line(memberSpan());
             switch (classPlan.kind()) {
+                case NOMINAL_VALUE -> emitNominalMethod();
                 case TUPLE_VALUE -> emitTupleMethod();
                 case CELL -> emitCellMethod();
                 case CLOSURE -> emitClosureMethod();
@@ -717,6 +721,125 @@ final class JvmBytecodeEmitter {
                 case TUPLE_COMPONENT_GET, SESSION_TUPLE_COMPONENT_GET -> emitTupleComponentGetter();
                 default -> throw invalidPlan(memberSpan(), "unexpected tuple method: " + member.kind());
             }
+        }
+
+        private void emitNominalMethod() {
+            var layout = classPlan.nominalLayout().orElseThrow();
+            ClassDesc base = cd(RUNTIME + "LyraNominalObject");
+            ClassDesc ticket = cd(RUNTIME + "LyraNominalConstruction");
+            if (member.kind() == GeneratedMemberKind.NOMINAL_CONSTRUCTOR) {
+                aloadReceiver();
+                loadParameter(0);
+                code.ldc(layout.schema().type().canonicalSpelling());
+                code.invokespecial(base, "<init>", method("(" + NominalClassLayout.CONSTRUCTION + "Ljava/lang/String;)V"));
+                code.return_();
+                return;
+            }
+            int index = Integer.parseInt(member.name().substring(member.name().lastIndexOf('$') + 1));
+            var field = layout.fields().get(index);
+            boolean initialize = member.kind() == GeneratedMemberKind.NOMINAL_INITIALIZE;
+            boolean initializingRead = member.kind() == GeneratedMemberKind.NOMINAL_INITIALIZATION_GET;
+            boolean publicAccess = member.kind() == GeneratedMemberKind.NOMINAL_PUBLIC_GET
+                    || member.kind() == GeneratedMemberKind.NOMINAL_PUBLIC_SET;
+            boolean write = initialize || member.kind() == GeneratedMemberKind.NOMINAL_SET
+                    || member.kind() == GeneratedMemberKind.NOMINAL_PUBLIC_SET;
+            int valueParameter = publicAccess ? 0 : 1;
+            if (write) {
+                loadParameter(valueParameter);
+                authenticateNominalFieldValue(field.member().type(), !publicAccess);
+                storeParameter(valueParameter);
+            }
+            if (initialize || initializingRead) {
+                loadParameter(0);
+                aloadReceiver();
+                code.ldc(index);
+                code.invokevirtual(ticket, initialize ? "initializeField" : "checkRead",
+                        method("(L" + RUNTIME + "LyraNominalObject;I)V"));
+            } else {
+                aloadReceiver();
+                if (!publicAccess) loadParameter(0);
+                code.ldc(index);
+                code.invokevirtual(base, publicAccess ? (write ? "checkPublicWrite" : "checkPublicRead")
+                                : (write ? "checkGeneratedWrite" : "checkGeneratedRead"),
+                        method(publicAccess ? "(I)V" : "(" + NominalClassLayout.AUTHORITY + "I)V"));
+            }
+            aloadReceiver();
+            if (write) {
+                loadParameter(valueParameter);
+                code.putfield(cd(classPlan.binaryName()), field.storageName(), type(field.value().descriptor()));
+                code.return_();
+            } else {
+                code.getfield(cd(classPlan.binaryName()), field.storageName(), type(field.value().descriptor()));
+                authenticateNominalFieldValue(field.member().type(), !publicAccess);
+                returnPhysicalDescriptor(field.value().descriptor());
+            }
+        }
+
+        /** Checks exact reference leaves while retaining typed storage and alias identity. */
+        private void authenticateNominalFieldValue(LyraType logical, boolean generated) {
+            if (logical.isMutable()) {
+                logical = logical.isNilable() ? logical.withoutQualifiers().nilable() : logical.withoutQualifiers();
+            }
+            JvmTypePlan physical = owner.mapper.map(logical, JvmMappingContext.JAVA_VALUE);
+            if (!physical.descriptor().startsWith("L") && !physical.descriptor().startsWith("[")) return;
+            int slot = allocateLocal(physical);
+            storePhysical(physical.physicalComponents().getFirst(), slot);
+            Label done = code.newLabel();
+            LyraType base = logical.withoutQualifiers();
+            code.aload(slot);
+            if (logical.isNilable()) code.ifnull(done);
+            else if (base instanceof FunctionType || base instanceof io.mindspice.lyra.compiler.types.NominalType) code.pop();
+            else {
+                code.invokestatic(cd("java.util.Objects"), "requireNonNull", method("(Ljava/lang/Object;)Ljava/lang/Object;"));
+                code.pop();
+            }
+            if (base instanceof FunctionType function) {
+                code.aload(slot);
+                emitIoAuthority();
+                emitScopedSignatureOverAuthority(function.signature().canonicalSpelling());
+                code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, generated ? "requireAuthenticatedForGeneratedInvocation" : "requireAuthenticated",
+                        method("(Ljava/lang/Object;" + NominalClassLayout.AUTHORITY + "L" + RUNTIME + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
+                code.pop();
+            } else if (base instanceof io.mindspice.lyra.compiler.types.NominalType nominal) {
+                boolean initializing = member.kind() == GeneratedMemberKind.NOMINAL_INITIALIZE
+                        || member.kind() == GeneratedMemberKind.NOMINAL_INITIALIZATION_GET;
+                if (initializing) {
+                    loadParameter(0); code.aload(slot); emitIoAuthority();
+                } else {
+                    code.aload(slot); emitIoAuthority(); code.dup();
+                }
+                code.ldc(nominal.canonicalSpelling());
+                code.invokevirtual(CD_AUTHORITY, "resolveNominalType", method("(Ljava/lang/String;)L" + RUNTIME + "NominalType;"));
+                if (initializing) code.invokevirtual(cd(RUNTIME + "LyraNominalConstruction"), "requireFieldValue",
+                        method("(Ljava/lang/Object;L" + RUNTIME + "NominalType;)L" + RUNTIME + "LyraNominalObject;"));
+                else code.invokestatic(cd(RUNTIME + "LyraNominalSupport"), generated ? "requireAuthenticatedForGeneratedInvocation" : "requireAuthenticated",
+                        method("(Ljava/lang/Object;" + NominalClassLayout.AUTHORITY + "L" + RUNTIME + "NominalType;)L" + RUNTIME + "LyraNominalObject;"));
+                code.pop();
+            } else if (base instanceof ArrayType array) {
+                String element = owner.mapper.map(array.elementType(), JvmMappingContext.JAVA_ARRAY_ELEMENT).descriptor();
+                if (element.startsWith("L") || element.startsWith("[")) {
+                    int index = code.allocateLocal(TypeKind.INT);
+                    code.iconst_0(); code.istore(index);
+                    Label loop = code.newLabel(); code.labelBinding(loop);
+                    code.iload(index); code.aload(slot); code.arraylength(); code.if_icmpge(done);
+                    code.aload(slot); code.iload(index); code.aaload();
+                    authenticateNominalFieldValue(array.elementType(), generated); code.pop();
+                    code.iinc(index, 1); code.goto_(loop);
+                }
+            } else if (base instanceof TupleType tuple) {
+                String tupleName = owner.plan.tupleClasses().get(tuple.canonicalSpelling());
+                for (int index = 0; index < tuple.arity(); index++) {
+                    String descriptor = owner.mapper.map(tuple.memberType(index), JvmMappingContext.TUPLE_FIELD).descriptor();
+                    if (!descriptor.startsWith("L") && !descriptor.startsWith("[")) continue;
+                    code.aload(slot);
+                    code.invokevirtual(cd(tupleName), "$lyra$get$" + index, method("()" + descriptor));
+                    authenticateNominalFieldValue(tuple.memberType(index), generated); code.pop();
+                }
+            } else if (base instanceof io.mindspice.lyra.compiler.types.RangeType) {
+                code.aload(slot); authenticateRange(logical); code.pop();
+            }
+            code.labelBinding(done);
+            code.aload(slot);
         }
 
         private void emitTupleConstructor() {
@@ -920,6 +1043,11 @@ final class JvmBytecodeEmitter {
 
         private boolean authenticateFunctionParameter(int index, LyraType logical,
                                                       JvmTypePlan physical) {
+            if (containsNominal(logical)) {
+                loadParameter(index);
+                authenticateNominalFieldValue(logical, true);
+                return true;
+            }
             if (logical.withoutQualifiers() instanceof io.mindspice.lyra.compiler.types.RangeType) {
                 loadParameter(index);
                 authenticateRange(logical);
@@ -1609,6 +1737,10 @@ final class JvmBytecodeEmitter {
 
         /** Checks callable leaves without wrapping or copying the exact typed value. */
         private void authenticateSessionValue(LyraType logical) {
+            if (containsNominal(logical)) {
+                authenticateNominalFieldValue(logical, false);
+                return;
+            }
             LyraType base = logical.withoutQualifiers();
             if (base instanceof PrimitiveType) return;
             if (base instanceof io.mindspice.lyra.compiler.types.RangeType) {
@@ -1989,6 +2121,12 @@ final class JvmBytecodeEmitter {
             } else if (member.kind() == GeneratedMemberKind.VALUE_GETTER) {
                 emitFacadeValueGetter(export);
             } else if (member.kind() == GeneratedMemberKind.SETTER) {
+                LyraType logical = declarations.get(export.declarationId()).contract().orElseThrow().valueType();
+                if (containsNominal(logical) && !(logical.withoutQualifiers() instanceof FunctionType)) {
+                    loadParameter(0);
+                    authenticateNominalFieldValue(logical, false);
+                    storeParameter(0);
+                }
                 emitFacadeSetter(export);
             } else {
                 throw invalidPlan(memberSpan(), "unknown facade export member");
@@ -2063,6 +2201,8 @@ final class JvmBytecodeEmitter {
                     declarations.get(export.declarationId()).contract().orElseThrow().valueType(),
                     JvmMappingContext.INTERNAL_VALUE);
             adapt(internal, export.valueType());
+            LyraType logical = declarations.get(export.declarationId()).contract().orElseThrow().valueType();
+            if (containsNominal(logical)) authenticateNominalFieldValue(logical, false);
             returnPhysicalDescriptor(export.valueType().descriptor());
         }
 
@@ -2353,6 +2493,7 @@ final class JvmBytecodeEmitter {
             loadParameter(index);
             JvmTypePlan source = owner.mapper.map(logical, JvmMappingContext.JAVA_PARAMETER);
             adapt(source, target);
+            if (containsNominal(logical)) authenticateNominalFieldValue(logical, false);
         }
 
         private void authenticateRange(LyraType logical) {
@@ -2518,6 +2659,10 @@ final class JvmBytecodeEmitter {
 
         private JvmTypePlan emitNode(IrNode node) {
             line(node.span());
+            if (node instanceof IrNode.NominalDeclaration) {
+                emitUnit();
+                return owner.mapper.map(node.type(), JvmMappingContext.INTERNAL_VALUE);
+            }
             if (node instanceof IrNode.Constant constant) {
                 return emitConstant(constant);
             }
@@ -4632,6 +4777,12 @@ final class JvmBytecodeEmitter {
         }
 
         private void emitIoAuthority() {
+            if (classPlan.kind() == GeneratedClassKind.NOMINAL_VALUE) {
+                aloadReceiver();
+                code.invokevirtual(cd(RUNTIME + "LyraNominalObject"), "nominalAuthority",
+                        method("()" + NominalClassLayout.AUTHORITY));
+                return;
+            }
             if (stateMethod || closureMethod) {
                 emitCurrentAuthority();
                 return;
@@ -4649,15 +4800,19 @@ final class JvmBytecodeEmitter {
         /** Leaves the existing authority below the resolved exact signature. */
         private void emitSignatureOverAuthority(String canonical) {
             if (canonical.contains("Nominal<")) {
-                code.dup();
-                code.ldc(canonical);
-                code.invokevirtual(CD_AUTHORITY, "resolveSignature",
-                        method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+                emitScopedSignatureOverAuthority(canonical);
             } else {
                 code.ldc(canonical);
                 code.invokestatic(CD_SIGNATURE, "parse",
                         method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
             }
+        }
+
+        private void emitScopedSignatureOverAuthority(String canonical) {
+            code.dup();
+            code.ldc(canonical);
+            code.invokevirtual(CD_AUTHORITY, "resolveSignature",
+                    method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
         }
 
         private DeclarationId targetDeclaration(IrNode node) {
@@ -4993,7 +5148,20 @@ final class JvmBytecodeEmitter {
                 return;
             }
             adapt(value, target);
+            if (containsNominal(lambda.signature().returnType())) {
+                authenticateNominalFieldValue(lambda.signature().returnType(), true);
+            }
             returnPhysicalDescriptor(target.descriptor());
+        }
+
+        private boolean containsNominal(LyraType logical) {
+            LyraType base = logical.withoutQualifiers();
+            if (base instanceof io.mindspice.lyra.compiler.types.NominalType) return true;
+            if (base instanceof ArrayType array) return containsNominal(array.elementType());
+            if (base instanceof TupleType tuple) return tuple.memberTypes().stream().anyMatch(this::containsNominal);
+            if (base instanceof FunctionType function) return containsNominal(function.returnType())
+                    || function.parameterTypes().stream().anyMatch(this::containsNominal);
+            return false;
         }
 
         private void emitTruthValue(IrNode node) {
@@ -6711,6 +6879,11 @@ final class JvmBytecodeEmitter {
 
         private void loadParameter(int index) {
             code.loadLocal(typeKind(method(member.descriptor()).parameterType(index).descriptorString()),
+                    code.parameterSlot(index));
+        }
+
+        private void storeParameter(int index) {
+            code.storeLocal(typeKind(method(member.descriptor()).parameterType(index).descriptorString()),
                     code.parameterSlot(index));
         }
 

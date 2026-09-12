@@ -393,6 +393,19 @@ public final class SessionStorageDomain implements AutoCloseable {
     }
 
     static Class<?> storageClass(LyraType type, ClassLoader loader, String javaPackage) {
+        if (type.baseType() instanceof NominalType nominal) {
+            String name = javaPackage + ".$lyra$nominal$" + nominal.id().stableHash();
+            try {
+                Class<?> representation = Class.forName(name, false, loader);
+                if (representation.getSuperclass() != LyraNominalObject.class
+                        || !java.lang.reflect.Modifier.isFinal(representation.getModifiers())) {
+                    throw new LyraLinkException("nominal contract has no final exact object representation: " + name);
+                }
+                return representation;
+            } catch (ClassNotFoundException failure) {
+                throw new LyraLinkException("nominal contract has no generated class: " + name, List.of(), failure);
+            }
+        }
         if (type.baseType() instanceof RangeType) return LyraRange.class;
         if (type.baseType() instanceof ArrayType array) {
             return storageClass(array.elementType(), loader, javaPackage).arrayType();

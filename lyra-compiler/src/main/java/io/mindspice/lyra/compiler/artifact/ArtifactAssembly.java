@@ -542,6 +542,12 @@ public final class ArtifactAssembly implements ArtifactSource {
             String binaryName, byte[] bytes, String metadataJson) {
         Objects.requireNonNull(bytes, "bytes");
         Objects.requireNonNull(metadataJson, "metadataJson");
+        String schemaOnePrefix = "{\"schemaVersion\":1,\"languageContractVersion\":1,\"compilerVersion\":";
+        String schemaTwoPrefix = "{\"schemaVersion\":2,\"languageContractVersion\":1,\"compilerVersion\":";
+        String provisionalPrefix;
+        if (metadataJson.startsWith(schemaOnePrefix)) provisionalPrefix = schemaOnePrefix;
+        else if (metadataJson.startsWith(schemaTwoPrefix)) provisionalPrefix = schemaTwoPrefix;
+        else throw new ArtifactAssemblyException("unsupported facade metadata publication contract: " + binaryName);
         if (bytes.length < 10 || u4(bytes, 0) != 0xCAFEBABE) {
             throw new ArtifactAssemblyException("facade is not a class file: " + binaryName);
         }
@@ -573,8 +579,7 @@ public final class ArtifactAssembly implements ArtifactSource {
                         throw new ArtifactAssemblyException("truncated facade UTF-8 constant: " + binaryName);
                     }
                     String value = modifiedUtf8(bytes, offset, length, binaryName);
-                    if (value.startsWith("{\"schemaVersion\":1,\"languageContractVersion\":1,"
-                            + "\"compilerVersion\":")
+                    if (value.startsWith(provisionalPrefix)
                             && value.endsWith(",\"_lyraProvisional\":true}")) {
                         legacyMatches++;
                         legacyStart = offset;

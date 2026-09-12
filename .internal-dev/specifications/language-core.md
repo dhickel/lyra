@@ -140,15 +140,15 @@ Closures capture bindings. Immutable captures retain their selected value/refere
 The owner accepted the following extension on 2026-09-11. Completion requires the
 corresponding backend and session gates; parsing alone does not complete it.
 
-Implementation status: lexical/grammar/AST support and initial nominal declaration/
-member resolution are implemented. Exact declaration schemas, named contracts,
-constructor signatures, lexical member privacy and receiver capture links are
-published by resolution. Typed construction/member operations, an initial
-definite-initialization certificate, field-sensitive heap/callable transfer and
-nominal IR are covered by focused source tests. General constructor summaries,
-complete repeated/imported heap transfer, contextual replacement receivers, JVM
-and session support remain in progress. Typed/IR success alone is not executable
-nominal conformance.
+Implementation status: lexical/grammar/AST, resolution, typed construction/member
+operations, initial definite-initialization certification, field-sensitive heap/
+callable transfer and nominal IR are implemented. Source declarations now emit
+deterministic final JVM representation classes with private typed fields and checked
+initialization/generated/public accessors. Host-driven integration tests load and
+exercise those source-produced classes. General constructor summaries, Lyra-side
+factory/construction and member execution, complete repeated/imported heap transfer,
+contextual replacement receivers, equality and persistent sessions remain in
+progress; emitted representation support alone is not full nominal conformance.
 
 ```lyra
 struct Vec2 {

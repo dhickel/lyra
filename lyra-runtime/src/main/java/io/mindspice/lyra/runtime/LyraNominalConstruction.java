@@ -61,6 +61,14 @@ public final class LyraNominalConstruction {
         value.checkInitializationRead(field);
     }
 
+    /** A receiver may refer to itself internally before publication; other values must be complete. */
+    public LyraNominalObject requireFieldValue(Object candidate, NominalType expected) {
+        checkReceiver(receiver);
+        Objects.requireNonNull(expected, "expected");
+        if (candidate == receiver && schema.type().equals(expected)) return receiver;
+        return LyraNominalSupport.requireAuthenticatedForGeneratedInvocation(candidate, authority, expected);
+    }
+
     /**
      * Generated initialization validates/evaluates the value first, calls this
      * method, then immediately stores the exact typed field without calling user

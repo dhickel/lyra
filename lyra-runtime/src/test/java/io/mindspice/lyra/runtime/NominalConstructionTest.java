@@ -80,6 +80,7 @@ class NominalConstructionTest {
         assertThrows(LyraLinkException.class, () -> new OtherValue(ticket));
         var value = new Value(ticket);
         assertEquals(TYPE, value.nominalType());
+        assertSame(value, ticket.requireFieldValue(value, TYPE));
         assertThrows(LyraLinkException.class, () -> new Value(ticket));
         assertThrows(LyraInitializationException.class, () -> value.initializedGet(ticket, 0));
         assertThrows(LyraInitializationException.class, () -> ticket.complete(value));
@@ -95,6 +96,7 @@ class NominalConstructionTest {
         assertThrows(LyraInitializationException.class, () -> LyraNominalSupport.requireAuthenticatedForGeneratedInvocation(
                 value, producer.closureAuthority(), TYPE));
         ticket.complete(value);
+        assertThrows(LyraLinkException.class, () -> ticket.requireFieldValue(value, TYPE));
         assertSame(value, LyraNominalSupport.requireAuthenticatedForGeneratedInvocation(value, producer.closureAuthority(), TYPE));
         assertEquals(17, value.generatedGet(producer.closureAuthority(), 0));
         assertThrows(LyraLinkException.class, () -> ticket.complete(value));
@@ -127,6 +129,8 @@ class NominalConstructionTest {
         var ticket = begin(producer);
         var value = new Value(ticket);
         var otherTicket = begin(otherInstance);
+        var incompleteOther = new Value(otherTicket);
+        assertThrows(LyraInitializationException.class, () -> ticket.requireFieldValue(incompleteOther, TYPE));
         assertThrows(LyraLinkException.class, () -> otherTicket.initializeField(value, 0));
         assertThrows(LyraLinkException.class, () -> begin(otherModule));
         assertThrows(LyraLinkException.class, () -> LyraNominalConstruction.begin(producer.closureAuthority(),
