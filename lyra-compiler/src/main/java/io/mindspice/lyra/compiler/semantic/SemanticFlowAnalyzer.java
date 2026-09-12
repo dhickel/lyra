@@ -1180,6 +1180,26 @@ public final class SemanticFlowAnalyzer {
                     }
                     Eval body = evaluate(constructor.body(), owner, current);
                     current = body.state; events.addAll(body.events); effects.addAll(body.effects);
+                } else if (retainedFactory) {
+                    var retained = retainedNominalDefinition(nominal, expression.span());
+                    if (retained.constructorLambda().isPresent()) {
+                        LambdaId constructor = retained.constructorLambda().orElseThrow();
+                        CallableSummary summary = summaries.summary(constructor).orElseThrow(() ->
+                                failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                                        "retained nominal constructor has no callable summary", expression.span()));
+                        CallableFlow callable = retainedNominalCallable(
+                                nominal, constructor, object, current, expression.span());
+                        FormulaAlternatives[] actualFormulas = new FormulaAlternatives[arguments.size()];
+                        for (int index = 0; index < arguments.size(); index++) {
+                            actualFormulas[index] = toFormulas(
+                                    arguments.get(index), caller.module.moduleId(), expression.span());
+                        }
+                        CallBranch branch = invokeCandidate(
+                                callable, expression, expression.children(), arguments,
+                                actualFormulas, caller, current, summary.signature().asFunctionType(), List.of());
+                        current = branch.state;
+                        effects.addAll(branch.effects);
+                    }
                 }
                 return new Eval(object, current, events, distinctEffects(effects));
             }
@@ -1188,6 +1208,20 @@ public final class SemanticFlowAnalyzer {
                     ResolvedNominal nominal, int memberIndex, ValueAlternatives self,
                     io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
                     SourceSpan span) {
+                var retained = retainedNominalDefinition(nominal, span);
+                Optional<LambdaId> initializer = retained.memberInitializerLambdas().get(memberIndex);
+                if (initializer.isEmpty()) {
+                    return retained.memberInitializerTemplates().get(memberIndex)
+                            .orElseGet(() -> scalarValue(
+                                    nominal.schema().members().get(memberIndex).type()));
+                }
+                return ValueAlternatives.singleton(ValueAlternative.callable(
+                        nominal.schema().members().get(memberIndex).type(),
+                        retainedNominalCallable(nominal, initializer.orElseThrow(), self, state, span)));
+            }
+
+            private SessionFlowCertificate.RetainedNominal retainedNominalDefinition(
+                    ResolvedNominal nominal, SourceSpan span) {
                 var certificate = graph.resolvedGraph().sessionFlowCertificate().orElseThrow(() ->
                         failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
                                 "retained nominal factory has no session certificate", span));
@@ -1197,11 +1231,14 @@ public final class SemanticFlowAnalyzer {
                     throw failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
                             "retained nominal factory has no exact definition", span);
                 }
-                Optional<LambdaId> initializer = retained.memberInitializerLambdas().get(memberIndex);
-                if (initializer.isEmpty()) {
-                    return scalarValue(nominal.schema().members().get(memberIndex).type());
-                }
-                LambdaId lambda = initializer.orElseThrow();
+                return retained;
+            }
+
+            private CallableFlow retainedNominalCallable(
+                    ResolvedNominal nominal, LambdaId lambda, ValueAlternatives self,
+                    io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
+                    SourceSpan span) {
+                var certificate = graph.resolvedGraph().sessionFlowCertificate().orElseThrow();
                 CallableSummary summary = certificate.callableSummaries().summary(lambda).orElseThrow(() ->
                         failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
                                 "retained nominal initializer has no callable summary", span));
@@ -1226,10 +1263,8 @@ public final class SemanticFlowAnalyzer {
                         captures.put(capture.declarationId(), value);
                     }
                 }
-                CallableFlow callable = new CallableFlow(Optional.of(lambda), Optional.empty(),
+                return new CallableFlow(Optional.of(lambda), Optional.empty(),
                         ProjectionPath.root(), captures, cells, Optional.empty());
-                return ValueAlternatives.singleton(ValueAlternative.callable(
-                        nominal.schema().members().get(memberIndex).type(), callable));
             }
 
             private Eval reference(
@@ -1921,7 +1956,8 @@ public final class SemanticFlowAnalyzer {
                             captureFormulas, call.span(), new io.mindspice.lyra.compiler.semantic.flow.SummaryObjectResolver() {
                                 @Override public boolean orderedEffects() { return orderedHeapEffects; }
                                 @Override public void applyWrite(CapturedCellWrite write, CallableSummary owner, Object activation) {
-                                    ValueAlternatives replacement = fromFormulas(write.value(), frame.module.moduleId(), write.span());
+                                    ValueAlternatives replacement = fromFormulas(
+                                            write.value(), frame.module.moduleId(), call.span());
                                     declarationState[0] = applyTransferredWrite(declarationState[0], owner, write,
                                             replacement, argumentExpressions, call.span());
                                     declarationFormulas.clear();
@@ -1996,7 +2032,7 @@ public final class SemanticFlowAnalyzer {
                             value, frame.module.moduleId(), diagnosticOrigins);
                     for (CapturedCellWrite write : success.writes()) {
                         ValueAlternatives replacement = fromFormulas(
-                                write.value(), frame.module.moduleId(), write.span());
+                                write.value(), frame.module.moduleId(), call.span());
                         addCallBoundaryOrigins(
                                 diagnosticOrigins, replacement, call,
                                 frame.module.moduleId());
@@ -2216,6 +2252,9 @@ public final class SemanticFlowAnalyzer {
             private TargetPath targetForAggregateOrigin(
                     io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
                     CapturedCellWrite write) {
+                if (state.binding(write.declarationId()).isPresent()) {
+                    return new TargetPath(write.declarationId(), write.route());
+                }
                 for (Map.Entry<DeclarationId,
                         io.mindspice.lyra.compiler.semantic.flow.BindingFlowValue> entry
                         : state.bindings().entrySet()) {

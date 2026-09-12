@@ -6750,7 +6750,7 @@ final class JvmBytecodeEmitter {
             if (declaration == null) {
                 throw invalidPlan(module.span(), "declaration identity is absent: " + id);
             }
-            if (stateMethod
+            if (member.kind() == GeneratedMemberKind.SESSION_EXECUTE
                     && declaration.moduleId().equals(module.moduleId())
                     && declaration.scopeId().equals(module.rootScope())
                     && !declaration.imported()

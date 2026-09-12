@@ -25,6 +25,8 @@ import io.mindspice.lyra.compiler.semantic.flow.EagerEffectWitness;
 import io.mindspice.lyra.compiler.semantic.flow.FormulaAlternatives;
 import io.mindspice.lyra.compiler.semantic.flow.FreshAllocationSite;
 import io.mindspice.lyra.compiler.semantic.flow.NominalObjectFact;
+import io.mindspice.lyra.compiler.semantic.flow.NilProvenance;
+import io.mindspice.lyra.compiler.semantic.flow.ProjectionPath;
 import io.mindspice.lyra.compiler.semantic.flow.ValueFormula;
 import io.mindspice.lyra.compiler.semantic.flow.ValueAlternative;
 import io.mindspice.lyra.compiler.semantic.flow.ValueAlternatives;
@@ -285,7 +287,11 @@ public final class SessionFlowCertificate {
     /** True when the producer proof contains at least one closure for a lambda identity. */
     public boolean certifiesLambda(LambdaId lambda) {
         Objects.requireNonNull(lambda, "lambda");
-        return callableProofs.stream().anyMatch(value -> value.lambda().filter(lambda::equals).isPresent());
+        return callableProofs.stream().anyMatch(value -> value.lambda().filter(lambda::equals).isPresent())
+                || retainedNominals.values().stream().anyMatch(nominal ->
+                nominal.constructorLambda().filter(lambda::equals).isPresent()
+                        || nominal.memberInitializerLambdas().stream()
+                        .anyMatch(initializer -> initializer.filter(lambda::equals).isPresent()));
     }
 
     /**
@@ -593,12 +599,28 @@ public final class SessionFlowCertificate {
                 continue;
             }
             String canonical = nominal.schema().type().canonicalSpelling();
+            List<Optional<ValueAlternatives>> initializerTemplates = new ArrayList<>();
+            List<Optional<RetainedInitializerCall>> initializerCalls = new ArrayList<>();
+            for (DeclarationId member : nominal.members()) {
+                Optional<TypedExpression> initializer = graph.declaration(member)
+                        .flatMap(io.mindspice.lyra.compiler.semantic.TypedDeclaration::initializer);
+                Optional<ValueAlternatives> template = initializer.flatMap(value ->
+                        retainedInitializerTemplate(value, graph, nominal, initializerTemplates));
+                initializerTemplates.add(template);
+                initializerCalls.add(initializer.flatMap(value ->
+                        retainedInitializerCall(value, graph, nominal, initializerTemplates)));
+            }
             nominals.put(canonical, new RetainedNominal(
                     declaration.name(), nominal, declaration.visibility(),
+                    nominal.constructor(),
                     nominal.members().stream().map(member -> graph.resolvedGraph()
-                            .declaration(member).orElseThrow().initializerLambda()).toList()));
+                            .declaration(member).orElseThrow().initializerLambda()).toList(),
+                    initializerTemplates, initializerCalls));
             nominalNames.put(declaration.name(), canonical);
         }
+        nominals.values().forEach(nominal -> nominal.memberInitializerTemplates().forEach(
+                template -> template.ifPresent(values -> collectProofs(
+                        values, callableProofs, aggregateProofs))));
         return new SessionFlowCertificate(
                 graph.allocator(), boundary, summaries, bindings,
                 callableProofs, aggregateProofs, allocations, nominals, nominalNames, sourceIds,
@@ -641,6 +663,153 @@ public final class SessionFlowCertificate {
                 value, callables, aggregates));
         state.objects().values().forEach(object -> object.fields().values()
                 .forEach(value -> collectProofs(value, callables, aggregates)));
+    }
+
+    private static Optional<ValueAlternatives> retainedInitializerTemplate(
+            TypedExpression initializer, TypedSemanticGraph graph,
+            ResolvedNominal nominal,
+            List<Optional<ValueAlternatives>> priorMemberTemplates) {
+        if (initializer.kind() == TypedExpressionKind.LITERAL) {
+            if (initializer.literal().orElse(null)
+                    instanceof io.mindspice.lyra.compiler.semantic.TypedLiteralValue.NilValue) {
+                return Optional.of(ValueAlternatives.singleton(ValueAlternative.nil(
+                        initializer.type(), new NilProvenance(graph.flowSiteId(initializer),
+                        initializer.span(), ProjectionPath.root()))));
+            }
+            return Optional.of(ValueAlternatives.singleton(
+                    ValueAlternative.scalar(initializer.type())));
+        }
+        if (initializer.kind() == TypedExpressionKind.MEMBER_ACCESS
+                && initializer.declarationId().isPresent()
+                && !initializer.children().isEmpty()
+                && initializer.children().getFirst().link()
+                .flatMap(io.mindspice.lyra.compiler.semantic.TypedLink::declarationId)
+                .filter(nominal.self()::equals).isPresent()) {
+            int memberIndex = nominal.members().indexOf(
+                    initializer.declarationId().orElseThrow());
+            if (memberIndex >= 0 && memberIndex < priorMemberTemplates.size()) {
+                return priorMemberTemplates.get(memberIndex);
+            }
+        }
+        if (initializer.kind() != TypedExpressionKind.ARRAY_LITERAL
+                && initializer.kind() != TypedExpressionKind.TUPLE_LITERAL) {
+            return retainedStructuralTemplate(initializer, graph);
+        }
+        List<ValueAlternative> combinations = List.of(ValueAlternative.scalar(initializer.type()));
+        for (int index = 0; index < initializer.children().size(); index++) {
+            Optional<ValueAlternatives> child = retainedInitializerTemplate(
+                    initializer.children().get(index), graph, nominal, priorMemberTemplates);
+            if (child.isEmpty()) {
+                child = retainedStructuralTemplate(initializer.children().get(index), graph);
+            }
+            if (child.isEmpty()) return Optional.empty();
+            ProjectionPath route = initializer.kind() == TypedExpressionKind.ARRAY_LITERAL
+                    ? ProjectionPath.arrayElement(index) : ProjectionPath.tupleMember(index);
+            List<ValueAlternative> next = new ArrayList<>();
+            for (ValueAlternative prefix : combinations) {
+                for (ValueAlternative member : child.orElseThrow().alternatives()) {
+                    var facts = new ArrayList<>(prefix.aggregateIdentities());
+                    facts.addAll(member.aggregateIdentities().stream()
+                            .map(value -> value.prefixedBy(route)).toList());
+                    var callables = new ArrayList<>(prefix.callableFlows());
+                    callables.addAll(member.callableFlows().stream()
+                            .map(value -> value.prefixedBy(route)).toList());
+                    var nils = new ArrayList<>(prefix.nilProvenance());
+                    nils.addAll(member.nilProvenance().stream()
+                            .map(value -> value.prefixedBy(route)).toList());
+                    var objects = new ArrayList<>(prefix.objects());
+                    objects.addAll(member.objects().stream()
+                            .map(value -> value.prefixedBy(route)).toList());
+                    next.add(ValueAlternative.of(initializer.type(), facts, callables, nils, objects));
+                }
+            }
+            combinations = next;
+        }
+        if (initializer.kind() == TypedExpressionKind.ARRAY_LITERAL) {
+            ArrayType array = (ArrayType) initializer.type().withoutQualifiers();
+            FlowSiteId site = graph.flowSiteId(initializer);
+            DeclarationId allocation = new DeclarationId(Long.MAX_VALUE - site.ordinal());
+            var identity = ArrayIdentity.localAllocation(
+                    ModuleId.fromSourceId(initializer.span().sourceId()), allocation, array);
+            var witness = io.mindspice.lyra.compiler.semantic.flow.OwnershipWitness.local(
+                    identity.ownerModule(), allocation, graph.flowScopeId(initializer), initializer.span())
+                    .withOriginSite(site);
+            combinations = combinations.stream().map(value -> {
+                var facts = new ArrayList<>(value.aggregateIdentities());
+                facts.add(new AggregateIdentityFact(identity, ProjectionPath.root(), witness));
+                return ValueAlternative.of(initializer.type(), facts, value.callableFlows(),
+                        value.nilProvenance(), value.objects());
+            }).toList();
+        }
+        return Optional.of(new ValueAlternatives(combinations));
+    }
+
+    private static Optional<RetainedInitializerCall> retainedInitializerCall(
+            TypedExpression initializer, TypedSemanticGraph graph,
+            ResolvedNominal nominal,
+            List<Optional<ValueAlternatives>> priorMemberTemplates) {
+        if (initializer.kind() != TypedExpressionKind.DIRECT_CALL
+                && initializer.kind() != TypedExpressionKind.NAMESPACE_DIRECT_CALL) {
+            return Optional.empty();
+        }
+        DeclarationId target = initializer.link()
+                .flatMap(io.mindspice.lyra.compiler.semantic.TypedLink::declarationId)
+                .orElse(null);
+        FunctionType function = target == null ? null : graph.contract(target)
+                .map(BindingContract::valueType).map(LyraType::withoutQualifiers)
+                .filter(FunctionType.class::isInstance).map(FunctionType.class::cast)
+                .orElse(null);
+        if (function == null || function.arity() != initializer.children().size()) {
+            return Optional.empty();
+        }
+        List<ValueAlternatives> arguments = new ArrayList<>();
+        for (TypedExpression argument : initializer.children()) {
+            Optional<ValueAlternatives> template = retainedInitializerTemplate(
+                    argument, graph, nominal, priorMemberTemplates);
+            if (template.isEmpty()) return Optional.empty();
+            arguments.add(template.orElseThrow());
+        }
+        return Optional.of(new RetainedInitializerCall(
+                target, function, arguments, initializer.children()));
+    }
+
+    /**
+     * Conservative value shape for an aggregate-producing initializer whose
+     * internal transfer is not itself a literal (for example a function call).
+     * Reusing one certified abstract identity per initializer site deliberately
+     * over-approximates aliasing across factory invocations without inventing a
+     * runtime value or losing the array ownership invariant.
+     */
+    private static Optional<ValueAlternatives> retainedStructuralTemplate(
+            TypedExpression initializer, TypedSemanticGraph graph) {
+        List<AggregateIdentityFact> facts = new ArrayList<>();
+        collectStructuralArrayFacts(initializer.type(), ProjectionPath.root(),
+                initializer, graph, facts);
+        if (facts.isEmpty()) return Optional.empty();
+        return Optional.of(ValueAlternatives.singleton(ValueAlternative.of(
+                initializer.type(), facts, List.of(), List.of(), List.of())));
+    }
+
+    private static void collectStructuralArrayFacts(
+            LyraType type, ProjectionPath route, TypedExpression initializer,
+            TypedSemanticGraph graph, List<AggregateIdentityFact> destination) {
+        LyraType shape = type.withoutQualifiers();
+        if (shape instanceof ArrayType array) {
+            FlowSiteId site = graph.flowSiteId(initializer);
+            DeclarationId allocation = new DeclarationId(Long.MAX_VALUE - site.ordinal());
+            ArrayIdentity identity = ArrayIdentity.localAllocation(
+                    ModuleId.fromSourceId(initializer.span().sourceId()), allocation, array);
+            var witness = io.mindspice.lyra.compiler.semantic.flow.OwnershipWitness.local(
+                    identity.ownerModule(), allocation, graph.flowScopeId(initializer), initializer.span())
+                    .withOriginSite(site);
+            destination.add(new AggregateIdentityFact(identity, route, witness));
+        } else if (shape instanceof TupleType tuple) {
+            for (int index = 0; index < tuple.arity(); index++) {
+                collectStructuralArrayFacts(tuple.memberType(index),
+                        route.compose(ProjectionPath.tupleMember(index)),
+                        initializer, graph, destination);
+            }
+        }
     }
 
     private static void collectProofs(
@@ -885,17 +1054,45 @@ public final class SessionFlowCertificate {
     /** Compiler-only retained schema/member identity; never a runtime capability. */
     public record RetainedNominal(
             String name, ResolvedNominal nominal, DeclarationVisibility visibility,
-            List<Optional<LambdaId>> memberInitializerLambdas) {
+            Optional<LambdaId> constructorLambda,
+            List<Optional<LambdaId>> memberInitializerLambdas,
+            List<Optional<ValueAlternatives>> memberInitializerTemplates,
+            List<Optional<RetainedInitializerCall>> memberInitializerCalls) {
         public RetainedNominal {
             Objects.requireNonNull(name, "name");
             Objects.requireNonNull(nominal, "nominal");
             Objects.requireNonNull(visibility, "visibility");
+            Objects.requireNonNull(constructorLambda, "constructorLambda");
             memberInitializerLambdas = List.copyOf(memberInitializerLambdas);
-            if (memberInitializerLambdas.size() != nominal.members().size()) {
+            memberInitializerTemplates = List.copyOf(memberInitializerTemplates);
+            memberInitializerCalls = List.copyOf(memberInitializerCalls);
+            if (memberInitializerLambdas.size() != nominal.members().size()
+                    || memberInitializerTemplates.size() != nominal.members().size()
+                    || memberInitializerCalls.size() != nominal.members().size()) {
                 throw new IllegalArgumentException("retained nominal initializer inventory differs");
             }
             if (!name.equals(nominal.schema().type().id().name())) {
                 throw new IllegalArgumentException("retained nominal name differs from its identity");
+            }
+            if (!constructorLambda.equals(nominal.constructor())) {
+                throw new IllegalArgumentException("retained nominal constructor differs from its definition");
+            }
+        }
+    }
+
+    /** Producer-certified direct call used to initialize one retained member. */
+    public record RetainedInitializerCall(
+            DeclarationId target, FunctionType function,
+            List<ValueAlternatives> arguments,
+            List<TypedExpression> argumentExpressions) {
+        public RetainedInitializerCall {
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(function, "function");
+            arguments = List.copyOf(arguments);
+            argumentExpressions = List.copyOf(argumentExpressions);
+            if (arguments.size() != function.arity()
+                    || argumentExpressions.size() != function.arity()) {
+                throw new IllegalArgumentException("retained initializer call arity differs");
             }
         }
     }
