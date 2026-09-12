@@ -323,9 +323,18 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
         Set<DeclarationId> nominalReceivers = this.nominals.stream().map(ResolvedNominal::self)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
         for (ResolvedDeclaration declaration : this.declarations) {
+            boolean contextualSelf = declaration.kind() == DeclarationKind.SELF
+                    && !nominalReceivers.contains(declaration.id())
+                    && scopeTree.scope(declaration.scopeId())
+                    .filter(scope -> scope.kind() == ScopeKind.LAMBDA).isPresent()
+                    && declaration.visibility() == DeclarationVisibility.PRIVATE
+                    && declaration.bindingMutability() == io.mindspice.lyra.compiler.types.BindingMutability.IMMUTABLE
+                    && declaration.effectiveContract().map(value -> value.valueType().withoutQualifiers())
+                    .filter(io.mindspice.lyra.compiler.types.NominalType.class::isInstance).isPresent();
             if ((declaration.kind() == DeclarationKind.NOMINAL) != nominalIds.contains(declaration.id())
                     || (declaration.kind() == DeclarationKind.MEMBER) != nominalMembers.contains(declaration.id())
-                    || (declaration.kind() == DeclarationKind.SELF) != nominalReceivers.contains(declaration.id())) {
+                    || declaration.kind() == DeclarationKind.SELF
+                    && !nominalReceivers.contains(declaration.id()) && !contextualSelf) {
                 throw new IllegalArgumentException("nominal declaration inventory is not reciprocal");
             }
             declaration.effectiveContract().ifPresent(contract -> nominalTypes.validateReferences(contract.valueType()));

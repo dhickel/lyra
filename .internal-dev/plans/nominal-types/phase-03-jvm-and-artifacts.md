@@ -76,5 +76,7 @@ factories now execute source construction expressions, required/default field
 initialization and class constructors; construction failure invalidates its ticket.
 Typed source member reads/writes, current-slot invocation, saved references and
 qualified/selective imported construction execute through direct bytecode. Contextual
-replacement receivers, structural equality, complete artifact/Java surfaces and
-persistent sessions remain unfinished.
+replacement receivers now capture the once-selected target without granting private
+authority. Cycle-safe structural struct equality and class identity execute through
+typed generated methods, including nested aggregates and match patterns. Complete
+artifact/Java surfaces and persistent sessions remain unfinished.

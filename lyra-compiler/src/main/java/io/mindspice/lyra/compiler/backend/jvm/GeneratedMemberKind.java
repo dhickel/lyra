@@ -10,6 +10,7 @@ enum GeneratedMemberKind {
     NOMINAL_SET(true),
     NOMINAL_PUBLIC_GET(true),
     NOMINAL_PUBLIC_SET(true),
+    NOMINAL_STRUCTURAL_EQUAL(true),
     TUPLE_FIELD(false),
     TUPLE_COMPONENT_GET(true),
     SESSION_TUPLE_COMPONENT_GET(true),

@@ -148,9 +148,10 @@ initialization/generated/public accessors. Host-driven integration tests load an
 exercise those source-produced classes. Lyra construction expressions now invoke
 origin-module factories, evaluate arguments once left-to-right, execute ordered
 defaults/constructors, and support source field access, mutation, current-slot calls,
-and saved method references. Complete repeated/imported heap transfer, contextual
-replacement receivers, equality, ergonomic Java construction and persistent sessions
-remain in progress; this executable slice alone is not full nominal conformance.
+saved method references, contextual replacement receivers and equality through direct
+bytecode. Complete repeated/imported heap transfer, ergonomic Java construction and
+persistent sessions remain in progress; this executable slice alone is not full
+nominal conformance.
 
 ```lyra
 struct Vec2 {

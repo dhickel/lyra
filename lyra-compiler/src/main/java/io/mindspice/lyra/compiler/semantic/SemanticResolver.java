@@ -279,6 +279,9 @@ public final class SemanticResolver {
         private final Map<SyntaxNode.Conditional, ScopeDraft> predicateScopes = new IdentityHashMap<>();
         private final Map<SyntaxNode, LambdaDraft> lambdaBySyntax = new IdentityHashMap<>();
         private final Map<LambdaId, LambdaDraft> lambdasById = new LinkedHashMap<>();
+        private final Map<SyntaxNode.Expression, DeclDraft> contextualSelfByLambda =
+                new IdentityHashMap<>();
+        private final Set<DeclarationId> contextualSelfDeclarations = new HashSet<>();
         /** Compile-local allocation identities for every source array literal. */
         private final Map<SyntaxNode.ArrayLiteral, DeclarationId> arrayAllocationSites =
                 new IdentityHashMap<>();
@@ -1054,6 +1057,26 @@ public final class SemanticResolver {
             } else if (expression instanceof SyntaxNode.Reassignment assignment) {
                 collectExpression(assignment.target(), scope, work, Optional.empty());
                 collectExpression(assignment.value(), scope, work, Optional.empty());
+                if (assignment.target() instanceof SyntaxNode.MemberAccess
+                        && (assignment.value() instanceof SyntaxNode.Lambda
+                        || assignment.value() instanceof SyntaxNode.CompactLambda)) {
+                    LambdaDraft lambda = lambdaBySyntax.get(assignment.value());
+                    if (lambda == null) {
+                        throw new IllegalStateException("replacement lambda has no collected identity");
+                    }
+                    if (lambda.scope.latest("self") != null) {
+                        fail(CompilerDiagnosticCodes.RESOLVE_DUPLICATE_NAME,
+                                assignment.value().span(),
+                                "a method replacement lambda cannot declare its implicit self name");
+                        return;
+                    }
+                    DeclDraft self = newDeclaration("self", assignment.value().span(),
+                            assignment.value().span(), lambda.scope, DeclarationKind.SELF,
+                            DeclarationVisibility.PRIVATE, BindingMutability.IMMUTABLE);
+                    lambda.scope.add(self);
+                    contextualSelfByLambda.put(assignment.value(), self);
+                    contextualSelfDeclarations.add(self.id);
+                }
             } else if (expression instanceof SyntaxNode.CallableCall call) {
                 collectExpression(call.target(), scope, work, Optional.empty());
                 for (SyntaxNode.Expression argument : call.arguments()) {
@@ -2151,6 +2174,7 @@ public final class SemanticResolver {
                 Use target = resolveExpression(
                         assignment.target(), scope, work, lambda, currentDeclaration, Optional.empty());
                 authorizeMutation(target, assignment.target(), work, lambda);
+                bindContextualReplacementSelf(assignment, target);
                 rememberExpected(assignment.value(), target.type);
                 Use value = resolveExpression(
                         assignment.value(), scope, work, lambda, currentDeclaration,
@@ -3531,6 +3555,28 @@ public final class SemanticResolver {
                     target.reference));
         }
 
+        private void bindContextualReplacementSelf(
+                SyntaxNode.Reassignment assignment, Use target) {
+            DeclDraft self = contextualSelfByLambda.get(assignment.value());
+            if (self == null || failed()) return;
+            DeclDraft member = selectedMembers.get(assignment.target().span());
+            if (member == null || target.type.isEmpty()
+                    || !(target.type.orElseThrow().withoutQualifiers() instanceof FunctionType)) {
+                // The ordinary assignment/signature diagnostics own non-method
+                // targets. Keep contextual self unavailable on an invalid slot.
+                return;
+            }
+            ResolvedNominal owner = nominals.values().stream()
+                    .filter(value -> value.members().contains(member.id))
+                    .findFirst().orElse(null);
+            if (owner == null) {
+                throw new IllegalStateException("replacement member has no nominal owner");
+            }
+            BindingContract contract = BindingContract.immutable(owner.schema().type());
+            self.declaredContract = Optional.of(contract);
+            self.effectiveContract = Optional.of(contract);
+        }
+
         private Optional<CaptureId> captureFor(
                 Optional<LambdaId> lambda,
                 ScopeDraft useScope,
@@ -3569,6 +3615,17 @@ public final class SemanticResolver {
             ScopeDraft targetScope = scopesById.get(target.scopeId);
             if (targetScope == null || !isAncestor(targetScope, useScope)) {
                 return Optional.empty();
+            }
+            if (contextualSelfDeclarations.contains(target.id)) {
+                Optional<CaptureId> direct = Optional.empty();
+                LambdaDraft cursor = current;
+                while (cursor != null) {
+                    CaptureId capture = ensureCapture(cursor, target, useSpan);
+                    if (direct.isEmpty()) direct = Optional.of(capture);
+                    if (targetScope.ownerLambda.filter(cursor.id::equals).isPresent()) break;
+                    cursor = parentLambda(cursor).map(lambdasById::get).orElse(null);
+                }
+                return direct;
             }
             if (targetScope.ownerLambda.equals(lambda)) {
                 return Optional.empty();

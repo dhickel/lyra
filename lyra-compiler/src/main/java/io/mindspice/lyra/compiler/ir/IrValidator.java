@@ -1200,8 +1200,7 @@ public final class IrValidator {
                             && value.type().withoutQualifiers().equals(identityType));
                     if (node.type() != PrimitiveType.BOOL || operands.isEmpty()
                             || !sameIdentityType
-                            || !(identityType instanceof io.mindspice.lyra.compiler.types.FunctionType
-                            || identityType instanceof io.mindspice.lyra.compiler.types.ArrayType)) {
+                            || !identityBearing(identityType)) {
                         add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, node.span(),
                                 "identity equality requires one identity-bearing operand type");
                     }
@@ -2327,6 +2326,15 @@ public final class IrValidator {
 
         private static LyraType narrowed(LyraType type) {
             return type.withoutQualifiers();
+        }
+
+        private boolean identityBearing(LyraType type) {
+            if (type instanceof FunctionType || type instanceof ArrayType) return true;
+            if (!(type instanceof io.mindspice.lyra.compiler.types.NominalType nominal)) return false;
+            return semantic.resolvedGraph().nominals().stream()
+                    .filter(value -> value.schema().type().equals(nominal))
+                    .map(value -> value.schema().kind())
+                    .anyMatch(io.mindspice.lyra.compiler.types.NominalSchema.Kind.CLASS::equals);
         }
 
         private static boolean truthTestable(LyraType type) {

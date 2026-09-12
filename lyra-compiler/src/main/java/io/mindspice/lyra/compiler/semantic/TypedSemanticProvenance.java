@@ -19,6 +19,7 @@ import io.mindspice.lyra.compiler.types.FunctionType;
 import io.mindspice.lyra.compiler.types.LiteralTyping;
 import io.mindspice.lyra.compiler.types.LyraSignature;
 import io.mindspice.lyra.compiler.types.LyraType;
+import io.mindspice.lyra.compiler.types.NominalType;
 import io.mindspice.lyra.compiler.types.PrimitiveType;
 import io.mindspice.lyra.compiler.types.TupleType;
 import io.mindspice.lyra.compiler.types.TypePosition;
@@ -1285,7 +1286,7 @@ final class TypedSemanticProvenance {
             case IDENTITY_EQUAL, IDENTITY_NOT_EQUAL -> {
                 LyraType base = operandTypes.getFirst().withoutQualifiers();
                 require(expression.type() == PrimitiveType.BOOL
-                                && (base instanceof FunctionType || base instanceof ArrayType)
+                                && identityBearing(base)
                                 && operandTypes.stream().allMatch(value -> !value.isNilable()
                                 && value.withoutQualifiers().equals(base)),
                         "typed identity equality contract is invalid");
@@ -2765,6 +2766,16 @@ final class TypedSemanticProvenance {
         return type.isNilable() || base instanceof PrimitiveType
                 || base instanceof ArrayType || base instanceof TupleType
                 || base instanceof FunctionType;
+    }
+
+    private boolean identityBearing(LyraType type) {
+        LyraType base = type.withoutQualifiers();
+        if (base instanceof FunctionType || base instanceof ArrayType) return true;
+        if (!(base instanceof NominalType nominal)) return false;
+        return resolved.nominals().stream()
+                .filter(value -> value.schema().type().equals(nominal))
+                .map(value -> value.schema().kind())
+                .anyMatch(io.mindspice.lyra.compiler.types.NominalSchema.Kind.CLASS::equals);
     }
 
     private static boolean sameIdentities(

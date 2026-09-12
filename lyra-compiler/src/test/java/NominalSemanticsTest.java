@@ -193,6 +193,64 @@ public class NominalSemanticsTest {
     }
 
     @Test
+    void replacementLambdasReceiveContextualSelfWithoutPrivateAuthority() {
+        var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
+                class Counter {
+                    let @pub @mut value :I32 = 0
+                    let @pub @mut update :Fn<I32;I32> = (=> |delta| delta)
+                }
+                let install :Fn<@mut Counter;Unit> = (=> |@mut counter| {
+                    counter:.update := (=> |delta| {
+                        self:.value := (+ self:.value delta)
+                        let nested :Fn<;I32> = (=> || self:.value)
+                        (nested)
+                    })
+                })
+                """))));
+        var contextual = typed.resolvedGraph().declarations().stream()
+                .filter(value -> value.kind()
+                        == io.mindspice.lyra.compiler.semantic.DeclarationKind.SELF)
+                .filter(value -> typed.resolvedGraph().scopeTree().require(value.scopeId()).kind()
+                        == io.mindspice.lyra.compiler.semantic.ScopeKind.LAMBDA)
+                .toList();
+        assertEquals(1, contextual.size());
+        var captures = typed.resolvedGraph().captures().stream()
+                .filter(value -> value.declarationId().equals(contextual.getFirst().id())).toList();
+        assertEquals(2, captures.size(), "outer replacement and nested closure retain the receiver");
+        success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(typed));
+
+        var inaccessible = resolve("""
+                class Secret {
+                    let @mut hidden :I32 = 0
+                    let @pub @mut action :Fn<;Unit> = (=> || {})
+                }
+                let install :Fn<@mut Secret;Unit> = (=> |@mut secret| {
+                    secret:.action := (=> || { self:.hidden := 1 })
+                })
+                """);
+        assertInstanceOf(PhaseResult.Failure.class, inaccessible);
+        assertEquals(io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes.RESOLVE_UNRESOLVED_NAME,
+                inaccessible.diagnostics().getFirst().code());
+    }
+
+    @Test
+    void classIdentityOperatorsDoNotMakeStructsIdentityBearing() {
+        success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
+                class Box { let value :I32 = 1 }
+                let box :Box = Box[]
+                let same :Bool = (eq? box box)
+                """))));
+        var invalid = io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
+                struct Point { let x :I32 }
+                let point :Point = Point[1]
+                let bad :Bool = (eq? point point)
+                """)));
+        assertInstanceOf(PhaseResult.Failure.class, invalid);
+        assertEquals(io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes.TYPE_INVALID_OPERATOR,
+                invalid.diagnostics().getFirst().code());
+    }
+
+    @Test
     void initializationRejectsPrematurePublicationAndInvocation() {
         for (String body : List.of(
                 "let leaked = ::consume[self] self:.x := 1",

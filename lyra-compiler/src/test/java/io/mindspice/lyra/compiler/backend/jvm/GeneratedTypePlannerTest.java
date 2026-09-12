@@ -112,6 +112,22 @@ public final class GeneratedTypePlannerTest {
                     classPlan.members().stream().filter(member -> member.kind() == GeneratedMemberKind.NOMINAL_SET).count());
             assertEquals(layout.fields().stream().filter(field -> field.member().publicAccess()).count(),
                     classPlan.members().stream().filter(member -> member.kind() == GeneratedMemberKind.NOMINAL_PUBLIC_GET).count());
+            var structuralEquality = classPlan.members().stream()
+                    .filter(member -> member.kind() == GeneratedMemberKind.NOMINAL_STRUCTURAL_EQUAL)
+                    .toList();
+            if (layout.schema().kind() == io.mindspice.lyra.compiler.types.NominalSchema.Kind.STRUCT) {
+                assertEquals(1, structuralEquality.size());
+                var equality = structuralEquality.getFirst();
+                assertEquals("$lyra$structuralEquals", equality.name());
+                assertEquals("(" + NominalClassLayout.AUTHORITY + "L"
+                                + layout.binaryName().replace('.', '/')
+                                + ";Lio/mindspice/lyra/runtime/LyraStructuralEquality;)Z",
+                        equality.descriptor());
+                assertFalse(equality.isStatic());
+                assertTrue(equality.isPublic());
+            } else {
+                assertTrue(structuralEquality.isEmpty());
+            }
         }
     }
 

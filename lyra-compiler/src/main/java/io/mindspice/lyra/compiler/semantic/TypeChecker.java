@@ -3335,7 +3335,7 @@ public final class TypeChecker {
                     return null;
                 }
                 LyraType first = values.getFirst().type().withoutQualifiers();
-                if (!(first instanceof FunctionType || first instanceof ArrayType)
+                if (!identityBearing(first)
                         || values.stream().anyMatch(value -> !value.type().withoutQualifiers().equals(first))) {
                     fail(CompilerDiagnosticCodes.TYPE_INVALID_OPERATOR,
                             span, "identity equality requires one identical identity-bearing type");
@@ -3509,6 +3509,16 @@ public final class TypeChecker {
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.of(operator.spelling()),
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
                     Optional.empty(), List.of(), Optional.empty()));
+        }
+
+        private boolean identityBearing(LyraType type) {
+            LyraType base = type.withoutQualifiers();
+            if (base instanceof FunctionType || base instanceof ArrayType) return true;
+            if (!(base instanceof NominalType nominal)) return false;
+            return graph.nominals().stream()
+                    .filter(value -> value.schema().type().equals(nominal))
+                    .map(value -> value.schema().kind())
+                    .anyMatch(io.mindspice.lyra.compiler.types.NominalSchema.Kind.CLASS::equals);
         }
 
         private NumericOperands numericOperands(

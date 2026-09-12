@@ -225,7 +225,8 @@ record GeneratedMemberPlan(
     public GeneratedMemberVisibility visibility() {
         return switch (kind) {
             case NOMINAL_CONSTRUCTOR, NOMINAL_INITIALIZE, NOMINAL_INITIALIZATION_GET,
-                    NOMINAL_GET, NOMINAL_SET, NOMINAL_PUBLIC_GET, NOMINAL_PUBLIC_SET -> GeneratedMemberVisibility.PUBLIC;
+                    NOMINAL_GET, NOMINAL_SET, NOMINAL_PUBLIC_GET, NOMINAL_PUBLIC_SET,
+                    NOMINAL_STRUCTURAL_EQUAL -> GeneratedMemberVisibility.PUBLIC;
             case FUNCTION_INVOKE, CLOSURE_INVOKE, FUNCTION_INVOCATION,
                     VALUE_GETTER, FUNCTION_VALUE_GETTER, SETTER, FACTORY,
                     FACTORY_WITH_OPTIONS, METADATA, CLOSE, TUPLE_CONSTRUCTOR,

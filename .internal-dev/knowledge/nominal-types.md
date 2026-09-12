@@ -164,6 +164,22 @@ origin factory. Lazy semantic-flow lookup must recheck the binding state after
 executing a nominal declaration because its type marker intentionally has no
 ordinary initializer value.
 
+Direct replacement lambdas need a resolver-issued contextual SELF declaration in
+the replacement lambda's own scope. Its exact nominal contract comes from the
+selected member target, and nested lambdas capture it through the ordinary capture
+chain. The emitter binds only that declaration to the receiver local while creating
+the replacement closure; assigning an existing callable must bypass this binding.
+Lexical member authorization remains tied to the source lambda location, so this
+receiver capability does not grant access to private members.
+
+Cycle-safe struct equality cannot use `equals` on generated objects or retain a
+comparison set across source expressions. Each top-level typed equality creates a
+fresh symmetric identity-pair context; recursive generated struct methods share it
+while directly comparing exact private field storage. A visited pair is coinductively
+equal only within that traversal. Validate both operands' producer, lifecycle and
+exact schema before field access. Class leaves use reference identity, including
+inside structs, while structs remain invalid operands for `eq?`.
+
 ## Open Questions
 
 No additional owner decision blocks starting implementation. Exact internal schema

@@ -69,6 +69,12 @@ record NominalClassLayout(String binaryName, NominalSchema schema, List<Field> f
         var result = new java.util.ArrayList<GeneratedMemberPlan>();
         result.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.NOMINAL_CONSTRUCTOR,
                 "<init>", "(" + CONSTRUCTION + ")V", false));
+        if (schema.kind() == NominalSchema.Kind.STRUCT) {
+            result.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.NOMINAL_STRUCTURAL_EQUAL,
+                    "$lyra$structuralEquals", "(" + AUTHORITY + "L"
+                            + binaryName.replace('.', '/') + ";Lio/mindspice/lyra/runtime/"
+                            + "LyraStructuralEquality;)Z", false));
+        }
         for (var field : fields) {
             result.add(GeneratedMemberPlan.field(GeneratedMemberKind.NOMINAL_FIELD, field.storageName(),
                     field.value(), field.value().descriptor(), field.index(), java.util.Optional.empty(),

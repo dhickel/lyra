@@ -213,14 +213,18 @@ class defaults before the explicit constructor, invalidates failed construction
 tickets, and returns the exact generated representation. Qualified and selectively
 imported type roles route to the defining module factory without fake value storage.
 Source member reads/writes, current-slot calls and saved method references use those
-typed fields directly.
+typed fields directly. Direct replacement lambdas capture the once-selected receiver
+as contextual `self`, including through nested closures, while assignment of an
+existing callable preserves its original receiver. Generated struct equality methods
+traverse exact private typed fields with one comparison-local symmetric identity-pair
+set; nested structs, arrays, tuples and match patterns share that context. Classes
+remain reference-identical and are identity-bearing under `eq?`; structs are not.
 Every reference-bearing boundary recursively authenticates nominal and callable
 leaves without copying arrays, tuples or object references. During initialization,
 only the active capability may admit its own incomplete receiver as an internal
 self-field value; ordinary generated and public boundaries require complete objects.
 Generated callable signatures resolve through the producer-scoped metadata cache.
-Contextual `self` for externally defined replacement lambdas, structural equality,
-complete artifact/Java surfaces and persistent sessions remain completion gates.
+Complete artifact/Java surfaces and persistent sessions remain completion gates.
 
 ### Functions and closures
 

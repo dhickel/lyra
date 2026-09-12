@@ -149,6 +149,155 @@ class NominalBytecodeTest {
         }
     }
 
+    @Test void directMethodReplacementCapturesTheSelectedReceiverAsContextualSelf() throws Throwable {
+        var artifact = compile("""
+                class Counter {
+                    let @pub @mut value :I32 = 0
+                    let @pub @mut change :Fn<I32;I32> = (=> |delta| {
+                        self:.value := (+ self:.value delta)
+                        self:.value
+                    })
+                }
+                let install :Fn<@mut Counter;Unit> = (=> |@mut counter| {
+                    counter:.change := (=> |delta| {
+                        self:.value := (+ self:.value (* delta 2))
+                        let read :Fn<;I32> = (=> || self:.value)
+                        (read)
+                    })
+                })
+                let @pub run :Fn<;I32> = (=> || {
+                    let @mut counter :Counter = Counter[]
+                    let saved :Fn<I32;I32> = counter:.change
+                    (install counter)
+                    let old :I32 = (saved 3)
+                    let current :I32 = counter::change[4]
+                    (+ (* old 10) current)
+                })
+                """);
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            assertEquals(41, (int) module.export("run", "Fn<;I32>")
+                    .methodHandle().invokeExact());
+        }
+    }
+
+    @Test void replacementSelectsReceiverOnceAndExistingCallablesKeepTheirReceiver() throws Throwable {
+        var artifact = compile("""
+                let @mut selections :I32 = 0
+                let next :Fn<;I32> = (=> || { selections := (++ selections) 0 })
+                class Counter {
+                    let @pub @mut value :I32
+                    Counter = (=> |start :I32| { self:.value := start })
+                    let @pub @mut change :Fn<I32;I32> = (=> |delta| {
+                        self:.value := (+ self:.value delta)
+                        self:.value
+                    })
+                }
+                let @pub run :Fn<;I32> = (=> || {
+                    let first :Counter = Counter[1]
+                    let @mut second :Counter = Counter[10]
+                    let original :Fn<I32;I32> = first:.change
+                    second:.change := original
+                    second::change[2]
+                    let @mut values :Array<Counter> = Array[Counter[0]]
+                    values[(next)]:.change := (=> |delta| {
+                        self:.value := (+ self:.value delta)
+                        self:.value
+                    })
+                    values[0]::change[5]
+                    (+ (* selections 100) (+ (* first:.value 10) second:.value))
+                })
+                """);
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            assertEquals(140, (int) module.export("run", "Fn<;I32>")
+                    .methodHandle().invokeExact());
+        }
+    }
+
+    @Test void structsCompareStructurallyWithCyclesWhileClassesUseIdentity() throws Throwable {
+        var artifact = compile("""
+                class Box { let @pub value :I32 = 7 }
+                struct Node {
+                    let @mut value :I32
+                    let @mut @nil next :Node = #NIL
+                }
+                struct Holder { let box :Box }
+                let @pub equalValues :Fn<;Bool> = (=> || (== Node[3] Node[3]))
+                let @pub differentValues :Fn<;Bool> = (=> || (== Node[3] Node[4]))
+                let @pub equalCycles :Fn<;Bool> = (=> || {
+                    let @mut left :Node = Node[5]
+                    let @mut right :Node = Node[5]
+                    left:.next := left
+                    right:.next := right
+                    (== left right)
+                })
+                let @pub differentCycles :Fn<;Bool> = (=> || {
+                    let @mut left :Node = Node[5]
+                    let @mut right :Node = Node[6]
+                    left:.next := left
+                    right:.next := right
+                    (== left right)
+                })
+                let @pub unequalCycles :Fn<;Bool> = (=> || {
+                    let @mut left :Node = Node[5]
+                    let @mut right :Node = Node[6]
+                    left:.next := left
+                    right:.next := right
+                    (!= left right)
+                })
+                let @pub matchedCycle :Fn<;Bool> = (=> || {
+                    let @mut left :Node = Node[5]
+                    let @mut right :Node = Node[5]
+                    left:.next := left
+                    right:.next := right
+                    (match left ?? right -> #T ?? _ -> #F)
+                })
+                let @pub freshContexts :Fn<;Bool> = (=> || {
+                    let @mut left :Node = Node[5]
+                    let @mut right :Node = Node[5]
+                    left:.next := left
+                    right:.next := right
+                    let before :Bool = (== left right)
+                    right:.value := 6
+                    let after :Bool = (== left right)
+                    (and before (not after))
+                })
+                let @pub nilStructs :Fn<;Bool> = (=> || {
+                    let @nil empty :Node = #NIL
+                    (== empty #NIL)
+                })
+                let @pub classAlias :Fn<;Bool> = (=> || {
+                    let box :Box = Box[]
+                    (== box box)
+                })
+                let @pub classDistinct :Fn<;Bool> = (=> || (== Box[] Box[]))
+                let @pub classIdentity :Fn<;Bool> = (=> || {
+                    let box :Box = Box[]
+                    (eq? box box)
+                })
+                let @pub nestedClassIdentity :Fn<;Bool> = (=> || {
+                    let box :Box = Box[]
+                    (== Holder[box] Holder[box])
+                })
+                let @pub nestedStructs :Fn<;Bool> = (=> ||
+                    (== Tuple[Array[Node[9]]] Tuple[Array[Node[9]]]))
+                """);
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            assertTrue((boolean) module.export("equalValues", "Fn<;Bool>").methodHandle().invokeExact());
+            assertFalse((boolean) module.export("differentValues", "Fn<;Bool>").methodHandle().invokeExact());
+            assertTrue((boolean) module.export("equalCycles", "Fn<;Bool>").methodHandle().invokeExact());
+            assertFalse((boolean) module.export("differentCycles", "Fn<;Bool>").methodHandle().invokeExact());
+            assertTrue((boolean) module.export("unequalCycles", "Fn<;Bool>").methodHandle().invokeExact());
+            assertTrue((boolean) module.export("matchedCycle", "Fn<;Bool>").methodHandle().invokeExact());
+            assertTrue((boolean) module.export("freshContexts", "Fn<;Bool>").methodHandle().invokeExact());
+            assertTrue((boolean) module.export("nilStructs", "Fn<;Bool>").methodHandle().invokeExact());
+            assertTrue((boolean) module.export("classAlias", "Fn<;Bool>").methodHandle().invokeExact());
+            assertFalse((boolean) module.export("classDistinct", "Fn<;Bool>").methodHandle().invokeExact());
+            assertTrue((boolean) module.export("classIdentity", "Fn<;Bool>").methodHandle().invokeExact());
+            assertTrue((boolean) module.export("nestedClassIdentity", "Fn<;Bool>").methodHandle().invokeExact());
+            assertTrue((boolean) module.export("nestedStructs", "Fn<;Bool>").methodHandle().invokeExact());
+        }
+    }
+
     @Test void emittedNominalSignaturesLoadAndRejectSameClassForeignProducers() throws Throwable {
         var artifact = compile("struct Node { } let @pub echo :Fn<@nil Node;@nil Node> = (=> |value| value) "
                 + "let @pub echoArray :Fn<Array<@nil Node>;Array<@nil Node>> = (=> |values| values)");

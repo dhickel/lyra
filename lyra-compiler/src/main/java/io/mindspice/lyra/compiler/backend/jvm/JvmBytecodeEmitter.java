@@ -95,6 +95,7 @@ final class JvmBytecodeEmitter {
     private static final ClassDesc CD_RUNTIME_EXCEPTION = cd(RUNTIME + "LyraRuntimeException");
     private static final ClassDesc CD_JAVA_RUNTIME_EXCEPTION = cd("java.lang.RuntimeException");
     private static final ClassDesc CD_THROWABLE = cd("java.lang.Throwable");
+    private static final ClassDesc CD_STRUCTURAL_EQUALITY = cd(RUNTIME + "LyraStructuralEquality");
     private static final ClassDesc CD_STACK_OVERFLOW = cd("java.lang.StackOverflowError");
     private static final ClassDesc CD_ARTIFACT_METADATA = cd(RUNTIME + "ArtifactMetadata");
     private static final ClassDesc CD_METADATA_READER = cd(RUNTIME + "ArtifactMetadataReader");
@@ -611,6 +612,7 @@ final class JvmBytecodeEmitter {
         private Label nominalFactoryStart;
         private Label nominalFactoryEnd;
         private Label nominalFactoryHandler;
+        private int equalityContextSlot = -1;
         private Label loopLabel;
         private final List<FailureHandler> failureHandlers = new ArrayList<>();
         private final List<CallFailureHandler> callFailureHandlers = new ArrayList<>();
@@ -807,6 +809,10 @@ final class JvmBytecodeEmitter {
                 code.return_();
                 return;
             }
+            if (member.kind() == GeneratedMemberKind.NOMINAL_STRUCTURAL_EQUAL) {
+                emitNominalStructuralEquality(layout, base);
+                return;
+            }
             int index = Integer.parseInt(member.name().substring(member.name().lastIndexOf('$') + 1));
             var field = layout.fields().get(index);
             boolean initialize = member.kind() == GeneratedMemberKind.NOMINAL_INITIALIZE;
@@ -845,6 +851,59 @@ final class JvmBytecodeEmitter {
                 authenticateNominalFieldValue(field.member().type(), !publicAccess);
                 returnPhysicalDescriptor(field.value().descriptor());
             }
+        }
+
+        private void emitNominalStructuralEquality(NominalClassLayout layout, ClassDesc base) {
+            if (layout.schema().kind()
+                    != io.mindspice.lyra.compiler.types.NominalSchema.Kind.STRUCT) {
+                throw invalidPlan(memberSpan(), "class cannot expose structural equality");
+            }
+            aloadReceiver();
+            loadParameter(0);
+            loadParameter(1);
+            code.invokevirtual(base, "checkStructuralEquality", method("("
+                    + NominalClassLayout.AUTHORITY + "L" + RUNTIME + "LyraNominalObject;)V"));
+            Label compare = code.newLabel();
+            aloadReceiver();
+            loadParameter(1);
+            code.if_acmpne(compare);
+            emitInt(1);
+            code.ireturn();
+            code.labelBinding(compare);
+            equalityContextSlot = code.parameterSlot(2);
+            loadParameter(2);
+            aloadReceiver();
+            loadParameter(1);
+            code.invokevirtual(CD_STRUCTURAL_EQUALITY, "enter",
+                    method("(Ljava/lang/Object;Ljava/lang/Object;)Z"));
+            Label fields = code.newLabel();
+            code.ifne(fields);
+            emitInt(1);
+            code.ireturn();
+            code.labelBinding(fields);
+            Label unequal = code.newLabel();
+            for (NominalClassLayout.Field field : layout.fields()) {
+                List<Integer> leftSlots = allocateLocals(field.value());
+                List<Integer> rightSlots = allocateLocals(field.value());
+                aloadReceiver();
+                code.getfield(cd(layout.binaryName()), field.storageName(),
+                        type(field.value().descriptor()));
+                storeLocal(field.value(), leftSlots);
+                loadParameter(1);
+                code.getfield(cd(layout.binaryName()), field.storageName(),
+                        type(field.value().descriptor()));
+                storeLocal(field.value(), rightSlots);
+                Label next = code.newLabel();
+                emitEqualityPair(BindingStorage.local(field.member().type(), field.value(), leftSlots),
+                        BindingStorage.local(field.member().type(), field.value(), rightSlots),
+                        next, unequal, memberSpan());
+                code.labelBinding(next);
+            }
+            emitInt(1);
+            code.ireturn();
+            code.labelBinding(unequal);
+            emitInt(0);
+            code.ireturn();
         }
 
         /** Checks exact reference leaves while retaining typed storage and alias identity. */
@@ -3463,7 +3522,27 @@ final class JvmBytecodeEmitter {
             emitAt(access.receiver().orElseThrow(), receiverPlan);
             int receiver = allocateLocal(receiverPlan);
             storePhysical(receiverPlan.physicalComponents().getFirst(), receiver);
-            JvmTypePlan value = emitNode(rebinding.value());
+            Map<DeclarationId, BindingStorage> displacedSelf = new LinkedHashMap<>();
+            List<DeclarationId> contextualSelf = rebinding.value() instanceof IrNode.Lambda replacement
+                    ? replacement.captures().stream()
+                    .map(captures::get).filter(Objects::nonNull)
+                    .map(IrCapture::declarationId)
+                    .filter(id -> Optional.ofNullable(declarations.get(id))
+                            .map(IrDeclaration::kind).filter(DeclarationKind.SELF::equals).isPresent())
+                    .distinct().toList()
+                    : List.of();
+            for (DeclarationId self : contextualSelf) {
+                BindingStorage previous = locals.put(self, BindingStorage.local(
+                        location.declaration().schema().type(), receiverPlan, List.of(receiver)));
+                if (previous != null) displacedSelf.put(self, previous);
+            }
+            JvmTypePlan value;
+            try {
+                value = emitNode(rebinding.value());
+            } finally {
+                for (DeclarationId self : contextualSelf) locals.remove(self);
+                locals.putAll(displacedSelf);
+            }
             adapt(value, location.layout().fields().get(location.index()).value());
             int stored = allocateLocal(location.layout().fields().get(location.index()).value());
             storePhysical(location.layout().fields().get(location.index()).value()
@@ -5741,8 +5820,29 @@ final class JvmBytecodeEmitter {
 
         private void emitEqualityPair(BindingStorage left, BindingStorage right,
                                       Label equal, Label unequal, SourceSpan span) {
+            int previousContext = equalityContextSlot;
+            boolean ownsContext = equalityContextSlot < 0
+                    && requiresStructEquality(left.logical());
+            if (ownsContext) {
+                code.new_(CD_STRUCTURAL_EQUALITY);
+                code.dup();
+                code.invokespecial(CD_STRUCTURAL_EQUALITY, "<init>", method("()V"));
+                equalityContextSlot = code.allocateLocal(TypeKind.REFERENCE);
+                code.astore(equalityContextSlot);
+            }
+            try {
+                emitEqualityPairCore(left, right, equal, unequal, span);
+            } finally {
+                if (ownsContext) equalityContextSlot = previousContext;
+            }
+        }
+
+        private void emitEqualityPairCore(BindingStorage left, BindingStorage right,
+                                          Label equal, Label unequal, SourceSpan span) {
             LyraType base = left.logical().withoutQualifiers();
-            if (base instanceof ArrayType || base instanceof TupleType) {
+            if (base instanceof ArrayType || base instanceof TupleType
+                    || base instanceof io.mindspice.lyra.compiler.types.NominalType nominal
+                    && isStructNominal(nominal)) {
                 emitStructuralEquality(left, right, equal, unequal, span);
                 return;
             }
@@ -5781,6 +5881,28 @@ final class JvmBytecodeEmitter {
             normalizeEqualityValue(right);
             emitPrimitiveEqualityToLabels(left.physical().physicalComponents().getFirst(),
                     equal, unequal, span);
+        }
+
+        private boolean requiresStructEquality(LyraType type) {
+            LyraType base = type.withoutQualifiers();
+            if (base instanceof ArrayType array) {
+                return requiresStructEquality(array.elementType());
+            }
+            if (base instanceof TupleType tuple) {
+                return tuple.memberTypes().stream().anyMatch(value ->
+                        requiresStructEquality(value));
+            }
+            if (!(base instanceof io.mindspice.lyra.compiler.types.NominalType nominal)) {
+                return false;
+            }
+            return isStructNominal(nominal);
+        }
+
+        private boolean isStructNominal(
+                io.mindspice.lyra.compiler.types.NominalType nominal) {
+            NominalClassLayout layout = owner.plan.nominalLayouts().get(nominal.canonicalSpelling());
+            return layout != null && layout.schema().kind()
+                    == io.mindspice.lyra.compiler.types.NominalSchema.Kind.STRUCT;
         }
 
         private void emitBoxedNullablePrimitiveEquality(
@@ -5928,9 +6050,34 @@ final class JvmBytecodeEmitter {
                 emitArrayStructuralEquality(left, right, array, equal, unequal, span);
             } else if (base instanceof TupleType tuple) {
                 emitTupleStructuralEquality(left, right, tuple, equal, unequal, span);
+            } else if (base instanceof io.mindspice.lyra.compiler.types.NominalType nominal) {
+                emitNominalStructuralEqualityPair(left, right, nominal, equal, unequal, span);
             } else {
                 throw unsupported(span, "unsupported structural equality type: " + base);
             }
+        }
+
+        private void emitNominalStructuralEqualityPair(
+                BindingStorage left, BindingStorage right,
+                io.mindspice.lyra.compiler.types.NominalType nominal,
+                Label equal, Label unequal, SourceSpan span) {
+            NominalClassLayout layout = owner.plan.nominalLayouts().get(nominal.canonicalSpelling());
+            if (layout == null || layout.schema().kind()
+                    != io.mindspice.lyra.compiler.types.NominalSchema.Kind.STRUCT
+                    || equalityContextSlot < 0) {
+                throw invalidPlan(span, "struct equality has no exact layout/context");
+            }
+            loadLocal(left);
+            if (member.kind() == GeneratedMemberKind.NOMINAL_STRUCTURAL_EQUAL) loadParameter(0);
+            else emitCurrentAuthority();
+            loadLocal(right);
+            code.aload(equalityContextSlot);
+            code.invokevirtual(cd(layout.binaryName()), "$lyra$structuralEquals",
+                    method("(" + NominalClassLayout.AUTHORITY + "L"
+                            + layout.binaryName().replace('.', '/') + ";L"
+                            + RUNTIME + "LyraStructuralEquality;)Z"));
+            code.ifne(equal);
+            code.goto_(unequal);
         }
 
         private void emitArrayStructuralEquality(BindingStorage left, BindingStorage right,

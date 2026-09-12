@@ -73,6 +73,17 @@ public abstract class LyraNominalObject {
         requireMutable(index);
     }
 
+    /** Validates both operands before generated cycle-safe struct traversal. */
+    protected final void checkStructuralEquality(
+            LyraClosureAuthority caller, LyraNominalObject other) {
+        Objects.requireNonNull(other, "other");
+        checkOwnership(caller, true);
+        other.checkOwnership(caller, true);
+        if (!schema.type().equals(other.schema.type()) || !schema.equals(other.schema)) {
+            throw new LyraLinkException("struct equality requires one exact nominal schema");
+        }
+    }
+
     private void checkOwnership(LyraClosureAuthority caller, boolean generated) {
         Objects.requireNonNull(caller, "caller");
         if (generated) {

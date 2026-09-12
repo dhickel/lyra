@@ -784,6 +784,20 @@ final class ResolvedTopologyValidator {
 
         ResolvedScope useScope = resolved.scopeTree().require(reference.scopeId());
         ResolvedScope targetScope = resolved.scopeTree().require(target.scopeId());
+        if (target.kind() == DeclarationKind.SELF
+                && targetScope.kind() == ScopeKind.LAMBDA) {
+            List<CaptureKey> contextual = new ArrayList<>();
+            Optional<LambdaId> owner = targetScope.ownerLambda();
+            while (current != null) {
+                contextual.add(new CaptureKey(current.id(), target.id()));
+                if (owner.filter(current.id()::equals).isPresent()) break;
+                current = parentLambda(current).orElse(null);
+            }
+            if (owner.isPresent() && current == null) {
+                throw invalid("contextual self capture does not reach its replacement lambda");
+            }
+            return List.copyOf(contextual);
+        }
         if (!isAncestor(targetScope, useScope)
                 || targetScope.ownerLambda().equals(reference.fromLambda())) {
             return List.of();
@@ -882,7 +896,8 @@ final class ResolvedTopologyValidator {
                     || rootDeclaration.bindingMutability() != BindingMutability.MUTABLE
                     && !(mutation.kind() == MutationKind.MEMBER_FIELD
                     && rootDeclaration.kind() == DeclarationKind.SELF
-                    && resolved.nominals().stream().anyMatch(value -> value.self().equals(rootDeclaration.id())))) {
+                    && (resolved.nominals().stream().anyMatch(value -> value.self().equals(rootDeclaration.id()))
+                    || resolved.scopeTree().require(rootDeclaration.scopeId()).kind() == ScopeKind.LAMBDA))) {
                 throw invalid("mutation root/reference/source assignment linkage is inconsistent");
             }
             if (mutation.kind() == MutationKind.MEMBER_FIELD) {
