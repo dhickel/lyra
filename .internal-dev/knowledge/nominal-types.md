@@ -152,6 +152,18 @@ incomplete receiver internally, so only the matching active construction ticket 
 authenticate that exact self value. It must not admit another incomplete object or
 make the receiver usable through an ordinary public/generated boundary.
 
+Module-state factories are the sole generated construction entry used by Lyra
+source. They evaluate constructor arguments into exact typed locals before loading
+the defining state, install required struct fields before defaults, and execute
+class defaults before the constructor body. A broad factory handler must be ordered
+after source call-site handlers so source failures keep their diagnostic code while
+the construction ticket is still invalidated. Nominal declaration captures,
+including selective-import aliases whose origin is nominal, are type roles rather
+than physical closure fields; the closure's normal module-state link reaches the
+origin factory. Lazy semantic-flow lookup must recheck the binding state after
+executing a nominal declaration because its type marker intentionally has no
+ordinary initializer value.
+
 ## Open Questions
 
 No additional owner decision blocks starting implementation. Exact internal schema

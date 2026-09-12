@@ -53,6 +53,7 @@ enum GeneratedMemberKind {
     STATE_IMPORT_LINK(true),
     STATE_COMPONENT_GET(true),
     STATE_COMPONENT_SET(true),
+    STATE_NOMINAL_FACTORY(true),
     STATE_CONSTRUCTOR(true),
     STATE_AUTHORITY_GET(true),
     STATE_CHECK_OPEN(true),

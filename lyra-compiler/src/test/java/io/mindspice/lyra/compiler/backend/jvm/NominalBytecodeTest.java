@@ -1,6 +1,7 @@
 package io.mindspice.lyra.compiler.backend.jvm;
 
 import io.mindspice.lyra.compiler.api.*;
+import io.mindspice.lyra.compiler.source.ResolvedSource;
 import io.mindspice.lyra.runtime.*;
 import org.junit.jupiter.api.Test;
 
@@ -9,8 +10,145 @@ import java.lang.reflect.Modifier;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Source-produced object classes; factory invocation is driven by the host until source construction is wired. */
+/** End-to-end source construction and exact nominal JVM representation coverage. */
 class NominalBytecodeTest {
+    @Test void failedSourceFactoryInvalidatesItsTicketAndLeavesProducerUsable() throws Throwable {
+        var artifact = compile("""
+                class Fallible {
+                    let @pub value :I32
+                    Fallible = (=> |value :I32 divisor :I32| {
+                        self:.value := value
+                        let ignored :F64 = (/ value divisor)
+                    })
+                }
+                let @pub make :Fn<I32,I32;Fallible> = (=> |value divisor| Fallible[value divisor])
+                """);
+        var nominal = artifact.metadata().nominalSchemas().schemas().getFirst().type();
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            var make = module.export("make", "Fn<I32,I32;" + nominal + ">").methodHandle();
+            var failure = assertThrows(LyraRuntimeException.class,
+                    () -> make.invokeWithArguments(9, 0));
+            assertEquals("LYR-ARITH", failure.code());
+            Object value = make.invokeWithArguments(9, 3);
+            assertEquals(9, value.getClass().getMethod("$lyra$public$get$0").invoke(value));
+        }
+        var stateName = artifact.classes().keySet().stream()
+                .filter(name -> name.contains(".$lyra$state$")).findFirst().orElseThrow();
+        var state = java.lang.classfile.ClassFile.of().parse(artifact.classes().get(stateName));
+        assertTrue(state.methods().stream().filter(method -> method.methodName().stringValue().startsWith("$lyra$new$"))
+                .flatMap(method -> method.code().stream()).flatMap(code -> code.elementStream())
+                .filter(java.lang.classfile.instruction.InvokeInstruction.class::isInstance)
+                .map(java.lang.classfile.instruction.InvokeInstruction.class::cast)
+                .anyMatch(call -> call.owner().name().stringValue().equals(
+                        "io/mindspice/lyra/runtime/LyraNominalConstruction")
+                        && call.name().stringValue().equals("fail")));
+    }
+
+    @Test void constructionArgumentsEvaluateOnceFromLeftToRight() throws Throwable {
+        var artifact = compile("""
+                let @mut count :I32 = 0
+                let next :Fn<;I32> = (=> || { count := (++ count) count })
+                struct Pair { let first :I32 let second :I32 }
+                let @pub run :Fn<;I32> = (=> || {
+                    let pair :Pair = Pair[(next) (next)]
+                    (+ (* pair:.first 10) pair:.second)
+                })
+                """);
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            var run = module.export("run", "Fn<;I32>").methodHandle();
+            assertEquals(12, (int) run.invokeExact());
+            assertEquals(34, (int) run.invokeExact());
+        }
+    }
+
+    @Test void qualifiedConstructionUsesTheDefiningModuleFactory() throws Throwable {
+        for (String mainSource : java.util.List.of("""
+                import model as m
+                let @pub make :Fn<I32;m->Point> = (=> |value| m->:.Point[value])
+                """, """
+                import model->{Point as P}
+                let @pub make :Fn<I32;P> = (=> |value| P[value])
+                """)) {
+            var request = CompileRequest.builder().rootModule("main").resolver(SourceResolver.memory(
+                    ResolvedSource.memory(io.mindspice.lyra.compiler.source.LogicalModuleId.parse("model"),
+                            "memory:nominal/model", "struct @pub Point { let x :I32 }"),
+                    ResolvedSource.memory(io.mindspice.lyra.compiler.source.LogicalModuleId.parse("main"),
+                            "memory:nominal/main", mainSource))).build();
+            var artifact = compile(request);
+            var nominal = artifact.metadata().nominalSchemas().schemas().stream()
+                    .filter(value -> value.type().id().name().equals("Point")).findFirst().orElseThrow().type();
+            try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+                Object point = module.export("make", "Fn<I32;" + nominal + ">")
+                        .methodHandle().invokeWithArguments(27);
+                assertEquals(27, point.getClass().getMethod("$lyra$public$get$0").invoke(point));
+                assertEquals(nominal, ((LyraNominalObject) point).nominalType());
+            }
+        }
+    }
+
+    @Test void sourceFactoriesExecuteStructDefaultsAndClassConstructors() throws Throwable {
+        var structs = compile("""
+                struct Point {
+                    let first :I32 = self:.required
+                    let @mut required :I32
+                    let next :I32 = (+ self:.first 1)
+                }
+                let @pub make :Fn<I32;Point> = (=> |value| Point[value])
+                let @pub read :Fn<Point;I32> = (=> |point| point:.required)
+                let @pub set :Fn<@mut Point,I32;Unit> = (=> |@mut point value| { point:.required := value })
+                """);
+        var pointSchema = structs.metadata().nominalSchemas().schemas().getFirst().type();
+        try (var loaded = LyraRuntime.load(structs); var module = loaded.instantiate()) {
+            var make = module.export("make", "Fn<I32;" + pointSchema + ">").methodHandle();
+            Object point = make.invokeWithArguments(41);
+            Class<?> type = point.getClass();
+            assertEquals(41, type.getMethod("$lyra$public$get$0").invoke(point));
+            assertEquals(41, type.getMethod("$lyra$public$get$1").invoke(point));
+            assertEquals(42, type.getMethod("$lyra$public$get$2").invoke(point));
+            var read = module.export("read", "Fn<" + pointSchema + ";I32>").methodHandle();
+            var set = module.export("set", "Fn<@mut" + pointSchema + ",I32;Unit>").methodHandle();
+            assertEquals(41, read.invokeWithArguments(point));
+            set.invokeWithArguments(point, 73);
+            assertEquals(73, read.invokeWithArguments(point));
+        }
+
+        var classes = compile("""
+                class Counter {
+                    let @pub @mut value :I32
+                    Counter = (=> |start :I32| { self:.value := start })
+                    let @pub increment :Fn<;Unit> = (=> || { self:.value := (++ self:.value) })
+                    let @pub current :Fn<;I32> = (=> || self:.value)
+                }
+                let @pub make :Fn<I32;Counter> = (=> |value| Counter[value])
+                let @pub run :Fn<I32;I32> = (=> |value| {
+                    let counter :Counter = Counter[value]
+                    counter::increment[]
+                    counter::current[]
+                })
+                """);
+        var counterSchema = classes.metadata().nominalSchemas().schemas().getFirst().type();
+        try (var loaded = LyraRuntime.load(classes); var module = loaded.instantiate()) {
+            var make = module.export("make", "Fn<I32;" + counterSchema + ">").methodHandle();
+            Object counter = make.invokeWithArguments(17);
+            assertEquals(17, counter.getClass().getMethod("$lyra$public$get$0").invoke(counter));
+            assertEquals(18, module.export("run", "Fn<I32;I32>").methodHandle().invokeWithArguments(17));
+        }
+
+        var methods = compile("""
+                class Cell { let @pub @mut read :Fn<;I32> = (=> || 1) }
+                let @pub savedBehavior :Fn<;I32> = (=> || {
+                    let @mut cell :Cell = Cell[]
+                    let saved :Fn<;I32> = cell:.read
+                    cell:.read := (=> || 2)
+                    (+ (* (saved) 10) cell::read[])
+                })
+                """);
+        try (var loaded = LyraRuntime.load(methods); var module = loaded.instantiate()) {
+            assertEquals(12, (int) module.export("savedBehavior", "Fn<;I32>")
+                    .methodHandle().invokeExact());
+        }
+    }
+
     @Test void emittedNominalSignaturesLoadAndRejectSameClassForeignProducers() throws Throwable {
         var artifact = compile("struct Node { } let @pub echo :Fn<@nil Node;@nil Node> = (=> |value| value) "
                 + "let @pub echoArray :Fn<Array<@nil Node>;Array<@nil Node>> = (=> |values| values)");
@@ -59,7 +197,11 @@ class NominalBytecodeTest {
     }
 
     private static CompiledArtifact compile(String source) {
-        var result = LyraCompiler.compile(CompileRequest.source("nominal-bytecode.lyra", source));
+        return compile(CompileRequest.source("nominal-bytecode.lyra", source));
+    }
+
+    private static CompiledArtifact compile(CompileRequest request) {
+        var result = LyraCompiler.compile(request);
         if (!(result instanceof CompileResult.Success success)) throw new AssertionError(result);
         return success.artifact();
     }
@@ -214,28 +356,48 @@ class NominalBytecodeTest {
                 boolean wide = random.nextBoolean();
                 boolean mutable = random.nextBoolean();
                 boolean classType = random.nextBoolean();
-                String source = (classType ? "class" : "struct") + " Sample { let @pub "
-                        + (mutable ? "@mut " : "") + "value :" + (wide ? "I64" : "I32") + (classType ? " = 0" : "") + " }";
+                String scalar = wide ? "I64" : "I32";
+                Object expected;
+                if (wide) expected = (long) random.nextInt(1_000_000);
+                else expected = random.nextInt(1_000_000);
+                String constructor = classType ? "" : "value";
+                String parameters = classType ? "" : scalar;
+                String fieldDefault = classType ? " = " + expected : "";
+                String source = (classType ? "class" : "struct") + " Sample { let "
+                        + (classType ? "@pub " : "") + (mutable ? "@mut " : "")
+                        + "value :" + scalar + fieldDefault + " }\n"
+                        + "let @pub make :Fn<" + parameters + ";Sample> = (=> |"
+                        + (classType ? "" : "value") + "| Sample[" + constructor + "])\n"
+                        + (mutable ? "let @pub set :Fn<@mut Sample," + scalar
+                        + ";Unit> = (=> |@mut sample value| { sample:.value := value })" : "");
                 String replay = "seed=" + seed + ", index=" + index + "\n" + source;
                 var artifact = compile(source);
-                var type = representation(artifact, "Sample");
+                var nominal = artifact.metadata().nominalSchemas().schemas().getFirst().type();
                 Class<?> primitive = wide ? long.class : int.class;
-                assertEquals(primitive, type.getDeclaredField("$lyra$field$0").getType(), replay);
-                var producer = producer(artifact);
-                var ticket = begin(artifact, producer, type);
-                var value = type.getConstructor(LyraNominalConstruction.class).newInstance(ticket);
-                Object expected;
-                if (wide) expected = random.nextLong(); else expected = random.nextInt();
-                type.getMethod("$lyra$initialize$0", LyraNominalConstruction.class, primitive).invoke(value, ticket, expected);
-                ticket.complete(value); producer.open();
-                assertEquals(expected, type.getMethod("$lyra$public$get$0").invoke(value), replay);
-                if (mutable) {
-                    Object next;
-                    if (wide) next = random.nextLong(); else next = random.nextInt();
-                    type.getMethod("$lyra$public$set$0", primitive).invoke(value, next);
-                    assertEquals(next, type.getMethod("$lyra$public$get$0").invoke(value), replay);
-                } else assertThrows(NoSuchMethodException.class, () -> type.getMethod("$lyra$public$set$0", primitive), replay);
-                producer.close();
+                try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+                    var make = module.export("make", "Fn<" + parameters + ";" + nominal + ">")
+                            .methodHandle();
+                    Object value = classType ? make.invokeWithArguments()
+                            : make.invokeWithArguments(expected);
+                    Class<?> type = value.getClass();
+                    assertEquals(primitive, type.getDeclaredField("$lyra$field$0").getType(), replay);
+                    assertEquals(expected, type.getMethod("$lyra$public$get$0").invoke(value), replay);
+                    if (mutable) {
+                        Object next;
+                        if (wide) next = (long) random.nextInt(1_000_000);
+                        else next = random.nextInt(1_000_000);
+                        module.export("set", "Fn<@mut" + nominal + "," + scalar + ";Unit>")
+                                .methodHandle().invokeWithArguments(value, next);
+                        assertEquals(next, type.getMethod("$lyra$public$get$0").invoke(value), replay);
+                    } else {
+                        assertThrows(NoSuchMethodException.class,
+                                () -> type.getMethod("$lyra$public$set$0", primitive), replay);
+                    }
+                } catch (Throwable failure) {
+                    if (failure instanceof Exception exception) throw exception;
+                    if (failure instanceof Error error) throw error;
+                    throw new AssertionError(replay, failure);
+                }
             }
         }
     }

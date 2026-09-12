@@ -156,6 +156,17 @@ public final class GeneratedTypePlannerTest {
                 .filter(layout -> layout.schema().type().id().name().equals("Empty")).findFirst().orElseThrow();
         assertTrue(empty.fields().isEmpty());
         assertEquals("()L" + empty.binaryName().replace('.', '/') + ";", empty.factorySignature().descriptor());
+        var state = generated.classes().stream().filter(plan -> plan.kind() == GeneratedClassKind.MODULE_STATE)
+                .findFirst().orElseThrow();
+        for (var declaration : typed.declarations().stream().filter(value -> value.kind()
+                == io.mindspice.lyra.compiler.semantic.DeclarationKind.NOMINAL).toList()) {
+            var layout = generated.nominalLayouts().values().stream().filter(value -> value.schema().type().id().name()
+                    .equals(declaration.name())).findFirst().orElseThrow();
+            assertTrue(state.members().stream().anyMatch(member -> member.kind()
+                    == GeneratedMemberKind.STATE_NOMINAL_FACTORY
+                    && member.name().equals("$lyra$new$" + declaration.id().value())
+                    && member.descriptor().equals(layout.factorySignature().descriptor())));
+        }
         var nominalDeclarations = typed.declarations().stream()
                 .filter(declaration -> declaration.kind() == io.mindspice.lyra.compiler.semantic.DeclarationKind.NOMINAL)
                 .map(declaration -> "$lyra$binding$" + declaration.id().value()).toList();

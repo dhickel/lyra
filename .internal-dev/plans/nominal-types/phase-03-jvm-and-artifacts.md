@@ -71,6 +71,10 @@ Lyra source, load those classes and exercise lifecycle, thread, producer, self-l
 array and callable-leaf checks without an interpreter or source replay.
 Generated plans now include final nominal classes, private exact typed fields,
 initialization/access members, constructor-to-instance signatures and recursive
-linkage inventories. ABI parity checks these against source schemas. Lyra-side
-factory execution, source field/method operations, equality, ergonomic Java
-factories and persistent sessions remain unfinished.
+linkage inventories. ABI parity checks these against source schemas. Module-state
+factories now execute source construction expressions, required/default field
+initialization and class constructors; construction failure invalidates its ticket.
+Typed source member reads/writes, current-slot invocation, saved references and
+qualified/selective imported construction execute through direct bytecode. Contextual
+replacement receivers, structural equality, complete artifact/Java surfaces and
+persistent sessions remain unfinished.

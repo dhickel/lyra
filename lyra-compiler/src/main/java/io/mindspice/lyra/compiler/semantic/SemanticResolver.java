@@ -2453,7 +2453,9 @@ public final class SemanticResolver {
         }
 
         private Optional<ResolvedNominal> constructorTarget(Use target) {
-            return target.declaration.map(value -> value.originDeclaration.orElse(value.id)).map(nominals::get);
+            return target.declaration.map(value -> value.originDeclaration.orElse(value.id))
+                    .or(() -> target.export.map(ResolvedExport::originDeclaration))
+                    .map(nominals::get);
         }
 
         private Use resolveConstruction(ResolvedNominal constructor, List<SyntaxNode.Expression> arguments,

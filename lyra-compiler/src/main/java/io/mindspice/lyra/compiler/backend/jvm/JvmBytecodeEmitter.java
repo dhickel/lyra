@@ -94,6 +94,7 @@ final class JvmBytecodeEmitter {
     private static final ClassDesc CD_FAILURE_CATEGORY = cd(RUNTIME + "LyraFailureCategory");
     private static final ClassDesc CD_RUNTIME_EXCEPTION = cd(RUNTIME + "LyraRuntimeException");
     private static final ClassDesc CD_JAVA_RUNTIME_EXCEPTION = cd("java.lang.RuntimeException");
+    private static final ClassDesc CD_THROWABLE = cd("java.lang.Throwable");
     private static final ClassDesc CD_STACK_OVERFLOW = cd("java.lang.StackOverflowError");
     private static final ClassDesc CD_ARTIFACT_METADATA = cd(RUNTIME + "ArtifactMetadata");
     private static final ClassDesc CD_METADATA_READER = cd(RUNTIME + "ArtifactMetadataReader");
@@ -256,6 +257,9 @@ final class JvmBytecodeEmitter {
         return type.withoutQualifiers();
     }
 
+    private record NominalFieldLocation(IrNode.NominalDeclaration declaration,
+                                        NominalClassLayout layout, int index) { }
+
     private static final class Emitter {
         private final TypedIr ir;
         private final io.mindspice.lyra.runtime.NominalTypeEnvironment nominalSchemas;
@@ -269,6 +273,8 @@ final class JvmBytecodeEmitter {
         private final Map<DeclarationId, IrCell> cells;
         private final Map<String, IrDeclaration> intrinsicFunctionsByClass;
         private final Map<DeclarationId, io.mindspice.lyra.compiler.ir.IrImportBinding> imports;
+        private final Map<DeclarationId, IrNode.NominalDeclaration> nominalDeclarations;
+        private final Map<DeclarationId, NominalFieldLocation> nominalFields;
         private final Map<FlowSiteId, IrFailureSite> failureSites;
         private final Map<String, byte[]> bytes = new LinkedHashMap<>();
         private final Map<String, String> descriptors = new LinkedHashMap<>();
@@ -301,6 +307,24 @@ final class JvmBytecodeEmitter {
             this.imports = ir.imports().stream()
                     .collect(java.util.stream.Collectors.toUnmodifiableMap(
                             io.mindspice.lyra.compiler.ir.IrImportBinding::declarationId, value -> value));
+            var declarationsByNominal = new TreeMap<DeclarationId, IrNode.NominalDeclaration>();
+            var fieldsByDeclaration = new TreeMap<DeclarationId, NominalFieldLocation>();
+            for (IrNode node : io.mindspice.lyra.compiler.ir.IrTraversal.preOrder(ir)) {
+                if (!(node instanceof IrNode.NominalDeclaration nominal)) continue;
+                if (declarationsByNominal.put(nominal.declarationId(), nominal) != null) {
+                    throw new IllegalArgumentException("duplicate nominal declaration in typed IR");
+                }
+                NominalClassLayout layout = plan.nominalLayouts().get(nominal.schema().type().canonicalSpelling());
+                if (layout == null) throw new IllegalArgumentException("nominal declaration has no generated layout");
+                for (int index = 0; index < nominal.members().size(); index++) {
+                    if (fieldsByDeclaration.put(nominal.members().get(index),
+                            new NominalFieldLocation(nominal, layout, index)) != null) {
+                        throw new IllegalArgumentException("nominal member belongs to multiple declarations");
+                    }
+                }
+            }
+            this.nominalDeclarations = Map.copyOf(declarationsByNominal);
+            this.nominalFields = Map.copyOf(fieldsByDeclaration);
             this.failureSites = ir.failureSites().stream()
                     .collect(java.util.stream.Collectors.toUnmodifiableMap(
                             IrFailureSite::siteId, value -> value));
@@ -324,6 +348,16 @@ final class JvmBytecodeEmitter {
                     .map(LyraType::withoutQualifiers)
                     .filter(FunctionType.class::isInstance)
                     .isPresent();
+        }
+
+        private boolean isNominalTypeRole(DeclarationId declarationId) {
+            Set<DeclarationId> visited = new HashSet<>();
+            IrDeclaration declaration = declarations.get(declarationId);
+            while (declaration != null && visited.add(declaration.id())) {
+                if (declaration.kind() == DeclarationKind.NOMINAL) return true;
+                declaration = declaration.originDeclaration().map(declarations::get).orElse(null);
+            }
+            return false;
         }
 
         private void validateSupportedInput() {
@@ -353,10 +387,12 @@ final class JvmBytecodeEmitter {
                         && access.accessKind() == AccessKind.MEMBER_VALUE
                         && access.memberName().filter(value -> !value.equals("length"))
                         .isPresent()
-                        && access.tupleIndex().isEmpty()) {
+                        && access.tupleIndex().isEmpty()
+                        && access.declarationId().filter(nominalFields::containsKey).isEmpty()) {
                     throw unsupported(node.span(), "unsupported scalar member access");
                 }
-                if (node instanceof IrNode.DirectCall call && call.receiver().isPresent()) {
+                if (node instanceof IrNode.DirectCall call && call.receiver().isPresent()
+                        && call.targetDeclaration().filter(nominalFields::containsKey).isEmpty()) {
                     throw unsupported(node.span(),
                             "receiver-bound direct calls are unavailable in the current language core");
                 }
@@ -569,6 +605,12 @@ final class JvmBytecodeEmitter {
         private final IrDeclaration intrinsicFunction;
         private final boolean stateMethod;
         private final boolean closureMethod;
+        private final IrNode.NominalDeclaration nominalFactory;
+        private int nominalTicketSlot = -1;
+        private int nominalReceiverSlot = -1;
+        private Label nominalFactoryStart;
+        private Label nominalFactoryEnd;
+        private Label nominalFactoryHandler;
         private Label loopLabel;
         private final List<FailureHandler> failureHandlers = new ArrayList<>();
         private final List<CallFailureHandler> callFailureHandlers = new ArrayList<>();
@@ -595,6 +637,11 @@ final class JvmBytecodeEmitter {
                     ? owner.intrinsicFunction(classPlan.binaryName()) : null;
             this.stateMethod = classPlan.kind() == GeneratedClassKind.MODULE_STATE;
             this.closureMethod = classPlan.kind() == GeneratedClassKind.CLOSURE;
+            this.nominalFactory = member.kind() == GeneratedMemberKind.STATE_NOMINAL_FACTORY
+                    ? owner.nominalDeclarations.get(declarationIdFromFactoryMember(member.name())) : null;
+            if (member.kind() == GeneratedMemberKind.STATE_NOMINAL_FACTORY && nominalFactory == null) {
+                throw invalidPlan(module.span(), "nominal factory has no declaration");
+            }
         }
 
         private void emit() {
@@ -611,6 +658,31 @@ final class JvmBytecodeEmitter {
             }
             emitFailureHandlers();
             emitCallFailureHandlers();
+            emitNominalFactoryFailureHandler();
+        }
+
+        private static DeclarationId declarationIdFromFactoryMember(String name) {
+            try {
+                return new DeclarationId(Long.parseLong(name.substring(name.lastIndexOf('$') + 1)));
+            } catch (RuntimeException failure) {
+                throw new IllegalArgumentException("nominal factory has no declaration identity", failure);
+            }
+        }
+
+        private void emitNominalFactoryFailureHandler() {
+            if (nominalFactoryHandler == null) return;
+            code.labelBinding(nominalFactoryEnd);
+            code.exceptionCatch(nominalFactoryStart, nominalFactoryEnd,
+                    nominalFactoryHandler, CD_THROWABLE);
+            code.labelBinding(nominalFactoryHandler);
+            int cause = code.allocateLocal(TypeKind.REFERENCE);
+            code.astore(cause);
+            code.aload(nominalTicketSlot);
+            code.aload(cause);
+            code.invokevirtual(cd(RUNTIME + "LyraNominalConstruction"), "fail",
+                    method("(Ljava/lang/Throwable;)V"));
+            code.aload(cause);
+            code.athrow();
         }
 
         private void emitCallFailureHandlers() {
@@ -1123,6 +1195,7 @@ final class JvmBytecodeEmitter {
                 case STATE_CONSTRUCTOR -> emitStateConstructor();
                 case STATE_COMPONENT_GET -> emitStateGetter();
                 case STATE_COMPONENT_SET -> emitStateSetter();
+                case STATE_NOMINAL_FACTORY -> emitNominalFactory();
                 case STATE_AUTHORITY_GET -> emitStateAuthorityGetter();
                 case STATE_CHECK_OPEN -> emitStateCheckOpen();
                 case STATE_FACTORY_CHECK_OPEN -> emitStateFactoryCheckOpen();
@@ -1187,6 +1260,101 @@ final class JvmBytecodeEmitter {
             code.invokevirtual(CD_ARTIFACT_KEY, "registerModuleState", method(
                     "(L" + RUNTIME + "ModuleId;Ljava/lang/Object;)V"));
             code.return_();
+        }
+
+        private void emitNominalFactory() {
+            NominalClassLayout layout = owner.plan.nominalLayouts().get(
+                    nominalFactory.schema().type().canonicalSpelling());
+            if (layout == null || !member.descriptor().equals(layout.factorySignature().descriptor())) {
+                throw invalidPlan(nominalFactory.span(), "nominal factory differs from its generated layout");
+            }
+            for (int index = 0; index < layout.factorySignature().parameters().size(); index++) {
+                LyraType logical = nominalFactory.schema().constructorParameters().get(index);
+                JvmTypePlan physical = layout.factorySignature().parameters().get(index);
+                if (authenticateFunctionParameter(index, logical, physical)) storeParameter(index);
+            }
+            emitCurrentAuthority();
+            code.ldc(nominalFactory.schema().type().canonicalSpelling());
+            code.ldc(cd(layout.binaryName()));
+            code.invokestatic(cd(RUNTIME + "LyraNominalConstruction"), "begin",
+                    method("(" + NominalClassLayout.AUTHORITY
+                            + "Ljava/lang/String;Ljava/lang/Class;)" + NominalClassLayout.CONSTRUCTION));
+            nominalTicketSlot = code.allocateLocal(TypeKind.REFERENCE);
+            code.astore(nominalTicketSlot);
+            nominalFactoryStart = code.newLabel();
+            nominalFactoryEnd = code.newLabel();
+            nominalFactoryHandler = code.newLabel();
+            code.labelBinding(nominalFactoryStart);
+            code.new_(cd(layout.binaryName()));
+            code.dup();
+            code.aload(nominalTicketSlot);
+            code.invokespecial(cd(layout.binaryName()), "<init>",
+                    method("(" + NominalClassLayout.CONSTRUCTION + ")V"));
+            nominalReceiverSlot = code.allocateLocal(TypeKind.REFERENCE);
+            code.astore(nominalReceiverSlot);
+            JvmTypePlan selfPlan = owner.mapper.map(nominalFactory.schema().type(),
+                    JvmMappingContext.INTERNAL_VALUE);
+            locals.put(nominalFactory.self(), BindingStorage.local(
+                    nominalFactory.schema().type(), selfPlan, List.of(nominalReceiverSlot)));
+
+            int parameter = 0;
+            if (nominalFactory.schema().kind() == io.mindspice.lyra.compiler.types.NominalSchema.Kind.STRUCT) {
+                for (int index = 0; index < layout.fields().size(); index++) {
+                    if (layout.fields().get(index).member().hasInitializer()) continue;
+                    int parameterIndex = parameter;
+                    emitNominalInitialization(layout, index, () -> loadParameter(parameterIndex));
+                    parameter++;
+                }
+            }
+
+            int initializer = 0;
+            for (int index = 0; index < layout.fields().size(); index++) {
+                if (!layout.fields().get(index).member().hasInitializer()) continue;
+                IrNode value = nominalFactory.initializers().get(initializer++);
+                int fieldIndex = index;
+                emitNominalInitialization(layout, fieldIndex, () -> {
+                    JvmTypePlan actual = emitNode(value);
+                    adapt(actual, layout.fields().get(fieldIndex).value());
+                });
+            }
+            if (nominalFactory.constructor().isPresent()) {
+                IrNode node = nominalFactory.initializers().get(initializer++);
+                if (!(node instanceof IrNode.Lambda constructorNode)
+                        || !constructorNode.lambdaId().equals(nominalFactory.constructor())) {
+                    throw invalidPlan(nominalFactory.span(), "nominal constructor body is absent");
+                }
+                io.mindspice.lyra.compiler.ir.IrLambda constructor = owner.lambdas.get(
+                        nominalFactory.constructor().orElseThrow());
+                if (constructor == null || constructor.parameterIds().size()
+                        != layout.factorySignature().parameters().size()) {
+                    throw invalidPlan(nominalFactory.span(), "nominal constructor parameters are incomplete");
+                }
+                for (int index = 0; index < constructor.parameterIds().size(); index++) {
+                    LyraType logical = constructor.signature().parameterType(index);
+                    JvmTypePlan physical = layout.factorySignature().parameters().get(index);
+                    locals.put(constructor.parameterIds().get(index), BindingStorage.local(
+                            logical, physical, List.of(code.parameterSlot(index))));
+                }
+                discard(emitNode(constructor.body()));
+            }
+            if (initializer != nominalFactory.initializers().size()) {
+                throw invalidPlan(nominalFactory.span(), "nominal initializer inventory is inconsistent");
+            }
+            code.aload(nominalTicketSlot);
+            code.aload(nominalReceiverSlot);
+            code.invokevirtual(cd(RUNTIME + "LyraNominalConstruction"), "complete",
+                    method("(L" + RUNTIME + "LyraNominalObject;)V"));
+            code.aload(nominalReceiverSlot);
+            code.areturn();
+        }
+
+        private void emitNominalInitialization(NominalClassLayout layout, int index,
+                                               Runnable value) {
+            code.aload(nominalReceiverSlot);
+            code.aload(nominalTicketSlot);
+            value.run();
+            code.invokevirtual(cd(layout.binaryName()), "$lyra$initialize$" + index,
+                    method(layout.fields().get(index).initializationSetterDescriptor()));
         }
 
         private void initializeIntrinsicFunctions() {
@@ -1513,6 +1681,8 @@ final class JvmBytecodeEmitter {
                         IrDeclaration captured = declarations.get(capture.declarationId());
                         if (captured != null && captured.moduleId().equals(module.moduleId())
                                 && captured.scopeId().equals(module.rootScope())
+                                && captured.kind() == DeclarationKind.LET
+                                && !owner.nominalFields.containsKey(captured.id())
                                 && !captured.imported()) {
                             initializeRootDeclarationsThrough(captured.id());
                         }
@@ -1522,7 +1692,8 @@ final class JvmBytecodeEmitter {
                         .filter(candidate -> candidate instanceof IrNode.Declaration declaration
                                 && declaration.declarationId().filter(id::equals).isPresent())
                         .findFirst().orElseThrow(() -> invalidPlan(metadata.span(),
-                                "root declaration is absent from the module body: " + id));
+                                "root declaration is absent from the module body: " + id
+                                        + " (" + metadata.kind() + " " + metadata.name() + ")"));
                 if (owner.ir.sessionExecution().isPresent()) {
                     emitSessionSafePoint();
                     loadStateLifecycle();
@@ -2663,6 +2834,9 @@ final class JvmBytecodeEmitter {
                 emitUnit();
                 return owner.mapper.map(node.type(), JvmMappingContext.INTERNAL_VALUE);
             }
+            if (node instanceof IrNode.Construction construction) {
+                return emitConstruction(construction);
+            }
             if (node instanceof IrNode.Constant constant) {
                 return emitConstant(constant);
             }
@@ -2776,6 +2950,41 @@ final class JvmBytecodeEmitter {
             emitInt(bits);
             code.invokespecial(cd("io.mindspice.lyra.runtime.LyraRange"), "<init>", method("(JJJZI)V"));
             return owner.mapper.map(range.type(), JvmMappingContext.INTERNAL_VALUE);
+        }
+
+        private JvmTypePlan emitConstruction(IrNode.Construction construction) {
+            IrNode.NominalDeclaration declaration = owner.nominalDeclarations.get(construction.declarationId());
+            if (declaration == null || !declaration.schema().type().equals(construction.type())) {
+                throw invalidPlan(construction.span(), "construction has no exact nominal declaration");
+            }
+            NominalClassLayout layout = owner.plan.nominalLayouts().get(
+                    construction.type().canonicalSpelling());
+            if (layout == null || construction.arguments().size()
+                    != layout.factorySignature().parameters().size()) {
+                throw invalidPlan(construction.span(), "construction differs from its factory ABI");
+            }
+            List<Integer> arguments = new ArrayList<>();
+            for (int index = 0; index < construction.arguments().size(); index++) {
+                JvmTypePlan parameter = layout.factorySignature().parameters().get(index);
+                emitAt(construction.arguments().get(index), parameter);
+                int slot = allocateLocal(parameter);
+                storePhysical(parameter.physicalComponents().getFirst(), slot);
+                arguments.add(slot);
+            }
+            IrDeclaration metadata = declarations.get(construction.declarationId());
+            if (metadata == null) throw invalidPlan(construction.span(), "nominal declaration metadata is absent");
+            emitLoadModuleState(metadata.moduleId());
+            for (int index = 0; index < arguments.size(); index++) {
+                JvmTypePlan parameter = layout.factorySignature().parameters().get(index);
+                loadPhysical(parameter.physicalComponents().getFirst(), arguments.get(index));
+            }
+            recordCallFailureFrame(construction.span(), () -> code.invokevirtual(
+                    cd(owner.plan.moduleStates().get(metadata.moduleId())),
+                    "$lyra$new$" + construction.declarationId().value(),
+                    method(layout.factorySignature().descriptor())));
+            JvmTypePlan desired = owner.mapper.map(construction.type(), JvmMappingContext.INTERNAL_VALUE);
+            adapt(layout.factorySignature().returnValue(), desired);
+            return desired;
         }
 
         private JvmTypePlan emitLoop(IrNode.Loop loop) {
@@ -3113,6 +3322,19 @@ final class JvmBytecodeEmitter {
         }
 
         private JvmTypePlan emitCaptureReference(IrNode.CaptureReference reference) {
+            if (nominalFactory != null) {
+                DeclarationId declaration = reference.declarationId().orElseThrow(() ->
+                        invalidPlan(reference.span(), "inline constructor capture has no declaration"));
+                JvmTypePlan desired = owner.mapper.map(reference.type(), JvmMappingContext.INTERNAL_VALUE);
+                BindingStorage local = locals.get(declaration);
+                if (local != null) {
+                    loadLocal(local);
+                    adapt(local.physical(), desired);
+                } else {
+                    emitLoadDeclaration(declaration, desired);
+                }
+                return desired;
+            }
             CaptureId id = reference.captureId().orElseThrow(() ->
                     invalidPlan(reference.span(), "capture reference has no capture identity"));
             IrCapture capture = captures.get(id);
@@ -3195,7 +3417,10 @@ final class JvmBytecodeEmitter {
         private JvmTypePlan emitRebinding(IrNode.Rebinding rebinding) {
             DeclarationId id = rebinding.targetDeclaration().orElseThrow(() ->
                     invalidPlan(rebinding.span(), "rebinding has no target declaration"));
-            if (rebinding.route().isRoot()) {
+            if (rebinding.mutationKind().filter(
+                    io.mindspice.lyra.compiler.semantic.MutationKind.MEMBER_FIELD::equals).isPresent()) {
+                emitNominalRebinding(rebinding);
+            } else if (rebinding.route().isRoot()) {
                 if (!(rootReferenceNode(rebinding.target()) instanceof IrNode.Reference)
                         && !(rootReferenceNode(rebinding.target()) instanceof IrNode.CaptureReference)) {
                     throw unsupported(rebinding.span(), "scalar rebinding target is not a binding reference");
@@ -3224,6 +3449,51 @@ final class JvmBytecodeEmitter {
             }
             emitUnit();
             return owner.mapper.map(rebinding.type(), JvmMappingContext.INTERNAL_VALUE);
+        }
+
+        private void emitNominalRebinding(IrNode.Rebinding rebinding) {
+            if (!(rebinding.target() instanceof IrNode.Access access)
+                    || access.receiver().isEmpty() || access.declarationId().isEmpty()) {
+                throw invalidPlan(rebinding.span(), "nominal assignment target has no exact member access");
+            }
+            NominalFieldLocation location = owner.nominalFields.get(access.declarationId().orElseThrow());
+            if (location == null) throw invalidPlan(rebinding.span(), "nominal assignment member is absent");
+            JvmTypePlan receiverPlan = owner.mapper.map(access.receiver().orElseThrow().type(),
+                    JvmMappingContext.INTERNAL_VALUE);
+            emitAt(access.receiver().orElseThrow(), receiverPlan);
+            int receiver = allocateLocal(receiverPlan);
+            storePhysical(receiverPlan.physicalComponents().getFirst(), receiver);
+            JvmTypePlan value = emitNode(rebinding.value());
+            adapt(value, location.layout().fields().get(location.index()).value());
+            int stored = allocateLocal(location.layout().fields().get(location.index()).value());
+            storePhysical(location.layout().fields().get(location.index()).value()
+                    .physicalComponents().getFirst(), stored);
+            Label generated = null;
+            Label done = null;
+            if (nominalFactory != null
+                    && nominalFactory.schema().type().equals(location.declaration().schema().type())) {
+                generated = code.newLabel();
+                done = code.newLabel();
+                code.aload(receiver);
+                code.aload(nominalReceiverSlot);
+                code.if_acmpne(generated);
+                code.aload(receiver);
+                code.aload(nominalTicketSlot);
+                loadPhysical(location.layout().fields().get(location.index()).value()
+                        .physicalComponents().getFirst(), stored);
+                code.invokevirtual(cd(location.layout().binaryName()),
+                        "$lyra$initialize$" + location.index(),
+                        method(location.layout().fields().get(location.index()).initializationSetterDescriptor()));
+                code.goto_(done);
+                code.labelBinding(generated);
+            }
+            code.aload(receiver);
+            emitCurrentAuthority();
+            loadPhysical(location.layout().fields().get(location.index()).value()
+                    .physicalComponents().getFirst(), stored);
+            code.invokevirtual(cd(location.layout().binaryName()), "$lyra$set$" + location.index(),
+                    method(location.layout().fields().get(location.index()).generatedSetterDescriptor()));
+            if (done != null) code.labelBinding(done);
         }
 
         /** Emits an aggregate assignment target without reading its final element. */
@@ -3443,6 +3713,7 @@ final class JvmBytecodeEmitter {
                     if (capture == null) {
                         throw invalidPlan(form.span(), "local function capture is absent: " + captureId);
                     }
+                    if (owner.isNominalTypeRole(capture.declarationId())) continue;
                     ensureLocalFunctionInitialized(capture.declarationId());
                 }
                 discard(emitDeclaration(form));
@@ -4624,8 +4895,15 @@ final class JvmBytecodeEmitter {
                 throw invalidPlan(call.span(), "direct call target declaration is absent");
             }
             FunctionType function = functionBase(declaration.contract().orElseThrow().valueType());
-            emitLoadDeclaration(id, owner.mapper.map(declaration.contract().orElseThrow().valueType(),
-                    JvmMappingContext.INTERNAL_VALUE));
+            if (call.receiver().isPresent()) {
+                NominalFieldLocation location = owner.nominalFields.get(id);
+                if (location == null) throw invalidPlan(call.span(), "method call has no nominal slot");
+                emitNominalFieldGet(call.receiver().orElseThrow(),
+                        declaration.contract().orElseThrow().valueType(), location);
+            } else {
+                emitLoadDeclaration(id, owner.mapper.map(declaration.contract().orElseThrow().valueType(),
+                        JvmMappingContext.INTERNAL_VALUE));
+            }
             JvmSignaturePlan signature = owner.mapper.mapSignature(function.signature(),
                     JvmAbiBoundary.JAVA_VISIBLE);
             for (int index = 0; index < function.arity(); index++) {
@@ -4742,6 +5020,7 @@ final class JvmBytecodeEmitter {
             for (CaptureId captureId : lambda.captures().stream().sorted().toList()) {
                 IrCapture capture = captures.get(captureId);
                 if (capture == null) throw invalidPlan(lambdaNode.span(), "lambda capture is absent");
+                if (owner.isNominalTypeRole(capture.declarationId())) continue;
                 if (capture.isSharedCell()) {
                     emitLoadCellForDeclaration(capture.declarationId());
                 } else if (owner.usesLocalFunctionSlot(capture)) {
@@ -4897,6 +5176,10 @@ final class JvmBytecodeEmitter {
                 adapt(fieldPlan, desired);
                 return desired;
             }
+            if (access.accessKind() == AccessKind.MEMBER_VALUE
+                    && access.declarationId().filter(owner.nominalFields::containsKey).isPresent()) {
+                return emitNominalAccess(access);
+            }
             JvmTypePlan desired = owner.mapper.map(access.type(), JvmMappingContext.INTERNAL_VALUE);
             if (access.accessKind() == AccessKind.NAMESPACE_VALUE) {
                 ModuleId targetModule = access.moduleId().orElseThrow(() ->
@@ -4914,6 +5197,49 @@ final class JvmBytecodeEmitter {
             DeclarationId id = access.declarationId().orElseThrow(() ->
                     invalidPlan(access.span(), "member access has no declaration identity"));
             emitLoadDeclaration(id, desired);
+            return desired;
+        }
+
+        private JvmTypePlan emitNominalAccess(IrNode.Access access) {
+            NominalFieldLocation location = owner.nominalFields.get(access.declarationId().orElseThrow());
+            return emitNominalFieldGet(access.receiver().orElseThrow(), access.type(), location);
+        }
+
+        private JvmTypePlan emitNominalFieldGet(IrNode receiverNode, LyraType resultType,
+                                                NominalFieldLocation location) {
+            JvmTypePlan receiverPlan = owner.mapper.map(receiverNode.type(), JvmMappingContext.INTERNAL_VALUE);
+            emitAt(receiverNode, receiverPlan);
+            int receiver = allocateLocal(receiverPlan);
+            storePhysical(receiverPlan.physicalComponents().getFirst(), receiver);
+            JvmTypePlan field = location.layout().fields().get(location.index()).value();
+            int result = allocateLocal(field);
+            Label generated = null;
+            Label done = null;
+            if (nominalFactory != null
+                    && nominalFactory.schema().type().equals(location.declaration().schema().type())) {
+                generated = code.newLabel();
+                done = code.newLabel();
+                code.aload(receiver);
+                code.aload(nominalReceiverSlot);
+                code.if_acmpne(generated);
+                code.aload(receiver);
+                code.aload(nominalTicketSlot);
+                code.invokevirtual(cd(location.layout().binaryName()),
+                        "$lyra$initialization$get$" + location.index(),
+                        method(location.layout().fields().get(location.index()).initializationGetterDescriptor()));
+                storePhysical(field.physicalComponents().getFirst(), result);
+                code.goto_(done);
+                code.labelBinding(generated);
+            }
+            code.aload(receiver);
+            emitCurrentAuthority();
+            code.invokevirtual(cd(location.layout().binaryName()), "$lyra$get$" + location.index(),
+                    method(location.layout().fields().get(location.index()).generatedGetterDescriptor()));
+            storePhysical(field.physicalComponents().getFirst(), result);
+            if (done != null) code.labelBinding(done);
+            loadPhysical(field.physicalComponents().getFirst(), result);
+            JvmTypePlan desired = owner.mapper.map(resultType, JvmMappingContext.INTERNAL_VALUE);
+            adapt(field, desired);
             return desired;
         }
 

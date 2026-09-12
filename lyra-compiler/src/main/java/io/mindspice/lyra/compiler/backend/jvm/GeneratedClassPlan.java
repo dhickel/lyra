@@ -237,6 +237,7 @@ record GeneratedClassPlan(
                         GeneratedMemberKind.STATE_IMPORT_LINK,
                         GeneratedMemberKind.STATE_COMPONENT_GET,
                         GeneratedMemberKind.STATE_COMPONENT_SET,
+                        GeneratedMemberKind.STATE_NOMINAL_FACTORY,
                         GeneratedMemberKind.STATE_CONSTRUCTOR,
                         GeneratedMemberKind.STATE_AUTHORITY_GET,
                         GeneratedMemberKind.STATE_CHECK_OPEN,

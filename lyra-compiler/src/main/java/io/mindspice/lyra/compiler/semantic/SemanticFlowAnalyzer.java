@@ -842,8 +842,14 @@ public final class SemanticFlowAnalyzer {
                     while (ownerFrame.nextForm <= formIndex) {
                         executedEffects.addAll(executeNext(ownerFrame).effects);
                     }
-                    ValueAlternatives value = ownerFrame.values.get(declarationId);
+                    ValueAlternatives value = ownerFrame.state.binding(declarationId)
+                            .map(binding -> binding.alternatives())
+                            .orElse(null);
+                    if (value == null) {
+                        value = ownerFrame.values.get(declarationId);
+                    }
                     if (value != null) {
+                        ownerFrame.values.putIfAbsent(declarationId, value);
                         return new Lookup(value, distinctEffects(executedEffects), true);
                     }
                 }

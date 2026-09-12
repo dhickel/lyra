@@ -11,6 +11,7 @@ import io.mindspice.lyra.compiler.ir.IrExport;
 import io.mindspice.lyra.compiler.ir.IrFunctionLink;
 import io.mindspice.lyra.compiler.ir.IrImportBinding;
 import io.mindspice.lyra.compiler.ir.IrLambda;
+import io.mindspice.lyra.compiler.ir.IrNode;
 import io.mindspice.lyra.compiler.ir.TypedIr;
 import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.types.ArrayType;
@@ -46,10 +47,13 @@ final class JvmAbiParity {
         for (var schema : ir.semanticGraph().resolvedGraph().nominalTypes().schemas()) {
             nominalLayouts.put(schema.type().canonicalSpelling(), NominalClassLayout.plan(schema, mapper));
         }
+        Map<DeclarationId, IrDeclaration> declarations = ir.declarations().stream()
+                .collect(java.util.stream.Collectors.toMap(IrDeclaration::id, value -> value));
         if (!nominalLayouts.equals(plan.nominalLayouts())) differences.add("nominal storage/factory layouts differ from typed schemas");
 
         for (IrExport export : ir.exports()) {
             if (ir.module(export.moduleId()).isEmpty()) continue;
+            if (isNominalTypeRole(declarations, export.declarationId())) continue;
             JvmExportId expectedId = JvmExportId.from(export);
             Optional<GeneratedExportPlan> generated = plan.exports().stream()
                     .filter(value -> value.exportId().equals(expectedId))
@@ -293,6 +297,20 @@ final class JvmAbiParity {
             if (!lifecycleShape) {
                 differences.add("module-state lifecycle composition differs: " + module.moduleId());
             }
+            var expectedNominalFactories = module.body().forms().stream()
+                    .filter(IrNode.NominalDeclaration.class::isInstance)
+                    .map(IrNode.NominalDeclaration.class::cast)
+                    .collect(java.util.stream.Collectors.toMap(
+                            value -> "$lyra$new$" + value.declarationId().value(),
+                            value -> plan.nominalLayouts().get(value.schema().type().canonicalSpelling())
+                                    .factorySignature().descriptor()));
+            var actualNominalFactories = state.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.STATE_NOMINAL_FACTORY)
+                    .collect(java.util.stream.Collectors.toMap(
+                            GeneratedMemberPlan::name, GeneratedMemberPlan::descriptor));
+            if (!actualNominalFactories.equals(expectedNominalFactories)) {
+                differences.add("module-state nominal factories differ: " + module.moduleId());
+            }
             var resultFields = state.members().stream()
                     .filter(value -> value.kind() == GeneratedMemberKind.SESSION_RESULT_FIELD).toList();
             var facade = plan.classPlan(plan.moduleFacades().get(module.moduleId())).orElseThrow();
@@ -467,6 +485,7 @@ final class JvmAbiParity {
                     differences.add("missing closure capture: " + captureId);
                     continue;
                 }
+                if (isNominalTypeRole(declarations, capture.declarationId())) continue;
                 if (capture.isSharedCell()) {
                     addExpectedDependency(dependencies,
                             plan.cellClasses().get(capture.sharedCellId().orElseThrow()),
@@ -564,6 +583,15 @@ final class JvmAbiParity {
                                     plan.typeNames()));
                 }
             }
+            for (IrNode form : module.body().forms()) {
+                if (!(form instanceof IrNode.NominalDeclaration nominal)) continue;
+                addExpectedTypeDependencies(stateDependencies, nominal.schema().type(),
+                        GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE, false, plan.typeNames());
+                for (LyraType parameter : nominal.schema().constructorParameters()) {
+                    addExpectedTypeDependencies(stateDependencies, parameter,
+                            GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE, false, plan.typeNames());
+                }
+            }
 
             module.submissionResult().ifPresent(result -> addExpectedTypeDependencies(stateDependencies,
                     result.type(), GeneratedDependencyKind.MODULE_STATE_FIELD_TYPE, true, plan.typeNames()));
@@ -584,6 +612,7 @@ final class JvmAbiParity {
                 addExpectedDependency(facadeDependencies, plan.moduleStates().get(module.moduleId()),
                         GeneratedDependencyKind.FACADE_STATE, true);
                 ir.exports().stream().filter(export -> export.moduleId().equals(module.moduleId()))
+                        .filter(export -> !isNominalTypeRole(declarations, export.declarationId()))
                         .forEach(export -> addExpectedTypeDependencies(facadeDependencies,
                                 export.contract().valueType(),
                                 GeneratedDependencyKind.FACADE_EXPORT_TYPE, true,
@@ -678,6 +707,7 @@ final class JvmAbiParity {
                     differences.add("missing closure capture: " + captureId);
                     continue;
                 }
+                if (isNominalTypeRole(declarations, capture.declarationId())) continue;
                 String prefix = "$lyra$capture$" + captureId.value();
                 boolean functionSlot = usesLocalFunctionSlot(
                         capture, declarations, rootDeclarations);
@@ -847,6 +877,18 @@ final class JvmAbiParity {
                     parameter, tuples, functions));
             collectTypeDefinitions(function.returnType(), tuples, functions);
         }
+    }
+
+    private static boolean isNominalTypeRole(
+            Map<DeclarationId, IrDeclaration> declarations, DeclarationId declarationId) {
+        Set<DeclarationId> visited = new HashSet<>();
+        IrDeclaration declaration = declarations.get(declarationId);
+        while (declaration != null && visited.add(declaration.id())) {
+            if (declaration.kind()
+                    == io.mindspice.lyra.compiler.semantic.DeclarationKind.NOMINAL) return true;
+            declaration = declaration.originDeclaration().map(declarations::get).orElse(null);
+        }
+        return false;
     }
 
     private record DependencyIdentity(

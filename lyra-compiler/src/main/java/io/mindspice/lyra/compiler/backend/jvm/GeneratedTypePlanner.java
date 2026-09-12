@@ -94,8 +94,15 @@ final class GeneratedTypePlanner {
             nominalLayouts.put(schema.type().canonicalSpelling(), NominalClassLayout.plan(schema, mapper));
         }
 
+        Map<DeclarationId, IrDeclaration> declarations = ir.declarations().stream()
+                .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                        IrDeclaration::id, value -> value));
         List<IrExport> emittedExports = ir.exports().stream()
-                .filter(export -> ir.module(export.moduleId()).isPresent()).toList();
+                .filter(export -> ir.module(export.moduleId()).isPresent())
+                // A public type is compile-time namespace/schema linkage. It has
+                // no module-state value getter; construction uses the state factory.
+                .filter(export -> !isNominalTypeRole(declarations, export.declarationId()))
+                .toList();
         List<JvmExportId> exportIds = emittedExports.stream()
                 .map(export -> exportId(export))
                 .sorted()
@@ -110,9 +117,6 @@ final class GeneratedTypePlanner {
         Map<DeclarationId, String> cellClasses = names.cellClasses();
         Map<DeclarationId, String> intrinsicFunctionClasses = names.intrinsicFunctionClasses();
 
-        Map<DeclarationId, IrDeclaration> declarations = ir.declarations().stream()
-                .collect(java.util.stream.Collectors.toUnmodifiableMap(
-                        IrDeclaration::id, value -> value));
         Map<DeclarationId, IrLambda> lambdasByOwner = new TreeMap<>();
         for (IrLambda lambda : ir.lambdas()) {
             lambda.ownerDeclaration().ifPresent(owner -> lambdasByOwner.put(owner, lambda));
@@ -150,7 +154,7 @@ final class GeneratedTypePlanner {
         addIntrinsicClosureClasses(classes, ir, mapper, names, intrinsicFunctionClasses,
                 moduleStates);
         addModuleStateClasses(classes, ir, mapper, names, moduleStates, cellClasses,
-                declarations, cellsByDeclaration, emissionMode);
+                declarations, cellsByDeclaration, nominalLayouts, emissionMode);
         addModuleFacadeClasses(classes, ir, mapper, names, moduleStates, moduleFacades,
                 exportPlans, emissionMode);
 
@@ -465,6 +469,10 @@ final class GeneratedTypePlanner {
                 if (capture == null) {
                     throw new IllegalArgumentException("lambda refers to absent capture: " + captureId);
                 }
+                if (isNominalTypeRole(declarations, capture.declarationId())) {
+                    // A constructor target is a linked type role, not a live value capture.
+                    continue;
+                }
                 if (capture.isSharedCell()) {
                     String cellName = cellClasses.get(capture.sharedCellId().orElseThrow());
                     if (cellName == null) {
@@ -641,6 +649,7 @@ final class GeneratedTypePlanner {
             Map<DeclarationId, String> cellClasses,
             Map<DeclarationId, IrDeclaration> declarations,
             Map<DeclarationId, IrCell> cellsByDeclaration,
+            Map<String, NominalClassLayout> nominalLayouts,
             EmissionMode emissionMode) {
         Map<DeclarationId, IrImportBinding> importsByDeclaration = ir.imports().stream()
                 .collect(java.util.stream.Collectors.toUnmodifiableMap(
@@ -761,6 +770,27 @@ final class GeneratedTypePlanner {
                 addTypeDependencies(dependencies, contract.orElseThrow().valueType(),
                         GeneratedDependencyKind.MODULE_STATE_FIELD_TYPE, true, names,
                         "module state binding type");
+            }
+            for (IrNode form : module.body().forms()) {
+                if (!(form instanceof IrNode.NominalDeclaration nominal)) continue;
+                NominalClassLayout layout = nominalLayouts.get(nominal.schema().type().canonicalSpelling());
+                IrDeclaration declaration = declarations.get(nominal.declarationId());
+                if (layout == null || declaration == null
+                        || declaration.kind() != DeclarationKind.NOMINAL
+                        || !declaration.moduleId().equals(module.moduleId())) {
+                    throw new IllegalArgumentException("nominal declaration has no exact class layout");
+                }
+                members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_NOMINAL_FACTORY,
+                        "$lyra$new$" + nominal.declarationId().value(),
+                        layout.factorySignature().descriptor(), false));
+                addTypeDependency(dependencies, layout.binaryName(),
+                        GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE, false,
+                        "nominal construction result");
+                for (LyraType parameter : nominal.schema().constructorParameters()) {
+                    addTypeDependencies(dependencies, parameter,
+                            GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE, false, names,
+                            "nominal constructor parameter");
+                }
             }
             if (ir.sessionExecution().isPresent()) {
                 members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_SESSION_ACCESSOR,
@@ -1505,6 +1535,17 @@ final class GeneratedTypePlanner {
         return Comparator.comparingInt((GeneratedClassPlan value) -> value.kind().orderRank())
                 .thenComparing(GeneratedClassPlan::stableKey)
                 .thenComparing(GeneratedClassPlan::binaryName);
+    }
+
+    private static boolean isNominalTypeRole(
+            Map<DeclarationId, IrDeclaration> declarations, DeclarationId declarationId) {
+        Set<DeclarationId> visited = new HashSet<>();
+        IrDeclaration declaration = declarations.get(declarationId);
+        while (declaration != null && visited.add(declaration.id())) {
+            if (declaration.kind() == DeclarationKind.NOMINAL) return true;
+            declaration = declaration.originDeclaration().map(declarations::get).orElse(null);
+        }
+        return false;
     }
 
     private static IllegalArgumentException cycle(List<String> names) {

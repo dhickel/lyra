@@ -145,10 +145,12 @@ operations, initial definite-initialization certification, field-sensitive heap/
 callable transfer and nominal IR are implemented. Source declarations now emit
 deterministic final JVM representation classes with private typed fields and checked
 initialization/generated/public accessors. Host-driven integration tests load and
-exercise those source-produced classes. General constructor summaries, Lyra-side
-factory/construction and member execution, complete repeated/imported heap transfer,
-contextual replacement receivers, equality and persistent sessions remain in
-progress; emitted representation support alone is not full nominal conformance.
+exercise those source-produced classes. Lyra construction expressions now invoke
+origin-module factories, evaluate arguments once left-to-right, execute ordered
+defaults/constructors, and support source field access, mutation, current-slot calls,
+and saved method references. Complete repeated/imported heap transfer, contextual
+replacement receivers, equality, ergonomic Java construction and persistent sessions
+remain in progress; this executable slice alone is not full nominal conformance.
 
 ```lyra
 struct Vec2 {

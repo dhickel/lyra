@@ -205,16 +205,22 @@ class equality uses identity. Equality does not invoke user code. Java-facing ac
 source-mapped failures, deterministic packaging, CLI execution and persistent sessions
 are completion gates.
 
-Source declarations already emit deterministic final representation classes with
-private exact fields and typed initialization, generated and public access methods.
+Source declarations emit deterministic final representation classes with private
+exact fields and typed initialization, generated and public access methods. Module
+states now own exact typed factories. Source construction evaluates arguments once
+left-to-right, initializes required struct fields before ordered defaults, executes
+class defaults before the explicit constructor, invalidates failed construction
+tickets, and returns the exact generated representation. Qualified and selectively
+imported type roles route to the defining module factory without fake value storage.
+Source member reads/writes, current-slot calls and saved method references use those
+typed fields directly.
 Every reference-bearing boundary recursively authenticates nominal and callable
 leaves without copying arrays, tuples or object references. During initialization,
 only the active capability may admit its own incomplete receiver as an internal
 self-field value; ordinary generated and public boundaries require complete objects.
 Generated callable signatures resolve through the producer-scoped metadata cache.
-This emitted representation support does not itself execute a Lyra construction
-expression: module factories, source member operations and method-slot behavior
-remain separate completion gates.
+Contextual `self` for externally defined replacement lambdas, structural equality,
+complete artifact/Java surfaces and persistent sessions remain completion gates.
 
 ### Functions and closures
 
