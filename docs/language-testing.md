@@ -162,6 +162,10 @@ The case count therefore differs from the much larger invocation/assertion count
     capabilities must all be rejected. Expected values, variant kinds, shapes
     and codes come only from the test-only model; every legal producer must also
     keep the fail-closed `retainedInitializerDiagnostic` preflight guard silent.
+    The annotated nilable-member read gap (issue #8) stays a documented open
+    limitation: annotated reads and nil-contract-consuming forms over member
+    reads are rejected with the structured `LYC-IR-003`, while bare reads and
+    the retained nilable-element index cases work.
     The balanced minimum campaign is now 120 cases (twelve modes × ten numeric
     kinds); the ten retained profiles rotate so the minimum budget already
     executes every profile and every operation name in each seed. The driver

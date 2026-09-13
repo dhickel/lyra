@@ -6,7 +6,7 @@
 
 ## Git Commit
 
-432121b17d6acae837fcbe6948ba912536a8e162
+c6f4274f96d0193da2f9428eae436ade08473836 (phase 2 commit containing the described changes)
 
 ## Change Summary
 

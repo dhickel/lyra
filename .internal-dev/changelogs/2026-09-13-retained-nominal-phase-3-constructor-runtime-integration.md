@@ -6,7 +6,7 @@
 
 ## Git Commit
 
-Baseline: `c6f4274f96d0193da2f9428eae436ade08473836`
+`df6e1d5` is the phase-3 WIP checkpoint and `2c3602afa8299e3d2a89ce03cf6c4f0ff458ce37` completes it; this changelog describes the completed phase.
 
 ## Change Summary
 

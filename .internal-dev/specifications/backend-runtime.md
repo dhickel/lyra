@@ -167,6 +167,46 @@ caller to mutate imported storage directly. Objects and their stored closures re
 all actual producer dependencies. Existing callable authentication, thread and
 lifecycle checks must be preserved; Java class names/type shapes are not authority.
 
+Retained construction across session generations executes the authenticated,
+producer-bound original typed factory MethodHandle bound to the original
+initialized module state; runtime never replays or interprets producer source,
+typed IR, schema-only construction evidence, or the compiler's transfer algebra.
+The closed `RetainedInitializerTransfer` algebra exists only to reconstruct exact
+static flow facts for the consumer graph.
+
+Root binding initialization is restricted to the session execution entry point:
+`JvmBytecodeEmitter` emits a root-binding initializer only for the generated
+`SESSION_EXECUTE` member of the root module's own non-imported declarations, and
+a nominal factory or ordinary state method loads already-initialized root
+storage instead of re-executing a binding initializer. Producer root bindings
+initialize exactly once per producer, defaults run exactly once per actual
+construction, and neither same-submission nor later-generation construction
+replays a producer root initializer.
+
+Fresh allocations minted while executing a retained factory inside a consumer
+generation receive consumer-scoped provenance derived by
+`RetainedAllocationDerivation` from the consumer construction/invocation context
+and the exact producer allocation site, with tagged identity domains kept
+disjoint from ordinary source and summary allocation identities. Distinct
+construction sites, generations and nested invocation/allocation nodes within
+one initializer are distinguished; aliases within one constructed value and
+genuinely shared returned storage are preserved and never cloned, and repeated
+dynamic execution at one finite analysis site stays finite through the existing
+repetition/join semantics.
+
+Certificate proof predicates are route-exact and destination-sensitive: object,
+aggregate and callable facts require exact `ObjectProofKey`/`RouteProof` evidence
+including the fact route; derived aggregate and object certification follows
+summary return and write formulas to the proven destination, so an unreachable
+or overwritten allocation mints no identity; nil provenance is certified exactly
+by site and span; predecessor transfer continuity is verified when a restored
+definition carries no current initializer evidence; and IR link validation is
+aligned with the semantic gate through `certifiesLinkedCallable`
+(identity/capture evidence), which is route-blind by design and is not semantic
+route authorization. Initializer shapes outside the closed algebra fail issuance
+with `LYC-SESSION-001` at the member span; immutable-`self` violations fail with
+`LYC-RESOLVE-021`; unresolved links at the IR boundary remain `LYC-IR-003`.
+
 Nominal schemas and exact origins must participate in Java signatures, deterministic
 generated names, artifact compatibility and dependency loading. Distinct declarations
 or revisions with identical shapes are different types. Canonical signature parsing

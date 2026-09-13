@@ -89,6 +89,32 @@ alone. Nominal representation classes join the session/root structural loading
 domain by exact declaration/revision identity, while object instances, factories,
 closures and mutable state retain their producer lifetime.
 
+Retained construction in a later generation executes the producer-bound factory
+and reconstructs the producer's flow facts through the closed
+initializer-transfer algebra defined in `language-core.md`. Identity semantics
+are exact: each construction returns a distinct instance; fresh allocations
+minted inside a retained factory receive consumer-scoped identities that
+distinguish construction sites, generations and nested invocation nodes, while
+aliases within one instance and genuinely shared returned storage are preserved
+and never cloned. Argument/default/constructor effects execute in producer
+order. Runtime failure or cooperative cancellation follows the ordinary
+nontransactional rules: no staged names and no partial instance are published,
+completed effects on older initialized state survive, and the producer and
+session remain usable for later submissions. Attached application roots invoke
+their retained factories from later Lyra evaluations and from Java through the
+same authenticated capability, with root-lifetime ownership.
+
+Two open limitations are tracked, not hidden: observing a retained nominal whose
+member initializer is Unit-typed or imports the intrinsic module one generation
+after construction fails at runtime with `LYR-LINK`
+(`bugs/retained-nominal/unit-initializer-later-observation-linkage.md`, issue
+#7); annotated retained nilable-member reads and nil-contract-consuming forms
+over member reads are rejected at the IR boundary with `LYC-IR-003`
+(`bugs/retained-nominal/nilable-member-read-contract.md`, issue #8). For issue
+#8 the bare (unannotated) member read still works; issue #7 affects both bare and
+member-qualified reads of the affected members, which is why its observation cases
+pin a structured `LYR-LINK` failure.
+
 Snapshots expose immutable bounded type/member display data, never live object
 handles. Formatting invokes no constructors, methods, equality or user stringification.
 Alias/cycle references and truncation budgets remain explicit. Public fields and

@@ -823,6 +823,15 @@ expected = {
     "RetainedCaptureFlowTest", "ReplProfileEmissionTest", "RootTypeRegistrationTest",
     "ReplPackagingCompatibilityTest", "LegacySchema1EncodingTest",
     "DebugArtifactMetadataTest", "RuntimeControlTest", "ReplRunCliTest",
+    # Retained nominal struct/class factory suites (phases 1-4): declaration,
+    # certificate, bytecode, runtime, session, and campaign coverage.  These
+    # are active feature suites, never deferred; omitting one must fail the
+    # report inventory, not silently pass.
+    "NominalSyntaxTest", "NominalTypeTest", "NominalTypeIdTest", "NominalSemanticsTest",
+    "NominalBytecodeTest", "RetainedNominalFlowCertificateTest",
+    "NominalArtifactMetadataTest", "NominalConstructionTest", "NominalTypeContractTest",
+    "NominalSessionTest", "SessionStateFuzzTest",
+    "LanguageFuzzTest", "FuzzInfrastructureTest",
 }
 short = {name.rsplit(".", 1)[-1] for name in names}
 missing = sorted(expected - short)
@@ -917,33 +926,38 @@ PY
     fi
 }
 
-test_group frontend LexerTest SourceFoundationTest ParserTest
+test_group frontend LexerTest SourceFoundationTest ParserTest NominalSyntaxTest
 test_group grammar GrammarMatcherTest ParserTest
 test_group sealing Domain11SealingTest TypedIrTest
 test_group identity TypeIdentityTest ModuleGraphDiscoveryTest GeneratedTypePlannerTest
 test_group module ModuleGraphDiscoveryTest SemanticResolverTest Domain11InitializationFlowTest Phase16SmokeTest Phase22ConformanceTest
-test_group semantic SemanticResolverTest TypeCheckerTest Domain11SemanticTest Domain11ContextualTypingTest Domain11FlowStateTest SemanticFlowAlgebraTest CallableSummaryTest
-test_group types TypeIdentityTest TypeCheckerTest Domain11ContextualTypingTest JvmAbiMapperTest
+test_group semantic SemanticResolverTest TypeCheckerTest Domain11SemanticTest Domain11ContextualTypingTest Domain11FlowStateTest SemanticFlowAlgebraTest CallableSummaryTest NominalSemanticsTest RetainedNominalFlowCertificateTest
+test_group types TypeIdentityTest TypeCheckerTest Domain11ContextualTypingTest JvmAbiMapperTest NominalTypeTest NominalTypeIdTest
 test_group ir TypedIrTest Domain11SealingTest Domain11FlowStateTest
 # Phase22ConformanceTest has one compiler and one CLI suite; the short-name
 # matcher is sufficient for the compiler-side group because the compiler suite
 # is present whenever the full report inventory passes.
-test_group jvm ClassFileApiSpikeTest Phase15SmokeTest Phase16SmokeTest Phase23StructuralBytecodeTest
-test_group abi JvmAbiMapperTest Phase15SmokeTest Phase16SmokeTest Phase22ConformanceTest
+test_group jvm ClassFileApiSpikeTest Phase15SmokeTest Phase16SmokeTest Phase23StructuralBytecodeTest NominalBytecodeTest
+test_group abi JvmAbiMapperTest Phase15SmokeTest Phase16SmokeTest Phase22ConformanceTest NominalTypeContractTest
 test_group artifact Phase18ArtifactTest Phase18SmokeTest Phase22ConformanceTest
 test_group api Phase19PublicApiTest Phase17SmokeTest Phase22ConformanceTest
-test_group runtime RuntimeFoundationTest Phase17SmokeTest Phase22ConformanceTest
+test_group runtime RuntimeFoundationTest Phase17SmokeTest Phase22ConformanceTest NominalConstructionTest NominalArtifactMetadataTest
 test_group io Phase20IoTest
 # Diagnostic behavior is asserted in compiler API/runtime conformance and CLI.
 test_group diagnostics Phase22ConformanceTest RuntimeFoundationTest Phase20IoTest
 test_group cli Phase21CliTest Phase22CliConformanceTest
-test_group repl-session LyraSessionTest ReplContractsTest PersistentScalarTest PersistentAggregateTest PersistentCallableTest SessionStorageLinkTest SessionAggregateLinkTest SessionCallableRuntimeTest SessionCapturedInstanceFlowTest SessionDeclarationWriteFlowTest SessionFailureFlowTest SessionRepairCompatibilityTest SessionTypeAdmissionTest SessionJavaConsumerTest
+test_group repl-session LyraSessionTest ReplContractsTest PersistentScalarTest PersistentAggregateTest PersistentCallableTest SessionStorageLinkTest SessionAggregateLinkTest SessionCallableRuntimeTest SessionCapturedInstanceFlowTest SessionDeclarationWriteFlowTest SessionFailureFlowTest SessionRepairCompatibilityTest SessionTypeAdmissionTest SessionJavaConsumerTest NominalSessionTest SessionStateFuzzTest
 test_group repl-results ExecutedSnapshotTest SessionCompilerTest
 test_group repl-remote RemoteConsoleSessionTest RemoteProtocolV2Test RemoteServerTest RemoteWireRobustnessTest RemoteSessionExecutionTest NoAuthAttachmentTest RemoteFileModuleTest
 test_group repl-console PlainConsoleTest ConsoleParsingTest AttachCliTest JLineConsoleTest JLinePtyTest
 # Phase 14 executable linkage/lifecycle/attachment/integration and module/root/
 # debug/I/O/PTY/reopen/flow/limit groups.  Every retained REPL matrix row uses
 # one of these groups as its check, so the clean reactor must really run them.
+# Retained nominal campaign evidence: the bounded compiler fuzz family and the
+# persistent-session state model that carry the nominal operation matrix.  Their
+# mandatory presence is additionally gated by the expected-report inventory
+# above; this group records clean-reactor evidence in the audit output.
+test_group nominal-campaigns LanguageFuzzTest FuzzInfrastructureTest SessionStateFuzzTest
 test_group repl-linkage SessionStorageLinkTest SessionAggregateLinkTest SessionCallableRuntimeTest SessionCapturedInstanceFlowTest SessionDeclarationWriteFlowTest PersistentScalarTest PersistentAggregateTest PersistentCallableTest PersistentImportTest
 test_group repl-module SessionPinnedModuleCompilerTest SessionImportedFlowTest PreparedSubmissionTest PersistentImportTest SessionModuleRuntimeTest
 test_group repl-lifecycle ModuleReloadTest SessionGenerationLifecycleTest ReloadSequenceReproTest SessionFailureFlowTest SessionRepairCompatibilityTest SessionTypeAdmissionTest

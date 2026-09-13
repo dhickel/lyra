@@ -139,7 +139,9 @@ Closures capture bindings. Immutable captures retain their selected value/refere
 
 The owner accepted the following extension on 2026-09-11. Lexical/grammar/AST,
 resolution, typed construction/member operations, definite-initialization
-certification, field-sensitive heap/callable transfer and nominal IR are implemented.
+certification, field-sensitive heap/callable transfer, nominal IR, the closed
+retained-initializer transfer algebra, exact consumer-scoped fresh-allocation
+provenance and the immutable-`self` mutation-authority rule are implemented.
 Source declarations emit
 deterministic final JVM representation classes with private typed fields and checked
 initialization/generated/public accessors. Host-driven integration tests load and
@@ -228,6 +230,33 @@ Construction and initialization:
   incomplete `self` counts as escape. A loop alone cannot prove an assignment
   happens at least once. Constructor failure publishes no instance and does not
   roll back effects already performed on other initialized state.
+- Retained construction (constructing a nominal in a later session submission)
+  reconstructs the producer factory's flow facts through a closed, immutable,
+  producer-certified initializer-transfer algebra, never through source or IR
+  replay. The algebra covers every currently legal member-initializer
+  composition: literals; references; lambdas; direct, namespace-direct and
+  callable-value calls; array/tuple composites; operators, conversions,
+  narrowing and ranges; short-circuit applies; conditionals, coalescing and
+  match alternatives with explicit prefix steps and independent branches; block
+  sequences with block-local declarations and rebinding; projections, indexing
+  and length; nested nominal construction; and iter/while loops. Consumption
+  reuses the ordinary callable-summary machinery with ordinary evaluation
+  discipline: ordered evaluation, target-before-arguments selection,
+  left-to-right argument effects, shared-cell refresh, transferred
+  writes/binds/effects and failure prefixes; only synthetic internal call
+  events stay unpublished as typed root boundaries. The algebra is compiler
+  proof, never an executable retained source tree or a second summary
+  interpreter. A member initializer outside the closed algebra is rejected at
+  issuance with the structured `LYC-SESSION-001` diagnostic at the member span;
+  no currently legal form is unrepresented, so the guard is now a safety net
+  rather than an active rejection path.
+- Retained constructors keep the Unit contract: a transferred constructor body
+  returns Unit and the construction expression returns the new instance, never
+  a value produced by the constructor body. Ordered execution is preserved
+  exactly across generations: arguments evaluated once left-to-right, required
+  struct fields installed before defaults, defaults evaluated in declaration
+  order, then the constructor body. Nested retained construction recurses under
+  the nested object's own derived construction context.
 - Recursive nominal references must have finite JVM reference layouts and still
   satisfy initialization; no recursive inline expansion or infinite value layout
   is permitted.
@@ -246,6 +275,23 @@ Mutation, methods, and references:
   do not freeze instances: methods may mutate their receiver's `@mut` fields even
   when called through an immutable binding. The implicit `self` supplies receiver
   mutation permission, not permission to rebind the caller's variable.
+- Immutable `self` is member-mutation permission, not general aggregate-mutation
+  authority. A non-field aggregate mutation through `self` or any alias of
+  `self` — a direct alias, a capture, a parameter, a call result, a tuple-held,
+  branch-merged or member-stored value — is legal only when the root reference
+  belongs to the exact nominal constructor lambda for that nominal. The compiler
+  enforces this with one bounded, monotone, flow-insensitive provenance lattice
+  (`SelfAliasProvenance`) shared by the resolver closing sweep, topology
+  validation and IR validation; a violation is the structured `LYC-RESOLVE-021`
+  diagnostic. The fixed point stops as soon as a pass adds no provenance,
+  converges within an explicit eight-pass bound, and fails closed with a
+  structured diagnostic instead of publishing partial provenance when the bound
+  is exhausted with facts still changing. The deliberate precision cost of this
+  flow-insensitive rule is accepted: aggregate sibling positions collapse,
+  member taint is declaration-wide and instance-insensitive, rebinds never
+  clear prior may-alias facts, opaque retained callable bodies are not walked,
+  and alias chains deeper than the eight-pass bound are rejected conservatively
+  rather than admitted.
 - Reading a method slot retains its current callable and receiver. It snapshots
   the implementation selection, not object state. Replacing the slot affects later
   lookups but does not retarget saved references, callbacks, or existing captures.

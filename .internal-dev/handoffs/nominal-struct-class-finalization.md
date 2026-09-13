@@ -22,6 +22,22 @@ campaign, and the Phase 24 release audit. A subsequent adversarial review found
 additional retained-factory flow defects. The current WIP deliberately contains
 new regression tests and is not a completion claim.
 
+## Status (reconciled 2026-09-13)
+
+The retained-factory work this handoff scoped is delivered and committed:
+phase 1 `432121b` closed the initializer transfer algebra, phase 2 `c6f4274`
+completed every legal expression category and consumer-scoped fresh
+provenance, phase 3 `df6e1d5`/`2c3602a` completed constructor/runtime
+integration and the immutable-`self` provenance proof closure, and phase 4
+`2b49f7c` added the independent compiler/session campaigns and the combined
+extended run. The records phase (phase 5, this reconciliation) updates the
+living specifications, decisions, review and this handoff. Two open
+limitations remain and are tracked as GitHub issues #7
+(`bugs/retained-nominal/unit-initializer-later-observation-linkage.md`) and #8
+(`bugs/retained-nominal/nilable-member-read-contract.md`); neither is a
+completion claim. Final qualification on the final commit is the remaining
+gate; the Phase 24 release audit stays mandatory.
+
 # Objective
 
 Finish nominal structs and classes as first-class language features across the
@@ -138,6 +154,9 @@ Files currently changed relative to `d3bb94f`:
 
 ## Work still required
 
+Historical list as of the original handoff; each item's delivery state is
+recorded in the reconciliation note at the end of this section.
+
 1. Consume `RetainedInitializerCall` in `SemanticFlowAnalyzer`.
    `retainedNominalInitializer` currently returns only `ValueAlternatives`.
    Refactor it to return an `Eval` (value, updated state, internal events,
@@ -178,6 +197,48 @@ Files currently changed relative to `d3bb94f`:
    nominal session completion; amend them with the exact retained initializer
    transfer contract after implementation. Add a new changelog/review and
    update reusable nominal/session knowledge.
+
+### Reconciliation of the required work (2026-09-13)
+
+1. Delivered in phase 1 (`432121b`): `retainedNominalInitializer` returns a
+   full `Eval` and consumes the closed transfer algebra through the ordinary
+   `invokeCandidate` path with candidate joins, transferred state/writes/
+   effects and withheld synthetic root events. The `RetainedInitializerCall`
+   record and parallel template inventories were removed, not consumed.
+2. Delivered: the closed algebra resolves original declaration/capture
+   identities and current shared cells at use; the fresh receiver and current
+   certificate supply `self`/earlier-member values.
+3. Delivered in phase 2 (`c6f4274`): the closed algebra covers every currently
+   legal initializer composition (callable-value calls, namespace calls,
+   conditionals, blocks, coalesce/match, composites, applies, sequences,
+   projections, nested construction, loops).
+4. Delivered: callable-bearing tuple/array class composites are transferred
+   and certified at every function route (`NominalSessionTest`, the retained
+   fuzz composites profile).
+5. Delivered in phase 3 (`df6e1d5`, `2c3602a`): constructor compositions cover
+   installed/captured closures, helper-returned closures, tuple-nested
+   aggregate writes, retained calls, shared-cell mutation, and failure after
+   partial writes with ordered runtime behavior, cleanup and recovery.
+6. Resolved by the recorded owner answers: the conservative aggregate template
+   was replaced with exact summary-derived fresh allocation identities
+   (`RetainedAllocationDerivation`), with the finite-site caveat documented in
+   `specifications/decisions.md` and the review.
+7. Delivered: `RetainedNominalFlowCertificateTest` (44 tests) covers issuance,
+   deep immutability, exact inventories, generation continuity and negative
+   forgery/mismatch cases.
+8. Delivered in phase 4 (`2b49f7c`): the retained compiler fuzz family and the
+   extended session model with deterministic operation budgets, replay data
+   and guard inventories; two valid-source crashes were closed and kept as
+   regressions.
+9. Delivered by this phase-5 reconciliation: living specifications, decisions,
+   review, knowledge and this handoff now match the committed implementation;
+   the Phase 24 audit inventory includes the nominal suites. Open
+   limitations issues #7 and #8 remain documented in
+   `specifications/repl.md`, the bug reports and the review.
+
+Remaining open work: issues #7 and #8, and the plan's final qualification
+sequence on the final commit (including `tools/phase24-release-audit.sh`).
+
 
 # Recommended Direction
 

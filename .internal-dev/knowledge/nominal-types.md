@@ -8,7 +8,7 @@ Accepted struct/class behavior and integration boundaries during implementation.
 
 - ../specifications/language-core.md — accepted nominal extension.
 - ../specifications/backend-runtime.md and ../specifications/repl.md.
-- ../plans/nominal-types/plan.md — active, unfinished implementation.
+- `.internal-dev/specifications/language-core.md` — living nominal contract (implementation status).
 - Compiler SyntaxVisitor, LyraType, ModuleIdentity, DeclarationId and JvmTypePlan.
 
 ## Key Takeaways
@@ -31,8 +31,14 @@ Accepted struct/class behavior and integration boundaries during implementation.
 
 These corrections prevent semantic drift during the requested full-pipeline feature.
 `NominalTypeId`, lexical/grammar/AST support and initial semantic declaration/member
-resolution are implemented. Complete initialization/flow and execution integration
-remain in progress.
+resolution are implemented. The retained-factory completion (plan
+`20260912-180414-complete-retained-nominal-struct-class-factory-semantics`) landed
+in commits `432121b`, `c6f4274`, `df6e1d5`, `2c3602a` and `2b49f7c`: closed
+initializer transfer, consumer-scoped fresh provenance, constructor/runtime
+integration with the immutable-`self` provenance lattice, and the independent
+compiler/session campaigns. Open issues #7 (Unit/intrinsic member observation
+`LYR-LINK`) and #8 (annotated nilable member reads `LYC-IR-003`) remain tracked
+under `bugs/retained-nominal/`.
 
 - Unary brackets retain IndexAccess syntax; non-unary brackets retain
   BracketApplication. Both must resolve the target's type/value role later. An
@@ -96,7 +102,9 @@ remain in progress.
   digest. Physical mapping validation checks that exact digest, not only a nominal
   class-name prefix. These descriptor plans do not yet emit or authenticate objects.
 - Generated nominal artifact publication, object authorities and retained nominal
-  sessions are not implemented by the compiler-only semantic heap or type records.
+  sessions are not implemented by the compiler-only semantic heap or type records;
+  they are delivered by the certificate/session and runtime factory layers of the
+  retained-factory completion.
 - Artifact schema 2 now encodes the nonempty nominal schema graph before exports;
   schema 1 omits it and keeps old revision inputs. The two-pass reader verifies
   origin/digest pairs before resolving recursive contracts. The complete canonical
@@ -104,15 +112,18 @@ remain in progress.
   even a valid field visibility/mutability/name cannot keep the old revision.
   Both metadata construction and reader compatibility validation recompute this
   extension; updating only one causes nominal round-trip failures.
-- This metadata reader does not yet make the compiler emit nominal artifacts or
-  authenticate generated nominal classes. Those remain separate implementation
-  gates, alongside schema-aware live loader/session linkage.
+- The metadata reader is one gate among several that are now all delivered: the
+  compiler emits nominal artifacts, the runtime authenticates generated nominal
+  classes and schema-aware live loader/session linkage, and retained nominal
+  sessions execute producer-bound factories.
 - NominalRuntimeContracts projects a validated IR's closed schemas directly into
   independent runtime records. It caches declaration references during recursive
   contract conversion and compares canonical spellings at the boundary. Embedded
   facade metadata and artifact assembly both use this projection and bind it into
   revisions; neither may call the schema-free type parser for nominal exports.
-  Generated object class plans/emission remain a separate gate.
+  Generated object class plans and emission are delivered by the generated-type
+  planner and `JvmBytecodeEmitter`; retained construction executes the
+  producer-bound factory.
 
 Nominal construction capabilities bind a single exact receiver and final class;
 the receiver constructor must also check its own embedded nominal contract.

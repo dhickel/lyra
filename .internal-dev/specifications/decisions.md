@@ -481,3 +481,53 @@
   deferred-features.md.
 - **Review timing:** at each implementation gate in plans/nominal-types/plan.md.
   This decision records intended behavior, not completed executable support.
+
+## 2026-09-13 — Retained nominal closed transfer, fresh provenance, proof/runtime separation, and immutable-self authority
+
+### Source and review
+
+- **Source:** owner-approved plan `20260912-180414-complete-retained-nominal-struct-class-factory-semantics` executed in phases 1-4 (commits `432121b`, `c6f4274`, `df6e1d5`, `2c3602a`, `2b49f7c`). The two recorded owner answers superseded the handoff's conservative same-site aliasing option and settled immediate closed-algebra completion.
+- **Affected specifications:** `language-core.md` (nominal initializer/constructor contracts, immutable-self authority), `backend-runtime.md` (retained-factory runtime authority, session-execute-only root initialization, consumer-scoped fresh provenance, route-exact certification), `repl.md` (cross-generation retained-nominal behavior and the two open limitations).
+- **Review timing:** revisit when issue #7's session-root ownership authority lands, when issue #8's nilable member-read contract derivation is added, when a new initializer syntax requires an algebra extension, or when the eight-pass provenance bound must change.
+
+### Immediate closed-algebra completion
+
+- **Decision:** complete the closed retained initializer-transfer algebra now, covering every currently legal member-initializer composition, instead of stopping at isolated direct-call regressions or a conservative type-shaped fallback.
+- **Justification:** retained factories must reconstruct flow facts equivalent in meaning to producer execution for any legal initializer. Per-form repair left valid source rejected with `LYC-SESSION-001` or, worse, scalar placeholders that silently dropped nested calls, writes, failures and laziness.
+- **Alternatives rejected:** continuing the disconnected template/call inventories; retaining arbitrary producer `TypedExpression` argument trees; fabricated type-shaped array identities for aggregate defaults; weakening the validator.
+- **Caveat:** the algebra is immutable, bounded compiler proof, never an executable retained source tree or a second callable-summary interpreter. Any future source-admissible initializer form must extend the algebra and its coverage inventory together.
+
+### Exact summary-derived fresh provenance
+
+- **Decision:** instantiate genuinely fresh summary/default allocations with deterministic consumer-scoped provenance derived by `RetainedAllocationDerivation` from the consumer construction/invocation context, the intervening `SummaryCallId` path and the exact producer allocation site, using tagged identity domains disjoint from ordinary source and summary identities.
+- **Justification:** two constructions of one retained factory must not share one abstract allocation identity, while aliases inside one constructed value and genuinely shared returned storage must be preserved, and certification must be recomputable from exact consumer evidence rather than caller-supplied values.
+- **Alternatives rejected:** conservative same-site aliasing across retained factory invocations (the handoff's provisional option, superseded by the owner answers); consumer-minted identities detached from producer evidence; infinite per-iteration identity precision.
+- **Caveat (finite-site):** the derivation is finite abstract provenance, not a distinct static identity for every runtime iteration. Repeated dynamic execution at one finite analysis site remains sound through the existing repetition/join semantics. Producer-allocated storage stays a certified cross-module view, so the imported-mutation diagnostic still fires.
+
+### Runtime keeps the authenticated producer factory
+
+- **Decision:** runtime construction continues to invoke the authenticated producer-bound original `$lyra$new$<id>` typed factory MethodHandle. The compiler transfer algebra never reaches runtime, and no source/IR replay, schema-only construction, or interpretation exists on any path.
+- **Justification:** the producer factory is the sole capability that can initialize the exact generated representation against its embedded nominal contract and real initialized module state. Replaying producer source or executing transfer nodes would duplicate initialization, fabricate authority, or diverge from the direct-bytecode ABI.
+- **Alternatives rejected:** executing compiler transfer nodes at runtime; constructing from schemas alone; a generic `Object` execution ABI; replaying producer source.
+- **Caveat:** transfer metadata reconstructs static flow facts only; runtime failure evidence remains the producer's own generated source frames.
+
+### Proof/runtime separation and session-execute-only root initialization
+
+- **Decision:** semantic-flow certification (certificate/transfer/summary proofs) and runtime capability authentication remain separate boundaries. `JvmBytecodeEmitter` emits root-binding initialization only from the generated `SESSION_EXECUTE` member of the root module's own declarations; nominal factories and ordinary state methods load already-initialized root storage.
+- **Justification:** the compiler proves flow facts for the consumer graph; the runtime authenticates the live capability. Re-executing a producer root initializer from a nominal factory broke session submission ordering; the emission-side restriction keeps producer roots initialized exactly once and defaults running exactly once per actual construction.
+- **Alternatives rejected:** letting factories re-run binding initializers (out-of-order submission failures); merging certificate evidence into runtime authority checks.
+- **Caveat:** `certifiesLinkedCallable` is deliberately route-blind IR-link evidence (identity/capture); the semantic flow validator remains the authoritative route-exactness gate.
+
+### Conservative flow-insensitive immutable-self provenance
+
+- **Decision:** a non-field aggregate mutation through `self` or any alias of `self` requires the exact nominal constructor lambda, enforced by one bounded, monotone, flow-insensitive provenance lattice (`SelfAliasProvenance`) shared by the resolver closing sweep, topology validation and IR validation. The eight-pass fixed point fails closed with the structured `LYC-RESOLVE-021` diagnostic instead of publishing partial provenance.
+- **Justification:** soundness matters more than precision at a mutation-authority boundary; every under-approximating variant admitted a demonstrated escape (branch-merge rebinds, multi-level callable forwarding, identity-returning calls, closure results carrying captured `self`, rebound member slots, aggregate-position loss).
+- **Alternatives rejected:** per-site exactness proofs without a bound; route-by-route engines that lost member identity through aggregates; instance-local slot tracking (the actual bypass); raising the pass bound instead of failing closed.
+- **Tradeoffs (accepted precision cost):** aggregate sibling positions collapse, member taint is declaration-wide and instance-insensitive, rebinds never clear prior may-alias facts, opaque retained callable bodies are not walked, and alias chains deeper than the eight-pass bound are rejected conservatively. The over-approximation only rejects mutation sites; it cannot erase a route to `self`.
+
+### Rejected sourceLocal relaxation for issue #7
+
+- **Decision:** do not relax `SessionStorageDomain.Linkage.sourceLocal` to ignore the intrinsic module and admit importing graphs. Keep the pinned `SessionClosureAuthorityTest` posture that an imported graph's authority is not certified. Issue #7's correct direction anchors the generated nominal instance's ownership to the session root identity (or authenticates same-session cross-generation reads through an authority independent of the importing-graph rule), designed across generated member access and runtime closure authentication.
+- **Justification:** the one-line relaxation made the four Unit/intrinsic inventory cases pass but turned the pinned closure-authority assertion red. A nominal-only same-workspace predicate fixed Unit-valued reads but then failed the separately correct callable boundary with `LYR-LINK`; broadly admitting that closure would erase the distinction the same test pins.
+- **Caveat:** a complete fix must carry route-scoped delegation from an authenticated nominal field (or construct the nominal under an authority that also owns its installed field values) while still rejecting the same imported closure when presented directly.
+- **Review timing:** at issue #7 design and implementation; the four pinned `LYR-LINK` inventory cases are the acceptance signal and must flip to value assertions together.

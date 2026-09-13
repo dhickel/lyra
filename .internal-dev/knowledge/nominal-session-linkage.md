@@ -114,6 +114,14 @@ session generations.
   The four namespace/Unit inventory cases with a producer `std->io` import construct
   successfully in generation 2 but fail observation in generation 3 with `LYR-LINK`
   (unrelated nominal artifact/session), independent of the transfer algebra.
+- Retained nilable member values transfer and certify correctly, but a read of a
+  nilable nominal member that must consume a nilable contract (an explicit
+  `:@nil` annotation, coalesce, narrowing-predicate or match form over
+  `box:.member`) is rejected at the IR boundary with the structured `LYC-IR-003`
+  because the member-read path has no independently derived nilable contract.
+  The bare (unannotated) read path works for the nilable case and is covered by the retained nilable-element index
+  tests. The fix is contract derivation at the IR/flow boundary for member
+  reads, not a relaxation of the retained transfer algebra (issue #8).
 - Do not fix that by widening `SessionStorageDomain.Linkage.sourceLocal` to count
   real source modules while ignoring the intrinsic module: the intended posture is
   that an importing graph is not eligible for the session-authentication bridge, and
