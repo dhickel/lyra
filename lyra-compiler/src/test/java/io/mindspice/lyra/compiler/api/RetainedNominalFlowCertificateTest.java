@@ -210,6 +210,198 @@ final class RetainedNominalFlowCertificateTest {
     }
 
     @Test
+    void derivedCertificationRejectsDiscardedSequenceAllocations() {
+        SessionCompileResult.Success producer = compile("discarded-allocation-producer.lyra", """
+                class Box {
+                    let @pub values :Array<I32> = {
+                        let discarded :Array<I32> = Array<I32>[1 2]
+                        Array<I32>[3 4]
+                    }
+                }
+                """, SessionSnapshot.empty());
+        SessionFlowCertificate.RetainedNominal box = nominal(certificate(producer), "Box");
+        var sequence = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Sequence.class,
+                transfer(box, "values"));
+        var discarded = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Declare.class,
+                sequence.steps().getFirst());
+        var discardedArray = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                discarded.initializer()).allocation().orElseThrow();
+        var returnedArray = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                sequence.steps().getLast()).allocation().orElseThrow();
+        SessionCompileResult.Success consumer = compile("discarded-allocation-consumer.lyra",
+                "let box :Box = Box[]", producer.stagedSnapshot());
+        TypedExpression construction = consumer.typedGraph().expressions().stream()
+                .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
+                .findFirst().orElseThrow();
+        var context = consumer.typedGraph().flowSiteId(construction);
+
+        assertFalse(certificate(producer).certifiesDerivedAggregate(
+                derivedArrayFact(discardedArray, context, construction.span()),
+                context, construction, Set.of()));
+        assertTrue(certificate(producer).certifiesDerivedAggregate(
+                derivedArrayFact(returnedArray, context, construction.span()),
+                context, construction, Set.of()));
+    }
+
+    @Test
+    void derivedCertificationFollowsTheExactShadowedResultBinding() {
+        SessionCompileResult.Success producer = compile("shadowed-allocation-producer.lyra", """
+                class Box {
+                    let @pub values :Array<I32> = {
+                        let selected :Array<I32> = Array<I32>[1]
+                        {
+                            let selected :Array<I32> = Array<I32>[2]
+                            selected
+                        }
+                    }
+                }
+                """, SessionSnapshot.empty());
+        var outer = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Sequence.class,
+                transfer(nominal(certificate(producer), "Box"), "values"));
+        var shadowed = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Declare.class,
+                outer.steps().getFirst());
+        var shadowedArray = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                shadowed.initializer()).allocation().orElseThrow();
+        var inner = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Sequence.class,
+                outer.steps().getLast());
+        var selected = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Declare.class,
+                inner.steps().getFirst());
+        var selectedArray = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                selected.initializer()).allocation().orElseThrow();
+        SessionCompileResult.Success consumer = compile("shadowed-allocation-consumer.lyra",
+                "let box :Box = Box[]", producer.stagedSnapshot());
+        TypedExpression construction = consumer.typedGraph().expressions().stream()
+                .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
+                .findFirst().orElseThrow();
+        var context = consumer.typedGraph().flowSiteId(construction);
+
+        assertFalse(certificate(producer).certifiesDerivedAggregate(
+                derivedArrayFact(shadowedArray, context, construction.span()),
+                context, construction, Set.of()));
+        assertTrue(certificate(producer).certifiesDerivedAggregate(
+                derivedArrayFact(selectedArray, context, construction.span()),
+                context, construction, Set.of()));
+    }
+
+    @Test
+    void derivedCertificationFollowsOnlyCallArgumentsReturnedByTheSummary() {
+        SessionCompileResult.Success producer = compile("call-result-allocation-producer.lyra", """
+                let choose :Fn<Array<I32>,Array<I32>;Array<I32>> =
+                    (=> |selected discarded| selected)
+                class Box {
+                    let @pub values :Array<I32> =
+                        ::choose[Array<I32>[1] Array<I32>[2]]
+                }
+                """, SessionSnapshot.empty());
+        var call = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Call.class,
+                transfer(nominal(certificate(producer), "Box"), "values"));
+        var selectedArray = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                call.arguments().getFirst()).allocation().orElseThrow();
+        var discardedArray = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                call.arguments().get(1)).allocation().orElseThrow();
+        SessionCompileResult.Success consumer = compile("call-result-allocation-consumer.lyra",
+                "let box :Box = Box[]", producer.stagedSnapshot());
+        TypedExpression construction = consumer.typedGraph().expressions().stream()
+                .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
+                .findFirst().orElseThrow();
+        var context = consumer.typedGraph().flowSiteId(construction);
+
+        assertTrue(certificate(producer).certifiesDerivedAggregate(
+                derivedArrayFact(selectedArray, context, construction.span()),
+                context, construction, Set.of()));
+        assertFalse(certificate(producer).certifiesDerivedAggregate(
+                derivedArrayFact(discardedArray, context, construction.span()),
+                context, construction, Set.of()));
+    }
+
+    @Test
+    void derivedCertificationFollowsOnlyConstructorArgumentsWrittenToState() {
+        SessionCompileResult.Success producer = compile("constructor-argument-allocation-producer.lyra", """
+                class Box {
+                    let @pub values :Array<I32>
+                    Box = (=> |selected :Array<I32> discarded :Array<I32>| {
+                        self:.values := selected
+                    })
+                }
+                class Outer {
+                    let @pub box :Box =
+                        Box[Array<I32>[1] Array<I32>[2]]
+                }
+                """, SessionSnapshot.empty());
+        var construction = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Construct.class,
+                transfer(nominal(certificate(producer), "Outer"), "box"));
+        var selectedArray = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                construction.arguments().getFirst()).allocation().orElseThrow();
+        var discardedArray = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                construction.arguments().get(1)).allocation().orElseThrow();
+        SessionCompileResult.Success consumer = compile(
+                "constructor-argument-allocation-consumer.lyra",
+                "let outer :Outer = Outer[]", producer.stagedSnapshot());
+        TypedExpression outerConstruction = consumer.typedGraph().expressions().stream()
+                .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
+                .findFirst().orElseThrow();
+        var context = consumer.typedGraph().flowSiteId(outerConstruction);
+
+        assertTrue(certificate(producer).certifiesDerivedAggregate(
+                derivedArrayFact(selectedArray, context, outerConstruction.span()),
+                context, outerConstruction, Set.of()));
+        assertFalse(certificate(producer).certifiesDerivedAggregate(
+                derivedArrayFact(discardedArray, context, outerConstruction.span()),
+                context, outerConstruction, Set.of()));
+    }
+
+    @Test
+    void derivedCertificationRejectsStaticallyUnselectedAlternativeAllocations() {
+        SessionCompileResult.Success producer = compile("unselected-allocation-producer.lyra", """
+                class Box {
+                    let @pub values :Array<I32> =
+                        (#T -> Array<I32>[3] : Array<I32>[4])
+                }
+                """, SessionSnapshot.empty());
+        SessionFlowCertificate.RetainedNominal box = nominal(certificate(producer), "Box");
+        var alternative = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Alternative.class,
+                transfer(box, "values"));
+        var selectedArray = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                alternative.branches().getFirst().result().orElseThrow().transfer())
+                .allocation().orElseThrow();
+        var unselectedArray = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                alternative.branches().get(1).result().orElseThrow().transfer())
+                .allocation().orElseThrow();
+        SessionCompileResult.Success consumer = compile("unselected-allocation-consumer.lyra",
+                "let box :Box = Box[]", producer.stagedSnapshot());
+        TypedExpression construction = consumer.typedGraph().expressions().stream()
+                .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
+                .findFirst().orElseThrow();
+        var context = consumer.typedGraph().flowSiteId(construction);
+
+        assertTrue(certificate(producer).certifiesDerivedAggregate(
+                derivedArrayFact(selectedArray, context, construction.span()),
+                context, construction, Set.of()));
+        assertFalse(certificate(producer).certifiesDerivedAggregate(
+                derivedArrayFact(unselectedArray, context, construction.span()),
+                context, construction, Set.of()));
+    }
+
+    @Test
     void retainedCallableCertificationRejectsUnderivableRoutes() {
         var producer = compile("callable-route-producer.lyra", """
                 let selected :Fn<;I32> = (=> || 3I32)
@@ -544,6 +736,87 @@ final class RetainedNominalFlowCertificateTest {
         assertEquals(witness.effectSpan(), witness.sourcePath().getLast());
         assertEquals(witness.effectSite().orElseThrow(),
                 witness.sourceSitePath().getLast());
+    }
+
+    @Test
+    void retainedConstructorSummaryCertifiesNestedObjectsAndTupleArrayWrites() {
+        SessionCompileResult.Success producer = compile("constructor-summary-producer.lyra", """
+                let record :Fn<I32;I32> = (=> |value| value)
+                class Inner { let @pub value :I32 = 5 }
+                class Box {
+                    let @pub built :Inner
+                    let @pub @mut nested :Tuple<Array<I32>,I32> =
+                        Tuple[Array<I32>[1 2] 3]
+                    Box = (=> || {
+                        self:.nested:.0[1] := ::record[9]
+                        self:.built := Inner[]
+                    })
+                }
+                """, SessionSnapshot.empty());
+        SessionFlowCertificate.RetainedNominal box = nominal(certificate(producer), "Box");
+        assertTrue(box.constructorLambda().isPresent());
+
+        SessionCompileResult.Success consumer = compile("constructor-summary-consumer.lyra",
+                "let box :Box = Box[]", producer.stagedSnapshot());
+        TypedExpression boxConstruction = consumer.typedGraph().expressions().stream()
+                .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
+                .findFirst().orElseThrow();
+        var boxContext = consumer.typedGraph().flowSiteId(boxConstruction);
+        var finalState = consumer.typedGraph().semanticFlowFacts()
+                .finalState(consumer.moduleGraph().rootModule()).orElseThrow();
+        var boxState = finalState.objects().entrySet().stream()
+                .filter(entry -> entry.getKey().type().equals(box.nominal().schema().type()))
+                .filter(entry -> entry.getKey().allocationSite().equals(boxContext))
+                .map(Map.Entry::getValue).reduce((left, right) -> {
+                    throw new AssertionError("consumer construction produced duplicate Box identities");
+                }).orElseThrow();
+        int builtField = java.util.stream.IntStream.range(
+                        0, box.nominal().schema().members().size())
+                .filter(index -> box.nominal().schema().members().get(index).name().equals("built"))
+                .findFirst().orElseThrow();
+        int nestedField = java.util.stream.IntStream.range(
+                        0, box.nominal().schema().members().size())
+                .filter(index -> box.nominal().schema().members().get(index).name().equals("nested"))
+                .findFirst().orElseThrow();
+
+        var nestedTransfer = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                transfer(box, "nested"));
+        var nestedArray = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                nestedTransfer.elements().getFirst()).allocation().orElseThrow();
+        AggregateIdentityFact expectedArray = derivedCrossModuleArrayFact(
+                nestedArray, boxContext, boxConstruction.span()).prefixedBy(
+                ProjectionPath.tupleMember(0));
+        ValueAlternative nestedValue = boxState.fields().get(nestedField).only();
+        assertEquals(nestedTransfer.type(), nestedValue.type());
+        assertEquals(List.of(expectedArray), nestedValue.aggregateIdentities(),
+                "only the exact producer array at tuple route .0 may inhabit Box.nested");
+
+        SessionFlowCertificate certificate = certificate(producer);
+        var constructorSummary = certificate.callableSummaries()
+                .summary(box.constructorLambda().orElseThrow()).orElseThrow();
+        var innerCall = constructorSummary.callReferences().stream()
+                .map(certificate::retainedConstruction).flatMap(Optional::stream)
+                .filter(construction -> construction.nominalType().id().name().equals("Inner"))
+                .findFirst().orElseThrow();
+        var call = innerCall.call();
+        var invocation = RetainedAllocationDerivation.invocationContext(
+                boxContext, call.id(), call.siteId().orElseThrow());
+        var innerSite = RetainedAllocationDerivation.objectSite(invocation, innerCall.site());
+        var innerAllocation = RetainedAllocationDerivation.objectAllocation(
+                invocation, innerCall.site());
+        NominalObjectFact expectedInner = new NominalObjectFact(
+                new io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity(
+                        innerCall.moduleId(), innerSite, innerCall.nominalType()),
+                ProjectionPath.root(), OwnershipWitness.local(
+                        innerCall.moduleId(), innerAllocation, innerCall.scopeId(),
+                        innerCall.call().span()).withOriginSite(innerSite)
+                        .atUse(boxConstruction.span()));
+        ValueAlternative builtValue = boxState.fields().get(builtField).only();
+        assertEquals(innerCall.nominalType(), builtValue.type());
+        assertEquals(List.of(expectedInner), builtValue.objects(),
+                "only the exact constructor-summary Inner may inhabit Box.built");
     }
 
     @Test
@@ -981,6 +1254,39 @@ final class RetainedNominalFlowCertificateTest {
 
     private static SessionFlowCertificate certificate(SessionCompileResult.Success compiled) {
         return compiled.flowCertificate();
+    }
+
+    private static AggregateIdentityFact derivedArrayFact(
+            SessionFlowCertificate.RetainedInitializerTransfer.ArrayAllocation allocation,
+            io.mindspice.lyra.compiler.identity.FlowSiteId context,
+            SourceSpan useSpan) {
+        DeclarationId derived = RetainedAllocationDerivation.arrayAllocation(
+                context, allocation.site());
+        return new AggregateIdentityFact(
+                io.mindspice.lyra.compiler.semantic.flow.ArrayIdentity.localAllocation(
+                        allocation.moduleId(), derived, allocation.type()),
+                ProjectionPath.root(), OwnershipWitness.local(
+                        allocation.moduleId(), derived, allocation.scopeId(), allocation.span())
+                .withOriginSite(allocation.site()).atUse(useSpan));
+    }
+
+    private static AggregateIdentityFact derivedCrossModuleArrayFact(
+            SessionFlowCertificate.RetainedInitializerTransfer.ArrayAllocation allocation,
+            io.mindspice.lyra.compiler.identity.FlowSiteId context,
+            SourceSpan useSpan) {
+        DeclarationId derived = RetainedAllocationDerivation.arrayAllocation(
+                context, allocation.site());
+        var export = io.mindspice.lyra.compiler.identity.ExportId.of(
+                allocation.moduleId(), "_flow_" + derived.ordinal(),
+                io.mindspice.lyra.compiler.types.LyraSignature.of(
+                        List.of(), allocation.type()));
+        return new AggregateIdentityFact(
+                io.mindspice.lyra.compiler.semantic.flow.ArrayIdentity.crossModuleOrigin(
+                        allocation.moduleId(), derived, export, allocation.type()),
+                ProjectionPath.root(), OwnershipWitness.crossModule(
+                        allocation.moduleId(), derived, allocation.scopeId(),
+                        allocation.span(), export).withOriginSite(allocation.site())
+                .atUse(useSpan));
     }
 
     private static Set<Object> allArrayIdentities(SessionFlowCertificate certificate) {

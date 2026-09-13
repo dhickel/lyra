@@ -3550,9 +3550,10 @@ public final class SemanticResolver {
                 return;
             }
             DeclDraft field = selectedMembers.get(targetSpan);
-            boolean constructorInitialization = field != null && declaration.kind == DeclarationKind.SELF
+            boolean constructorSelfMutation = declaration.kind == DeclarationKind.SELF
                     && nominals.values().stream().anyMatch(value -> value.self().equals(declaration.id)
-                            && lambda.isPresent() && value.constructor().equals(lambda));
+                    && lambda.isPresent() && value.constructor().equals(lambda));
+            boolean constructorInitialization = field != null && constructorSelfMutation;
             if (field != null && !field.bindingMutability.isMutable() && !constructorInitialization) {
                 fail(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED, targetSpan, "member is immutable: " + field.name);
                 return;
@@ -3593,7 +3594,9 @@ public final class SemanticResolver {
                     return;
                 }
             }
-            if (declaration.bindingMutability != BindingMutability.MUTABLE && declaration.kind != DeclarationKind.SELF) {
+            if (declaration.bindingMutability != BindingMutability.MUTABLE
+                    && (declaration.kind != DeclarationKind.SELF
+                    || field == null && !constructorSelfMutation)) {
                 fail(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
                         targetSpan,
                         "mutation requires an @mut binding or parameter",

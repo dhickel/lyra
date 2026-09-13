@@ -788,9 +788,12 @@ public final class SessionFlowCertificate {
             RetainedNominal nominal = retainedNominals.get(nominalType.canonicalSpelling());
             if (nominal == null || !nominal.nominal().declaration().equals(
                     consumer.declarationId().orElseThrow())) return false;
-            return nominal.memberInitializers().stream().flatMap(Optional::stream)
+            boolean memberDerived = nominal.memberInitializers().stream().flatMap(Optional::stream)
                     .anyMatch(transfer -> matchesDerivedAggregate(
                             transfer, consumerContext, ProjectionPath.root(), fact));
+            if (memberDerived || nominal.constructorLambda().isEmpty()) return memberDerived;
+            return matchesSummaryDerivedAggregate(fact, consumerContext, ProjectionPath.root(),
+                    nominal.constructorLambda().orElseThrow(), currentSummaries);
         }
         if (!isCallableConsumer(consumer.kind()) || callableTargets.isEmpty()) return false;
         CallableSummarySet localEvidence = currentSummaries;
@@ -877,36 +880,41 @@ public final class SessionFlowCertificate {
                 yield matched;
             }
             case RetainedInitializerTransfer.Call call -> {
-                boolean matched = call.arguments().stream().anyMatch(argument ->
-                        matchesDerivedAggregate(argument, context, prefix, fact));
+                Set<LambdaId> targets = retainedTargetLambdas(
+                        call.target(), call.function());
+                boolean matched = matchesDerivedAggregateArguments(
+                        fact, context, prefix, call.arguments(), targets);
                 FlowSiteId invocation = RetainedAllocationDerivation.invocationContext(context, call.site());
-                yield matched || retainedTargetLambdas(call.target(), call.function()).stream()
-                        .anyMatch(lambda -> matchesSummaryDerivedAggregate(
+                yield matched || targets.stream().anyMatch(lambda ->
+                        matchesSummaryDerivedAggregate(
                                 fact, invocation, prefix, lambda));
             }
             case RetainedInitializerTransfer.CallableCall call -> {
-                boolean matched = matchesDerivedAggregate(call.target(), context, prefix, fact)
-                        || call.arguments().stream().anyMatch(argument ->
-                        matchesDerivedAggregate(argument, context, prefix, fact));
+                Set<LambdaId> targets = retainedTargetLambdas(call.target());
+                boolean matched = matchesDerivedAggregateArguments(
+                        fact, context, prefix, call.arguments(), targets);
                 FlowSiteId invocation = RetainedAllocationDerivation.invocationContext(context, call.site());
-                yield matched || retainedTargetLambdas(call.target()).stream()
-                        .anyMatch(lambda -> matchesSummaryDerivedAggregate(
+                yield matched || targets.stream().anyMatch(lambda ->
+                        matchesSummaryDerivedAggregate(
                                 fact, invocation, prefix, lambda));
             }
-            case RetainedInitializerTransfer.Apply apply -> apply.operands().stream().anyMatch(operand ->
-                    matchesDerivedAggregate(operand, context, prefix, fact));
+            case RetainedInitializerTransfer.Apply apply ->
+                    (apply.kind() == RetainedInitializerTransfer.ApplyKind.CONVERSION
+                            || apply.kind() == RetainedInitializerTransfer.ApplyKind.NARROWING)
+                            && matchesDerivedAggregate(
+                            apply.operands().getLast(), context, prefix, fact);
             case RetainedInitializerTransfer.Alternative alternative ->
-                    alternative.prefix().stream().anyMatch(step -> matchesDerivedAggregate(
-                            step.transfer(), context, prefix, fact))
-                            || alternative.branches().stream().anyMatch(branch ->
-                            branch.selectors().stream().anyMatch(step -> matchesDerivedAggregate(
-                                    step.transfer(), context, prefix, fact))
-                                    || branch.result().stream().anyMatch(step -> matchesDerivedAggregate(
-                                    step.transfer(), context, prefix, fact)));
-            case RetainedInitializerTransfer.Sequence sequence -> sequence.steps().stream().anyMatch(step ->
-                    matchesDerivedAggregate(step, context, prefix, fact));
-            case RetainedInitializerTransfer.Declare declare -> matchesDerivedAggregate(
-                    declare.initializer(), context, prefix, fact);
+                    (alternative.kind() == RetainedInitializerTransfer.AlternativeKind.COALESCE
+                            && alternative.prefix().stream().anyMatch(step -> matchesDerivedAggregate(
+                            step.transfer(), context, prefix, fact)))
+                            || java.util.stream.IntStream.range(0, alternative.branches().size())
+                            .filter(alternative.reachableBranches()::contains)
+                            .mapToObj(alternative.branches()::get)
+                            .anyMatch(branch -> branch.result().stream().anyMatch(step ->
+                                    matchesDerivedAggregate(step.transfer(), context, prefix, fact)));
+            case RetainedInitializerTransfer.Sequence sequence -> matchesDerivedAggregateSequence(
+                    sequence, context, prefix, fact, Map.of(), new LinkedHashSet<>());
+            case RetainedInitializerTransfer.Declare ignored -> false;
             case RetainedInitializerTransfer.Rebind rebind -> matchesDerivedAggregate(
                     rebind.value(), context, prefix, fact);
             case RetainedInitializerTransfer.Project project -> {
@@ -914,21 +922,30 @@ public final class SessionFlowCertificate {
                         ? new AggregateIdentityFact(fact.identity(), project.route(), fact.witness()) : fact;
                 yield matchesDerivedAggregate(project.base(), context,
                         project.kind() == RetainedInitializerTransfer.ProjectionKind.ROUTE
-                                ? ProjectionPath.root() : prefix, sourceFact)
-                        || project.index().stream().anyMatch(index -> matchesDerivedAggregate(
-                        index, context, prefix, fact));
+                                ? ProjectionPath.root() : prefix, sourceFact);
             }
             case RetainedInitializerTransfer.Construct construct -> {
-                boolean matched = construct.arguments().stream().anyMatch(argument ->
-                        matchesDerivedAggregate(argument, context, prefix, fact));
                 FlowSiteId nested = RetainedAllocationDerivation.objectSite(
                         context, construct.site().site());
                 RetainedNominal nominal = retainedNominals.get(
                         construct.site().nominalType().canonicalSpelling());
+                boolean matched = construct.site().schema().kind() == NominalSchema.Kind.STRUCT
+                        && construct.arguments().stream().anyMatch(argument ->
+                        matchesDerivedAggregate(argument, context, ProjectionPath.root(), fact));
+                if (!matched && nominal != null && nominal.constructorLambda().isPresent()) {
+                    matched = matchesDerivedAggregateArguments(
+                            fact, context, ProjectionPath.root(), construct.arguments(),
+                            Set.of(nominal.constructorLambda().orElseThrow()));
+                }
                 if (!matched && nominal != null) {
                     matched = nominal.memberInitializers().stream().flatMap(Optional::stream)
                             .anyMatch(initializer -> matchesDerivedAggregate(
                                     initializer, nested, ProjectionPath.root(), fact));
+                    if (!matched && nominal.constructorLambda().isPresent()) {
+                        matched = matchesSummaryDerivedAggregate(
+                                fact, nested, ProjectionPath.root(),
+                                nominal.constructorLambda().orElseThrow());
+                    }
                 }
                 yield matched;
             }
@@ -943,6 +960,131 @@ public final class SessionFlowCertificate {
                                 fact, invocation, prefix, lambda));
             }
         };
+    }
+
+    private boolean matchesDerivedAggregateArguments(
+            AggregateIdentityFact fact, FlowSiteId context,
+            ProjectionPath prefix, List<RetainedInitializerTransfer> arguments,
+            Set<LambdaId> targets) {
+        Optional<ProjectionPath> destination = prefix.suffixOf(fact.route());
+        if (destination.isEmpty()) return false;
+        for (LambdaId target : targets) {
+            CallableSummary summary = callableSummaries.summary(target).orElse(null);
+            if (summary == null) continue;
+            List<FormulaAlternatives> destinations = new ArrayList<>();
+            destinations.add(summary.returnFormula().alternatives());
+            summary.writes().forEach(write -> destinations.add(write.value()));
+            for (FormulaAlternatives formulas : destinations) {
+                FormulaAlternatives selected;
+                try {
+                    selected = formulas.select(destination.orElseThrow());
+                } catch (IllegalArgumentException invalidRoute) {
+                    continue;
+                }
+                for (ValueFormula formula : selected.formulas()) {
+                    if (!(formula instanceof ValueFormula.Parameter parameter)
+                            || parameter.parameterIndex() >= arguments.size()) continue;
+                    AggregateIdentityFact sourceFact = new AggregateIdentityFact(
+                            fact.identity(), parameter.parameterRoute(), fact.witness());
+                    if (matchesDerivedAggregate(
+                            arguments.get(parameter.parameterIndex()), context,
+                            ProjectionPath.root(), sourceFact)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean matchesDerivedAggregateSequence(
+            RetainedInitializerTransfer.Sequence sequence, FlowSiteId context,
+            ProjectionPath prefix, AggregateIdentityFact fact,
+            Map<DeclarationId, RetainedInitializerTransfer> inheritedBindings,
+            Set<DeclarationId> activeBindings) {
+        TreeMap<DeclarationId, RetainedInitializerTransfer> bindings =
+                new TreeMap<>(inheritedBindings);
+        for (int index = 0; index < sequence.steps().size(); index++) {
+            RetainedInitializerTransfer step = sequence.steps().get(index);
+            if (index == sequence.steps().size() - 1) {
+                return matchesDerivedAggregateResult(
+                        step, context, prefix, fact, bindings, activeBindings);
+            }
+            if (step instanceof RetainedInitializerTransfer.Declare declare) {
+                bindings.put(declare.declaration(), declare.initializer());
+            } else if (step instanceof RetainedInitializerTransfer.Rebind rebind) {
+                if (matchesDerivedAggregateResult(
+                        rebind.value(), context, prefix, fact, bindings, activeBindings)) {
+                    return true;
+                }
+                if (rebind.target().route().isRoot()) {
+                    bindings.put(rebind.target().declaration(), rebind.value());
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean matchesDerivedAggregateResult(
+            RetainedInitializerTransfer transfer, FlowSiteId context,
+            ProjectionPath prefix, AggregateIdentityFact fact,
+            Map<DeclarationId, RetainedInitializerTransfer> bindings,
+            Set<DeclarationId> activeBindings) {
+        if (transfer instanceof RetainedInitializerTransfer.Sequence sequence) {
+            return matchesDerivedAggregateSequence(
+                    sequence, context, prefix, fact, bindings, activeBindings);
+        }
+        if (transfer instanceof RetainedInitializerTransfer.Reference reference) {
+            if (!activeBindings.add(reference.declaration())) return false;
+            try {
+                RetainedInitializerTransfer source = bindings.get(reference.declaration());
+                if (source == null) return false;
+                AggregateIdentityFact sourceFact = reference.route().isRoot() ? fact
+                        : new AggregateIdentityFact(
+                        fact.identity(), reference.route(), fact.witness());
+                return matchesDerivedAggregateResult(source, context,
+                        reference.route().isRoot() ? prefix : ProjectionPath.root(),
+                        sourceFact, bindings, activeBindings);
+            } finally {
+                activeBindings.remove(reference.declaration());
+            }
+        }
+        if (transfer instanceof RetainedInitializerTransfer.Composite composite) {
+            boolean matched = composite.allocation().stream().anyMatch(allocation ->
+                    matchesDerivedAggregate(fact, context, allocation, prefix));
+            for (int index = 0; !matched && index < composite.elements().size(); index++) {
+                ProjectionPath member = composite.arrayLiteral()
+                        ? ProjectionPath.arrayElement(index) : ProjectionPath.tupleMember(index);
+                matched = matchesDerivedAggregateResult(
+                        composite.elements().get(index), context,
+                        prefix.compose(member), fact, bindings, activeBindings);
+            }
+            return matched;
+        }
+        if (transfer instanceof RetainedInitializerTransfer.Alternative alternative) {
+            boolean matched = alternative.kind()
+                    == RetainedInitializerTransfer.AlternativeKind.COALESCE
+                    && alternative.prefix().stream().anyMatch(step ->
+                    matchesDerivedAggregateResult(
+                            step.transfer(), context, prefix, fact, bindings, activeBindings));
+            if (matched) return true;
+            return java.util.stream.IntStream.range(0, alternative.branches().size())
+                    .filter(alternative.reachableBranches()::contains)
+                    .mapToObj(alternative.branches()::get)
+                    .anyMatch(branch -> branch.result().stream().anyMatch(step ->
+                            matchesDerivedAggregateResult(
+                                    step.transfer(), context, prefix, fact,
+                                    bindings, activeBindings)));
+        }
+        if (transfer instanceof RetainedInitializerTransfer.Project project) {
+            AggregateIdentityFact sourceFact = project.kind()
+                    == RetainedInitializerTransfer.ProjectionKind.ROUTE
+                    ? new AggregateIdentityFact(
+                    fact.identity(), project.route(), fact.witness()) : fact;
+            return matchesDerivedAggregateResult(project.base(), context,
+                    project.kind() == RetainedInitializerTransfer.ProjectionKind.ROUTE
+                            ? ProjectionPath.root() : prefix,
+                    sourceFact, bindings, activeBindings);
+        }
+        return matchesDerivedAggregate(transfer, context, prefix, fact);
     }
 
     private boolean matchesCallableDerivedAggregate(
@@ -973,10 +1115,17 @@ public final class SessionFlowCertificate {
                             invocation, construction.site());
                     RetainedNominal nominal = retainedNominals.get(
                             construction.nominalType().canonicalSpelling());
-                    if (nominal != null && nominal.memberInitializers().stream()
-                            .flatMap(Optional::stream).anyMatch(initializer ->
-                                    matchesDerivedAggregate(initializer, objectContext,
-                                            ProjectionPath.root(), fact))) return true;
+                    if (nominal != null) {
+                        if (nominal.memberInitializers().stream()
+                                .flatMap(Optional::stream).anyMatch(initializer ->
+                                        matchesDerivedAggregate(initializer, objectContext,
+                                                ProjectionPath.root(), fact))) return true;
+                        if (nominal.constructorLambda().isPresent()
+                                && matchesSummaryDerivedAggregate(
+                                fact, objectContext, ProjectionPath.root(),
+                                nominal.constructorLambda().orElseThrow(),
+                                currentSummaries)) return true;
+                    }
                     continue;
                 }
                 List<Set<CallableEvidence>> arguments = new ArrayList<>();
@@ -1149,10 +1298,21 @@ public final class SessionFlowCertificate {
                             invocation, construction.site());
                     RetainedNominal nominal = retainedNominals.get(
                             construction.nominalType().canonicalSpelling());
-                    if (nominal != null && nominal.memberInitializers().stream()
-                            .flatMap(Optional::stream).anyMatch(initializer ->
-                                    matchesDerivedAggregate(initializer, objectContext,
-                                            ProjectionPath.root(), fact))) return true;
+                    if (nominal != null) {
+                        if (nominal.memberInitializers().stream()
+                                .flatMap(Optional::stream).anyMatch(initializer ->
+                                        matchesDerivedAggregate(initializer, objectContext,
+                                                ProjectionPath.root(), fact))) return true;
+                        if (nominal.constructorLambda().isPresent()) {
+                            LambdaId constructor = nominal.constructorLambda().orElseThrow();
+                            if (matchesSummaryDerivedAggregateAllocations(
+                                    fact, objectContext, ProjectionPath.root(), constructor,
+                                    currentSummaries)
+                                    || matchesSummaryDerivedAggregateInConstructions(
+                                    fact, objectContext, ProjectionPath.root(), constructor,
+                                    active, currentSummaries)) return true;
+                        }
+                    }
                 } else {
                     for (LambdaId target : retainedCallTargets(call, currentSummaries)) {
                         if (matchesSummaryDerivedAggregateAllocations(
@@ -1387,9 +1547,12 @@ public final class SessionFlowCertificate {
             RetainedNominal nominal = retainedNominals.get(nominalType.canonicalSpelling());
             if (nominal == null || !nominal.nominal().declaration().equals(
                     consumer.declarationId().orElseThrow())) return false;
-            return nominal.memberInitializers().stream().flatMap(Optional::stream)
+            boolean memberDerived = nominal.memberInitializers().stream().flatMap(Optional::stream)
                     .anyMatch(transfer -> matchesDerivedObject(
                             transfer, consumerContext, ProjectionPath.root(), fact));
+            if (memberDerived || nominal.constructorLambda().isEmpty()) return memberDerived;
+            return matchesSummaryDerivedObject(fact, consumerContext, ProjectionPath.root(),
+                    nominal.constructorLambda().orElseThrow(), new LinkedHashSet<>());
         }
         if (!isCallableConsumer(consumer.kind()) || callableTargets.isEmpty()) return false;
         return callableTargets.stream().allMatch(this::certifiesLambda)
@@ -1459,9 +1622,16 @@ public final class SessionFlowCertificate {
                 FlowSiteId nested = RetainedAllocationDerivation.objectSite(context, construct.site().site());
                 RetainedNominal nominal = retainedNominals.get(
                         construct.site().nominalType().canonicalSpelling());
-                if (!matched && nominal != null) matched = nominal.memberInitializers().stream()
-                        .flatMap(Optional::stream).anyMatch(initializer -> matchesDerivedObject(
-                                initializer, nested, ProjectionPath.root(), fact));
+                if (!matched && nominal != null) {
+                    matched = nominal.memberInitializers().stream()
+                            .flatMap(Optional::stream).anyMatch(initializer -> matchesDerivedObject(
+                                    initializer, nested, ProjectionPath.root(), fact));
+                    if (!matched && nominal.constructorLambda().isPresent()) {
+                        matched = matchesSummaryDerivedObject(
+                                fact, nested, ProjectionPath.root(),
+                                nominal.constructorLambda().orElseThrow(), new LinkedHashSet<>());
+                    }
+                }
                 yield matched || construct.arguments().stream().anyMatch(argument ->
                         matchesDerivedObject(argument, context, prefix, fact));
             }
@@ -1559,10 +1729,17 @@ public final class SessionFlowCertificate {
                                 invocation, construction.site());
                         RetainedNominal nominal = retainedNominals.get(
                                 construction.nominalType().canonicalSpelling());
-                        if (nominal != null && nominal.memberInitializers().stream()
-                                .flatMap(Optional::stream).anyMatch(initializer ->
-                                        matchesDerivedObject(initializer, objectContext,
-                                                ProjectionPath.root(), fact))) return true;
+                        if (nominal != null) {
+                            if (nominal.memberInitializers().stream()
+                                    .flatMap(Optional::stream).anyMatch(initializer ->
+                                            matchesDerivedObject(initializer, objectContext,
+                                                    ProjectionPath.root(), fact))) return true;
+                            if (nominal.constructorLambda().isPresent()
+                                    && matchesSummaryDerivedObject(
+                                    fact, objectContext, ProjectionPath.root(),
+                                    nominal.constructorLambda().orElseThrow(),
+                                    new LinkedHashSet<>())) return true;
+                        }
                     }
                     continue;
                 }
@@ -1614,10 +1791,16 @@ public final class SessionFlowCertificate {
                                 invocation, construction.site());
                         RetainedNominal nominal = retainedNominals.get(
                                 construction.nominalType().canonicalSpelling());
-                        if (nominal != null && nominal.memberInitializers().stream()
-                                .flatMap(Optional::stream).anyMatch(initializer ->
-                                        matchesDerivedObject(initializer, objectContext,
-                                                ProjectionPath.root(), fact))) return true;
+                        if (nominal != null) {
+                            if (nominal.memberInitializers().stream()
+                                    .flatMap(Optional::stream).anyMatch(initializer ->
+                                            matchesDerivedObject(initializer, objectContext,
+                                                    ProjectionPath.root(), fact))) return true;
+                            if (nominal.constructorLambda().isPresent()
+                                    && matchesSummaryDerivedObject(
+                                    fact, objectContext, ProjectionPath.root(),
+                                    nominal.constructorLambda().orElseThrow(), active)) return true;
+                        }
                     }
                 } else {
                     for (LambdaId target : retainedCallTargets(call)) {
@@ -2158,6 +2341,11 @@ public final class SessionFlowCertificate {
                     .flatMap(id -> graph.contract(id).map(contract ->
                             new RetainedInitializerTransfer.Alternative.PredicateBinding(id, contract)));
             if (expression.predicateBinding().isPresent() && binding.isEmpty()) return Optional.empty();
+            Set<Integer> reachableBranches = expression.children().getFirst().literal()
+                    .filter(io.mindspice.lyra.compiler.semantic.TypedLiteralValue.BooleanValue.class::isInstance)
+                    .map(io.mindspice.lyra.compiler.semantic.TypedLiteralValue.BooleanValue.class::cast)
+                    .map(value -> Set.of(value.value() ? 0 : 1))
+                    .orElseGet(() -> Set.of(0, 1));
             return Optional.of(new RetainedInitializerTransfer.Alternative(
                     RetainedInitializerTransfer.AlternativeKind.CONDITIONAL, expression.type(),
                     List.of(step.apply(0)), List.of(
@@ -2165,7 +2353,8 @@ public final class SessionFlowCertificate {
                                     Optional.empty(), Optional.empty(), false, Optional.of(step.apply(1))),
                             new RetainedInitializerTransfer.Alternative.Branch(
                                     Optional.empty(), Optional.empty(), false, expression.children().size() == 3
-                                    ? Optional.of(step.apply(2)) : Optional.empty())), binding));
+                                    ? Optional.of(step.apply(2)) : Optional.empty())), binding,
+                    reachableBranches));
         }
         if (expression.kind() == TypedExpressionKind.COALESCE) {
             if (expression.children().size() != 2) return Optional.empty();
@@ -3347,7 +3536,8 @@ public final class SessionFlowCertificate {
          * arm's result.
          */
         record Alternative(AlternativeKind kind, LyraType type, List<Step> prefix,
-                           List<Branch> branches, Optional<PredicateBinding> predicateBinding)
+                           List<Branch> branches, Optional<PredicateBinding> predicateBinding,
+                           Set<Integer> reachableBranches)
                 implements RetainedInitializerTransfer {
             public record Step(LyraType type, RetainedInitializerTransfer transfer) {
                 public Step {
@@ -3389,8 +3579,13 @@ public final class SessionFlowCertificate {
                 prefix = List.copyOf(Objects.requireNonNull(prefix, "prefix"));
                 branches = List.copyOf(Objects.requireNonNull(branches, "branches"));
                 predicateBinding = Objects.requireNonNull(predicateBinding, "predicateBinding");
-                if (prefix.stream().anyMatch(Objects::isNull) || branches.stream().anyMatch(Objects::isNull)) {
-                    throw new IllegalArgumentException("retained alternative contains null");
+                reachableBranches = Set.copyOf(Objects.requireNonNull(
+                        reachableBranches, "reachableBranches"));
+                int branchCount = branches.size();
+                if (prefix.stream().anyMatch(Objects::isNull) || branches.stream().anyMatch(Objects::isNull)
+                        || reachableBranches.isEmpty()
+                        || reachableBranches.stream().anyMatch(index -> index < 0 || index >= branchCount)) {
+                    throw new IllegalArgumentException("retained alternative contains invalid reachability");
                 }
                 switch (kind) {
                     case CONDITIONAL -> {
@@ -3442,6 +3637,14 @@ public final class SessionFlowCertificate {
                         }
                     }
                 }
+            }
+
+            public Alternative(
+                    AlternativeKind kind, LyraType type, List<Step> prefix,
+                    List<Branch> branches, Optional<PredicateBinding> predicateBinding) {
+                this(kind, type, prefix, branches, predicateBinding,
+                        java.util.stream.IntStream.range(0, branches.size()).boxed()
+                                .collect(java.util.stream.Collectors.toUnmodifiableSet()));
             }
         }
 

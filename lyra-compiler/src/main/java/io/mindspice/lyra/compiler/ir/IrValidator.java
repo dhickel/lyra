@@ -8,6 +8,7 @@ import io.mindspice.lyra.compiler.identity.FlowSiteId;
 import io.mindspice.lyra.compiler.identity.ReferenceId;
 import io.mindspice.lyra.compiler.semantic.AccessKind;
 import io.mindspice.lyra.compiler.semantic.DeclarationKind;
+import io.mindspice.lyra.compiler.semantic.MutationKind;
 import io.mindspice.lyra.compiler.semantic.ReferenceKind;
 import io.mindspice.lyra.compiler.semantic.ResolvedModule;
 import io.mindspice.lyra.compiler.semantic.ScopeKind;
@@ -998,7 +999,17 @@ public final class IrValidator {
                     }
                 }
                 semantic.resolvedGraph().declaration(id).ifPresent(declaration -> {
-                    if (!declaration.isMutable() && !(nominalField && declaration.kind() == DeclarationKind.SELF)) {
+                    boolean constructorSelfMutation = declaration.kind() == DeclarationKind.SELF
+                            && node.mutationKind().filter(kind -> kind != MutationKind.REBINDING).isPresent()
+                            && node.rootReference().flatMap(semantic.resolvedGraph()::reference)
+                            .flatMap(io.mindspice.lyra.compiler.semantic.ResolvedReference::fromLambda)
+                            .filter(lambda -> semantic.resolvedGraph().nominals().stream().anyMatch(nominal ->
+                                    nominal.self().equals(declaration.id())
+                                            && nominal.constructor().filter(lambda::equals).isPresent()))
+                            .isPresent();
+                    boolean permittedImmutableSelfMutation = declaration.kind() == DeclarationKind.SELF
+                            && (nominalField || constructorSelfMutation);
+                    if (!declaration.isMutable() && !permittedImmutableSelfMutation) {
                         add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, node.span(),
                                 "IR rebinds an immutable declaration");
                     }

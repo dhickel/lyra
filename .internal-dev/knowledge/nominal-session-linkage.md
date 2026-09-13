@@ -113,8 +113,49 @@ session generations.
 - Cross-generation initializer coverage needs an observation after construction.
   The four namespace/Unit inventory cases with a producer `std->io` import construct
   successfully in generation 2 but fail observation in generation 3 with `LYR-LINK`
-  (unrelated nominal artifact/session). This was reproduced against the starting
-  phase-2 production files, independently of route-certification edits.
+  (unrelated nominal artifact/session), independent of the transfer algebra.
+- Do not fix that by widening `SessionStorageDomain.Linkage.sourceLocal` to count
+  real source modules while ignoring the intrinsic module: the intended posture is
+  that an importing graph is not eligible for the session-authentication bridge, and
+  `SessionClosureAuthorityTest` pins it ("imported graph authority is not certified").
+  A generated nominal instance is owned by its creating submission's authority, so
+  the correct fix anchors that ownership to the session root (or adds an authority
+  path independent of the importing-graph rule) instead of relaxing the classifier.
+- A nominal-only same-workspace predicate is insufficient: it admits the object and
+  fixes Unit-valued member reads, but a callable member then correctly fails the
+  separate closure-authentication boundary. A complete solution needs route-scoped
+  delegation for a callable reached through an authenticated nominal field, or a
+  session-root construction authority that owns installed field values, while the
+  same imported closure presented directly must remain rejected.
+- Tuple-nested array writes rooted at constructor `self` are aggregate mutations,
+  not rebinding of the immutable `self` declaration. Resolver, type checker,
+  topology validation and IR validation must classify that root consistently.
+- Consumer-derived retained array identities still need their producer scope, span
+  and origin site registered in the analyzer's canonical allocation indexes. The
+  derived identity changes; its producer provenance does not.
+- A retained constructor summary can allocate nested objects and arrays just as a
+  member initializer can. Consumer-construction certificate checks must search the
+  constructor summary as well as member-initializer transfers. Each nested retained
+  object site must be pushed as the active construction context while its defaults
+  and constructor summary execute; certificate recursion must use that same derived
+  context before descending into another constructor.
+- Immutable `self` is not general aggregate-mutation authority. Direct member-field
+  assignment keeps its established method/contextual-replacement behavior, but an
+  indexed or otherwise non-field write through `self` is valid only when the root
+  reference belongs to the exact constructor lambda of that nominal. Resolver,
+  topology and IR checks must agree so ordinary invalid source remains a structured
+  diagnostic instead of reaching semantic-flow invariants.
+- Derived aggregate certification follows destination reachability, not transfer-tree
+  containment. A retained block contributes its final value and explicit writes;
+  declaration identities resolve lexically so shadowed bindings cannot leak an older
+  allocation. Call and class-constructor arguments count only when summary return/write
+  formulas route the parameter to the destination; unused arguments do not. Conditional
+  transfer evidence records statically reachable result branches, while conservative
+  eager-effect evidence may still include every branch.
+- REPL runtime frames keep an internal session `SourceId` while `SourceOrigin.label`
+  carries the caller label. Exact producer-frame tests should assert the mapped UTF-16
+  offsets, caller origin range and line/column derived from the registered producer
+  text rather than equating the internal source ID with the display label.
 - An unannotated observation `Tuple[box:.x:.0 (box:.x:.1)]` hits the existing
   context-free tuple provenance check. An explicitly typed `Tuple<I32,I32>` binding
   permits asserting both the scalar and invoked lambda result without changing the

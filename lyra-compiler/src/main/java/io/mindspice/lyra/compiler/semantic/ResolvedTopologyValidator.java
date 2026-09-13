@@ -886,6 +886,17 @@ final class ResolvedTopologyValidator {
             ResolvedDeclaration rootDeclaration = rootReference.targetDeclaration()
                     .flatMap(resolved::declaration).orElseThrow(() -> invalid(
                             "source mutation root reference has no declaration"));
+            boolean nominalSelf = resolved.nominals().stream()
+                    .anyMatch(value -> value.self().equals(rootDeclaration.id()));
+            boolean contextualSelf = resolved.scopeTree().require(rootDeclaration.scopeId()).kind()
+                    == ScopeKind.LAMBDA;
+            boolean constructorSelfMutation = mutation.kind() != MutationKind.REBINDING
+                    && resolved.nominals().stream().anyMatch(value ->
+                    value.self().equals(rootDeclaration.id())
+                            && value.constructor().equals(rootReference.fromLambda()));
+            boolean permittedImmutableSelfMutation = rootDeclaration.kind() == DeclarationKind.SELF
+                    && (mutation.kind() == MutationKind.MEMBER_FIELD
+                    && (nominalSelf || contextualSelf) || constructorSelfMutation);
             if (!mutation.rootReference().equals(Optional.of(rootReferenceId))
                     || !mutation.rootDeclaration().equals(rootDeclaration.id())
                     || rootReference.kind() != ReferenceKind.VALUE
@@ -894,10 +905,7 @@ final class ResolvedTopologyValidator {
                     || !rootDeclaration.moduleId().equals(site.moduleId())
                     || rootDeclaration.imported()
                     || rootDeclaration.bindingMutability() != BindingMutability.MUTABLE
-                    && !(mutation.kind() == MutationKind.MEMBER_FIELD
-                    && rootDeclaration.kind() == DeclarationKind.SELF
-                    && (resolved.nominals().stream().anyMatch(value -> value.self().equals(rootDeclaration.id()))
-                    || resolved.scopeTree().require(rootDeclaration.scopeId()).kind() == ScopeKind.LAMBDA))) {
+                    && !permittedImmutableSelfMutation) {
                 throw invalid("mutation root/reference/source assignment linkage is inconsistent");
             }
             if (mutation.kind() == MutationKind.MEMBER_FIELD) {

@@ -616,6 +616,241 @@ class NominalSessionTest {
     }
 
     @Test
+    void retainedConstructorsInstallCapturedAndHelperReturnedClosuresAndNestedAggregateWrites() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("constructor-compositions-1.lyra", """
+                    let @mut effects :I32 = 0
+                    let record :Fn<I32;I32> = (=> |value| { effects := (++ effects) value })
+                    let make :Fn<I32;Fn<;I32>> = (=> |value| (=> || (+ value 1)))
+                    class Inner { let @pub value :I32 = 5 }
+                    class Box {
+                        let @pub @mut captured :Fn<;I32> = (=> || 0)
+                        let @pub @mut returned :Fn<;I32> = (=> || 0)
+                        let @pub @mut nested :Tuple<Array<I32>,I32> = Tuple[Array<I32>[1 2] 3]
+                        let @pub built :Inner
+                        Box = (=> |value :I32| {
+                            self:.captured := (=> || value)
+                            self:.returned := ::make[value]
+                            self:.nested:.0[1] := ::record[9]
+                            self:.built := Inner[]
+                        })
+                    }
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "constructor-compositions-2.lyra", "let box :Box = Box[41]")));
+            EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
+                    "constructor-compositions-3.lyra", """
+                    let observed :Tuple<I32,I32,I32,I32,I32> =
+                        Tuple[box::captured[] box::returned[] box:.nested:.0[1]
+                              box:.built:.value effects]
+                    observed
+                    """)));
+            ValueSnapshot.Aggregate tuple = assertInstanceOf(ValueSnapshot.Aggregate.class,
+                    result.value().orElseThrow().data());
+            assertEquals(List.of("41", "42", "9", "5", "1"), tuple.elements().stream()
+                    .map(ValueSnapshot::data).map(ValueSnapshot.Scalar.class::cast)
+                    .map(ValueSnapshot.Scalar::value).toList());
+        }
+    }
+
+    @Test
+    void retainedConstructorsRecursivelyUseExactNestedObjectContexts() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("nested-constructor-contexts-1.lyra", """
+                    class Deep {
+                        let @pub @mut values :Array<I32> = Array<I32>[0]
+                        Deep = (=> |value :I32| { self:.values[0] := value })
+                    }
+                    class Leaf {
+                        let @pub deep :Deep
+                        Leaf = (=> |value :I32| { self:.deep := Deep[value] })
+                    }
+                    class Middle {
+                        let @pub leaf :Leaf
+                        Middle = (=> |value :I32| { self:.leaf := Leaf[value] })
+                    }
+                    class Outer {
+                        let @pub middle :Middle
+                        Outer = (=> || { self:.middle := Middle[7] })
+                    }
+                    let producerOuter :Outer = Outer[]
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "nested-constructor-contexts-2.lyra",
+                    "let retainedOuter :Outer = Outer[]")));
+            EvaluationResult.Success observed = success(session.submit(EvaluationSource.of(
+                    "nested-constructor-contexts-3.lyra", """
+                    let result :Tuple<I32,I32> =
+                        Tuple[producerOuter:.middle:.leaf:.deep:.values[0]
+                              retainedOuter:.middle:.leaf:.deep:.values[0]]
+                    result
+                    """)));
+            ValueSnapshot.Aggregate tuple = assertInstanceOf(ValueSnapshot.Aggregate.class,
+                    observed.value().orElseThrow().data());
+            assertEquals(List.of("7", "7"), tuple.elements().stream()
+                    .map(ValueSnapshot::data).map(ValueSnapshot.Scalar.class::cast)
+                    .map(ValueSnapshot.Scalar::value).toList());
+        }
+    }
+
+    @Test
+    void retainedConstructionOrderIsObservableAcrossArgumentsRequiredFieldsDefaultsAndConstructor() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("constructor-order-1.lyra", """
+                    let @mut order :I32 = 0
+                    let mark :Fn<I32;I32> = (=> |digit| {
+                        order := (+ (* order 10) digit)
+                        digit
+                    })
+                    class Ordered {
+                        let @pub first :I32 = ::mark[3]
+                        let @pub second :I32 = ::mark[4]
+                        Ordered = (=> |left :I32 right :I32| {
+                            let ignored :I32 = ::mark[(+ self:.first 2)]
+                        })
+                    }
+                    struct Sequence {
+                        let required :I32
+                        let afterRequired :I32 = ::mark[(+ self:.required 1)]
+                    }
+                    """)));
+            success(session.submit(EvaluationSource.of("constructor-order-2.lyra", """
+                    let ordered :Ordered = Ordered[::mark[1], ::mark[2]]
+                    let sequence :Sequence = Sequence[::mark[6]]
+                    """)));
+            assertScalar("1234567", success(session.submit(EvaluationSource.of(
+                    "constructor-order-3.lyra", "order"))));
+        }
+    }
+
+    @Test
+    void retainedFactoriesInitializeRootsOnceAndDefaultsOncePerConstruction() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("constructor-once-1.lyra", """
+                    let @mut rootEffects :I32 = 0
+                    let initializeRoot :Fn<;I32> = (=> || {
+                        rootEffects := (++ rootEffects)
+                        rootEffects
+                    })
+                    let rootValue :I32 = ::initializeRoot[]
+                    let @mut defaultEffects :I32 = 0
+                    class Once {
+                        let @pub value :I32 = {
+                            defaultEffects := (++ defaultEffects)
+                            defaultEffects
+                        }
+                    }
+                    let sameSubmission :Once = Once[]
+                    """)));
+            assertScalar("13", success(session.submit(EvaluationSource.of(
+                    "constructor-once-2.lyra", """
+                    let first :Once = Once[]
+                    let second :Once = Once[]
+                    (+ (* rootEffects 10) defaultEffects)
+                    """))));
+            assertScalar("14", success(session.submit(EvaluationSource.of(
+                    "constructor-once-3.lyra", """
+                    let third :Once = Once[]
+                    (+ (* rootEffects 10) defaultEffects)
+                    """))));
+        }
+    }
+
+    @Test
+    void retainedConstructionFailuresPublishNothingPreserveEffectsAndKeepProducerUsable() {
+        try (LyraSession session = LyraSession.open()) {
+            String producerSource = """
+                    let @mut effects :I32 = 0
+                    let @mut divisor :I32 = 0
+                    let touch :Fn<I32;I32> = (=> |digit| {
+                        effects := (+ (* effects 10) digit)
+                        digit
+                    })
+                    class ArgumentFailure {
+                        let @pub value :I32 = 1
+                        ArgumentFailure = (=> |left :I32 right :I32| { () })
+                    }
+                    class DefaultFailure {
+                        let @pub first :I32 = ::touch[1]
+                        let @pub broken :I32 = (% 8 divisor)
+                    }
+                    class ConstructorFailure {
+                        let @pub value :I32 = ::touch[2]
+                        ConstructorFailure = (=> || {
+                            let marker :I32 = ::touch[3]
+                            let ignored :I32 = (% 9 divisor)
+                        })
+                    }
+                    """;
+            success(session.submit(EvaluationSource.of(
+                    "constructor-failures-producer.lyra", producerSource)));
+
+            String typeFailureSource = "effects := 9 let invalid :Bool = 1";
+            EvaluationResult.CompilationFailure typeFailure = assertInstanceOf(
+                    EvaluationResult.CompilationFailure.class,
+                    session.submit(EvaluationSource.of(
+                            "constructor-type-failure.lyra", typeFailureSource)));
+            var typeFailureSpan = typeFailure.diagnostics().getFirst().primarySpan();
+            assertEquals(typeFailureSource.lastIndexOf('1'), typeFailureSpan.startOffset());
+            assertEquals(typeFailureSource.length(), typeFailureSpan.endOffset());
+            assertScalar("0", success(session.submit(EvaluationSource.of(
+                    "constructor-type-failure-observe.lyra", "effects"))));
+
+            EvaluationResult.RuntimeFailure argumentFailure = assertInstanceOf(
+                    EvaluationResult.RuntimeFailure.class,
+                    session.submit(EvaluationSource.of("constructor-argument-failure.lyra", """
+                            let stagedArgument :ArgumentFailure =
+                                ArgumentFailure[::touch[4] (% 1 divisor)]
+                            """)));
+            assertEquals("LYR-ARITH", argumentFailure.code());
+            assertTrue(argumentFailure.frames().stream().anyMatch(frame ->
+                            frame.origin().label().equals("constructor-argument-failure.lyra")
+                                    && frame.excerpt().orElse("").contains("(% 1 divisor)")),
+                    argumentFailure.toString());
+            assertScalar("4", success(session.submit(EvaluationSource.of(
+                    "constructor-argument-effects.lyra", "effects"))));
+            assertInstanceOf(EvaluationResult.CompilationFailure.class,
+                    session.submit(EvaluationSource.of(
+                            "constructor-argument-unpublished.lyra", "stagedArgument")));
+
+            EvaluationResult.RuntimeFailure defaultFailure = assertInstanceOf(
+                    EvaluationResult.RuntimeFailure.class,
+                    session.submit(EvaluationSource.of("constructor-default-failure.lyra",
+                            "let stagedDefault :DefaultFailure = DefaultFailure[]")));
+            assertEquals("LYR-ARITH", defaultFailure.code());
+            assertProducerFrame(defaultFailure, producerSource,
+                    "(% 8 divisor)", 13, 28);
+            assertScalar("41", success(session.submit(EvaluationSource.of(
+                    "constructor-default-effects.lyra", "effects"))));
+            assertInstanceOf(EvaluationResult.CompilationFailure.class,
+                    session.submit(EvaluationSource.of(
+                            "constructor-default-unpublished.lyra", "stagedDefault")));
+
+            EvaluationResult.RuntimeFailure constructorFailure = assertInstanceOf(
+                    EvaluationResult.RuntimeFailure.class,
+                    session.submit(EvaluationSource.of("constructor-body-failure.lyra",
+                            "let stagedConstructor :ConstructorFailure = ConstructorFailure[]")));
+            assertEquals("LYR-ARITH", constructorFailure.code());
+            assertProducerFrame(constructorFailure, producerSource,
+                    "(% 9 divisor)", 19, 28);
+            assertScalar("4123", success(session.submit(EvaluationSource.of(
+                    "constructor-body-effects.lyra", "effects"))));
+            assertInstanceOf(EvaluationResult.CompilationFailure.class,
+                    session.submit(EvaluationSource.of(
+                            "constructor-body-unpublished.lyra", "stagedConstructor")));
+
+            success(session.submit(EvaluationSource.of("constructor-recovery.lyra", """
+                    divisor := 1
+                    let stagedArgument :ArgumentFailure = ArgumentFailure[5 6]
+                    let stagedDefault :DefaultFailure = DefaultFailure[]
+                    let stagedConstructor :ConstructorFailure = ConstructorFailure[]
+                    """)));
+            assertScalar("4123123", success(session.submit(EvaluationSource.of(
+                    "constructor-recovery-observe.lyra", "effects"))));
+        }
+    }
+
+    @Test
     void currentGenerationWrappersDeriveRetainedAllocationsThroughDirectParameterAndCaptureCalls() {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("wrapper-allocation-1.lyra", """
@@ -732,6 +967,27 @@ class NominalSessionTest {
     private static void assertScalar(String expected, EvaluationResult.Success result) {
         assertEquals(expected, assertInstanceOf(ValueSnapshot.Scalar.class,
                 result.value().orElseThrow().data()).value());
+    }
+
+    private static void assertProducerFrame(
+            EvaluationResult.RuntimeFailure failure, String producerSource,
+            String expression, int expectedLine, int expectedColumn) {
+        RuntimeFrame frame = failure.frames().stream()
+                .filter(candidate -> candidate.origin().label().equals(
+                        "constructor-failures-producer.lyra"))
+                .filter(candidate -> candidate.excerpt().orElse("").equals(expression))
+                .findFirst().orElseThrow(() -> new AssertionError(failure.toString()));
+        int start = producerSource.indexOf(expression);
+        assertEquals(start, frame.span().startOffset());
+        assertEquals(start + expression.length(), frame.span().endOffset());
+        assertEquals(0, frame.origin().originStartOffset());
+        assertEquals(producerSource.length(), frame.origin().originEndOffset());
+        int line = 1 + (int) producerSource.substring(0, frame.span().startOffset()).chars()
+                .filter(character -> character == '\n').count();
+        int lineStart = producerSource.lastIndexOf('\n', start - 1);
+        int column = start - lineStart;
+        assertEquals(expectedLine, line);
+        assertEquals(expectedColumn, column);
     }
 
     private static EvaluationResult.Success success(EvaluationResult result) {

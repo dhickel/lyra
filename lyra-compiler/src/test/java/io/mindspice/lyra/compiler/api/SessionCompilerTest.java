@@ -32,6 +32,39 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SessionCompilerTest {
     @Test
+    void nonConstructorSelfAggregateMutationsRemainStructuredResolutionFailures() {
+        List<String> sources = List.of("""
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub mutate :Fn<;Unit> = (=> || { self:.values[0] := 7 })
+                }
+                """, """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut mutate :Fn<;Unit> = (=> || {})
+                }
+                let install :Fn<@mut Box;Unit> = (=> |@mut box| {
+                    box:.mutate := (=> || { self:.values[0] := 7 })
+                })
+                """);
+        for (int index = 0; index < sources.size(); index++) {
+            String source = sources.get(index);
+            SessionCompileResult.Failure failure = assertInstanceOf(
+                    SessionCompileResult.Failure.class,
+                    LyraCompiler.compileSession(new SessionCompileRequest(
+                            "non-constructor-self-" + index + ".lyra", source,
+                            SessionSnapshot.empty())));
+            assertEquals(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
+                    failure.diagnostics().getFirst().code());
+            int target = source.indexOf("self:.values[0]");
+            assertEquals(SourceSpan.of(SourceId.path(
+                            "non-constructor-self-" + index + ".lyra"),
+                    target, target + "self:.values[0]".length()),
+                    failure.diagnostics().getFirst().primarySpan());
+        }
+    }
+
+    @Test
     void emptySnapshotCompilesARealExpressionArtifact() {
         SessionCompileResult result = LyraCompiler.compileSession(
                 new SessionCompileRequest("expression.lyra", "42", SessionSnapshot.empty()));

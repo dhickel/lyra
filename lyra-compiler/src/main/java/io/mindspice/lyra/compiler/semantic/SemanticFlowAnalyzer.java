@@ -543,16 +543,27 @@ public final class SemanticFlowAnalyzer {
         }
 
         private DeclarationId retainedArrayAllocation(
-                FlowSiteId context, FlowSiteId producerSite, SourceSpan span) {
+                FlowSiteId context, FlowSiteId producerSite, ScopeId producerScope,
+                SourceSpan producerSpan, SourceSpan useSpan) {
             RetainedAllocationDerivation derivation = RetainedAllocationDerivation.of(
                     RetainedAllocationDerivation.Kind.ARRAY, context, producerSite);
+            DeclarationId derived = new DeclarationId(derivation.ordinal());
             RetainedAllocationDerivation previous = retainedDeclarationDerivations.putIfAbsent(
-                    new DeclarationId(derivation.ordinal()), derivation);
+                    derived, derivation);
             if (previous != null && !previous.equals(derivation)) {
                 throw failure(CallableSummaryResult.InternalFailure.Kind.DOMAIN_LIMIT,
-                        "retained array derivation collided in the finite identity domain", span);
+                        "retained array derivation collided in the finite identity domain", useSpan);
             }
-            return new DeclarationId(derivation.ordinal());
+            ScopeId previousScope = allocationScopes.putIfAbsent(derived, producerScope);
+            SourceSpan previousSpan = allocationSpans.putIfAbsent(derived, producerSpan);
+            FlowSiteId previousSite = allocationFlowSites.putIfAbsent(derived, producerSite);
+            if (previousScope != null && !previousScope.equals(producerScope)
+                    || previousSpan != null && !previousSpan.equals(producerSpan)
+                    || previousSite != null && !previousSite.equals(producerSite)) {
+                throw failure(CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
+                        "retained array derivation has inconsistent producer provenance", useSpan);
+            }
+            return derived;
         }
 
         private FlowSiteId retainedObjectSite(
@@ -1474,7 +1485,8 @@ public final class SemanticFlowAnalyzer {
                     composite.allocation().ifPresent(allocation -> {
                         FlowSiteId context = retainedConstructionContexts.getLast();
                         DeclarationId derived = retainedArrayAllocation(
-                                context, allocation.site(), construction.span());
+                                context, allocation.site(), allocation.scopeId(),
+                                allocation.span(), construction.span());
                         facts.add(new AggregateIdentityFact(
                                 ArrayIdentity.localAllocation(allocation.moduleId(), derived, allocation.type()),
                                 ProjectionPath.root(), OwnershipWitness.local(allocation.moduleId(), derived,
@@ -1580,7 +1592,9 @@ public final class SemanticFlowAnalyzer {
                                 result.state.withoutBinding(alternative.predicateBinding().orElseThrow().declaration()),
                                 result.events, result.effects);
                     }
-                    branches.add(result);
+                    if (alternative.reachableBranches().contains(index)) {
+                        branches.add(result);
+                    }
                     effects.addAll(result.effects);
                 }
 
@@ -1712,8 +1726,14 @@ public final class SemanticFlowAnalyzer {
                         context, site.site(), construction.span());
                 ConstructionEvidence evidence = new ConstructionEvidence(site.nominalDeclaration(), site.moduleId(),
                         site.scopeId(), site.span(), derivedSite, derivedAllocation, site.argumentTargets());
-                Eval initialized = initializeNominal(
-                        evidence, construction, caller, current, arguments, List.of(), effects);
+                Eval initialized;
+                retainedConstructionContexts.addLast(derivedSite);
+                try {
+                    initialized = initializeNominal(
+                            evidence, construction, caller, current, arguments, List.of(), effects);
+                } finally {
+                    retainedConstructionContexts.removeLast();
+                }
                 return new Eval(retainedForeignValues(initialized.value, nested.type(),
                         caller.module.moduleId(), construction.span()), initialized.state,
                         initialized.events, initialized.effects);
@@ -2847,9 +2867,14 @@ public final class SemanticFlowAnalyzer {
                                                 retained.target(), retained.moduleId(), retained.scopeId(),
                                                 retained.call().span(), derivedSite,
                                                 derivedAllocation, retained.argumentTargets());
-                                        initialized = initializeNominal(evidence, call, frame,
-                                                declarationState[0], actuals,
-                                                new ArrayList<>(), new ArrayList<>());
+                                        retainedConstructionContexts.addLast(derivedSite);
+                                        try {
+                                            initialized = initializeNominal(evidence, call, frame,
+                                                    declarationState[0], actuals,
+                                                    new ArrayList<>(), new ArrayList<>());
+                                        } finally {
+                                            retainedConstructionContexts.removeLast();
+                                        }
                                     }
                                     declarationState[0] = initialized.state;
                                     effects.addAll(initialized.effects);
@@ -4905,7 +4930,8 @@ public final class SemanticFlowAnalyzer {
                                                 "retained callable allocation has no exact consumer derivation context"))),
                                 fresh.invocationPath(), span);
                         DeclarationId allocation = retainedArrayAllocation(
-                                context, provenance.originSite(), span);
+                                context, provenance.originSite(), provenance.scopeId(),
+                                provenance.sourceSpan(), span);
                         if (provenance.moduleId().equals(contextModule)) {
                             OwnershipWitness witness = OwnershipWitness.local(
                                             provenance.moduleId(), allocation,

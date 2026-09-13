@@ -1,6 +1,8 @@
 package io.mindspice.lyra.compiler.backend.jvm;
 
 import io.mindspice.lyra.compiler.api.*;
+import io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes;
+import io.mindspice.lyra.compiler.session.SessionSnapshot;
 import io.mindspice.lyra.compiler.source.ResolvedSource;
 import io.mindspice.lyra.runtime.*;
 import org.junit.jupiter.api.Test;
@@ -12,6 +14,36 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** End-to-end source construction and exact nominal JVM representation coverage. */
 class NominalBytecodeTest {
+    @Test void ordinaryMethodsCannotMutateAggregatesThroughImmutableSelf() {
+        for (String source : java.util.List.of("""
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub mutate :Fn<;Unit> = (=> || { self:.values[0] := 7 })
+                }
+                """, """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut mutate :Fn<;Unit> = (=> || {})
+                }
+                let install :Fn<@mut Box;Unit> = (=> |@mut box| {
+                    box:.mutate := (=> || { self:.values[0] := 7 })
+                })
+                """)) {
+            CompileResult.Failure failure = assertInstanceOf(
+                    CompileResult.Failure.class,
+                    LyraCompiler.compile(CompileRequest.builder()
+                            .source("ordinary-self-mutation.lyra", source).build()));
+            assertEquals(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
+                    failure.diagnostics().getFirst().code());
+            int start = source.indexOf("self:.values[0]");
+            assertEquals(io.mindspice.lyra.compiler.source.SourceSpan.of(
+                            io.mindspice.lyra.compiler.source.SourceId.path(
+                                    "ordinary-self-mutation.lyra"),
+                            start, start + "self:.values[0]".length()),
+                    failure.diagnostics().getFirst().primarySpan());
+        }
+    }
+
     @Test void failedSourceFactoryInvalidatesItsTicketAndLeavesProducerUsable() throws Throwable {
         var artifact = compile("""
                 class Fallible {
@@ -59,6 +91,60 @@ class NominalBytecodeTest {
             assertEquals(12, (int) run.invokeExact());
             assertEquals(34, (int) run.invokeExact());
         }
+    }
+
+    @Test void retainedFactoryEmissionCannotReplaySessionRootInitializers() {
+        var compiled = assertInstanceOf(SessionCompileResult.Success.class,
+                LyraCompiler.compileSession(new SessionCompileRequest(
+                        "retained-emission.lyra", """
+                        let @mut rootRuns :I32 = 0
+                        let initializeRoot :Fn<;I32> = (=> || {
+                            rootRuns := (++ rootRuns)
+                            rootRuns
+                        })
+                        let rootValue :I32 = ::initializeRoot[]
+                        let @mut defaults :I32 = 0
+                        class Once {
+                            let @pub first :I32 = { defaults := (++ defaults) defaults }
+                            let @pub second :I32 = { defaults := (++ defaults) defaults }
+                        }
+                        let @pub make :Fn<;Once> = (=> || Once[])
+                        """, SessionSnapshot.empty())));
+        CompiledArtifact artifact = compiled.artifact();
+        String stateName = artifact.classes().keySet().stream()
+                .filter(name -> name.contains(".$lyra$state$")).findFirst().orElseThrow();
+        var state = java.lang.classfile.ClassFile.of().parse(artifact.classes().get(stateName));
+        var factory = state.methods().stream()
+                .filter(method -> method.methodName().stringValue().startsWith("$lyra$new$"))
+                .findFirst().orElseThrow();
+        var factoryCalls = factory.code().orElseThrow().elementStream()
+                .filter(java.lang.classfile.instruction.InvokeInstruction.class::isInstance)
+                .map(java.lang.classfile.instruction.InvokeInstruction.class::cast).toList();
+        assertEquals(1, factoryCalls.stream().filter(call -> call.owner().name().stringValue().equals(
+                        "io/mindspice/lyra/runtime/LyraNominalConstruction")
+                        && call.name().stringValue().equals("begin")).count());
+        assertEquals(1, factoryCalls.stream().filter(call -> call.owner().name().stringValue().equals(
+                        "io/mindspice/lyra/runtime/LyraNominalConstruction")
+                        && call.name().stringValue().equals("complete")).count());
+        assertEquals(2, factoryCalls.stream().filter(call ->
+                call.name().stringValue().startsWith("$lyra$initialize$")).count());
+        assertEquals(0, factoryCalls.stream().filter(call -> call.owner().name().stringValue().equals(
+                        "io/mindspice/lyra/runtime/ModuleLifecycle")
+                        && (call.name().stringValue().equals("beginSessionBinding")
+                        || call.name().stringValue().equals("initializeSessionBinding"))).count());
+
+        var execute = state.methods().stream().filter(method ->
+                        method.methodName().stringValue().equals("$lyra$sessionExecute"))
+                .findFirst().orElseThrow();
+        var executeCalls = execute.code().orElseThrow().elementStream()
+                .filter(java.lang.classfile.instruction.InvokeInstruction.class::isInstance)
+                .map(java.lang.classfile.instruction.InvokeInstruction.class::cast).toList();
+        assertEquals(5, executeCalls.stream().filter(call -> call.owner().name().stringValue().equals(
+                        "io/mindspice/lyra/runtime/ModuleLifecycle")
+                        && call.name().stringValue().equals("beginSessionBinding")).count());
+        assertEquals(5, executeCalls.stream().filter(call -> call.owner().name().stringValue().equals(
+                        "io/mindspice/lyra/runtime/ModuleLifecycle")
+                        && call.name().stringValue().equals("initializeSessionBinding")).count());
     }
 
     @Test void qualifiedConstructionUsesTheDefiningModuleFactory() throws Throwable {

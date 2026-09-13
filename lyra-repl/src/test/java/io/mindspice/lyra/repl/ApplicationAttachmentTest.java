@@ -17,7 +17,12 @@ import io.mindspice.lyra.runtime.LyraRuntime;
 import io.mindspice.lyra.runtime.RootTypeRegistration;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -313,6 +318,111 @@ class ApplicationAttachmentTest {
     }
 
     @Test
+    void attachedSourceFactoryConstructsAndPublishesIntoLaterSessionEvaluation() throws Throwable {
+        AttachableCompileResult.Success compiled = assertInstanceOf(
+                AttachableCompileResult.Success.class,
+                LyraCompiler.compileAttachable(CompileRequest.builder().source(
+                        "attached-factory-root.lyra", """
+                        class RootBox {
+                            let @pub value :I32
+                            RootBox = (=> |value :I32| { self:.value := value })
+                        }
+                        let @pub makeBox :Fn<I32;RootBox> =
+                            (=> |value| RootBox[value])
+                        """).profile(CompileProfile.ATTACHABLE).build()));
+        var loaded = LyraRuntime.load(compiled.artifact());
+        var root = loaded.instantiate();
+        try (ApplicationAttachment attachment = open(compiled, root)) {
+            success(attachment, "let attachedBox :RootBox = ::makeBox[42]");
+            assertEquals("42", scalar(success(attachment, "attachedBox:.value")));
+
+            Object javaBox = attachment.registration().requireBinding("makeBox")
+                    .invocation().invoke(7);
+            assertEquals(7, javaBox.getClass().getMethod("$lyra$public$get$0")
+                    .invoke(javaBox));
+        } finally {
+            root.close();
+            loaded.close();
+        }
+    }
+
+    @Test
+    void attachedRetainedFactoryCancellationKeepsPriorRootEffectsAndRootLifetimeAuthority()
+            throws Throwable {
+        AttachableCompileResult.Success compiled = compiledRoot();
+        var loaded = LyraRuntime.load(compiled.artifact());
+        var root = loaded.instantiate();
+        BlockingInput input = new BlockingInput();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        SessionOptions options = SessionOptions.builder().ioEnvironment(
+                new io.mindspice.lyra.runtime.RuntimeIoEnvironment(
+                        input, output, output, StandardCharsets.UTF_8)).build();
+        ApplicationAttachment attachment = ApplicationAttachment.open(root, compiled.context(), options);
+        Object retained = null;
+        try {
+            success(attachment, """
+                    import std->io
+                    let makeInstalled :Fn<I32;Fn<I32;I32>> =
+                        (=> |captured| (=> |ignored| captured))
+                    class WaitBox {
+                        let @pub value :I32 = 9
+                        WaitBox = (=> |captured :I32| {
+                            selected := ::makeInstalled[captured]
+                            let @nil ignored :String = io->::readLine[]
+                        })
+                    }
+                    """);
+            DispatchedEvaluation construction = attachment.submitDispatch(
+                    "attached-retained-construction.lyra",
+                    "let stagedBox :WaitBox = WaitBox[42]");
+            AtomicReference<Throwable> controlFailure = new AtomicReference<>();
+            Thread control = new Thread(() -> {
+                try {
+                    assertTrue(input.awaitRead(), "constructor never reached its deterministic I/O gate");
+                    assertTrue(construction.cancel());
+                } catch (Throwable failure) {
+                    controlFailure.set(failure);
+                } finally {
+                    input.release();
+                }
+            }, "retained-constructor-cancel");
+            control.start();
+            try {
+                assertTrue(attachment.poll());
+            } finally {
+                input.release();
+                control.join(11_000);
+            }
+            assertFalse(control.isAlive());
+            assertNull(controlFailure.get());
+            assertInstanceOf(EvaluationResult.Cancelled.class, construction.awaitResult());
+
+            // The constructor's completed root write survives, while its
+            // staged object name and partial receiver do not publish.
+            assertEquals(42, attachment.registration().requireBinding("selected")
+                    .invocation().invoke(0));
+            assertInstanceOf(EvaluationResult.CompilationFailure.class,
+                    attachment.submit("attached-retained-unpublished.lyra", "stagedBox"));
+
+            // The same retained producer and session remain usable. The input
+            // gate now returns EOF, allowing one real retained construction.
+            success(attachment, "let stagedBox :WaitBox = WaitBox[7]");
+            assertEquals(7, attachment.registration().requireBinding("selected")
+                    .invocation().invoke(0));
+            retained = attachment.registration().requireBinding("selected")
+                    .functionValue().orElseThrow().invoke();
+            attachment.close();
+            assertEquals(7, invokeFunction(retained, 0));
+        } finally {
+            attachment.close();
+            root.close();
+        }
+        Object closedRetained = retained;
+        assertThrows(LyraClosedException.class, () -> invokeFunction(closedRetained, 0));
+        loaded.close();
+    }
+
+    @Test
     void olderCapturedAliasesKeepTheirProducerLinksAcrossGenerations() throws Throwable {
         AttachableCompileResult.Success compiled = compiledRoot();
         var loaded = LyraRuntime.load(compiled.artifact());
@@ -424,6 +534,44 @@ class ApplicationAttachmentTest {
     private static ApplicationAttachment open(AttachableCompileResult.Success compiled,
                                               io.mindspice.lyra.runtime.ModuleHandle root) {
         return ApplicationAttachment.open(root, compiled.context(), SessionOptions.defaults());
+    }
+
+    private static final class BlockingInput extends InputStream {
+        private final CountDownLatch entered = new CountDownLatch(1);
+        private final CountDownLatch released = new CountDownLatch(1);
+        private boolean delivered;
+
+        boolean awaitRead() throws InterruptedException {
+            return entered.await(10, TimeUnit.SECONDS);
+        }
+
+        void release() {
+            released.countDown();
+        }
+
+        @Override
+        public int read() throws IOException {
+            byte[] one = new byte[1];
+            int count = read(one, 0, 1);
+            return count < 0 ? -1 : one[0] & 0xff;
+        }
+
+        @Override
+        public int read(byte[] target, int offset, int length) throws IOException {
+            if (delivered) return -1;
+            entered.countDown();
+            try {
+                if (!released.await(10, TimeUnit.SECONDS)) {
+                    throw new IOException("timed out waiting to release deterministic constructor input");
+                }
+            } catch (InterruptedException failure) {
+                Thread.currentThread().interrupt();
+                throw new IOException("constructor input interrupted", failure);
+            }
+            target[offset] = (byte) '\n';
+            delivered = true;
+            return 1;
+        }
     }
 
     private static int invokeFunction(Object closure, int value) throws Throwable {
