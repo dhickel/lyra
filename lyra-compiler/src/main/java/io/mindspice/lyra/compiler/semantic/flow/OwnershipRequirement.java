@@ -119,9 +119,7 @@ public record OwnershipRequirement(
                 nested.put(entry.getKey(), new FormulaAlternatives(
                         entry.getValue().rootType(), values, overrides));
             }
-            return List.of(new ValueFormula.Lambda(
-                    lambda.lambdaId(), lambda.functionType(),
-                    lambda.resultRoute(), nested));
+            return List.of(lambda.withCaptures(nested));
         }
         return List.of(formula);
     }

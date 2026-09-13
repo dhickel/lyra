@@ -69,6 +69,7 @@ final class SemanticFlowFactValidator {
         private final Map<DeclarationId, ResolvedDeclaration> declarations = new TreeMap<>();
         private final Set<ModuleId> modules = new TreeSet<>();
         private final Optional<SessionFlowCertificate> sessionCertificate;
+        private java.util.function.Predicate<CallableFlow> retainedCallableVerifier;
 
         private Validator(TypedSemanticGraph graph, SemanticFlowFacts facts) {
             this.graph = graph;
@@ -504,9 +505,24 @@ final class SemanticFlowFactValidator {
         private void validateObject(io.mindspice.lyra.compiler.semantic.flow.NominalObjectFact fact) {
             var identity = fact.identity();
             var witness = fact.ownership();
-            boolean inherited = graph.resolvedGraph().sessionFlowCertificate()
-                    .map(value -> value.certifiesObject(fact)).orElse(false);
+            SessionFlowCertificate certificate = graph.resolvedGraph()
+                    .sessionFlowCertificate().orElse(null);
+            Optional<TypedExpression> consumer = exactDerivedConsumer(
+                    fact.ownership().useSpan());
+            boolean inherited = certificate != null && (certificate.certifiesObject(fact)
+                    || consumer.filter(expression ->
+                    certificate.certifiesDerivedObjectFromCallables(
+                            fact, graph.flowSiteId(expression), expression,
+                            eventTargetCallables(expression), facts.callableSummaries(),
+                            facts.declarationValues())
+                            || certificate.certifiesDerivedObject(
+                            fact, graph.flowSiteId(expression), expression,
+                            eventTargets(expression))).isPresent());
             if (inherited) {
+                boolean currentUse = modules.stream().anyMatch(module ->
+                        module.sourceId().equals(witness.useSpan().sourceId()));
+                require(currentUse || certificate.certifiesObjectUse(fact),
+                        "certified object use site belongs to an unrelated module");
                 graph.resolvedGraph().nominalTypes().require(identity.type());
                 return;
             }
@@ -525,8 +541,19 @@ final class SemanticFlowFactValidator {
 
         private void validateAggregate(AggregateIdentityFact fact) {
             OwnershipWitness witness = fact.witness();
-            boolean inherited = graph.resolvedGraph().sessionFlowCertificate()
-                    .map(value -> value.certifiesAggregate(fact)).orElse(false);
+            SessionFlowCertificate certificate = graph.resolvedGraph()
+                    .sessionFlowCertificate().orElse(null);
+            Optional<TypedExpression> consumer = exactDerivedConsumer(
+                    fact.witness().useSpan());
+            boolean inherited = certificate != null && (certificate.certifiesAggregate(fact)
+                    || consumer.filter(expression ->
+                    certificate.certifiesDerivedAggregateFromCallables(
+                            fact, graph.flowSiteId(expression), expression,
+                            eventTargetCallables(expression), facts.callableSummaries(),
+                            facts.declarationValues())
+                            || certificate.certifiesDerivedAggregate(
+                            fact, graph.flowSiteId(expression), expression,
+                            eventTargets(expression), facts.callableSummaries())).isPresent());
             if (inherited) {
                 // The producer already validated the allocation site, owner
                 // scope, and source provenance.  A later graph may not own
@@ -536,9 +563,7 @@ final class SemanticFlowFactValidator {
                 SourceSpan use = fact.witness().useSpan();
                 boolean consumerUse = modules.stream().anyMatch(module ->
                         module.sourceId().equals(use.sourceId()));
-                require(consumerUse || graph.resolvedGraph().sessionFlowCertificate()
-                                .map(certificate -> certificate.certifiesAggregateUse(fact))
-                                .orElse(false),
+                require(consumerUse || certificate.certifiesAggregateUse(fact),
                         "certified aggregate use site belongs to an unrelated module");
                 return;
             }
@@ -593,7 +618,7 @@ final class SemanticFlowFactValidator {
                         "intrinsic callable has a lambda creation site");
                 if (!declarations.containsKey(callable.intrinsicDeclarationId().orElseThrow())) {
                     require(graph.resolvedGraph().sessionFlowCertificate()
-                                    .map(value -> value.certifiesCallable(callable)).orElse(false),
+                                    .map(value -> certifiesRetainedCallable(callable)).orElse(false),
                             "intrinsic callable is foreign and uncertified");
                 } else {
                     requireDeclaration(callable.intrinsicDeclarationId().orElseThrow());
@@ -605,7 +630,7 @@ final class SemanticFlowFactValidator {
             if (lambda == null) {
                 SessionFlowCertificate certificate = graph.resolvedGraph()
                         .sessionFlowCertificate()
-                        .filter(value -> value.certifiesCallableTransfer(callable))
+                        .filter(value -> certifiesRetainedCallable(callable))
                         .orElseThrow(() -> invalid(
                                 "callable lambda is foreign and uncertified"));
                 CallableSummary summary = certificate.callableSummaries().summary(lambdaId)
@@ -637,6 +662,14 @@ final class SemanticFlowFactValidator {
                     "callable capture binding coverage changed");
             callable.capturedValues().values().forEach(this::validateValues);
             callable.sharedCellSnapshots().values().forEach(this::validateValues);
+        }
+
+        private boolean certifiesRetainedCallable(CallableFlow callable) {
+            if (retainedCallableVerifier == null) {
+                retainedCallableVerifier = sessionCertificate.orElseThrow()
+                        .callableTransferVerifier(graph, facts.callableSummaries());
+            }
+            return retainedCallableVerifier.test(callable);
         }
 
         private void validateCertifiedCallableCaptures(
@@ -750,6 +783,10 @@ final class SemanticFlowFactValidator {
                     .map(certificate -> certificate.certifiesEffect(witness)).orElse(false);
             boolean certificateTarget = sessionCertificate
                     .map(certificate -> certificate.certifiesEffectTarget(witness)).orElse(false);
+            boolean certifiedCallableTarget = witness.targetLambda()
+                    .flatMap(lambda -> sessionCertificate.map(
+                            certificate -> certificate.certifiesLambda(lambda)))
+                    .orElse(false);
             boolean producerCertified = certificateOwned || retainedProducer.isPresent();
             boolean dynamicTarget = witness.kind() == EagerEffectWitness.Kind.CALLABLE_CALL
                     || witness.kind() == EagerEffectWitness.Kind.PARAMETER_CALL
@@ -761,7 +798,9 @@ final class SemanticFlowFactValidator {
                             && (modules.contains(witness.targetModule())
                             || graph.resolvedGraph().retainedModules()
                             .module(witness.targetModule()).isPresent()
-                            || producerCertified && !dynamicTarget),
+                            || producerCertified && !dynamicTarget
+                            || dynamicTarget
+                            && (certificateTarget || certifiedCallableTarget)),
                     "eager effect names a foreign module");
             require(core.ownsFlowSite(witness.effectSite().orElseThrow(), witness.effectSpan())
                             || certificateOwned && sessionCertificate.orElseThrow()
@@ -860,6 +899,61 @@ final class SemanticFlowFactValidator {
                     || expression.kind() == TypedExpressionKind.DIRECT_CALL
                     || expression.kind() == TypedExpressionKind.NAMESPACE_DIRECT_CALL
                     || expression.kind() == TypedExpressionKind.CONSTRUCTION;
+        }
+
+        /**
+         * Binds a retained derived occurrence to one exact graph-owned site.
+         * Source spans are only the reverse-lookup key; ambiguous eligible
+         * sites fail closed instead of letting a fact choose the convenient one.
+         */
+        private Optional<TypedExpression> exactDerivedConsumer(SourceSpan span) {
+            List<TypedExpression> candidates = graph.expressions().stream()
+                    .filter(SemanticFlowFactValidator.Validator::isCall)
+                    .filter(expression -> expression.span().equals(span))
+                    .toList();
+            require(candidates.size() <= 1,
+                    "retained derived use span names multiple graph call sites");
+            return candidates.stream().findFirst();
+        }
+
+        private Set<CallableFlow> eventTargetCallables(
+                TypedExpression expression) {
+            FlowSiteId site = graph.flowSiteId(expression);
+            TreeSet<CallableFlow> result = new TreeSet<>();
+            for (SemanticFlowEvent call : facts.events()) {
+                if (call.kind() != SemanticFlowEvent.Kind.CALL
+                        || call.siteId().filter(site::equals).isEmpty()
+                        || !call.span().equals(expression.span())
+                        || call.lambdaId().isEmpty()
+                        || call.targetDeclaration().isEmpty()) continue;
+                DeclarationId target = call.targetDeclaration().orElseThrow();
+                List<ValueAlternatives> values = new ArrayList<>();
+                Optional.ofNullable(facts.declarationValues().get(target))
+                        .ifPresent(values::add);
+                facts.events().stream()
+                        .filter(event -> event.declarationId().filter(target::equals).isPresent())
+                        .map(SemanticFlowEvent::value).forEach(values::add);
+                sessionCertificate.flatMap(certificate -> certificate.sharedCell(target)
+                        .or(() -> certificate.value(target))).ifPresent(values::add);
+                LambdaId selected = call.lambdaId().orElseThrow();
+                values.stream().flatMap(value -> value.alternatives().stream())
+                        .flatMap(value -> value.callableFlows().stream())
+                        .filter(value -> value.route().isRoot()
+                                && value.lambdaId().filter(selected::equals).isPresent())
+                        .forEach(result::add);
+            }
+            return Set.copyOf(result);
+        }
+
+        private Set<io.mindspice.lyra.compiler.identity.LambdaId> eventTargets(
+                TypedExpression expression) {
+            FlowSiteId site = graph.flowSiteId(expression);
+            return facts.events().stream()
+                    .filter(event -> event.kind() == SemanticFlowEvent.Kind.CALL
+                            && event.siteId().filter(site::equals).isPresent()
+                            && event.span().equals(expression.span()))
+                    .flatMap(event -> event.lambdaId().stream())
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
         }
 
         private static void require(boolean condition, String message) {

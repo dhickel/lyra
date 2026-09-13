@@ -15,6 +15,7 @@ import io.mindspice.lyra.compiler.semantic.TypedExpressionKind;
 import io.mindspice.lyra.compiler.semantic.TypedLambda;
 import io.mindspice.lyra.compiler.semantic.TypedSemanticGraph;
 import io.mindspice.lyra.compiler.semantic.TypedSemanticInput;
+import io.mindspice.lyra.compiler.semantic.CallbackLoop;
 import io.mindspice.lyra.compiler.semantic.DeclarationVisibility;
 import io.mindspice.lyra.compiler.semantic.ResolvedNominal;
 import io.mindspice.lyra.compiler.semantic.flow.AggregateIdentityFact;
@@ -33,6 +34,7 @@ import io.mindspice.lyra.compiler.semantic.flow.NominalObjectFact;
 import io.mindspice.lyra.compiler.semantic.flow.NilProvenance;
 import io.mindspice.lyra.compiler.semantic.flow.OwnershipWitness;
 import io.mindspice.lyra.compiler.semantic.flow.ProjectionPath;
+import io.mindspice.lyra.compiler.semantic.flow.RetainedAllocationDerivation;
 import io.mindspice.lyra.compiler.semantic.flow.SummaryCallId;
 import io.mindspice.lyra.compiler.semantic.flow.ValueFormula;
 import io.mindspice.lyra.compiler.semantic.flow.ValueAlternative;
@@ -45,8 +47,13 @@ import io.mindspice.lyra.compiler.types.BindingContract;
 import io.mindspice.lyra.compiler.types.FunctionType;
 import io.mindspice.lyra.compiler.types.LyraSignature;
 import io.mindspice.lyra.compiler.types.LyraType;
+import io.mindspice.lyra.compiler.types.NominalSchema;
 import io.mindspice.lyra.compiler.types.NominalType;
+import io.mindspice.lyra.compiler.types.PrimitiveType;
+import io.mindspice.lyra.compiler.types.RangeType;
 import io.mindspice.lyra.compiler.types.TupleType;
+import io.mindspice.lyra.compiler.types.TypeQualifier;
+import io.mindspice.lyra.compiler.types.TypeRules;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -77,9 +84,11 @@ public final class SessionFlowCertificate {
     private final CallableSummarySet callableSummaries;
     private final Map<String, ExternalBinding> certifiedBindings;
     private final Set<CallableProofKey> callableProofs;
+    private final Set<RouteProof> routeProofs;
     private final Set<AggregateProofKey> aggregateProofs;
     private final Set<ObjectProofKey> objectProofs;
     private final Set<SourceSpan> aggregateUseSpans;
+    private final Set<SourceSpan> objectUseSpans;
     private final Map<FreshAllocationSite, AllocationProvenance> allocationProvenance;
     private final Map<SummaryCallId, RetainedConstruction> retainedConstructions;
     private final Map<String, RetainedNominal> retainedNominals;
@@ -93,9 +102,11 @@ public final class SessionFlowCertificate {
             CallableSummarySet callableSummaries,
             Map<String, ExternalBinding> certifiedBindings,
             Set<CallableProofKey> callableProofs,
+            Set<RouteProof> routeProofs,
             Set<AggregateProofKey> aggregateProofs,
             Set<ObjectProofKey> objectProofs,
             Set<SourceSpan> aggregateUseSpans,
+            Set<SourceSpan> objectUseSpans,
             Map<FreshAllocationSite, AllocationProvenance> allocationProvenance,
             Map<SummaryCallId, RetainedConstruction> retainedConstructions,
             Map<String, RetainedNominal> retainedNominals,
@@ -107,10 +118,13 @@ public final class SessionFlowCertificate {
         this.callableSummaries = Objects.requireNonNull(callableSummaries, "callableSummaries");
         this.certifiedBindings = immutableBindings(certifiedBindings);
         this.callableProofs = Set.copyOf(Objects.requireNonNull(callableProofs, "callableProofs"));
+        this.routeProofs = Set.copyOf(Objects.requireNonNull(routeProofs, "routeProofs"));
         this.aggregateProofs = Set.copyOf(Objects.requireNonNull(aggregateProofs, "aggregateProofs"));
         this.objectProofs = Set.copyOf(Objects.requireNonNull(objectProofs, "objectProofs"));
         this.aggregateUseSpans = Set.copyOf(
                 Objects.requireNonNull(aggregateUseSpans, "aggregateUseSpans"));
+        this.objectUseSpans = Set.copyOf(
+                Objects.requireNonNull(objectUseSpans, "objectUseSpans"));
         this.allocationProvenance = immutableAllocationProvenance(allocationProvenance);
         this.retainedConstructions = immutableRetainedConstructions(retainedConstructions);
         this.retainedNominals = immutableRetainedNominals(retainedNominals);
@@ -281,7 +295,8 @@ public final class SessionFlowCertificate {
     /** True only for a callable value (including a routed aggregate callable) in this proof. */
     public boolean certifiesCallable(CallableFlow callable) {
         Objects.requireNonNull(callable, "callable");
-        return callableProofs.contains(CallableProofKey.of(callable));
+        return routeProofs.contains(RouteProof.of(callable))
+                && callableProofs.contains(CallableProofKey.of(callable));
     }
 
     /**
@@ -295,6 +310,25 @@ public final class SessionFlowCertificate {
         if (certifiesCallable(callable)) {
             return true;
         }
+        return routeProofs.contains(RouteProof.of(callable))
+                && certifiesCallableTransferIdentity(callable);
+    }
+
+    /**
+     * Link-resolvability predicate for a foreign callable: its lambda identity
+     * and capture contracts are certified, but no route is asserted.  Route
+     * exactness is enforced by the semantic flow validator, so IR link
+     * validation uses this narrower question rather than accepting a route it
+     * cannot resolve.
+     */
+    public boolean certifiesLinkedCallable(CallableFlow callable) {
+        Objects.requireNonNull(callable, "callable");
+        return certifiesCallableTransferIdentity(callable);
+    }
+
+    private boolean certifiesCallableTransferIdentity(CallableFlow callable) {
+        CallableProofKey key = CallableProofKey.of(callable);
+        if (callableProofs.stream().anyMatch(proof -> proof.atRoute(callable.route()).equals(key))) return true;
         if (callable.isIntrinsic()) {
             return false;
         }
@@ -304,15 +338,85 @@ public final class SessionFlowCertificate {
                 summary, callable.capturedValues(), callable.sharedCellSnapshots());
     }
 
-    /** True when the producer proof contains at least one closure for a lambda identity. */
+    /**
+     * True when the producer proof contains an exact retained evidence chain
+     * to this lambda. Besides boundary closures and literal transfer nodes, a
+     * reachable callable summary may expose a nested callable in its solved
+     * formulas or through one of its exact certified call targets.
+     */
     public boolean certifiesLambda(LambdaId lambda) {
         Objects.requireNonNull(lambda, "lambda");
-        return callableProofs.stream().anyMatch(value -> value.lambda().filter(lambda::equals).isPresent())
+        if (directlyCertifiesLambda(lambda)) {
+            return true;
+        }
+        TreeSet<LambdaId> visited = new TreeSet<>();
+        java.util.ArrayDeque<LambdaId> pending = new java.util.ArrayDeque<>();
+        callableSummaries.orderedSummaries().stream()
+                .map(CallableSummary::lambdaId)
+                .filter(this::directlyCertifiesLambda)
+                .forEach(pending::addLast);
+        while (!pending.isEmpty()) {
+            LambdaId current = pending.removeFirst();
+            if (!visited.add(current)) {
+                continue;
+            }
+            CallableSummary summary = callableSummaries.summary(current).orElse(null);
+            if (summary == null) {
+                continue;
+            }
+            if (summaryCertifiesLambda(summary, lambda)) {
+                return true;
+            }
+            for (CallableCallReference call : summary.callReferences()) {
+                for (LambdaId target : retainedCallTargets(call)) {
+                    if (target.equals(lambda)) {
+                        return true;
+                    }
+                    if (!visited.contains(target)) {
+                        pending.addLast(target);
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean directlyCertifiesLambda(LambdaId lambda) {
+        return callableProofs.stream().anyMatch(value ->
+                value.lambda().filter(lambda::equals).isPresent())
                 || retainedNominals.values().stream().anyMatch(nominal ->
                 nominal.constructorLambda().filter(lambda::equals).isPresent()
                         || nominal.memberInitializers().stream()
                         .flatMap(Optional::stream)
                         .anyMatch(initializer -> certifiesLambda(initializer, lambda)));
+    }
+
+    private static boolean summaryCertifiesLambda(
+            CallableSummary summary, LambdaId lambda) {
+        if (containsLambda(summary.returnFormula().alternatives(), lambda)
+                || summary.writes().stream().anyMatch(write ->
+                containsLambda(write.value(), lambda))
+                || summary.ownershipRequirements().stream().anyMatch(requirement ->
+                containsLambda(requirement.value(), lambda))) {
+            return true;
+        }
+        return summary.callReferences().stream().anyMatch(call ->
+                containsLambda(call.target(), lambda)
+                        || call.arguments().stream().anyMatch(argument ->
+                        containsLambda(argument, lambda)));
+    }
+
+    private static boolean containsLambda(
+            FormulaAlternatives alternatives, LambdaId lambda) {
+        return alternatives.formulas().stream().anyMatch(formula ->
+                containsLambda(formula, lambda));
+    }
+
+    private static boolean containsLambda(ValueFormula formula, LambdaId lambda) {
+        return formula instanceof ValueFormula.Lambda value
+                && (value.lambdaId().equals(lambda)
+                || value.capturedValues().values().stream().anyMatch(capture ->
+                containsLambda(capture, lambda)));
     }
 
     private static boolean certifiesLambda(
@@ -323,6 +427,28 @@ public final class SessionFlowCertificate {
             case RetainedInitializerTransfer.Value ignored -> false;
             case RetainedInitializerTransfer.Call call -> call.arguments().stream()
                     .anyMatch(argument -> certifiesLambda(argument, lambda));
+            case RetainedInitializerTransfer.Composite composite -> composite.elements().stream()
+                    .anyMatch(element -> certifiesLambda(element, lambda));
+            case RetainedInitializerTransfer.Apply apply -> apply.operands().stream()
+                    .anyMatch(operand -> certifiesLambda(operand, lambda));
+            case RetainedInitializerTransfer.Alternative alternative -> alternative.prefix().stream()
+                    .anyMatch(step -> certifiesLambda(step.transfer(), lambda))
+                    || alternative.branches().stream().anyMatch(branch ->
+                    branch.selectors().stream().anyMatch(step -> certifiesLambda(step.transfer(), lambda))
+                            || branch.result().stream().anyMatch(step -> certifiesLambda(step.transfer(), lambda)));
+            case RetainedInitializerTransfer.Sequence sequence -> sequence.steps().stream()
+                    .anyMatch(step -> certifiesLambda(step, lambda));
+            case RetainedInitializerTransfer.Declare declare ->
+                    certifiesLambda(declare.initializer(), lambda);
+            case RetainedInitializerTransfer.Rebind rebind -> certifiesLambda(rebind.value(), lambda);
+            case RetainedInitializerTransfer.Project project -> certifiesLambda(project.base(), lambda)
+                    || project.index().stream().anyMatch(value -> certifiesLambda(value, lambda));
+            case RetainedInitializerTransfer.Construct construct -> construct.arguments().stream()
+                    .anyMatch(argument -> certifiesLambda(argument, lambda));
+            case RetainedInitializerTransfer.CallableCall call -> certifiesLambda(call.target(), lambda)
+                    || call.arguments().stream().anyMatch(argument -> certifiesLambda(argument, lambda));
+            case RetainedInitializerTransfer.Loop loop -> certifiesLambda(loop.input(), lambda)
+                    || certifiesLambda(loop.action(), lambda);
         };
     }
 
@@ -517,6 +643,28 @@ public final class SessionFlowCertificate {
         return true;
     }
 
+    /** Finds one exact retained producer aggregate occurrence by identity and route. */
+    public Optional<AggregateIdentityFact> matchingAggregate(
+            DeclarationId origin, ArrayType type, ProjectionPath route) {
+        Objects.requireNonNull(origin, "origin");
+        Objects.requireNonNull(type, "type");
+        Objects.requireNonNull(route, "route");
+        return java.util.stream.Stream.concat(
+                        boundaryState.bindings().values().stream()
+                                .flatMap(binding -> binding.alternatives().alternatives().stream()),
+                        java.util.stream.Stream.concat(
+                                boundaryState.sharedCells().values().stream()
+                                        .flatMap(values -> values.alternatives().stream()),
+                                boundaryState.objects().values().stream()
+                                        .flatMap(object -> object.fields().values().stream())
+                                        .flatMap(values -> values.alternatives().stream())))
+                .flatMap(value -> value.aggregateIdentities().stream())
+                .filter(fact -> fact.identity().originDeclaration().equals(origin)
+                        && fact.identity().arrayType().equals(type)
+                        && fact.route().equals(route))
+                .findFirst();
+    }
+
     /** True only for a retained producer aggregate identity. */
     public boolean certifiesAggregate(AggregateIdentityFact fact) {
         Objects.requireNonNull(fact, "fact");
@@ -588,7 +736,937 @@ public final class SessionFlowCertificate {
         Objects.requireNonNull(fact, "fact");
         return objectProofs.contains(ObjectProofKey.of(fact))
                 || retainedConstructions.values().stream().anyMatch(construction ->
-                construction.certifies(fact));
+                construction.certifies(fact, routeProofs));
+    }
+
+    /** True only for an object occurrence published at an exact certified use span. */
+    public boolean certifiesObjectUse(NominalObjectFact fact) {
+        Objects.requireNonNull(fact, "fact");
+        SourceSpan use = fact.ownership().useSpan();
+        return use.equals(fact.ownership().sourceSpan()) || objectUseSpans.contains(use);
+    }
+
+    /**
+     * Validates an exact consumer-scoped aggregate derivation. The supplied
+     * context is a current graph-owned construction/call site; this proof then
+     * walks only its closed retained transfer inventory and exact producer
+     * allocation records. No unmatched allocation token is accepted.
+     */
+    public boolean certifiesDerivedAggregate(
+            AggregateIdentityFact fact, FlowSiteId consumerContext, SourceSpan consumerSpan) {
+        return false;
+    }
+
+    /**
+     * Exact consumer-expression form used by the semantic fact sealer. Calls
+     * supply the concrete producer lambda alternatives recorded for this exact
+     * graph site; constructions bind directly to their retained nominal.
+     */
+    public boolean certifiesDerivedAggregate(
+            AggregateIdentityFact fact, FlowSiteId consumerContext,
+            TypedExpression consumer, Set<LambdaId> callableTargets) {
+        return certifiesDerivedAggregate(fact, consumerContext, consumer,
+                callableTargets, CallableSummarySet.empty());
+    }
+
+    /**
+     * Exact form for a current graph wrapper whose sealed local summary reaches
+     * predecessor evidence. Supplemental summaries authorize no producer fact;
+     * they only establish the exact path from the current consumer site.
+     */
+    public boolean certifiesDerivedAggregate(
+            AggregateIdentityFact fact, FlowSiteId consumerContext,
+            TypedExpression consumer, Set<LambdaId> callableTargets,
+            CallableSummarySet currentSummaries) {
+        Objects.requireNonNull(consumer, "consumer");
+        currentSummaries = Objects.requireNonNull(currentSummaries, "currentSummaries");
+        callableTargets = Set.copyOf(Objects.requireNonNull(callableTargets, "callableTargets"));
+        if (!fact.witness().useSpan().equals(consumer.span())) return false;
+        if (consumer.kind() == TypedExpressionKind.CONSTRUCTION) {
+            if (!(consumer.type().withoutQualifiers() instanceof NominalType nominalType)
+                    || consumer.declarationId().isEmpty()) return false;
+            RetainedNominal nominal = retainedNominals.get(nominalType.canonicalSpelling());
+            if (nominal == null || !nominal.nominal().declaration().equals(
+                    consumer.declarationId().orElseThrow())) return false;
+            return nominal.memberInitializers().stream().flatMap(Optional::stream)
+                    .anyMatch(transfer -> matchesDerivedAggregate(
+                            transfer, consumerContext, ProjectionPath.root(), fact));
+        }
+        if (!isCallableConsumer(consumer.kind()) || callableTargets.isEmpty()) return false;
+        CallableSummarySet localEvidence = currentSummaries;
+        return callableTargets.stream().allMatch(lambda -> certifiesLambda(lambda)
+                        || localEvidence.summary(lambda).isPresent())
+                && callableTargets.stream().anyMatch(lambda -> matchesSummaryDerivedAggregate(
+                        fact, consumerContext, ProjectionPath.root(), lambda,
+                        localEvidence));
+    }
+
+    /**
+     * Exact current-call form retaining the selected callable alternatives and
+     * their creation-time captures. This is required when a local wrapper
+     * reaches predecessor evidence through a parameter or capture placeholder.
+     */
+    public boolean certifiesDerivedAggregateFromCallables(
+            AggregateIdentityFact fact, FlowSiteId consumerContext,
+            TypedExpression consumer, Set<CallableFlow> callableTargets,
+            CallableSummarySet currentSummaries,
+            Map<DeclarationId, ValueAlternatives> currentValues) {
+        Objects.requireNonNull(fact, "fact");
+        Objects.requireNonNull(consumerContext, "consumerContext");
+        Objects.requireNonNull(consumer, "consumer");
+        callableTargets = Set.copyOf(Objects.requireNonNull(
+                callableTargets, "callableTargets"));
+        currentSummaries = Objects.requireNonNull(currentSummaries, "currentSummaries");
+        currentValues = Map.copyOf(Objects.requireNonNull(currentValues, "currentValues"));
+        if (!fact.witness().useSpan().equals(consumer.span())
+                || !isCallableConsumer(consumer.kind())
+                || callableTargets.isEmpty()) return false;
+        CallableSummarySet localEvidence = currentSummaries;
+        Map<DeclarationId, ValueAlternatives> declarationEvidence = currentValues;
+        List<CallableEvidence> targets = callableTargets.stream()
+                .filter(callable -> callable.route().isRoot())
+                .map(callable -> callableEvidence(
+                        callable, localEvidence, declarationEvidence))
+                .flatMap(Optional::stream).toList();
+        if (targets.size() != callableTargets.size()) return false;
+        return targets.stream().allMatch(target -> certifiesLambda(target.lambda())
+                        || localEvidence.summary(target.lambda()).isPresent())
+                && targets.stream().anyMatch(target -> matchesCallableDerivedAggregate(
+                        fact, consumerContext, ProjectionPath.root(), target,
+                        localEvidence, declarationEvidence, new LinkedHashSet<>()));
+    }
+
+    /** Exact construction-target compatibility form. */
+    public boolean certifiesDerivedAggregate(
+            AggregateIdentityFact fact, FlowSiteId consumerContext, SourceSpan consumerSpan,
+            Optional<NominalType> constructedType) {
+        Objects.requireNonNull(fact, "fact");
+        Objects.requireNonNull(consumerContext, "consumerContext");
+        Objects.requireNonNull(consumerSpan, "consumerSpan");
+        constructedType = Objects.requireNonNull(constructedType, "constructedType");
+        if (!fact.witness().useSpan().equals(consumerSpan)
+                || constructedType.isEmpty()) return false;
+        Iterable<RetainedNominal> candidates = Optional.ofNullable(retainedNominals.get(
+                constructedType.orElseThrow().canonicalSpelling())).stream().toList();
+        for (RetainedNominal nominal : candidates) {
+            for (RetainedInitializerTransfer transfer : nominal.memberInitializers()
+                    .stream().flatMap(Optional::stream).toList()) {
+                if (matchesDerivedAggregate(transfer, consumerContext,
+                        ProjectionPath.root(), fact)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean matchesDerivedAggregate(
+            RetainedInitializerTransfer transfer, FlowSiteId context,
+            ProjectionPath prefix, AggregateIdentityFact fact) {
+        return switch (transfer) {
+            case RetainedInitializerTransfer.Lambda ignored -> false;
+            case RetainedInitializerTransfer.Reference ignored -> false;
+            case RetainedInitializerTransfer.Value ignored -> false;
+            case RetainedInitializerTransfer.Composite composite -> {
+                boolean matched = composite.allocation().stream().anyMatch(allocation ->
+                        matchesDerivedAggregate(fact, context, allocation, prefix));
+                for (int index = 0; !matched && index < composite.elements().size(); index++) {
+                    ProjectionPath member = composite.arrayLiteral()
+                            ? ProjectionPath.arrayElement(index) : ProjectionPath.tupleMember(index);
+                    matched = matchesDerivedAggregate(composite.elements().get(index), context,
+                            prefix.compose(member), fact);
+                }
+                yield matched;
+            }
+            case RetainedInitializerTransfer.Call call -> {
+                boolean matched = call.arguments().stream().anyMatch(argument ->
+                        matchesDerivedAggregate(argument, context, prefix, fact));
+                FlowSiteId invocation = RetainedAllocationDerivation.invocationContext(context, call.site());
+                yield matched || retainedTargetLambdas(call.target(), call.function()).stream()
+                        .anyMatch(lambda -> matchesSummaryDerivedAggregate(
+                                fact, invocation, prefix, lambda));
+            }
+            case RetainedInitializerTransfer.CallableCall call -> {
+                boolean matched = matchesDerivedAggregate(call.target(), context, prefix, fact)
+                        || call.arguments().stream().anyMatch(argument ->
+                        matchesDerivedAggregate(argument, context, prefix, fact));
+                FlowSiteId invocation = RetainedAllocationDerivation.invocationContext(context, call.site());
+                yield matched || retainedTargetLambdas(call.target()).stream()
+                        .anyMatch(lambda -> matchesSummaryDerivedAggregate(
+                                fact, invocation, prefix, lambda));
+            }
+            case RetainedInitializerTransfer.Apply apply -> apply.operands().stream().anyMatch(operand ->
+                    matchesDerivedAggregate(operand, context, prefix, fact));
+            case RetainedInitializerTransfer.Alternative alternative ->
+                    alternative.prefix().stream().anyMatch(step -> matchesDerivedAggregate(
+                            step.transfer(), context, prefix, fact))
+                            || alternative.branches().stream().anyMatch(branch ->
+                            branch.selectors().stream().anyMatch(step -> matchesDerivedAggregate(
+                                    step.transfer(), context, prefix, fact))
+                                    || branch.result().stream().anyMatch(step -> matchesDerivedAggregate(
+                                    step.transfer(), context, prefix, fact)));
+            case RetainedInitializerTransfer.Sequence sequence -> sequence.steps().stream().anyMatch(step ->
+                    matchesDerivedAggregate(step, context, prefix, fact));
+            case RetainedInitializerTransfer.Declare declare -> matchesDerivedAggregate(
+                    declare.initializer(), context, prefix, fact);
+            case RetainedInitializerTransfer.Rebind rebind -> matchesDerivedAggregate(
+                    rebind.value(), context, prefix, fact);
+            case RetainedInitializerTransfer.Project project -> {
+                AggregateIdentityFact sourceFact = project.kind() == RetainedInitializerTransfer.ProjectionKind.ROUTE
+                        ? new AggregateIdentityFact(fact.identity(), project.route(), fact.witness()) : fact;
+                yield matchesDerivedAggregate(project.base(), context,
+                        project.kind() == RetainedInitializerTransfer.ProjectionKind.ROUTE
+                                ? ProjectionPath.root() : prefix, sourceFact)
+                        || project.index().stream().anyMatch(index -> matchesDerivedAggregate(
+                        index, context, prefix, fact));
+            }
+            case RetainedInitializerTransfer.Construct construct -> {
+                boolean matched = construct.arguments().stream().anyMatch(argument ->
+                        matchesDerivedAggregate(argument, context, prefix, fact));
+                FlowSiteId nested = RetainedAllocationDerivation.objectSite(
+                        context, construct.site().site());
+                RetainedNominal nominal = retainedNominals.get(
+                        construct.site().nominalType().canonicalSpelling());
+                if (!matched && nominal != null) {
+                    matched = nominal.memberInitializers().stream().flatMap(Optional::stream)
+                            .anyMatch(initializer -> matchesDerivedAggregate(
+                                    initializer, nested, ProjectionPath.root(), fact));
+                }
+                yield matched;
+            }
+            case RetainedInitializerTransfer.Loop loop -> {
+                FlowSiteId invocation = RetainedAllocationDerivation.invocationContext(context, loop.site());
+                yield matchesDerivedAggregate(loop.input(), context, prefix, fact)
+                        || matchesDerivedAggregate(loop.action(), context, prefix, fact)
+                        || java.util.stream.Stream.concat(
+                                retainedTargetLambdas(loop.input()).stream(),
+                                retainedTargetLambdas(loop.action()).stream())
+                        .anyMatch(lambda -> matchesSummaryDerivedAggregate(
+                                fact, invocation, prefix, lambda));
+            }
+        };
+    }
+
+    private boolean matchesCallableDerivedAggregate(
+            AggregateIdentityFact fact, FlowSiteId context,
+            ProjectionPath prefix, CallableEvidence evidence,
+            CallableSummarySet currentSummaries,
+            Map<DeclarationId, ValueAlternatives> currentValues,
+            Set<CallableEvidenceVisit> active) {
+        CallableEvidenceVisit visit = new CallableEvidenceVisit(
+                evidence.lambda(), context);
+        if (!active.add(visit)) return false;
+        try {
+            if (matchesSummaryDerivedAggregateAllocations(
+                    fact, context, prefix, evidence.lambda(), currentSummaries)) {
+                return true;
+            }
+            CallableSummary summary = evidenceSummary(
+                    evidence.lambda(), currentSummaries);
+            if (summary == null) return false;
+            for (CallableCallReference call : summary.callReferences()) {
+                if (call.siteId().isEmpty()) continue;
+                FlowSiteId invocation = RetainedAllocationDerivation.invocationContext(
+                        context, call.id(), call.siteId().orElseThrow());
+                if (call.kind() == CallableCallReference.Kind.CONSTRUCTION) {
+                    RetainedConstruction construction = retainedConstructions.get(call.id());
+                    if (construction == null) continue;
+                    FlowSiteId objectContext = RetainedAllocationDerivation.objectSite(
+                            invocation, construction.site());
+                    RetainedNominal nominal = retainedNominals.get(
+                            construction.nominalType().canonicalSpelling());
+                    if (nominal != null && nominal.memberInitializers().stream()
+                            .flatMap(Optional::stream).anyMatch(initializer ->
+                                    matchesDerivedAggregate(initializer, objectContext,
+                                            ProjectionPath.root(), fact))) return true;
+                    continue;
+                }
+                List<Set<CallableEvidence>> arguments = new ArrayList<>();
+                boolean complete = true;
+                for (FormulaAlternatives argument : call.arguments()) {
+                    Set<CallableEvidence> resolved = resolveCallableEvidence(
+                            argument, evidence, currentSummaries, currentValues);
+                    arguments.add(resolved);
+                    if (argument.rootType().withoutQualifiers() instanceof FunctionType
+                            && resolved.isEmpty()) complete = false;
+                }
+                if (!complete) continue;
+                Set<CallableEvidence> targets = resolveCallableEvidence(
+                        call.target(), evidence, currentSummaries, currentValues);
+                for (CallableEvidence target : targets) {
+                    CallableEvidence invoked = new CallableEvidence(
+                            target.lambda(), arguments, target.captures());
+                    if (matchesCallableDerivedAggregate(
+                            fact, invocation, prefix, invoked, currentSummaries,
+                            currentValues, active)) return true;
+                }
+            }
+            return false;
+        } finally {
+            active.remove(visit);
+        }
+    }
+
+    private Optional<CallableEvidence> callableEvidence(
+            CallableFlow callable, CallableSummarySet currentSummaries,
+            Map<DeclarationId, ValueAlternatives> currentValues) {
+        if (callable.lambdaId().isEmpty()) return Optional.empty();
+        LambdaId lambda = callable.lambdaId().orElseThrow();
+        CallableSummary summary = evidenceSummary(lambda, currentSummaries);
+        if (summary == null) return Optional.empty();
+        TreeMap<io.mindspice.lyra.compiler.identity.CaptureId, Set<CallableEvidence>> captures =
+                new TreeMap<>();
+        for (CallableSummary.CapturePlaceholder placeholder : summary.captures()) {
+            ValueAlternatives values = placeholder.isSharedCell()
+                    ? callable.sharedCellSnapshots().get(placeholder.cellId().orElseThrow())
+                    : callable.capturedValues().get(placeholder.declarationId());
+            if (values == null) return Optional.empty();
+            Set<CallableEvidence> resolved = callableEvidence(
+                    values, currentSummaries, currentValues);
+            if (placeholder.type().withoutQualifiers() instanceof FunctionType
+                    && resolved.isEmpty()) return Optional.empty();
+            captures.put(placeholder.captureId(), resolved);
+        }
+        return Optional.of(new CallableEvidence(lambda, List.of(), captures));
+    }
+
+    private Set<CallableEvidence> callableEvidence(
+            ValueAlternatives values, CallableSummarySet currentSummaries,
+            Map<DeclarationId, ValueAlternatives> currentValues) {
+        LinkedHashSet<CallableEvidence> result = new LinkedHashSet<>();
+        for (ValueAlternative alternative : values.alternatives()) {
+            for (CallableFlow callable : alternative.callableFlows()) {
+                if (!callable.route().isRoot()) continue;
+                callableEvidence(callable, currentSummaries, currentValues)
+                        .ifPresent(result::add);
+            }
+        }
+        return Set.copyOf(result);
+    }
+
+    private Set<CallableEvidence> resolveCallableEvidence(
+            FormulaAlternatives formulas, CallableEvidence environment,
+            CallableSummarySet currentSummaries,
+            Map<DeclarationId, ValueAlternatives> currentValues) {
+        LinkedHashSet<CallableEvidence> result = new LinkedHashSet<>();
+        for (ValueFormula formula : formulas.formulas()) {
+            if (formula instanceof ValueFormula.Lambda lambda) {
+                TreeMap<io.mindspice.lyra.compiler.identity.CaptureId, Set<CallableEvidence>> captures =
+                        new TreeMap<>();
+                boolean complete = true;
+                for (var entry : lambda.captures().entrySet()) {
+                    Set<CallableEvidence> resolved = resolveCallableEvidence(
+                            entry.getValue(), environment, currentSummaries, currentValues);
+                    if (entry.getValue().rootType().withoutQualifiers() instanceof FunctionType
+                            && resolved.isEmpty()) complete = false;
+                    captures.put(entry.getKey(), resolved);
+                }
+                if (complete) result.add(new CallableEvidence(
+                        lambda.lambdaId(), List.of(), captures));
+            } else if (formula instanceof ValueFormula.Declaration declaration) {
+                ValueAlternatives values = currentValues.get(declaration.declarationId());
+                if (values == null) values = boundaryState.sharedCell(
+                        declaration.declarationId()).or(() -> boundaryState.binding(
+                        declaration.declarationId()).map(BindingFlowValue::alternatives))
+                        .orElse(null);
+                if (values != null) {
+                    try {
+                        result.addAll(callableEvidence(
+                                values.select(declaration.declarationRoute()),
+                                currentSummaries, currentValues));
+                    } catch (IllegalArgumentException invalidRoute) {
+                        return Set.of();
+                    }
+                }
+            } else if (formula instanceof ValueFormula.Parameter parameter) {
+                if (!parameter.parameterRoute().isRoot()
+                        || parameter.parameterIndex() >= environment.parameters().size()) {
+                    return Set.of();
+                }
+                result.addAll(environment.parameters().get(parameter.parameterIndex()));
+            } else if (formula instanceof ValueFormula.Capture capture) {
+                if (!capture.captureRoute().isRoot()) return Set.of();
+                result.addAll(environment.captures().getOrDefault(
+                        capture.captureId(), Set.of()));
+            }
+        }
+        return Set.copyOf(result);
+    }
+
+    private record CallableEvidence(
+            LambdaId lambda,
+            List<Set<CallableEvidence>> parameters,
+            Map<io.mindspice.lyra.compiler.identity.CaptureId, Set<CallableEvidence>> captures) {
+        private CallableEvidence {
+            Objects.requireNonNull(lambda, "lambda");
+            parameters = List.copyOf(parameters);
+            TreeMap<io.mindspice.lyra.compiler.identity.CaptureId, Set<CallableEvidence>> copy =
+                    new TreeMap<>();
+            captures.forEach((capture, values) -> copy.put(capture, Set.copyOf(values)));
+            captures = Collections.unmodifiableMap(copy);
+        }
+    }
+
+    private record CallableEvidenceVisit(LambdaId lambda, FlowSiteId context) {
+        private CallableEvidenceVisit {
+            Objects.requireNonNull(lambda, "lambda");
+            Objects.requireNonNull(context, "context");
+        }
+    }
+
+    private boolean matchesSummaryDerivedAggregate(
+            AggregateIdentityFact fact, FlowSiteId context,
+            ProjectionPath prefix, LambdaId rootLambda) {
+        return matchesSummaryDerivedAggregate(
+                fact, context, prefix, rootLambda, CallableSummarySet.empty());
+    }
+
+    private boolean matchesSummaryDerivedAggregate(
+            AggregateIdentityFact fact, FlowSiteId context,
+            ProjectionPath prefix, LambdaId rootLambda,
+            CallableSummarySet currentSummaries) {
+        if (matchesSummaryDerivedAggregateAllocations(
+                fact, context, prefix, rootLambda, currentSummaries)) return true;
+        return matchesSummaryDerivedAggregateInConstructions(
+                fact, context, prefix, rootLambda, new LinkedHashSet<>(),
+                currentSummaries);
+    }
+
+    private boolean matchesSummaryDerivedAggregateInConstructions(
+            AggregateIdentityFact fact, FlowSiteId context, ProjectionPath prefix,
+            LambdaId lambda, Set<LambdaId> active,
+            CallableSummarySet currentSummaries) {
+        if (!active.add(lambda)) return false;
+        CallableSummary summary = evidenceSummary(lambda, currentSummaries);
+        if (summary == null) return false;
+        try {
+            for (CallableCallReference call : summary.callReferences()) {
+                if (call.siteId().isEmpty()) continue;
+                FlowSiteId invocation = RetainedAllocationDerivation.invocationContext(
+                        context, call.id(), call.siteId().orElseThrow());
+                if (call.kind() == CallableCallReference.Kind.CONSTRUCTION) {
+                    RetainedConstruction construction = retainedConstructions.get(call.id());
+                    if (construction == null) continue;
+                    FlowSiteId objectContext = RetainedAllocationDerivation.objectSite(
+                            invocation, construction.site());
+                    RetainedNominal nominal = retainedNominals.get(
+                            construction.nominalType().canonicalSpelling());
+                    if (nominal != null && nominal.memberInitializers().stream()
+                            .flatMap(Optional::stream).anyMatch(initializer ->
+                                    matchesDerivedAggregate(initializer, objectContext,
+                                            ProjectionPath.root(), fact))) return true;
+                } else {
+                    for (LambdaId target : retainedCallTargets(call, currentSummaries)) {
+                        if (matchesSummaryDerivedAggregateAllocations(
+                                fact, invocation, prefix, target, currentSummaries)
+                                || matchesSummaryDerivedAggregateInConstructions(
+                                fact, invocation, prefix, target, active,
+                                currentSummaries)) return true;
+                    }
+                }
+            }
+            return false;
+        } finally {
+            active.remove(lambda);
+        }
+    }
+
+    private boolean matchesSummaryDerivedAggregateAllocations(
+            AggregateIdentityFact fact, FlowSiteId context,
+            ProjectionPath prefix, LambdaId rootLambda,
+            CallableSummarySet currentSummaries) {
+        CallableSummary summary = evidenceSummary(rootLambda, currentSummaries);
+        if (summary == null) return false;
+        List<ValueFormula.FreshAllocation> allocations = new ArrayList<>();
+        collectAllocationFormulas(summary.returnFormula().alternatives(), allocations);
+        summary.writes().forEach(write -> collectAllocationFormulas(write.value(), allocations));
+        summary.ownershipRequirements().forEach(requirement ->
+                collectAllocationFormulas(requirement.value(), allocations));
+        for (ValueFormula.FreshAllocation fresh : allocations) {
+            AllocationProvenance provenance = allocationProvenance.get(fresh.allocationSite());
+            FlowSiteId derivedContext = summaryPathContext(
+                    rootLambda, context, fresh.invocationPath(),
+                    fresh.allocationSite().ownerLambda(), currentSummaries);
+            if (provenance != null && derivedContext != null
+                    && matchesDerivedAggregate(fact, derivedContext, provenance,
+                    prefix.compose(fresh.resultRoute()))) return true;
+        }
+        return false;
+    }
+
+    private FlowSiteId summaryPathContext(
+            LambdaId root, FlowSiteId context, List<SummaryCallId> path,
+            LambdaId finalOwner) {
+        return summaryPathContext(root, context, path, finalOwner,
+                CallableSummarySet.empty());
+    }
+
+    private FlowSiteId summaryPathContext(
+            LambdaId root, FlowSiteId context, List<SummaryCallId> path,
+            LambdaId finalOwner, CallableSummarySet currentSummaries) {
+        LambdaId current = root;
+        FlowSiteId result = context;
+        for (int index = 0; index < path.size(); index++) {
+            SummaryCallId id = path.get(index);
+            if (!id.ownerLambda().equals(current)) return null;
+            CallableSummary owner = evidenceSummary(current, currentSummaries);
+            if (owner == null) return null;
+            CallableCallReference call = owner.callReferences().stream()
+                    .filter(candidate -> candidate.id().equals(id)).findFirst().orElse(null);
+            if (call == null || call.siteId().isEmpty()) return null;
+            LambdaId next = index + 1 < path.size()
+                    ? path.get(index + 1).ownerLambda() : finalOwner;
+            if (!retainedCallTargets(call, currentSummaries).contains(next)) return null;
+            result = RetainedAllocationDerivation.invocationContext(
+                    result, id, call.siteId().orElseThrow());
+            current = next;
+        }
+        return current.equals(finalOwner) ? result : null;
+    }
+
+    private Set<LambdaId> retainedTargetLambdas(
+            DeclarationId declaration, FunctionType function) {
+        ValueAlternatives values = boundaryState.sharedCell(declaration)
+                .or(() -> boundaryState.binding(declaration).map(BindingFlowValue::alternatives))
+                .orElse(null);
+        if (values == null) {
+            return callableSummaries.lambdaForDeclaration(declaration)
+                    .filter(lambda -> callableSummaries.summary(lambda)
+                            .map(summary -> summary.signature().asFunctionType().equals(function))
+                            .orElse(false)).stream().collect(java.util.stream.Collectors.toSet());
+        }
+        return callableLambdas(values);
+    }
+
+    private Set<LambdaId> retainedTargetLambdas(
+            RetainedInitializerTransfer transfer) {
+        if (transfer instanceof RetainedInitializerTransfer.Lambda lambda) {
+            return Set.of(lambda.lambda());
+        }
+        if (transfer instanceof RetainedInitializerTransfer.Reference reference) {
+            ValueAlternatives values = boundaryState.sharedCell(reference.declaration())
+                    .or(() -> boundaryState.binding(reference.declaration())
+                            .map(BindingFlowValue::alternatives)).orElse(null);
+            if (values == null) return Set.of();
+            try {
+                return callableLambdas(values.select(reference.route()));
+            } catch (IllegalArgumentException invalidRoute) {
+                return Set.of();
+            }
+        }
+        if (transfer instanceof RetainedInitializerTransfer.Value value) {
+            return callableLambdas(value.value());
+        }
+        if (transfer instanceof RetainedInitializerTransfer.Project project
+                && project.kind() == RetainedInitializerTransfer.ProjectionKind.ROUTE) {
+            return retainedTargetLambdas(project.base());
+        }
+        if (transfer instanceof RetainedInitializerTransfer.Sequence sequence) {
+            return retainedTargetLambdas(sequence.steps().getLast());
+        }
+        if (transfer instanceof RetainedInitializerTransfer.Alternative alternative) {
+            TreeSet<LambdaId> result = new TreeSet<>();
+            alternative.branches().forEach(branch -> branch.result().ifPresent(step ->
+                    result.addAll(retainedTargetLambdas(step.transfer()))));
+            return Set.copyOf(result);
+        }
+        return Set.of();
+    }
+
+    private static Set<LambdaId> callableLambdas(ValueAlternatives values) {
+        return values.alternatives().stream()
+                .flatMap(value -> value.callableFlows().stream())
+                .filter(callable -> callable.route().isRoot())
+                .flatMap(callable -> callable.lambdaId().stream())
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    private Set<LambdaId> retainedCallTargets(CallableCallReference call) {
+        return retainedCallTargets(call, CallableSummarySet.empty());
+    }
+
+    private Set<LambdaId> retainedCallTargets(
+            CallableCallReference call, CallableSummarySet currentSummaries) {
+        TreeSet<LambdaId> result = new TreeSet<>();
+        call.targetLambda().ifPresent(result::add);
+        for (ValueFormula formula : call.target().formulas()) {
+            if (formula instanceof ValueFormula.Lambda lambda) {
+                result.add(lambda.lambdaId());
+            } else if (formula instanceof ValueFormula.Declaration declaration) {
+                currentSummaries.lambdaForDeclaration(declaration.declarationId())
+                        .or(() -> callableSummaries.lambdaForDeclaration(
+                        declaration.declarationId())).ifPresent(result::add);
+                ValueAlternatives values = boundaryState.sharedCell(declaration.declarationId())
+                        .or(() -> boundaryState.binding(declaration.declarationId())
+                                .map(BindingFlowValue::alternatives)).orElse(null);
+                if (values != null) result.addAll(callableLambdas(values));
+            }
+        }
+        return Set.copyOf(result);
+    }
+
+    private CallableSummary evidenceSummary(
+            LambdaId lambda, CallableSummarySet currentSummaries) {
+        return currentSummaries.summary(lambda)
+                .or(() -> callableSummaries.summary(lambda)).orElse(null);
+    }
+
+    private static boolean isCallableConsumer(TypedExpressionKind kind) {
+        return kind == TypedExpressionKind.DIRECT_CALL
+                || kind == TypedExpressionKind.NAMESPACE_DIRECT_CALL
+                || kind == TypedExpressionKind.CALLABLE_CALL
+                || kind == TypedExpressionKind.ITER
+                || kind == TypedExpressionKind.WHILE;
+    }
+
+    private static boolean matchesDerivedAggregate(
+            AggregateIdentityFact fact, FlowSiteId context,
+            RetainedInitializerTransfer.ArrayAllocation provenance, ProjectionPath route) {
+        DeclarationId expected = RetainedAllocationDerivation.arrayAllocation(
+                context, provenance.site());
+        var export = io.mindspice.lyra.compiler.identity.ExportId.of(
+                provenance.moduleId(), "_flow_" + expected.ordinal(),
+                LyraSignature.of(List.of(), provenance.type()));
+        OwnershipWitness witness = fact.witness();
+        boolean identity = fact.identity().originDeclaration().equals(expected)
+                && fact.identity().ownerModule().equals(provenance.moduleId())
+                && fact.identity().arrayType().equals(provenance.type())
+                && (fact.identity() instanceof ArrayIdentity.LocalAllocation
+                && fact.identity().originExport().isEmpty()
+                || fact.identity() instanceof ArrayIdentity.CrossModuleOrigin
+                && fact.identity().originExport().equals(Optional.of(export)));
+        return identity && fact.route().equals(route)
+                && witness.ownerModule().equals(provenance.moduleId())
+                && witness.originDeclaration().equals(expected)
+                && witness.scopeId().equals(provenance.scopeId())
+                && witness.sourceSpan().equals(provenance.span())
+                && witness.originSite().equals(Optional.of(provenance.site()))
+                && witness.originExport().equals(fact.identity().originExport());
+    }
+
+    private static boolean matchesDerivedAggregate(
+            AggregateIdentityFact fact, FlowSiteId context,
+            AllocationProvenance provenance, ProjectionPath route) {
+        DeclarationId derived = RetainedAllocationDerivation.arrayAllocation(
+                context, provenance.originSite());
+        var export = io.mindspice.lyra.compiler.identity.ExportId.of(
+                provenance.moduleId(), "_flow_" + derived.ordinal(),
+                LyraSignature.of(List.of(), provenance.arrayType()));
+        OwnershipWitness witness = fact.witness();
+        boolean identity = fact.identity().ownerModule().equals(provenance.moduleId())
+                && fact.identity().originDeclaration().equals(derived)
+                && fact.identity().arrayType().equals(provenance.arrayType())
+                && (fact.identity() instanceof ArrayIdentity.LocalAllocation
+                && fact.identity().originExport().isEmpty()
+                || fact.identity() instanceof ArrayIdentity.CrossModuleOrigin
+                && fact.identity().originExport().equals(Optional.of(export)));
+        return identity && fact.route().equals(route)
+                && witness.ownerModule().equals(provenance.moduleId())
+                && witness.originDeclaration().equals(derived)
+                && witness.scopeId().equals(provenance.scopeId())
+                && witness.sourceSpan().equals(provenance.sourceSpan())
+                && witness.originSite().equals(Optional.of(provenance.originSite()))
+                && witness.originExport().equals(fact.identity().originExport());
+    }
+
+    /** Validates a consumer-scoped nominal-object derivation from a certified producer site. */
+    public boolean certifiesDerivedObject(
+            NominalObjectFact fact, FlowSiteId consumerContext, SourceSpan consumerSpan) {
+        return false;
+    }
+
+    /** Exact consumer-expression form used by the semantic fact sealer. */
+    public boolean certifiesDerivedObject(
+            NominalObjectFact fact, FlowSiteId consumerContext,
+            TypedExpression consumer, Set<LambdaId> callableTargets) {
+        Objects.requireNonNull(fact, "fact");
+        Objects.requireNonNull(consumer, "consumer");
+        callableTargets = Set.copyOf(Objects.requireNonNull(callableTargets, "callableTargets"));
+        if (!fact.ownership().useSpan().equals(consumer.span())) return false;
+        if (consumer.kind() == TypedExpressionKind.CONSTRUCTION) {
+            if (!(consumer.type().withoutQualifiers() instanceof NominalType nominalType)
+                    || consumer.declarationId().isEmpty()) return false;
+            RetainedNominal nominal = retainedNominals.get(nominalType.canonicalSpelling());
+            if (nominal == null || !nominal.nominal().declaration().equals(
+                    consumer.declarationId().orElseThrow())) return false;
+            return nominal.memberInitializers().stream().flatMap(Optional::stream)
+                    .anyMatch(transfer -> matchesDerivedObject(
+                            transfer, consumerContext, ProjectionPath.root(), fact));
+        }
+        if (!isCallableConsumer(consumer.kind()) || callableTargets.isEmpty()) return false;
+        return callableTargets.stream().allMatch(this::certifiesLambda)
+                && callableTargets.stream().anyMatch(lambda -> matchesSummaryDerivedObject(
+                        fact, consumerContext, ProjectionPath.root(), lambda,
+                        new LinkedHashSet<>()));
+    }
+
+    /** Exact current-call object form retaining selected callable captures. */
+    public boolean certifiesDerivedObjectFromCallables(
+            NominalObjectFact fact, FlowSiteId consumerContext,
+            TypedExpression consumer, Set<CallableFlow> callableTargets,
+            CallableSummarySet currentSummaries,
+            Map<DeclarationId, ValueAlternatives> currentValues) {
+        Objects.requireNonNull(fact, "fact");
+        Objects.requireNonNull(consumerContext, "consumerContext");
+        Objects.requireNonNull(consumer, "consumer");
+        callableTargets = Set.copyOf(Objects.requireNonNull(
+                callableTargets, "callableTargets"));
+        currentSummaries = Objects.requireNonNull(currentSummaries, "currentSummaries");
+        currentValues = Map.copyOf(Objects.requireNonNull(currentValues, "currentValues"));
+        if (!fact.ownership().useSpan().equals(consumer.span())
+                || !isCallableConsumer(consumer.kind())
+                || callableTargets.isEmpty()) return false;
+        CallableSummarySet localEvidence = currentSummaries;
+        Map<DeclarationId, ValueAlternatives> declarationEvidence = currentValues;
+        List<CallableEvidence> targets = callableTargets.stream()
+                .filter(callable -> callable.route().isRoot())
+                .map(callable -> callableEvidence(
+                        callable, localEvidence, declarationEvidence))
+                .flatMap(Optional::stream).toList();
+        if (targets.size() != callableTargets.size()) return false;
+        return targets.stream().allMatch(target -> certifiesLambda(target.lambda())
+                        || localEvidence.summary(target.lambda()).isPresent())
+                && targets.stream().anyMatch(target -> matchesCallableDerivedObject(
+                        fact, consumerContext, ProjectionPath.root(), target,
+                        localEvidence, declarationEvidence, new LinkedHashSet<>()));
+    }
+
+    /** Exact construction-target compatibility form. */
+    public boolean certifiesDerivedObject(
+            NominalObjectFact fact, FlowSiteId consumerContext, SourceSpan consumerSpan,
+            Optional<NominalType> constructedType) {
+        Objects.requireNonNull(fact, "fact");
+        Objects.requireNonNull(consumerContext, "consumerContext");
+        Objects.requireNonNull(consumerSpan, "consumerSpan");
+        constructedType = Objects.requireNonNull(constructedType, "constructedType");
+        if (!fact.ownership().useSpan().equals(consumerSpan)
+                || constructedType.isEmpty()) return false;
+        Iterable<RetainedNominal> candidates = Optional.ofNullable(retainedNominals.get(
+                constructedType.orElseThrow().canonicalSpelling())).stream().toList();
+        for (RetainedNominal nominal : candidates) {
+            for (RetainedInitializerTransfer transfer : nominal.memberInitializers()
+                    .stream().flatMap(Optional::stream).toList()) {
+                if (matchesDerivedObject(transfer, consumerContext, ProjectionPath.root(), fact)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean matchesDerivedObject(
+            RetainedInitializerTransfer transfer, FlowSiteId context,
+            ProjectionPath prefix, NominalObjectFact fact) {
+        return switch (transfer) {
+            case RetainedInitializerTransfer.Construct construct -> {
+                boolean matched = matchesDerivedObject(fact, context, construct.site(), prefix);
+                FlowSiteId nested = RetainedAllocationDerivation.objectSite(context, construct.site().site());
+                RetainedNominal nominal = retainedNominals.get(
+                        construct.site().nominalType().canonicalSpelling());
+                if (!matched && nominal != null) matched = nominal.memberInitializers().stream()
+                        .flatMap(Optional::stream).anyMatch(initializer -> matchesDerivedObject(
+                                initializer, nested, ProjectionPath.root(), fact));
+                yield matched || construct.arguments().stream().anyMatch(argument ->
+                        matchesDerivedObject(argument, context, prefix, fact));
+            }
+            case RetainedInitializerTransfer.Composite composite -> {
+                boolean matched = false;
+                for (int index = 0; !matched && index < composite.elements().size(); index++) {
+                    ProjectionPath member = composite.arrayLiteral()
+                            ? ProjectionPath.arrayElement(index) : ProjectionPath.tupleMember(index);
+                    matched = matchesDerivedObject(composite.elements().get(index), context,
+                            prefix.compose(member), fact);
+                }
+                yield matched;
+            }
+            case RetainedInitializerTransfer.Call call -> {
+                FlowSiteId invocation = RetainedAllocationDerivation.invocationContext(context, call.site());
+                yield call.arguments().stream().anyMatch(argument -> matchesDerivedObject(
+                        argument, context, prefix, fact))
+                        || retainedTargetLambdas(call.target(), call.function()).stream()
+                        .anyMatch(lambda -> matchesSummaryDerivedObject(
+                                fact, invocation, prefix, lambda, new LinkedHashSet<>()));
+            }
+            case RetainedInitializerTransfer.CallableCall call -> {
+                FlowSiteId invocation = RetainedAllocationDerivation.invocationContext(context, call.site());
+                yield matchesDerivedObject(call.target(), context, prefix, fact)
+                        || call.arguments().stream().anyMatch(argument -> matchesDerivedObject(
+                        argument, context, prefix, fact))
+                        || retainedTargetLambdas(call.target()).stream()
+                        .anyMatch(lambda -> matchesSummaryDerivedObject(
+                                fact, invocation, prefix, lambda, new LinkedHashSet<>()));
+            }
+            case RetainedInitializerTransfer.Apply apply -> apply.operands().stream().anyMatch(operand ->
+                    matchesDerivedObject(operand, context, prefix, fact));
+            case RetainedInitializerTransfer.Alternative alternative -> alternative.prefix().stream()
+                    .anyMatch(step -> matchesDerivedObject(step.transfer(), context, prefix, fact))
+                    || alternative.branches().stream().anyMatch(branch ->
+                    branch.selectors().stream().anyMatch(step -> matchesDerivedObject(
+                            step.transfer(), context, prefix, fact))
+                            || branch.result().stream().anyMatch(step -> matchesDerivedObject(
+                            step.transfer(), context, prefix, fact)));
+            case RetainedInitializerTransfer.Sequence sequence -> sequence.steps().stream().anyMatch(step ->
+                    matchesDerivedObject(step, context, prefix, fact));
+            case RetainedInitializerTransfer.Declare declare -> matchesDerivedObject(
+                    declare.initializer(), context, prefix, fact);
+            case RetainedInitializerTransfer.Rebind rebind -> matchesDerivedObject(
+                    rebind.value(), context, prefix, fact);
+            case RetainedInitializerTransfer.Project project -> {
+                NominalObjectFact sourceFact = project.kind() == RetainedInitializerTransfer.ProjectionKind.ROUTE
+                        ? new NominalObjectFact(fact.identity(), project.route(), fact.ownership()) : fact;
+                yield matchesDerivedObject(project.base(), context,
+                        project.kind() == RetainedInitializerTransfer.ProjectionKind.ROUTE
+                                ? ProjectionPath.root() : prefix, sourceFact)
+                        || project.index().stream().anyMatch(index -> matchesDerivedObject(
+                        index, context, prefix, fact));
+            }
+            case RetainedInitializerTransfer.Loop loop -> {
+                FlowSiteId invocation = RetainedAllocationDerivation.invocationContext(context, loop.site());
+                yield matchesDerivedObject(loop.input(), context, prefix, fact)
+                        || matchesDerivedObject(loop.action(), context, prefix, fact)
+                        || java.util.stream.Stream.concat(
+                                retainedTargetLambdas(loop.input()).stream(),
+                                retainedTargetLambdas(loop.action()).stream())
+                        .anyMatch(lambda -> matchesSummaryDerivedObject(
+                                fact, invocation, prefix, lambda, new LinkedHashSet<>()));
+            }
+            case RetainedInitializerTransfer.Lambda ignored -> false;
+            case RetainedInitializerTransfer.Value ignored -> false;
+            case RetainedInitializerTransfer.Reference ignored -> false;
+        };
+    }
+
+    private boolean matchesCallableDerivedObject(
+            NominalObjectFact fact, FlowSiteId context, ProjectionPath route,
+            CallableEvidence evidence, CallableSummarySet currentSummaries,
+            Map<DeclarationId, ValueAlternatives> currentValues,
+            Set<CallableEvidenceVisit> active) {
+        CallableEvidenceVisit visit = new CallableEvidenceVisit(
+                evidence.lambda(), context);
+        if (!active.add(visit)) return false;
+        try {
+            CallableSummary summary = evidenceSummary(
+                    evidence.lambda(), currentSummaries);
+            if (summary == null) return false;
+            for (CallableCallReference call : summary.callReferences()) {
+                if (call.siteId().isEmpty()) continue;
+                FlowSiteId invocation = RetainedAllocationDerivation.invocationContext(
+                        context, call.id(), call.siteId().orElseThrow());
+                if (call.kind() == CallableCallReference.Kind.CONSTRUCTION) {
+                    RetainedConstruction construction = retainedConstructions.get(call.id());
+                    if (construction != null
+                            && matchesDerivedObject(fact, invocation, construction, route)) {
+                        return true;
+                    }
+                    if (construction != null) {
+                        FlowSiteId objectContext = RetainedAllocationDerivation.objectSite(
+                                invocation, construction.site());
+                        RetainedNominal nominal = retainedNominals.get(
+                                construction.nominalType().canonicalSpelling());
+                        if (nominal != null && nominal.memberInitializers().stream()
+                                .flatMap(Optional::stream).anyMatch(initializer ->
+                                        matchesDerivedObject(initializer, objectContext,
+                                                ProjectionPath.root(), fact))) return true;
+                    }
+                    continue;
+                }
+                List<Set<CallableEvidence>> arguments = new ArrayList<>();
+                boolean complete = true;
+                for (FormulaAlternatives argument : call.arguments()) {
+                    Set<CallableEvidence> resolved = resolveCallableEvidence(
+                            argument, evidence, currentSummaries, currentValues);
+                    arguments.add(resolved);
+                    if (argument.rootType().withoutQualifiers() instanceof FunctionType
+                            && resolved.isEmpty()) complete = false;
+                }
+                if (!complete) continue;
+                Set<CallableEvidence> targets = resolveCallableEvidence(
+                        call.target(), evidence, currentSummaries, currentValues);
+                for (CallableEvidence target : targets) {
+                    CallableEvidence invoked = new CallableEvidence(
+                            target.lambda(), arguments, target.captures());
+                    if (matchesCallableDerivedObject(
+                            fact, invocation, route, invoked, currentSummaries,
+                            currentValues, active)) return true;
+                }
+            }
+            return false;
+        } finally {
+            active.remove(visit);
+        }
+    }
+
+    private boolean matchesSummaryDerivedObject(
+            NominalObjectFact fact, FlowSiteId context, ProjectionPath route,
+            LambdaId lambda, Set<LambdaId> active) {
+        if (!active.add(lambda)) return false;
+        CallableSummary summary = callableSummaries.summary(lambda).orElse(null);
+        if (summary == null) return false;
+        try {
+            for (CallableCallReference call : summary.callReferences()) {
+                if (call.siteId().isEmpty()) continue;
+                FlowSiteId invocation = RetainedAllocationDerivation.invocationContext(
+                        context, call.id(), call.siteId().orElseThrow());
+                if (call.kind() == CallableCallReference.Kind.CONSTRUCTION) {
+                    RetainedConstruction construction = retainedConstructions.get(call.id());
+                    if (construction != null
+                            && matchesDerivedObject(fact, invocation, construction, route)) {
+                        return true;
+                    }
+                    if (construction != null) {
+                        FlowSiteId objectContext = RetainedAllocationDerivation.objectSite(
+                                invocation, construction.site());
+                        RetainedNominal nominal = retainedNominals.get(
+                                construction.nominalType().canonicalSpelling());
+                        if (nominal != null && nominal.memberInitializers().stream()
+                                .flatMap(Optional::stream).anyMatch(initializer ->
+                                        matchesDerivedObject(initializer, objectContext,
+                                                ProjectionPath.root(), fact))) return true;
+                    }
+                } else {
+                    for (LambdaId target : retainedCallTargets(call)) {
+                        if (matchesSummaryDerivedObject(
+                                fact, invocation, route, target, active)) return true;
+                    }
+                }
+            }
+            return false;
+        } finally {
+            active.remove(lambda);
+        }
+    }
+
+    private static boolean matchesDerivedObject(
+            NominalObjectFact fact, FlowSiteId context,
+            RetainedInitializerTransfer.ConstructionSite site, ProjectionPath route) {
+        FlowSiteId derivedSite = RetainedAllocationDerivation.objectSite(context, site.site());
+        DeclarationId derivedAllocation = RetainedAllocationDerivation.objectAllocation(context, site.site());
+        OwnershipWitness witness = fact.ownership();
+        return fact.identity().ownerModule().equals(site.moduleId())
+                && fact.identity().allocationSite().equals(derivedSite)
+                && fact.identity().type().equals(site.nominalType())
+                && fact.route().equals(route)
+                && witness.ownerModule().equals(site.moduleId())
+                && witness.originDeclaration().equals(derivedAllocation)
+                && witness.scopeId().equals(site.scopeId())
+                && witness.sourceSpan().equals(site.span())
+                && witness.originExport().isEmpty()
+                && witness.originSite().equals(Optional.of(derivedSite));
+    }
+
+    private boolean matchesDerivedObject(
+            NominalObjectFact fact, FlowSiteId context,
+            RetainedConstruction construction, ProjectionPath route) {
+        FlowSiteId derivedSite = RetainedAllocationDerivation.objectSite(context, construction.site());
+        DeclarationId derivedAllocation = RetainedAllocationDerivation.objectAllocation(context, construction.site());
+        OwnershipWitness witness = fact.ownership();
+        return fact.identity().ownerModule().equals(construction.moduleId())
+                && fact.identity().allocationSite().equals(derivedSite)
+                && fact.identity().type().equals(construction.nominalType())
+                && route.suffixOf(fact.route()).filter(suffix -> routeProofs.contains(
+                        new RouteProof(construction.site(), suffix))).isPresent()
+                && witness.ownerModule().equals(construction.moduleId())
+                && witness.originDeclaration().equals(derivedAllocation)
+                && witness.scopeId().equals(construction.scopeId())
+                && witness.sourceSpan().equals(construction.call().span())
+                && witness.originExport().isEmpty()
+                && witness.originSite().equals(Optional.of(derivedSite));
     }
 
     /**
@@ -773,13 +1851,16 @@ public final class SessionFlowCertificate {
         Set<AggregateProofKey> aggregateProofs = new LinkedHashSet<>();
         Set<ObjectProofKey> objectProofs = new LinkedHashSet<>();
         Set<SourceSpan> aggregateUseSpans = new LinkedHashSet<>();
+        Set<SourceSpan> objectUseSpans = new LinkedHashSet<>();
         if (predecessor != null) {
             callableProofs.addAll(predecessor.callableProofs);
             aggregateProofs.addAll(predecessor.aggregateProofs);
             objectProofs.addAll(predecessor.objectProofs);
             aggregateUseSpans.addAll(predecessor.aggregateUseSpans);
+            objectUseSpans.addAll(predecessor.objectUseSpans);
         }
-        collectProofs(boundary, callableProofs, aggregateProofs, objectProofs, aggregateUseSpans);
+        collectProofs(boundary, callableProofs, aggregateProofs, objectProofs,
+                aggregateUseSpans, objectUseSpans);
         CallableSummarySet summaries = predecessor == null
                 ? graph.semanticFlowFacts().callableSummaries()
                 : CallableSummarySet.combine(
@@ -877,10 +1958,14 @@ public final class SessionFlowCertificate {
         nominals.values().forEach(nominal -> nominal.memberInitializers().forEach(
                 transfer -> transfer.ifPresent(value -> collectTransferProofs(
                         value, callableProofs, aggregateProofs, objectProofs,
-                        aggregateUseSpans))));
+                        aggregateUseSpans, objectUseSpans))));
+        Set<RouteProof> routes = new LinkedHashSet<>();
+        if (predecessor != null) routes.addAll(predecessor.routeProofs);
+        routes.addAll(new RouteDerivation(boundary, summaries, nominals, constructions, graph).derive());
         return new SessionFlowCertificate(
                 graph.allocator(), boundary, summaries, bindings,
-                callableProofs, aggregateProofs, objectProofs, aggregateUseSpans,
+                callableProofs, routes, aggregateProofs, objectProofs, aggregateUseSpans,
+                objectUseSpans,
                 allocations, constructions,
                 nominals, nominalNames, sourceIds,
                 predecessor == null ? 1 : predecessor.generationCount + 1);
@@ -917,14 +2002,17 @@ public final class SessionFlowCertificate {
             Set<CallableProofKey> callables,
             Set<AggregateProofKey> aggregates,
             Set<ObjectProofKey> objects,
-            Set<SourceSpan> aggregateUses) {
+            Set<SourceSpan> aggregateUses,
+            Set<SourceSpan> objectUses) {
         state.bindings().values().forEach(value -> collectProofs(
-                value.alternatives(), callables, aggregates, objects, aggregateUses));
+                value.alternatives(), callables, aggregates, objects,
+                aggregateUses, objectUses));
         state.sharedCells().values().forEach(value -> collectProofs(
-                value, callables, aggregates, objects, aggregateUses));
+                value, callables, aggregates, objects, aggregateUses, objectUses));
         state.objects().values().forEach(object -> object.fields().values()
                 .forEach(value -> collectProofs(
-                        value, callables, aggregates, objects, aggregateUses)));
+                        value, callables, aggregates, objects,
+                        aggregateUses, objectUses)));
     }
 
     /**
@@ -959,8 +2047,12 @@ public final class SessionFlowCertificate {
             return Optional.empty();
         }
         if (declaration.initializerLambda().isPresent()) {
+            LyraType type = declaration.contract().orElseThrow().valueType();
+            if (!(type.withoutQualifiers() instanceof FunctionType function)) {
+                return Optional.empty();
+            }
             return Optional.of(new RetainedInitializerTransfer.Lambda(
-                    declaration.initializerLambda().orElseThrow()));
+                    declaration.initializerLambda().orElseThrow(), function));
         }
         return declaration.initializer().flatMap(value ->
                 retainedInitializerTransfer(value, declaration, graph));
@@ -981,21 +2073,268 @@ public final class SessionFlowCertificate {
             TypedExpression initializer, io.mindspice.lyra.compiler.semantic.TypedDeclaration declaration,
             TypedSemanticInput graph) {
         if (declaration.initializerLambda().isPresent()) {
+            if (!(initializer.type().withoutQualifiers() instanceof FunctionType function)) {
+                return Optional.empty();
+            }
             return Optional.of(new RetainedInitializerTransfer.Lambda(
-                    declaration.initializerLambda().orElseThrow()));
+                    declaration.initializerLambda().orElseThrow(), function));
         }
-        if (initializer.kind() == TypedExpressionKind.DIRECT_CALL
-                || initializer.kind() == TypedExpressionKind.NAMESPACE_DIRECT_CALL) {
-            return retainedInitializerCall(initializer, graph)
+        return retainedTransfer(initializer, graph);
+    }
+
+    /** Builds one bounded transfer node; it never retains a producer expression. */
+    private static Optional<RetainedInitializerTransfer> retainedTransfer(
+            TypedExpression expression, TypedSemanticInput graph) {
+        if (expression.kind() == TypedExpressionKind.LAMBDA) {
+            if (!(expression.type().withoutQualifiers() instanceof FunctionType function)) {
+                return Optional.empty();
+            }
+            return expression.lambdaId().map(lambda ->
+                            new RetainedInitializerTransfer.Lambda(lambda, function))
                     .map(RetainedInitializerTransfer.class::cast);
         }
-        Optional<RetainedInitializerTransfer.Reference> reference =
-                retainedReference(initializer, graph);
-        if (reference.isPresent()) {
-            return Optional.of(reference.orElseThrow());
+        if (expression.kind() == TypedExpressionKind.DIRECT_CALL
+                || expression.kind() == TypedExpressionKind.NAMESPACE_DIRECT_CALL) {
+            return retainedInitializerCall(expression, graph).map(RetainedInitializerTransfer.class::cast);
         }
-        return retainedLiteralValue(initializer, graph)
-                .map(RetainedInitializerTransfer.Value::new);
+        if (expression.kind() == TypedExpressionKind.CALLABLE_CALL) {
+            return retainedCallableCall(expression, graph).map(RetainedInitializerTransfer.class::cast);
+        }
+        Optional<RetainedInitializerTransfer.Reference> reference = retainedReference(expression, graph);
+        if (reference.isPresent()) return Optional.of(reference.orElseThrow());
+        if (expression.kind() == TypedExpressionKind.LITERAL) {
+            return retainedLiteralValue(expression, graph)
+                    .map(value -> new RetainedInitializerTransfer.Value(expression.type(), value))
+                    .map(RetainedInitializerTransfer.class::cast);
+        }
+        return switch (expression.kind()) {
+            case ARRAY_LITERAL, TUPLE_LITERAL -> retainedComposite(expression, graph);
+            case OPERATOR, SHORT_CIRCUIT, CONVERSION, NARROWING, RANGE -> retainedApply(expression, graph);
+            case CONDITIONAL, COALESCE, MATCH -> retainedAlternative(expression, graph);
+            case BLOCK -> retainedSequence(expression, graph);
+            case DECLARATION -> retainedDeclare(expression, graph);
+            case REBINDING -> retainedRebind(expression, graph);
+            case INDEX_ACCESS, MEMBER_ACCESS -> retainedProject(expression, graph);
+            case CONSTRUCTION -> retainedConstruct(expression, graph);
+            case ITER, WHILE -> retainedLoop(expression, graph);
+            default -> Optional.empty();
+        };
+    }
+
+    private static Optional<RetainedInitializerTransfer> retainedComposite(
+            TypedExpression expression, TypedSemanticInput graph) {
+        // Every array allocation is instantiated in the consumer construction
+        // context, so even all-literal composites retain their ordered child proof.
+        List<RetainedInitializerTransfer> elements = retainedChildren(expression.children(), graph);
+        if (elements == null) return Optional.empty();
+        Optional<RetainedInitializerTransfer.ArrayAllocation> allocation = expression.kind()
+                == TypedExpressionKind.ARRAY_LITERAL
+                ? Optional.of(RetainedInitializerTransfer.ArrayAllocation.of(expression, graph))
+                : Optional.empty();
+        return Optional.of(new RetainedInitializerTransfer.Composite(
+                expression.type(), expression.kind() == TypedExpressionKind.ARRAY_LITERAL,
+                elements, allocation));
+    }
+
+    private static Optional<RetainedInitializerTransfer> retainedApply(
+            TypedExpression expression, TypedSemanticInput graph) {
+        List<RetainedInitializerTransfer> operands = retainedChildren(expression.children(), graph);
+        if (operands == null) return Optional.empty();
+        return Optional.of(new RetainedInitializerTransfer.Apply(
+                RetainedInitializerTransfer.ApplyKind.of(expression.kind()), expression.type(),
+                expression.operator(), operands));
+    }
+
+    private static Optional<RetainedInitializerTransfer> retainedAlternative(
+            TypedExpression expression, TypedSemanticInput graph) {
+        List<RetainedInitializerTransfer> transfers = retainedChildren(expression.children(), graph);
+        if (transfers == null) return Optional.empty();
+        java.util.function.IntFunction<RetainedInitializerTransfer.Alternative.Step> step = index ->
+                new RetainedInitializerTransfer.Alternative.Step(expression.children().get(index).type(),
+                        transfers.get(index));
+        if (expression.kind() == TypedExpressionKind.CONDITIONAL) {
+            if (expression.children().size() != 2 && expression.children().size() != 3) return Optional.empty();
+            Optional<RetainedInitializerTransfer.Alternative.PredicateBinding> binding = expression.predicateBinding()
+                    .flatMap(id -> graph.contract(id).map(contract ->
+                            new RetainedInitializerTransfer.Alternative.PredicateBinding(id, contract)));
+            if (expression.predicateBinding().isPresent() && binding.isEmpty()) return Optional.empty();
+            return Optional.of(new RetainedInitializerTransfer.Alternative(
+                    RetainedInitializerTransfer.AlternativeKind.CONDITIONAL, expression.type(),
+                    List.of(step.apply(0)), List.of(
+                            new RetainedInitializerTransfer.Alternative.Branch(
+                                    Optional.empty(), Optional.empty(), false, Optional.of(step.apply(1))),
+                            new RetainedInitializerTransfer.Alternative.Branch(
+                                    Optional.empty(), Optional.empty(), false, expression.children().size() == 3
+                                    ? Optional.of(step.apply(2)) : Optional.empty())), binding));
+        }
+        if (expression.kind() == TypedExpressionKind.COALESCE) {
+            if (expression.children().size() != 2) return Optional.empty();
+            return Optional.of(new RetainedInitializerTransfer.Alternative(
+                    RetainedInitializerTransfer.AlternativeKind.COALESCE, expression.type(),
+                    List.of(step.apply(0)), List.of(new RetainedInitializerTransfer.Alternative.Branch(
+                            Optional.empty(), Optional.empty(), false, Optional.of(step.apply(1)))), Optional.empty()));
+        }
+        var match = expression.match().orElse(null);
+        if (match == null) return Optional.empty();
+        List<RetainedInitializerTransfer.Alternative.Step> prefix = match.subjectChild().isPresent()
+                ? List.of(step.apply(match.subjectChild().getAsInt())) : List.of();
+        List<RetainedInitializerTransfer.Alternative.Branch> branches = new ArrayList<>();
+        for (var arm : match.arms()) {
+            branches.add(new RetainedInitializerTransfer.Alternative.Branch(
+                    arm.patternChild().stream().mapToObj(step).findFirst(),
+                    arm.guardChild().stream().mapToObj(step).findFirst(),
+                    arm.wildcard(), Optional.of(step.apply(arm.resultChild()))));
+        }
+        return Optional.of(new RetainedInitializerTransfer.Alternative(
+                RetainedInitializerTransfer.AlternativeKind.MATCH, expression.type(),
+                prefix, branches, Optional.empty()));
+    }
+
+    private static Optional<RetainedInitializerTransfer> retainedSequence(
+            TypedExpression expression, TypedSemanticInput graph) {
+        List<RetainedInitializerTransfer> steps = retainedChildren(expression.children(), graph);
+        return steps == null ? Optional.empty() : Optional.of(
+                new RetainedInitializerTransfer.Sequence(expression.type(), steps));
+    }
+
+    private static Optional<RetainedInitializerTransfer> retainedDeclare(
+            TypedExpression expression, TypedSemanticInput graph) {
+        if (expression.children().size() != 1 || expression.declarationId().isEmpty()) return Optional.empty();
+        DeclarationId declaration = expression.declarationId().orElseThrow();
+        BindingContract contract = graph.contract(declaration).orElse(null);
+        if (contract == null) return Optional.empty();
+        List<DeclarationId> cells = graph.resolvedGraph().captures().stream()
+                .filter(capture -> capture.declarationId().equals(declaration) && capture.isSharedCell())
+                .map(capture -> capture.sharedCellId().orElseThrow()).distinct().toList();
+        if (cells.size() > 1) return Optional.empty();
+        return retainedTransfer(expression.children().getFirst(), graph).map(value ->
+                new RetainedInitializerTransfer.Declare(expression.type(), declaration,
+                        contract, cells.stream().findFirst(), value))
+                .map(RetainedInitializerTransfer.class::cast);
+    }
+
+    private static Optional<RetainedInitializerTransfer> retainedRebind(
+            TypedExpression expression, TypedSemanticInput graph) {
+        if (expression.children().size() != 2) return Optional.empty();
+        Optional<WriteTarget> target = WriteTarget.of(expression.children().getFirst(), graph);
+        return target.flatMap(path -> {
+            BindingContract rootContract = graph.contract(path.declaration()).orElse(null);
+            if (rootContract == null) return Optional.empty();
+            LyraType targetType;
+            try {
+                targetType = ValueAlternative.typeAt(rootContract.valueType(), path.route());
+            } catch (IllegalArgumentException invalidRoute) {
+                return Optional.empty();
+            }
+            List<DeclarationId> cells = graph.resolvedGraph().captures().stream()
+                    .filter(capture -> capture.declarationId().equals(path.declaration()) && capture.isSharedCell())
+                    .map(capture -> capture.sharedCellId().orElseThrow()).distinct().toList();
+            if (cells.size() > 1) return Optional.empty();
+            return retainedTransfer(expression.children().get(1), graph)
+                    .map(value -> new RetainedInitializerTransfer.Rebind(expression.type(), path,
+                            rootContract.valueType(), targetType, cells.stream().findFirst(), value))
+                    .map(RetainedInitializerTransfer.class::cast);
+        });
+    }
+
+    private static Optional<RetainedInitializerTransfer> retainedProject(
+            TypedExpression expression, TypedSemanticInput graph) {
+        if (expression.children().isEmpty()) return Optional.empty();
+        Optional<RetainedInitializerTransfer> base = retainedTransfer(expression.children().getFirst(), graph);
+        if (base.isEmpty()) return Optional.empty();
+        if (expression.kind() == TypedExpressionKind.MEMBER_ACCESS && expression.tupleIndex().isPresent()) {
+            return Optional.of(new RetainedInitializerTransfer.Project(expression.type(), base.orElseThrow(),
+                    expression.children().getFirst().type(), RetainedInitializerTransfer.ProjectionKind.ROUTE,
+                    ProjectionPath.tupleMember(expression.tupleIndex().orElseThrow().intValueExact()), Optional.empty()));
+        }
+        if (expression.kind() == TypedExpressionKind.MEMBER_ACCESS && expression.declarationId().isPresent()
+                && expression.children().getFirst().type().withoutQualifiers() instanceof NominalType owner) {
+            var nominal = graph.resolvedGraph().nominals().stream()
+                    .filter(value -> value.schema().type().equals(owner)).findFirst().orElse(null);
+            if (nominal == null) return Optional.empty();
+            int index = nominal.members().indexOf(expression.declarationId().orElseThrow());
+            if (index < 0) return Optional.empty();
+            return Optional.of(new RetainedInitializerTransfer.Project(expression.type(), base.orElseThrow(),
+                    expression.children().getFirst().type(), RetainedInitializerTransfer.ProjectionKind.ROUTE,
+                    ProjectionPath.of(new io.mindspice.lyra.compiler.semantic.flow.ProjectionStep.NominalMember(
+                            owner, index, nominal.schema().members().get(index).type())), Optional.empty()));
+        }
+        if (expression.kind() == TypedExpressionKind.INDEX_ACCESS && expression.children().size() == 2) {
+            boolean stringIndex = expression.children().getFirst().type().withoutQualifiers()
+                    == PrimitiveType.STRING;
+            return retainedTransfer(expression.children().get(1), graph).map(index ->
+                    new RetainedInitializerTransfer.Project(expression.type(), base.orElseThrow(),
+                            expression.children().getFirst().type(), stringIndex
+                            ? RetainedInitializerTransfer.ProjectionKind.STRING_INDEX
+                            : RetainedInitializerTransfer.ProjectionKind.ROUTE,
+                            stringIndex ? ProjectionPath.root()
+                                    : ProjectionPath.of(indexRoute(expression.children().get(1))), Optional.of(index)))
+                    .map(RetainedInitializerTransfer.class::cast);
+        }
+        if (expression.kind() == TypedExpressionKind.MEMBER_ACCESS
+                && expression.children().size() == 1
+                && "length".equals(expression.memberName().orElse(null))
+                && (expression.children().getFirst().type().withoutQualifiers() == PrimitiveType.STRING
+                || expression.children().getFirst().type().withoutQualifiers() instanceof ArrayType)) {
+            return Optional.of(new RetainedInitializerTransfer.Project(expression.type(), base.orElseThrow(),
+                    expression.children().getFirst().type(), RetainedInitializerTransfer.ProjectionKind.LENGTH,
+                    ProjectionPath.root(), Optional.empty()));
+        }
+        return Optional.empty();
+    }
+
+    private static Optional<RetainedInitializerTransfer> retainedConstruct(
+            TypedExpression expression, TypedSemanticInput graph) {
+        if (expression.declarationId().isEmpty()) return Optional.empty();
+        List<RetainedInitializerTransfer> arguments = retainedChildren(expression.children(), graph);
+        if (arguments == null) return Optional.empty();
+        NominalSchema schema = graph.resolvedGraph().nominals().stream()
+                .filter(nominal -> nominal.declaration().equals(expression.declarationId().orElseThrow()))
+                .map(nominal -> nominal.schema()).findFirst().orElse(null);
+        if (schema == null) return Optional.empty();
+        return Optional.of(new RetainedInitializerTransfer.Construct(
+                new RetainedInitializerTransfer.ConstructionSite(expression.declarationId().orElseThrow(), schema,
+                        ModuleId.fromSourceId(expression.span().sourceId()), graph.flowScopeId(expression),
+                        expression.span(), graph.flowSiteId(expression),
+                        new DeclarationId(Long.MAX_VALUE - graph.flowSiteId(expression).ordinal()),
+                        expression.children().stream().map(TypedExpression::type).toList(),
+                        expression.children().stream().map(argument -> WriteTarget.of(argument, graph)).toList()), arguments));
+    }
+
+    private static Optional<RetainedInitializerTransfer> retainedLoop(
+            TypedExpression expression, TypedSemanticInput graph) {
+        if (expression.children().size() != 2) return Optional.empty();
+        return retainedTransfer(expression.children().getFirst(), graph).flatMap(input ->
+                retainedTransfer(expression.children().getLast(), graph).map(action ->
+                        new RetainedInitializerTransfer.Loop(expression.kind(), expression.type(),
+                                expression.span(), graph.flowSiteId(expression), input, action,
+                                expression.kind() == TypedExpressionKind.WHILE
+                                        ? Optional.of((FunctionType) expression.children().getFirst().type().withoutQualifiers())
+                                        : Optional.empty(),
+                                (FunctionType) expression.children().getLast().type().withoutQualifiers()))
+                        .map(RetainedInitializerTransfer.class::cast));
+    }
+
+    private static List<RetainedInitializerTransfer> retainedChildren(
+            List<TypedExpression> children, TypedSemanticInput graph) {
+        List<RetainedInitializerTransfer> result = new ArrayList<>();
+        for (TypedExpression child : children) {
+            Optional<RetainedInitializerTransfer> transfer = retainedTransfer(child, graph);
+            if (transfer.isEmpty()) return null;
+            result.add(transfer.orElseThrow());
+        }
+        return List.copyOf(result);
+    }
+
+    private static io.mindspice.lyra.compiler.semantic.flow.ProjectionStep indexRoute(
+            TypedExpression index) {
+        if (index.literal().orElse(null) instanceof io.mindspice.lyra.compiler.semantic.TypedLiteralValue.IntegerValue integer) {
+            java.math.BigInteger value = integer.exactValue().integerValue();
+            if (value.signum() >= 0 && value.bitLength() <= 31) {
+                return io.mindspice.lyra.compiler.semantic.flow.ProjectionStep.arrayElement(value.intValue());
+            }
+        }
+        return io.mindspice.lyra.compiler.semantic.flow.ProjectionStep.unknownArrayElement();
     }
 
     /**
@@ -1006,11 +2345,12 @@ public final class SessionFlowCertificate {
      */
     private static Optional<RetainedInitializerTransfer.Reference> retainedReference(
             TypedExpression expression, TypedSemanticInput graph) {
-        if (expression.kind() == TypedExpressionKind.REFERENCE) {
+        if (expression.kind() == TypedExpressionKind.REFERENCE
+                || expression.kind() == TypedExpressionKind.NAMESPACE_MEMBER_ACCESS) {
             return expression.link()
                     .flatMap(io.mindspice.lyra.compiler.semantic.TypedLink::declarationId)
                     .map(declaration -> new RetainedInitializerTransfer.Reference(
-                            declaration, ProjectionPath.root()));
+                            declaration, expression.type(), ProjectionPath.root(), expression.type()));
         }
         if (expression.kind() != TypedExpressionKind.MEMBER_ACCESS
                 || expression.children().isEmpty()) {
@@ -1026,7 +2366,8 @@ public final class SessionFlowCertificate {
                     ProjectionPath.tupleMember(
                             expression.tupleIndex().orElseThrow().intValueExact()));
             return Optional.of(new RetainedInitializerTransfer.Reference(
-                    base.orElseThrow().declaration(), route));
+                    base.orElseThrow().declaration(), base.orElseThrow().declarationType(),
+                    route, expression.type()));
         }
         if (expression.declarationId().isEmpty()
                 || !(expression.children().getFirst().type().withoutQualifiers()
@@ -1049,7 +2390,8 @@ public final class SessionFlowCertificate {
         ProjectionPath route = base.orElseThrow().route().compose(
                 ProjectionPath.of(step));
         return Optional.of(new RetainedInitializerTransfer.Reference(
-                base.orElseThrow().declaration(), route));
+                base.orElseThrow().declaration(), base.orElseThrow().declarationType(),
+                route, expression.type()));
     }
 
     /**
@@ -1152,7 +2494,7 @@ public final class SessionFlowCertificate {
             targets.add(WriteTarget.of(argument, graph));
         }
         return Optional.of(new RetainedInitializerTransfer.Call(
-                target, function, arguments, targets));
+                target, function, initializer.span(), graph.flowSiteId(initializer), arguments, targets));
     }
 
     /**
@@ -1162,18 +2504,23 @@ public final class SessionFlowCertificate {
      */
     private static Optional<RetainedInitializerTransfer> retainedArgumentTransfer(
             TypedExpression argument, TypedSemanticInput graph) {
-        if (argument.kind() == TypedExpressionKind.DIRECT_CALL
-                || argument.kind() == TypedExpressionKind.NAMESPACE_DIRECT_CALL) {
-            return retainedInitializerCall(argument, graph)
-                    .map(RetainedInitializerTransfer.class::cast);
+        return retainedTransfer(argument, graph);
+    }
+
+    private static Optional<RetainedInitializerTransfer.CallableCall> retainedCallableCall(
+            TypedExpression expression, TypedSemanticInput graph) {
+        if (expression.children().isEmpty()
+                || !(expression.children().getFirst().type().withoutQualifiers() instanceof FunctionType function)) {
+            return Optional.empty();
         }
-        Optional<RetainedInitializerTransfer.Reference> reference =
-                retainedReference(argument, graph);
-        if (reference.isPresent()) {
-            return Optional.of(reference.orElseThrow());
-        }
-        return retainedLiteralValue(argument, graph)
-                .map(RetainedInitializerTransfer.Value::new);
+        Optional<RetainedInitializerTransfer> target = retainedTransfer(expression.children().getFirst(), graph);
+        List<RetainedInitializerTransfer> arguments = retainedChildren(
+                expression.children().subList(1, expression.children().size()), graph);
+        if (target.isEmpty() || arguments == null || arguments.size() != function.arity()) return Optional.empty();
+        return Optional.of(new RetainedInitializerTransfer.CallableCall(target.orElseThrow(), function,
+                expression.span(), graph.flowSiteId(expression), arguments,
+                expression.children().subList(1, expression.children().size()).stream()
+                        .map(argument -> WriteTarget.of(argument, graph)).toList()));
     }
 
     /**
@@ -1248,8 +2595,12 @@ public final class SessionFlowCertificate {
                     throw new IllegalArgumentException(
                             "constructor summary call differs from its canonical source: " + call.id());
                 }
+                NominalSchema schema = graph.resolvedGraph().nominals().stream()
+                        .filter(nominal -> nominal.declaration().equals(
+                                source.declarationId().orElseThrow()))
+                        .map(ResolvedNominal::schema).findFirst().orElseThrow();
                 RetainedConstruction construction = new RetainedConstruction(
-                        call, summary.moduleId(), graph.flowScopeId(source),
+                        call, schema, summary.moduleId(), graph.flowScopeId(source),
                         new DeclarationId(Long.MAX_VALUE - site.ordinal()),
                         source.children().stream().map(argument -> WriteTarget.of(argument, graph))
                                 .toList());
@@ -1287,15 +2638,115 @@ public final class SessionFlowCertificate {
             Set<CallableProofKey> callables,
             Set<AggregateProofKey> aggregates,
             Set<ObjectProofKey> objects,
-            Set<SourceSpan> aggregateUses) {
+            Set<SourceSpan> aggregateUses,
+            Set<SourceSpan> objectUses) {
+        collectTransferProofs(transfer, ProjectionPath.root(), callables,
+                aggregates, objects, aggregateUses, objectUses);
+    }
+
+    private static void collectTransferProofs(
+            RetainedInitializerTransfer transfer, ProjectionPath prefix,
+            Set<CallableProofKey> callables, Set<AggregateProofKey> aggregates,
+            Set<ObjectProofKey> objects, Set<SourceSpan> aggregateUses,
+            Set<SourceSpan> objectUses) {
         switch (transfer) {
             case RetainedInitializerTransfer.Lambda ignored -> { }
             case RetainedInitializerTransfer.Reference ignored -> { }
-            case RetainedInitializerTransfer.Value value ->
-                    collectProofs(value.value(), callables, aggregates, objects, aggregateUses);
-            case RetainedInitializerTransfer.Call call ->
-                    call.arguments().forEach(argument -> collectTransferProofs(
-                            argument, callables, aggregates, objects, aggregateUses));
+            case RetainedInitializerTransfer.Value value -> value.value().alternatives().forEach(alternative -> {
+                alternative.callableFlows().forEach(callable -> callables.add(
+                        CallableProofKey.of(callable.prefixedBy(prefix))));
+                alternative.aggregateIdentities().forEach(fact -> aggregates.add(
+                        AggregateProofKey.of(fact.prefixedBy(prefix))));
+                alternative.objects().forEach(fact -> {
+                    objects.add(ObjectProofKey.of(fact.prefixedBy(prefix)));
+                    objectUses.add(fact.ownership().useSpan());
+                });
+                alternative.aggregateIdentities().forEach(fact ->
+                        aggregateUses.add(fact.witness().useSpan()));
+            });
+            case RetainedInitializerTransfer.Call call -> call.arguments().forEach(argument ->
+                    collectTransferProofs(argument, prefix, callables, aggregates,
+                            objects, aggregateUses, objectUses));
+            case RetainedInitializerTransfer.Composite composite -> {
+                for (int index = 0; index < composite.elements().size(); index++) {
+                    ProjectionPath member = composite.arrayLiteral()
+                            ? ProjectionPath.arrayElement(index) : ProjectionPath.tupleMember(index);
+                    collectTransferProofs(composite.elements().get(index), prefix.compose(member),
+                            callables, aggregates, objects, aggregateUses, objectUses);
+                }
+                composite.allocation().ifPresent(allocation -> {
+                    AggregateIdentityFact fact = new AggregateIdentityFact(
+                            ArrayIdentity.localAllocation(allocation.moduleId(), allocation.allocation(), allocation.type()),
+                            prefix, OwnershipWitness.local(allocation.moduleId(), allocation.allocation(),
+                                    allocation.scopeId(), allocation.span()).withOriginSite(allocation.site()));
+                    aggregates.add(AggregateProofKey.of(fact));
+                    var export = io.mindspice.lyra.compiler.identity.ExportId.of(allocation.moduleId(),
+                            "_flow_" + allocation.allocation().ordinal(), LyraSignature.of(List.of(), allocation.type()));
+                    aggregates.add(AggregateProofKey.of(new AggregateIdentityFact(
+                            ArrayIdentity.crossModuleOrigin(allocation.moduleId(), allocation.allocation(), export,
+                                    allocation.type()), prefix, OwnershipWitness.crossModule(
+                                    allocation.moduleId(), allocation.allocation(), allocation.scopeId(), allocation.span(), export)
+                                    .withOriginSite(allocation.site()))));
+                    aggregateUses.add(allocation.span());
+                });
+            }
+            case RetainedInitializerTransfer.Apply apply -> apply.operands().forEach(operand ->
+                    collectTransferProofs(operand, prefix, callables, aggregates,
+                            objects, aggregateUses, objectUses));
+            case RetainedInitializerTransfer.Alternative alternative -> {
+                alternative.prefix().forEach(step -> collectTransferProofs(
+                        step.transfer(), prefix, callables, aggregates,
+                        objects, aggregateUses, objectUses));
+                alternative.branches().forEach(branch -> {
+                    branch.selectors().forEach(step -> collectTransferProofs(
+                            step.transfer(), prefix, callables, aggregates,
+                            objects, aggregateUses, objectUses));
+                    branch.result().ifPresent(step -> collectTransferProofs(
+                            step.transfer(), prefix, callables, aggregates,
+                            objects, aggregateUses, objectUses));
+                });
+            }
+            case RetainedInitializerTransfer.Sequence sequence -> sequence.steps().forEach(step ->
+                    collectTransferProofs(step, prefix, callables, aggregates,
+                            objects, aggregateUses, objectUses));
+            case RetainedInitializerTransfer.Declare declare -> collectTransferProofs(
+                    declare.initializer(), prefix, callables, aggregates,
+                    objects, aggregateUses, objectUses);
+            case RetainedInitializerTransfer.Rebind rebind -> collectTransferProofs(
+                    rebind.value(), prefix, callables, aggregates,
+                    objects, aggregateUses, objectUses);
+            case RetainedInitializerTransfer.Project project -> {
+                collectTransferProofs(project.base(), prefix, callables, aggregates,
+                        objects, aggregateUses, objectUses);
+                project.index().ifPresent(index -> collectTransferProofs(
+                        index, prefix, callables, aggregates,
+                        objects, aggregateUses, objectUses));
+            }
+            case RetainedInitializerTransfer.Construct construct -> {
+                construct.arguments().forEach(argument -> collectTransferProofs(
+                        argument, prefix, callables, aggregates,
+                        objects, aggregateUses, objectUses));
+                var site = construct.site();
+                objects.add(ObjectProofKey.of(new NominalObjectFact(
+                        new io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity(
+                                site.moduleId(), site.site(), site.nominalType()), prefix,
+                        OwnershipWitness.local(site.moduleId(), site.allocation(), site.scopeId(), site.span())
+                                .withOriginSite(site.site()))));
+                objectUses.add(site.span());
+            }
+            case RetainedInitializerTransfer.CallableCall call -> {
+                collectTransferProofs(call.target(), prefix, callables, aggregates,
+                        objects, aggregateUses, objectUses);
+                call.arguments().forEach(argument -> collectTransferProofs(
+                        argument, prefix, callables, aggregates,
+                        objects, aggregateUses, objectUses));
+            }
+            case RetainedInitializerTransfer.Loop loop -> {
+                collectTransferProofs(loop.input(), prefix, callables, aggregates,
+                        objects, aggregateUses, objectUses);
+                collectTransferProofs(loop.action(), prefix, callables, aggregates,
+                        objects, aggregateUses, objectUses);
+            }
         }
     }
 
@@ -1343,10 +2794,30 @@ public final class SessionFlowCertificate {
         return switch (transfer) {
             case RetainedInitializerTransfer.Lambda ignored -> false;
             case RetainedInitializerTransfer.Reference ignored -> false;
-            case RetainedInitializerTransfer.Value value ->
-                    containsNil(value.value(), nil, visited);
+            case RetainedInitializerTransfer.Value value -> containsNil(value.value(), nil, visited);
             case RetainedInitializerTransfer.Call call -> call.arguments().stream()
                     .anyMatch(argument -> containsNil(argument, nil, visited));
+            case RetainedInitializerTransfer.Composite composite -> composite.elements().stream()
+                    .anyMatch(element -> containsNil(element, nil, visited));
+            case RetainedInitializerTransfer.Apply apply -> apply.operands().stream()
+                    .anyMatch(operand -> containsNil(operand, nil, visited));
+            case RetainedInitializerTransfer.Alternative alternative -> alternative.prefix().stream()
+                    .anyMatch(step -> containsNil(step.transfer(), nil, visited))
+                    || alternative.branches().stream().anyMatch(branch ->
+                    branch.selectors().stream().anyMatch(step -> containsNil(step.transfer(), nil, visited))
+                            || branch.result().stream().anyMatch(step -> containsNil(step.transfer(), nil, visited)));
+            case RetainedInitializerTransfer.Sequence sequence -> sequence.steps().stream()
+                    .anyMatch(step -> containsNil(step, nil, visited));
+            case RetainedInitializerTransfer.Declare declare -> containsNil(declare.initializer(), nil, visited);
+            case RetainedInitializerTransfer.Rebind rebind -> containsNil(rebind.value(), nil, visited);
+            case RetainedInitializerTransfer.Project project -> containsNil(project.base(), nil, visited)
+                    || project.index().stream().anyMatch(index -> containsNil(index, nil, visited));
+            case RetainedInitializerTransfer.Construct construct -> construct.arguments().stream()
+                    .anyMatch(argument -> containsNil(argument, nil, visited));
+            case RetainedInitializerTransfer.CallableCall call -> containsNil(call.target(), nil, visited)
+                    || call.arguments().stream().anyMatch(argument -> containsNil(argument, nil, visited));
+            case RetainedInitializerTransfer.Loop loop -> containsNil(loop.input(), nil, visited)
+                    || containsNil(loop.action(), nil, visited);
         };
     }
 
@@ -1365,19 +2836,25 @@ public final class SessionFlowCertificate {
             Set<CallableProofKey> callables,
             Set<AggregateProofKey> aggregates,
             Set<ObjectProofKey> objects,
-            Set<SourceSpan> aggregateUses) {
+            Set<SourceSpan> aggregateUses,
+            Set<SourceSpan> objectUses) {
         values.alternatives().forEach(value -> {
             value.aggregateIdentities().forEach(fact -> {
                 aggregates.add(AggregateProofKey.of(fact));
                 aggregateUses.add(fact.witness().useSpan());
             });
-            value.objects().forEach(fact -> objects.add(ObjectProofKey.of(fact)));
+            value.objects().forEach(fact -> {
+                objects.add(ObjectProofKey.of(fact));
+                objectUses.add(fact.ownership().useSpan());
+            });
             value.callableFlows().forEach(callable -> {
                 if (callables.add(CallableProofKey.of(callable))) {
                     callable.capturedValues().values().forEach(captured ->
-                            collectProofs(captured, callables, aggregates, objects, aggregateUses));
+                            collectProofs(captured, callables, aggregates, objects,
+                                    aggregateUses, objectUses));
                     callable.sharedCellSnapshots().values().forEach(captured ->
-                            collectProofs(captured, callables, aggregates, objects, aggregateUses));
+                            collectProofs(captured, callables, aggregates, objects,
+                                    aggregateUses, objectUses));
                 }
             });
         });
@@ -1637,10 +3114,18 @@ public final class SessionFlowCertificate {
                 throw new IllegalArgumentException("retained nominal initializer inventory differs");
             }
             for (int index = 0; index < memberInitializers.size(); index++) {
-                if (memberInitializers.get(index).isPresent()
+                Optional<RetainedInitializerTransfer> initializer = Objects.requireNonNull(
+                        memberInitializers.get(index), "retained member initializer");
+                if (initializer.isPresent()
                         != nominal.schema().members().get(index).hasInitializer()) {
                     throw new IllegalArgumentException(
                             "retained nominal initializer coverage differs from its schema");
+                }
+                if (initializer.isPresent() && !TypeRules.canImplicitlyConvert(
+                        initializer.orElseThrow().type(),
+                        nominal.schema().members().get(index).type())) {
+                    throw new IllegalArgumentException(
+                            "retained nominal initializer type differs from its member schema");
                 }
             }
             if (!name.equals(nominal.schema().type().id().name())) {
@@ -1668,20 +3153,24 @@ public final class SessionFlowCertificate {
      * call whose result is reconstructed through ordinary summary invocation.</p>
      */
     public sealed interface RetainedInitializerTransfer {
+        /** Exact resolved result type carried by every closed transfer node. */
+        LyraType type();
 
         /** A producer-certified lambda literal; its captures are re-resolved on use. */
-        record Lambda(LambdaId lambda) implements RetainedInitializerTransfer {
+        record Lambda(LambdaId lambda, FunctionType type) implements RetainedInitializerTransfer {
             public Lambda {
                 Objects.requireNonNull(lambda, "lambda");
+                Objects.requireNonNull(type, "type");
             }
         }
 
         /** A closed abstract value with no dependency on the consumer's receiver. */
-        record Value(ValueAlternatives value) implements RetainedInitializerTransfer {
+        record Value(LyraType type, ValueAlternatives value) implements RetainedInitializerTransfer {
             public Value {
+                Objects.requireNonNull(type, "type");
                 Objects.requireNonNull(value, "value");
-                if (value.isEmpty()) {
-                    throw new IllegalArgumentException("retained initializer value is empty");
+                if (value.isEmpty() || !valuesHaveType(value, type)) {
+                    throw new IllegalArgumentException("retained initializer value/type differs");
                 }
             }
         }
@@ -1692,30 +3181,640 @@ public final class SessionFlowCertificate {
          * slots so the fresh receiver or the current shared cell supplies the
          * transferred value.
          */
-        record Reference(DeclarationId declaration, ProjectionPath route)
+        record Reference(DeclarationId declaration, LyraType declarationType,
+                         ProjectionPath route, LyraType type)
                 implements RetainedInitializerTransfer {
             public Reference {
                 Objects.requireNonNull(declaration, "declaration");
+                Objects.requireNonNull(declarationType, "declarationType");
                 Objects.requireNonNull(route, "route");
+                Objects.requireNonNull(type, "type");
+                LyraType selected;
+                try {
+                    selected = ValueAlternative.typeAt(declarationType, route);
+                } catch (IllegalArgumentException invalidRoute) {
+                    throw new IllegalArgumentException(
+                            "retained declaration projection route differs", invalidRoute);
+                }
+                if (!compatibleType(selected, type)) {
+                    throw new IllegalArgumentException(
+                            "retained declaration projection type differs");
+                }
+            }
+
+            /** Compatibility form is intentionally root-only; routed proofs need their root contract. */
+            public Reference(DeclarationId declaration, ProjectionPath route, LyraType type) {
+                this(declaration, type, route, type);
+                if (!route.isRoot()) {
+                    throw new IllegalArgumentException(
+                            "routed retained references need their declaration root type");
+                }
             }
         }
 
         /** A direct or namespace direct call to a producer-certified function. */
         record Call(
-                DeclarationId target, FunctionType function,
+                DeclarationId target, FunctionType function, SourceSpan span, FlowSiteId site,
                 List<RetainedInitializerTransfer> arguments,
                 List<Optional<WriteTarget>> argumentTargets)
                 implements RetainedInitializerTransfer {
             public Call {
                 Objects.requireNonNull(target, "target");
                 Objects.requireNonNull(function, "function");
-                arguments = List.copyOf(arguments);
-                argumentTargets = List.copyOf(argumentTargets);
-                if (arguments.size() != function.arity()
-                        || argumentTargets.size() != function.arity()) {
-                    throw new IllegalArgumentException("retained initializer call arity differs");
+                Objects.requireNonNull(span, "span");
+                Objects.requireNonNull(site, "site");
+                arguments = checkedTransfers(arguments, "arguments");
+                argumentTargets = checkedTargets(argumentTargets, function.arity());
+                if (!RetainedAllocationDerivation.isOrdinarySourceDeclaration(target)
+                        || !RetainedAllocationDerivation.isOrdinarySourceSite(site)
+                        || arguments.size() != function.arity()) {
+                    throw new IllegalArgumentException("retained initializer call target/site/arity differs");
+                }
+                requireArgumentTypes(function, arguments);
+            }
+
+            @Override public LyraType type() { return function.returnType(); }
+        }
+
+        /** Ordered dynamic aggregate members with a producer-certified array allocation when needed. */
+        record Composite(LyraType type, boolean arrayLiteral, List<RetainedInitializerTransfer> elements,
+                         Optional<ArrayAllocation> allocation) implements RetainedInitializerTransfer {
+            public Composite {
+                Objects.requireNonNull(type, "type");
+                elements = checkedTransfers(elements, "elements");
+                allocation = Objects.requireNonNull(allocation, "allocation");
+                LyraType plain = type.withoutQualifiers();
+                boolean valid = arrayLiteral == allocation.isPresent();
+                if (valid && arrayLiteral) {
+                    valid = plain instanceof ArrayType array
+                            && allocation.orElseThrow().type().equals(array);
+                    if (valid) {
+                        ArrayType array = (ArrayType) plain;
+                        for (RetainedInitializerTransfer element : elements) {
+                            valid &= sameType(element.type(), array.elementType());
+                        }
+                    }
+                } else if (valid) {
+                    valid = plain instanceof TupleType tuple && tuple.arity() == elements.size();
+                    if (valid) {
+                        TupleType tuple = (TupleType) plain;
+                        for (int index = 0; index < elements.size(); index++) {
+                            valid &= sameType(elements.get(index).type(), tuple.memberType(index));
+                        }
+                    }
+                }
+                if (!valid) throw new IllegalArgumentException("retained composite type/shape differs");
+            }
+        }
+
+        enum ApplyKind {
+            OPERATOR, SHORT_CIRCUIT, CONVERSION, NARROWING, RANGE;
+            static ApplyKind of(TypedExpressionKind kind) {
+                return switch (kind) {
+                    case OPERATOR -> OPERATOR;
+                    case SHORT_CIRCUIT -> SHORT_CIRCUIT;
+                    case CONVERSION -> CONVERSION;
+                    case NARROWING -> NARROWING;
+                    case RANGE -> RANGE;
+                    default -> throw new IllegalArgumentException("not an apply transfer: " + kind);
+                };
+            }
+        }
+
+        /** Strictly ordered scalar/range application. */
+        record Apply(ApplyKind kind, LyraType type, Optional<String> operation,
+                     List<RetainedInitializerTransfer> operands)
+                implements RetainedInitializerTransfer {
+            public Apply {
+                Objects.requireNonNull(kind, "kind");
+                Objects.requireNonNull(type, "type");
+                operation = Objects.requireNonNull(operation, "operation");
+                operation.ifPresent(value -> {
+                    if (value.isBlank()) throw new IllegalArgumentException(
+                            "retained apply operation is blank");
+                });
+                operands = checkedTransfers(operands, "operands");
+                if (operands.isEmpty()) throw new IllegalArgumentException("retained apply has no operands");
+                List<RetainedInitializerTransfer> checkedOperands = operands;
+                boolean valid = switch (kind) {
+                    case CONVERSION -> operation.isEmpty() && operands.size() == 1
+                            && TypeRules.canExplicitlyConvert(operands.getFirst().type(), type);
+                    case NARROWING -> operation.isEmpty() && operands.size() == 1
+                            && (TypeRules.canExplicitlyConvert(operands.getFirst().type(), type)
+                            || operands.getFirst().type().hasQualifier(TypeQualifier.NIL)
+                            && !type.hasQualifier(TypeQualifier.NIL)
+                            && operands.getFirst().type().withoutQualifiers()
+                            .equals(type.withoutQualifiers()));
+                    case SHORT_CIRCUIT -> operation.filter(value -> value.equals("and")
+                                    || value.equals("or")).isPresent()
+                            && operands.size() >= 2 && type.equals(PrimitiveType.BOOL)
+                            && operands.stream().allMatch(operand -> truthTestable(operand.type()));
+                    case RANGE -> operation.filter(value -> value.equals("..")
+                                    || value.equals("...")).isPresent()
+                            && operands.size() == 3
+                            && type.withoutQualifiers() instanceof RangeType range
+                            && operands.stream().allMatch(operand ->
+                            sameType(operand.type(), range.elementType()));
+                    case OPERATOR -> operation.filter(value ->
+                            validOperatorApply(value, type, checkedOperands)).isPresent();
+                };
+                if (!valid) throw new IllegalArgumentException(
+                        "retained apply operation/type/arity differs");
+            }
+
+            public Apply(ApplyKind kind, LyraType type,
+                         List<RetainedInitializerTransfer> operands) {
+                this(kind, type, Optional.empty(), operands);
+            }
+        }
+
+        enum AlternativeKind {
+            CONDITIONAL, COALESCE, MATCH;
+            static AlternativeKind of(TypedExpressionKind kind) {
+                return switch (kind) {
+                    case CONDITIONAL -> CONDITIONAL;
+                    case COALESCE -> COALESCE;
+                    case MATCH -> MATCH;
+                    default -> throw new IllegalArgumentException("not an alternative transfer: " + kind);
+                };
+            }
+        }
+
+        /**
+         * Closed lazy-join metadata. Prefixes are evaluated once; every branch
+         * starts from that exact post-prefix state rather than another branch's
+         * result. Selector steps are arm-local match tests and precede only that
+         * arm's result.
+         */
+        record Alternative(AlternativeKind kind, LyraType type, List<Step> prefix,
+                           List<Branch> branches, Optional<PredicateBinding> predicateBinding)
+                implements RetainedInitializerTransfer {
+            public record Step(LyraType type, RetainedInitializerTransfer transfer) {
+                public Step {
+                    Objects.requireNonNull(type, "type");
+                    Objects.requireNonNull(transfer, "transfer");
+                    if (!type.equals(transfer.type())) {
+                        throw new IllegalArgumentException("retained alternative step type differs from its transfer");
+                    }
                 }
             }
+
+            public record Branch(Optional<Step> pattern, Optional<Step> guard,
+                                 boolean wildcard, Optional<Step> result) {
+                public Branch {
+                    pattern = Objects.requireNonNull(pattern, "pattern");
+                    guard = Objects.requireNonNull(guard, "guard");
+                    result = Objects.requireNonNull(result, "result");
+                    if (wildcard && pattern.isPresent()) {
+                        throw new IllegalArgumentException(
+                                "retained wildcard arm has a pattern transfer");
+                    }
+                }
+
+                public List<Step> selectors() {
+                    return java.util.stream.Stream.concat(pattern.stream(), guard.stream()).toList();
+                }
+            }
+
+            public record PredicateBinding(DeclarationId declaration, BindingContract contract) {
+                public PredicateBinding {
+                    Objects.requireNonNull(declaration, "declaration");
+                    Objects.requireNonNull(contract, "contract");
+                }
+            }
+
+            public Alternative {
+                Objects.requireNonNull(kind, "kind");
+                Objects.requireNonNull(type, "type");
+                prefix = List.copyOf(Objects.requireNonNull(prefix, "prefix"));
+                branches = List.copyOf(Objects.requireNonNull(branches, "branches"));
+                predicateBinding = Objects.requireNonNull(predicateBinding, "predicateBinding");
+                if (prefix.stream().anyMatch(Objects::isNull) || branches.stream().anyMatch(Objects::isNull)) {
+                    throw new IllegalArgumentException("retained alternative contains null");
+                }
+                switch (kind) {
+                    case CONDITIONAL -> {
+                        boolean bindingValid = prefix.size() == 1 && (predicateBinding.isEmpty()
+                                || predicateBinding.orElseThrow().contract().valueType().equals(
+                                withoutNil(prefix.getFirst().type())));
+                        if (prefix.size() != 1 || branches.size() != 2
+                                || branches.stream().anyMatch(branch -> !branch.selectors().isEmpty()
+                                || branch.wildcard())
+                                || branches.getFirst().result().isEmpty()
+                                || !truthTestable(prefix.getFirst().type())
+                                || !sameType(branches.getFirst().result().orElseThrow().type(), type)
+                                || branches.get(1).result().stream().anyMatch(result ->
+                                !sameType(result.type(), type))
+                                || branches.get(1).result().isEmpty()
+                                && !type.equals(PrimitiveType.UNIT)
+                                || !bindingValid) {
+                            throw new IllegalArgumentException("retained conditional has an invalid prefix, branch or result type");
+                        }
+                    }
+                    case COALESCE -> {
+                        if (prefix.size() != 1 || branches.size() != 1
+                                || !branches.getFirst().selectors().isEmpty()
+                                || branches.getFirst().wildcard()
+                                || branches.getFirst().result().isEmpty()
+                                || prefix.size() == 1
+                                && (!prefix.getFirst().type().hasQualifier(TypeQualifier.NIL)
+                                || !sameType(withoutNil(prefix.getFirst().type()), type))
+                                || !sameType(branches.getFirst().result().orElseThrow().type(), type)
+                                || predicateBinding.isPresent()) {
+                            throw new IllegalArgumentException("retained coalesce has an invalid prefix, branch or result type");
+                        }
+                    }
+                    case MATCH -> {
+                        Branch fallback = branches.isEmpty() ? null : branches.getLast();
+                        if (prefix.size() > 1 || branches.isEmpty() || predicateBinding.isPresent()
+                                || fallback == null || !fallback.wildcard()
+                                || fallback.guard().isPresent()
+                                || branches.stream().anyMatch(branch ->
+                                !branch.wildcard() && branch.pattern().isEmpty())
+                                || branches.subList(0, branches.size() - 1).stream()
+                                .anyMatch(branch -> branch.wildcard() && branch.guard().isEmpty())
+                                || prefix.isEmpty() && branches.stream()
+                                .anyMatch(branch -> branch.guard().isPresent())
+                                || branches.stream().anyMatch(branch -> branch.result().isEmpty()
+                                || !sameType(branch.result().orElseThrow().type(), type))
+                                || !validMatchSelectors(prefix, branches)) {
+                            throw new IllegalArgumentException("retained match has an invalid prefix, arm or result type");
+                        }
+                    }
+                }
+            }
+        }
+
+        /** Ordered lexical block forms, whose final form provides the value. */
+        record Sequence(LyraType type, List<RetainedInitializerTransfer> steps)
+                implements RetainedInitializerTransfer {
+            public Sequence {
+                Objects.requireNonNull(type, "type");
+                steps = checkedTransfers(steps, "steps");
+                if (steps.isEmpty() || !sameType(steps.getLast().type(), type)) {
+                    throw new IllegalArgumentException("retained sequence result type differs from its final step");
+                }
+            }
+        }
+
+        /** A producer declaration identity and exact shared-cell contract introduced by a retained block. */
+        record Declare(LyraType type, DeclarationId declaration, BindingContract contract,
+                       Optional<DeclarationId> sharedCell,
+                       RetainedInitializerTransfer initializer) implements RetainedInitializerTransfer {
+            public Declare {
+                Objects.requireNonNull(type, "type");
+                Objects.requireNonNull(declaration, "declaration");
+                Objects.requireNonNull(contract, "contract");
+                sharedCell = Objects.requireNonNull(sharedCell, "sharedCell");
+                Objects.requireNonNull(initializer, "initializer");
+                if (!type.equals(PrimitiveType.UNIT)
+                        || !sameType(initializer.type(), contract.valueType())
+                        || sharedCell.isPresent() && (!contract.isMutable()
+                        || sharedCell.orElseThrow().equals(declaration))) {
+                    throw new IllegalArgumentException("retained declaration type/cell contract differs");
+                }
+            }
+        }
+
+        /** A routed producer storage update introduced by a retained block. */
+        record Rebind(LyraType type, WriteTarget target, LyraType rootType,
+                      LyraType targetType, Optional<DeclarationId> sharedCell,
+                      RetainedInitializerTransfer value)
+                implements RetainedInitializerTransfer {
+            public Rebind {
+                Objects.requireNonNull(type, "type");
+                Objects.requireNonNull(target, "target");
+                Objects.requireNonNull(rootType, "rootType");
+                Objects.requireNonNull(targetType, "targetType");
+                sharedCell = Objects.requireNonNull(sharedCell, "sharedCell");
+                Objects.requireNonNull(value, "value");
+                LyraType routed;
+                try {
+                    routed = ValueAlternative.typeAt(rootType, target.route());
+                } catch (IllegalArgumentException invalidRoute) {
+                    throw new IllegalArgumentException("retained rebind route differs from its root type", invalidRoute);
+                }
+                if (!type.equals(PrimitiveType.UNIT) || !routed.equals(targetType)
+                        || !sameType(value.type(), targetType)
+                        || sharedCell.isPresent()
+                        && sharedCell.orElseThrow().equals(target.declaration())) {
+                    throw new IllegalArgumentException("retained rebind value/result type differs");
+                }
+            }
+        }
+
+        enum ProjectionKind { ROUTE, LENGTH, STRING_INDEX }
+
+        /** A routed projection or the exact array/string length operation. */
+        record Project(LyraType type, RetainedInitializerTransfer base, LyraType baseType,
+                       ProjectionKind kind, ProjectionPath route,
+                       Optional<RetainedInitializerTransfer> index) implements RetainedInitializerTransfer {
+            public Project {
+                Objects.requireNonNull(type, "type");
+                Objects.requireNonNull(base, "base");
+                Objects.requireNonNull(baseType, "baseType");
+                Objects.requireNonNull(kind, "kind");
+                Objects.requireNonNull(route, "route");
+                index = Objects.requireNonNull(index, "index");
+                if (!sameType(base.type(), baseType)) {
+                    throw new IllegalArgumentException("retained projection base type differs");
+                }
+                if (kind == ProjectionKind.LENGTH) {
+                    LyraType plain = baseType.withoutQualifiers();
+                    if (!route.isRoot() || index.isPresent() || !sameType(type, PrimitiveType.I32)
+                            || plain != PrimitiveType.STRING && !(plain instanceof ArrayType)) {
+                        throw new IllegalArgumentException("retained length projection differs");
+                    }
+                } else if (kind == ProjectionKind.STRING_INDEX) {
+                    LyraType indexType = index.map(value -> value.type()).orElse(null);
+                    if (!route.isRoot() || indexType == null
+                            || baseType.withoutQualifiers() != PrimitiveType.STRING
+                            || indexType.isNilable() || !indexType.isInteger()
+                            || !sameType(type, PrimitiveType.CHAR)) {
+                        throw new IllegalArgumentException("retained string index projection differs");
+                    }
+                } else {
+                    LyraType routed;
+                    try {
+                        routed = ValueAlternative.typeAt(baseType, route);
+                    } catch (IllegalArgumentException invalidRoute) {
+                        throw new IllegalArgumentException("retained projection route differs from its base type", invalidRoute);
+                    }
+                    // The element type reached through an array route carries the
+                    // storage mutability qualifier, while a member contract type
+                    // does not; compare the resolved shape exactly.
+                    if (route.isRoot() || !sameType(routed.withoutQualifiers(), type)
+                            || index.isPresent() != route.steps().getLast().isArrayElement()
+                            || index.stream().anyMatch(value ->
+                            value.type().isNilable() || !value.type().isInteger())) {
+                        throw new IllegalArgumentException(
+                                "retained projection route/index/result differs: " + route);
+                    }
+                }
+            }
+        }
+
+        /** Exact source identity required to initialize a nested retained nominal. */
+        record ConstructionSite(DeclarationId nominalDeclaration, NominalSchema schema,
+                                ModuleId moduleId, ScopeId scopeId, SourceSpan span,
+                                FlowSiteId site, DeclarationId allocation,
+                                List<LyraType> argumentTypes,
+                                List<Optional<WriteTarget>> argumentTargets) {
+            public ConstructionSite {
+                Objects.requireNonNull(nominalDeclaration, "nominalDeclaration");
+                Objects.requireNonNull(schema, "schema");
+                Objects.requireNonNull(moduleId, "moduleId");
+                Objects.requireNonNull(scopeId, "scopeId");
+                Objects.requireNonNull(span, "span");
+                Objects.requireNonNull(site, "site");
+                Objects.requireNonNull(allocation, "allocation");
+                argumentTypes = List.copyOf(Objects.requireNonNull(argumentTypes, "argumentTypes"));
+                argumentTargets = List.copyOf(Objects.requireNonNull(argumentTargets, "argumentTargets"));
+                if (!moduleId.sourceId().equals(span.sourceId())
+                        || !schema.type().id().module().moduleId().equals(moduleId)
+                        || !RetainedAllocationDerivation.isOrdinarySourceDeclaration(
+                        nominalDeclaration)
+                        || !RetainedAllocationDerivation.isOrdinarySourceAllocation(
+                        site, allocation)
+                        || !argumentTypes.equals(schema.constructorParameters())
+                        || argumentTargets.size() != argumentTypes.size()
+                        || argumentTargets.stream().anyMatch(Objects::isNull)) {
+                    throw new IllegalArgumentException("retained construction source/schema/arguments differ");
+                }
+            }
+
+            public NominalType nominalType() { return schema.type(); }
+        }
+
+        /** Nested construction routed through the producer-bound nominal factory. */
+        record Construct(ConstructionSite site, List<RetainedInitializerTransfer> arguments)
+                implements RetainedInitializerTransfer {
+            public Construct {
+                Objects.requireNonNull(site, "site");
+                arguments = checkedTransfers(arguments, "arguments");
+                boolean valid = site.argumentTargets().size() == arguments.size();
+                for (int index = 0; valid && index < arguments.size(); index++) {
+                    valid = sameType(arguments.get(index).type(), site.argumentTypes().get(index));
+                }
+                if (!valid) throw new IllegalArgumentException("retained construction arity/type differs");
+            }
+
+            @Override public LyraType type() { return site.nominalType(); }
+        }
+
+        /** A callable-value call, with target evaluation before left-to-right arguments. */
+        record CallableCall(RetainedInitializerTransfer target, FunctionType function,
+                            SourceSpan span, FlowSiteId site,
+                            List<RetainedInitializerTransfer> arguments,
+                            List<Optional<WriteTarget>> argumentTargets) implements RetainedInitializerTransfer {
+            public CallableCall {
+                Objects.requireNonNull(target, "target");
+                Objects.requireNonNull(function, "function");
+                Objects.requireNonNull(span, "span");
+                Objects.requireNonNull(site, "site");
+                arguments = checkedTransfers(arguments, "arguments");
+                argumentTargets = checkedTargets(argumentTargets, function.arity());
+                if (!RetainedAllocationDerivation.isOrdinarySourceSite(site)
+                        || !sameCallableType(target.type(), function)
+                        || arguments.size() != function.arity()) {
+                    throw new IllegalArgumentException("retained callable target/arity differs");
+                }
+                requireArgumentTypes(function, arguments);
+            }
+
+            @Override public LyraType type() { return function.returnType(); }
+        }
+
+        /** Callback-loop selection and contracts, retained without callback source bodies. */
+        record Loop(TypedExpressionKind kind, LyraType type, SourceSpan span, FlowSiteId site,
+                    RetainedInitializerTransfer input, RetainedInitializerTransfer action,
+                    Optional<FunctionType> inputFunction,
+                    FunctionType actionFunction) implements RetainedInitializerTransfer {
+            public Loop {
+                if (kind != TypedExpressionKind.ITER && kind != TypedExpressionKind.WHILE) {
+                    throw new IllegalArgumentException("retained loop kind is invalid");
+                }
+                Objects.requireNonNull(type, "type");
+                Objects.requireNonNull(span, "span");
+                Objects.requireNonNull(site, "site");
+                Objects.requireNonNull(input, "input");
+                Objects.requireNonNull(action, "action");
+                inputFunction = Objects.requireNonNull(inputFunction, "inputFunction");
+                Objects.requireNonNull(actionFunction, "actionFunction");
+                if (!RetainedAllocationDerivation.isOrdinarySourceSite(site)
+                        || (kind == TypedExpressionKind.WHILE) != inputFunction.isPresent()
+                        || !sameType(type, PrimitiveType.UNIT)
+                        || !sameCallableType(action.type(), actionFunction)
+                        || !CallbackLoop.valid(kind, type, List.of(input.type(), action.type()))
+                        || kind == TypedExpressionKind.WHILE
+                        && !sameCallableType(input.type(), inputFunction.orElseThrow())) {
+                    throw new IllegalArgumentException("retained loop input/action contract differs");
+                }
+            }
+        }
+
+        /** Exact producer array allocation identity used by a dynamic composite. */
+        record ArrayAllocation(ModuleId moduleId, ScopeId scopeId, SourceSpan span, FlowSiteId site,
+                               DeclarationId allocation, ArrayType type) {
+            public ArrayAllocation {
+                Objects.requireNonNull(moduleId, "moduleId");
+                Objects.requireNonNull(scopeId, "scopeId");
+                Objects.requireNonNull(span, "span");
+                Objects.requireNonNull(site, "site");
+                Objects.requireNonNull(allocation, "allocation");
+                Objects.requireNonNull(type, "type");
+                if (!moduleId.sourceId().equals(span.sourceId())
+                        || !RetainedAllocationDerivation.isOrdinarySourceAllocation(
+                        site, allocation)) {
+                    throw new IllegalArgumentException("retained array allocation source/identity differs");
+                }
+            }
+            static ArrayAllocation of(TypedExpression expression, TypedSemanticInput graph) {
+                if (!(expression.type().withoutQualifiers() instanceof ArrayType type)) {
+                    throw new IllegalArgumentException("retained array allocation has no array type");
+                }
+                FlowSiteId site = graph.flowSiteId(expression);
+                return new ArrayAllocation(ModuleId.fromSourceId(expression.span().sourceId()),
+                        graph.flowScopeId(expression), expression.span(), site,
+                        new DeclarationId(Long.MAX_VALUE - site.ordinal()), type);
+            }
+        }
+
+        private static boolean validOperatorApply(
+                String operation, LyraType type,
+                List<RetainedInitializerTransfer> operands) {
+            List<LyraType> operandTypes = operands.stream()
+                    .map(RetainedInitializerTransfer::type).toList();
+            int arity = operands.size();
+            boolean validArity = switch (operation) {
+                case "+", "*", "<", "<=", ">", ">=", "==", "!=", "eq?", "!eq?", "xor" -> arity >= 2;
+                case "-", "/" -> arity >= 1;
+                case "%", "^" -> arity == 2;
+                case "not", "++", "--" -> arity == 1;
+                default -> false;
+            };
+            if (!validArity) {
+                return false;
+            }
+            return switch (operation) {
+                case "xor" -> sameType(type, PrimitiveType.BOOL)
+                        && operandTypes.stream().allMatch(
+                        RetainedInitializerTransfer::truthTestable);
+                case "not" -> sameType(type, PrimitiveType.BOOL)
+                        && truthTestable(operandTypes.getFirst());
+                case "<", "<=", ">", ">=" -> sameType(type, PrimitiveType.BOOL)
+                        && operandTypes.stream().noneMatch(LyraType::isNilable)
+                        && TypeRules.commonNumericType(operandTypes).isPresent();
+                case "==", "!=" -> sameType(type, PrimitiveType.BOOL)
+                        && (TypeRules.commonType(operandTypes).isPresent()
+                        || operandTypes.stream().anyMatch(value ->
+                        value.withoutQualifiers() == PrimitiveType.BOOL)
+                        && operandTypes.stream().allMatch(
+                        RetainedInitializerTransfer::truthTestable));
+                case "eq?", "!eq?" -> {
+                    LyraType base = operandTypes.getFirst().withoutQualifiers();
+                    yield sameType(type, PrimitiveType.BOOL)
+                            && (base instanceof FunctionType
+                            || base instanceof ArrayType
+                            || base instanceof NominalType)
+                            && operandTypes.stream().allMatch(value -> !value.isNilable()
+                            && value.withoutQualifiers().equals(base));
+                }
+                case "+" -> operandTypes.stream().allMatch(value ->
+                        !value.isNilable()
+                                && value.withoutQualifiers() == PrimitiveType.STRING)
+                        ? sameType(type, PrimitiveType.STRING)
+                        : type.isNumeric() && !type.isNilable()
+                        && operandTypes.stream().allMatch(type::equals);
+                case "-", "*", "^", "++", "--" -> type.isNumeric()
+                        && !type.isNilable()
+                        && operandTypes.stream().allMatch(type::equals);
+                case "%" -> type.isInteger() && !type.isNilable()
+                        && operandTypes.stream().allMatch(type::equals);
+                case "/" -> {
+                    boolean integers = operandTypes.stream().allMatch(LyraType::isInteger);
+                    yield type.isNumeric() && !type.isNilable()
+                            && (integers
+                            ? type.isFloating()
+                            && TypeRules.commonNumericType(operandTypes).isPresent()
+                            : operandTypes.stream().allMatch(type::equals));
+                }
+                default -> false;
+            };
+        }
+
+        private static boolean validMatchSelectors(
+                List<Alternative.Step> prefix,
+                List<Alternative.Branch> branches) {
+            for (Alternative.Branch branch : branches) {
+                if (branch.guard().stream().anyMatch(guard ->
+                        !truthTestable(guard.type()))) {
+                    return false;
+                }
+                if (branch.pattern().isEmpty()) {
+                    continue;
+                }
+                LyraType pattern = branch.pattern().orElseThrow().type();
+                if (prefix.isEmpty()) {
+                    if (!truthTestable(pattern)) {
+                        return false;
+                    }
+                } else if (TypeRules.commonType(
+                        List.of(prefix.getFirst().type(), pattern)).isEmpty()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static boolean truthTestable(LyraType type) {
+            LyraType base = type.withoutQualifiers();
+            return type.isNilable() || base instanceof PrimitiveType
+                    || base instanceof ArrayType || base instanceof TupleType
+                    || base instanceof FunctionType;
+        }
+
+        private static List<RetainedInitializerTransfer> checkedTransfers(
+                List<RetainedInitializerTransfer> values, String name) {
+            values = List.copyOf(Objects.requireNonNull(values, name));
+            if (values.stream().anyMatch(Objects::isNull)) throw new IllegalArgumentException(name + " contains null");
+            return values;
+        }
+
+        private static boolean sameType(LyraType left, LyraType right) {
+            return left.equals(right);
+        }
+
+        private static boolean sameCallableType(LyraType target, FunctionType function) {
+            return target.withoutQualifiers().equals(function);
+        }
+
+        private static boolean compatibleType(LyraType source, LyraType target) {
+            return TypeRules.canImplicitlyConvert(source, target);
+        }
+
+        private static LyraType withoutNil(LyraType type) {
+            LyraType base = type.withoutQualifiers();
+            return type.hasQualifier(TypeQualifier.MUT)
+                    ? base.withQualifier(TypeQualifier.MUT) : base;
+        }
+
+        private static void requireArgumentTypes(
+                FunctionType function, List<RetainedInitializerTransfer> arguments) {
+            for (int index = 0; index < arguments.size(); index++) {
+                if (!compatibleType(arguments.get(index).type(), function.parameterType(index))) {
+                    throw new IllegalArgumentException("retained callable argument type differs at " + index);
+                }
+            }
+        }
+
+        private static List<Optional<WriteTarget>> checkedTargets(
+                List<Optional<WriteTarget>> values, int arity) {
+            values = List.copyOf(Objects.requireNonNull(values, "argumentTargets"));
+            if (values.size() != arity || values.stream().anyMatch(Objects::isNull)) {
+                throw new IllegalArgumentException("retained argument targets differ");
+            }
+            return values;
         }
     }
 
@@ -1726,21 +3825,34 @@ public final class SessionFlowCertificate {
      */
     public record RetainedConstruction(
             CallableCallReference call,
+            NominalSchema schema,
             ModuleId moduleId,
             ScopeId scopeId,
             DeclarationId allocation,
             List<Optional<WriteTarget>> argumentTargets) {
         public RetainedConstruction {
             Objects.requireNonNull(call, "call");
+            Objects.requireNonNull(schema, "schema");
             Objects.requireNonNull(moduleId, "moduleId");
             Objects.requireNonNull(scopeId, "scopeId");
             Objects.requireNonNull(allocation, "allocation");
             argumentTargets = List.copyOf(argumentTargets);
             if (call.kind() != CallableCallReference.Kind.CONSTRUCTION
                     || call.siteId().isEmpty()
+                    || !RetainedAllocationDerivation.isOrdinarySourceSite(
+                    call.siteId().orElseThrow())
                     || call.targetDeclaration().isEmpty()
-                    || !(call.target().only() instanceof ValueFormula.Constructor)
+                    || !RetainedAllocationDerivation.isOrdinarySourceDeclaration(
+                    call.targetDeclaration().orElseThrow())
+                    || !(call.target().only() instanceof ValueFormula.Constructor constructor)
+                    || !call.targetDeclaration().orElseThrow().equals(constructor.declaration())
+                    || !schema.type().equals(constructor.nominalType())
+                    || !schema.type().id().module().moduleId().equals(moduleId)
+                    || !schema.constructorParameters().equals(call.arguments().stream()
+                    .map(FormulaAlternatives::rootType).toList())
                     || argumentTargets.size() != call.arguments().size()
+                    || !RetainedAllocationDerivation.isOrdinarySourceAllocation(
+                    call.siteId().orElseThrow(), allocation)
                     || !moduleId.sourceId().equals(call.span().sourceId())) {
                 throw new IllegalArgumentException(
                         "retained construction evidence differs from its certified call");
@@ -1756,12 +3868,13 @@ public final class SessionFlowCertificate {
         }
 
         public NominalType nominalType() {
-            return ((ValueFormula.Constructor) call.target().only()).nominalType();
+            return schema.type();
         }
 
-        private boolean certifies(NominalObjectFact fact) {
+        private boolean certifies(NominalObjectFact fact, Set<RouteProof> routes) {
             OwnershipWitness witness = fact.ownership();
-            return fact.identity().ownerModule().equals(moduleId)
+            return routes.contains(new RouteProof(site(), fact.route()))
+                    && fact.identity().ownerModule().equals(moduleId)
                     && fact.identity().allocationSite().equals(site())
                     && fact.identity().type().equals(nominalType())
                     && witness.ownerModule().equals(moduleId)
@@ -1789,9 +3902,11 @@ public final class SessionFlowCertificate {
             Objects.requireNonNull(originSite, "originSite");
             Objects.requireNonNull(arrayType, "arrayType");
             Objects.requireNonNull(allocation, "allocation");
-            if (!moduleId.sourceId().equals(sourceSpan.sourceId())) {
+            if (!moduleId.sourceId().equals(sourceSpan.sourceId())
+                    || !RetainedAllocationDerivation.isOrdinarySummaryAllocation(
+                    originSite, allocation)) {
                 throw new IllegalArgumentException(
-                        "allocation provenance span belongs to another module");
+                        "allocation provenance source/identity differs");
             }
         }
 
@@ -1800,25 +3915,421 @@ public final class SessionFlowCertificate {
         }
     }
 
+    /**
+     * A consumer may re-project a retained callable through its own typed source.
+     * Build that finite route proof once, independently of the candidate flow
+     * facts; identity/capture authentication still belongs to this certificate.
+     */
+    public java.util.function.Predicate<CallableFlow> callableTransferVerifier(
+            TypedSemanticInput consumer, CallableSummarySet currentSummaries) {
+        Objects.requireNonNull(consumer, "consumer");
+        if (consumer.resolvedGraph().sessionFlowCertificate().orElse(null) != this) {
+            throw new IllegalArgumentException("callable route consumer has a different predecessor");
+        }
+        Set<RouteProof> derived = new RouteDerivation(boundaryState,
+                CallableSummarySet.combine(callableSummaries, currentSummaries),
+                retainedNominals, retainedConstructions, consumer).derive();
+        return callable -> (routeProofs.contains(RouteProof.of(callable))
+                || derived.contains(RouteProof.of(callable)))
+                && certifiesCallableTransferIdentity(callable);
+    }
+
+    /** Identity-only atoms and exact routes, never executable retained values. */
+    private record RouteProof(Object origin, ProjectionPath route) {
+        private RouteProof {
+            Objects.requireNonNull(origin, "origin");
+            Objects.requireNonNull(route, "route");
+            if (!(origin instanceof LambdaId || origin instanceof DeclarationId || origin instanceof FlowSiteId)) {
+                throw new IllegalArgumentException("route proof needs an exact lambda, intrinsic or construction site");
+            }
+        }
+
+        private static RouteProof of(CallableFlow callable) {
+            return new RouteProof(callable.lambdaId().<Object>map(value -> value)
+                    .orElseGet(() -> callable.intrinsicDeclarationId().orElseThrow()), callable.route());
+        }
+    }
+
+    /**
+     * Finite projection reachability over already-issued transfer/summary edges.
+     * This does not evaluate values, calls, captures, writes or control flow: it
+     * propagates identity atoms only, selecting and prefixing their exact routes.
+     * Nodes/edges are discarded after issuance; only the closed route set remains.
+     */
+    private static final class RouteDerivation {
+        private final CallableSummarySet summaries;
+        private final Map<String, ResolvedNominal> nominals = new TreeMap<>();
+        private final List<RouteNode> nodes = new ArrayList<>();
+        private final Map<DeclarationId, RouteNode> declarations = new TreeMap<>();
+        private final Map<LambdaId, RouteNode> returns = new TreeMap<>();
+        private final Map<SummaryCallId, RouteNode> calls = new TreeMap<>();
+        private final List<RouteEdge> edges = new ArrayList<>();
+        private final List<RouteInvocation> invocations = new ArrayList<>();
+        private final Map<TypedExpression, RouteNode> expressions = new IdentityHashMap<>();
+
+        private static final class RouteNode {
+            private final LyraType type;
+            private final Set<RouteProof> proofs = new LinkedHashSet<>();
+            private RouteNode(LyraType type) { this.type = type; }
+        }
+        private record RouteEdge(RouteNode source, RouteNode target,
+                                 ProjectionPath select, ProjectionPath prefix) { }
+        private record RouteInvocation(RouteNode target, List<RouteNode> arguments,
+                                       RouteNode result) { }
+
+        private RouteDerivation(BindingFlowState boundary, CallableSummarySet summaries,
+                                Map<String, RetainedNominal> nominals,
+                                Map<SummaryCallId, RetainedConstruction> constructions,
+                                TypedSemanticInput graph) {
+            this.summaries = summaries;
+            nominals.forEach((name, nominal) -> this.nominals.put(name, nominal.nominal()));
+            graph.resolvedGraph().nominals().forEach(nominal -> this.nominals.putIfAbsent(
+                    nominal.schema().type().canonicalSpelling(), nominal));
+            graph.contractsByDeclaration().forEach((id, contract) -> declaration(id, contract.valueType()));
+            summaries.orderedSummaries().forEach(summary -> {
+                returns.put(summary.lambdaId(), node(summary.signature().returnType()));
+                summary.parameters().forEach(parameter -> declaration(parameter.declarationId(), parameter.type()));
+                summary.captures().forEach(capture -> {
+                    RouteNode captured = declaration(capture.declarationId(), capture.type());
+                    capture.sharedCellId().ifPresent(cell -> edge(declaration(cell, capture.type()), captured));
+                });
+                summary.callReferences().forEach(call -> calls.put(call.id(), node(((FunctionType) call.target().rootType().withoutQualifiers()).returnType())));
+            });
+            boundary.bindings().forEach((id, value) -> values(value.alternatives(), declaration(id, value.contract().valueType())));
+            boundary.sharedCells().forEach((id, value) -> values(value, declaration(id, value.alternatives().getFirst().type())));
+            boundary.objects().values().forEach(object -> {
+                ResolvedNominal nominal = this.nominals.get(object.schema().type().canonicalSpelling());
+                if (nominal != null) object.fields().forEach((index, value) -> values(value,
+                        declaration(nominal.members().get(index), object.schema().members().get(index).type())));
+            });
+            nominals.values().forEach(nominal -> {
+                for (int index = 0; index < nominal.memberInitializers().size(); index++) {
+                    int member = index;
+                    nominal.memberInitializer(index).ifPresent(transfer -> edge(transfer(transfer),
+                            declaration(nominal.nominal().members().get(member), transfer.type())));
+                }
+            });
+            graph.declarations().forEach(value -> {
+                RouteNode target = declaration(value.id(), value.contract().map(BindingContract::valueType).orElse(null));
+                value.initializerLambda().ifPresent(lambda -> target.proofs.add(new RouteProof(lambda, ProjectionPath.root())));
+                value.initializer().ifPresent(initializer -> edge(expression(initializer, graph), target));
+            });
+            // Current source is inspected transiently, never stored in a certificate
+            // or forced into a producer-only construction evidence record.
+            graph.expressions().forEach(expression -> expression(expression, graph));
+            summaries.orderedSummaries().forEach(summary -> {
+                edge(formulas(summary.returnFormula().alternatives()), returns.get(summary.lambdaId()));
+                summary.writes().forEach(write -> formulas(write.value()));
+                summary.ownershipRequirements().forEach(requirement -> formulas(requirement.value()));
+                for (CallableCallReference call : summary.callReferences()) {
+                    RouteNode result = calls.get(call.id());
+                    List<RouteNode> arguments = call.arguments().stream().map(this::formulas).toList();
+                    if (call.kind() == CallableCallReference.Kind.CONSTRUCTION) {
+                        RetainedConstruction construction = constructions.get(call.id());
+                        if (construction != null) result.proofs.add(new RouteProof(construction.site(), ProjectionPath.root()));
+                        else graph.expressions().stream().filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION
+                                && call.siteId().filter(graph.flowSiteId(expression)::equals).isPresent()
+                                && expression.span().equals(call.span())
+                                && expression.declarationId().equals(call.targetDeclaration()))
+                                .findFirst().ifPresent(expression -> edge(expression(expression, graph), result));
+                    } else {
+                        RouteNode target = formulas(call.target());
+                        call.targetLambda().ifPresent(lambda -> target.proofs.add(new RouteProof(lambda, ProjectionPath.root())));
+                        invocations.add(new RouteInvocation(target, arguments, result));
+                    }
+                }
+            });
+        }
+
+        private RouteNode node(LyraType type) {
+            RouteNode node = new RouteNode(type);
+            nodes.add(node);
+            return node;
+        }
+
+        private RouteNode declaration(DeclarationId id, LyraType type) {
+            return declarations.computeIfAbsent(id, ignored -> node(type));
+        }
+
+        private void edge(RouteNode source, RouteNode target) {
+            edges.add(new RouteEdge(source, target, ProjectionPath.root(), ProjectionPath.root()));
+        }
+
+        private void select(RouteNode source, ProjectionPath route, RouteNode target, ProjectionPath prefix) {
+            // Nominal heap members are separately certified storage, not flattened
+            // object atoms. Resolve only the exact schema/member selector issued
+            // by the source; structural selectors retain ordinary suffix semantics.
+            for (int index = 0; index < route.steps().size(); index++) {
+                if (route.steps().get(index) instanceof io.mindspice.lyra.compiler.semantic.flow.ProjectionStep.NominalMember member) {
+                    ResolvedNominal nominal = nominals.get(member.owner().canonicalSpelling());
+                    if (nominal != null) {
+                        select(declaration(nominal.members().get(member.index()), member.type()),
+                                route.suffix(index + 1), target, prefix);
+                    }
+                    return;
+                }
+            }
+            edges.add(new RouteEdge(source, target, route, prefix));
+        }
+
+        private void values(ValueAlternatives values, RouteNode node) {
+            for (ValueAlternative value : values) {
+                value.objects().forEach(object -> node.proofs.add(new RouteProof(
+                        object.identity().allocationSite(), object.route())));
+                value.callableFlows().forEach(callable -> {
+                    node.proofs.add(RouteProof.of(callable));
+                    callable.capturedValues().forEach((id, captured) -> values(captured,
+                            declaration(id, captured.alternatives().getFirst().type())));
+                    callable.sharedCellSnapshots().forEach((id, captured) -> values(captured,
+                            declaration(id, captured.alternatives().getFirst().type())));
+                });
+            }
+        }
+
+        private RouteNode transfer(RetainedInitializerTransfer transfer) {
+            RouteNode result = node(transfer.type());
+            switch (transfer) {
+                case RetainedInitializerTransfer.Lambda lambda -> result.proofs.add(new RouteProof(lambda.lambda(), ProjectionPath.root()));
+                case RetainedInitializerTransfer.Value value -> values(value.value(), result);
+                case RetainedInitializerTransfer.Reference reference -> select(
+                        declaration(reference.declaration(), reference.declarationType()), reference.route(), result, ProjectionPath.root());
+                case RetainedInitializerTransfer.Composite composite -> {
+                    for (int index = 0; index < composite.elements().size(); index++) {
+                        edges.add(new RouteEdge(transfer(composite.elements().get(index)), result, ProjectionPath.root(),
+                                composite.arrayLiteral() ? ProjectionPath.arrayElement(index) : ProjectionPath.tupleMember(index)));
+                    }
+                }
+                case RetainedInitializerTransfer.Project project -> {
+                    RouteNode base = transfer(project.base());
+                    project.index().ifPresent(this::transfer);
+                    if (project.kind() == RetainedInitializerTransfer.ProjectionKind.ROUTE)
+                        select(base, project.route(), result, ProjectionPath.root());
+                }
+                case RetainedInitializerTransfer.Construct construct -> {
+                    result.proofs.add(new RouteProof(construct.site().site(), ProjectionPath.root()));
+                    construct.arguments().forEach(this::transfer);
+                }
+                case RetainedInitializerTransfer.Call call -> invocations.add(new RouteInvocation(
+                        declaration(call.target(), call.function()), call.arguments().stream().map(this::transfer).toList(), result));
+                case RetainedInitializerTransfer.CallableCall call -> invocations.add(new RouteInvocation(
+                        transfer(call.target()), call.arguments().stream().map(this::transfer).toList(), result));
+                case RetainedInitializerTransfer.Sequence sequence -> {
+                    List<RouteNode> steps = sequence.steps().stream().map(this::transfer).toList();
+                    edge(steps.getLast(), result);
+                }
+                case RetainedInitializerTransfer.Declare declare -> edge(transfer(declare.initializer()),
+                        declaration(declare.declaration(), declare.contract().valueType()));
+                case RetainedInitializerTransfer.Rebind rebind -> {
+                    RouteNode value = transfer(rebind.value());
+                    writeRoute(value, rebind.target(), rebind.rootType());
+                    edge(value, result);
+                }
+                case RetainedInitializerTransfer.Alternative alternative -> {
+                    alternative.prefix().forEach(step -> {
+                        RouteNode value = transfer(step.transfer());
+                        if (alternative.kind() == RetainedInitializerTransfer.AlternativeKind.COALESCE) edge(value, result);
+                    });
+                    alternative.branches().forEach(branch -> {
+                        branch.selectors().forEach(step -> transfer(step.transfer()));
+                        branch.result().ifPresent(step -> edge(transfer(step.transfer()), result));
+                    });
+                }
+                case RetainedInitializerTransfer.Apply apply -> {
+                    List<RouteNode> operands = apply.operands().stream().map(this::transfer).toList();
+                    if (apply.kind() == RetainedInitializerTransfer.ApplyKind.CONVERSION
+                            || apply.kind() == RetainedInitializerTransfer.ApplyKind.NARROWING) edge(operands.getLast(), result);
+                }
+                case RetainedInitializerTransfer.Loop loop -> {
+                    transfer(loop.input());
+                    transfer(loop.action());
+                }
+            }
+            return result;
+        }
+
+        private RouteNode expression(TypedExpression expression, TypedSemanticInput graph) {
+            RouteNode existing = expressions.get(expression);
+            if (existing != null) return existing;
+            RouteNode result = node(expression.type());
+            expressions.put(expression, result);
+            List<RouteNode> children = expression.children().stream().map(child -> expression(child, graph)).toList();
+            Optional<RetainedInitializerTransfer.Reference> reference = retainedReference(expression, graph);
+            if (reference.isPresent()) {
+                var value = reference.orElseThrow();
+                select(declaration(value.declaration(), value.declarationType()), value.route(), result, ProjectionPath.root());
+                return result;
+            }
+            switch (expression.kind()) {
+                case LAMBDA -> expression.lambdaId().ifPresent(lambda -> result.proofs.add(new RouteProof(lambda, ProjectionPath.root())));
+                case CONSTRUCTION -> result.proofs.add(new RouteProof(graph.flowSiteId(expression), ProjectionPath.root()));
+                case ARRAY_LITERAL, TUPLE_LITERAL -> {
+                    for (int index = 0; index < children.size(); index++) edges.add(new RouteEdge(children.get(index), result,
+                            ProjectionPath.root(), expression.kind() == TypedExpressionKind.ARRAY_LITERAL
+                            ? ProjectionPath.arrayElement(index) : ProjectionPath.tupleMember(index)));
+                }
+                case CALLABLE_CALL -> invocations.add(new RouteInvocation(children.getFirst(), children.subList(1, children.size()), result));
+                case DIRECT_CALL, NAMESPACE_DIRECT_CALL -> expression.link().flatMap(value -> value.declarationId())
+                        .ifPresent(id -> invocations.add(new RouteInvocation(declaration(id, null), children, result)));
+                case BLOCK, CONVERSION, NARROWING -> { if (!children.isEmpty()) edge(children.getLast(), result); }
+                case CONDITIONAL -> {
+                    for (int index = 1; index < children.size(); index++) edge(children.get(index), result);
+                    expression.predicateBinding().ifPresent(id -> edge(children.getFirst(), declaration(id,
+                            graph.contract(id).orElseThrow().valueType())));
+                }
+                case COALESCE -> children.forEach(child -> edge(child, result));
+                case MATCH -> expression.match().orElseThrow().arms().forEach(arm -> edge(children.get(arm.resultChild()), result));
+                case DECLARATION -> expression.declarationId().ifPresent(id -> {
+                    if (!children.isEmpty()) edge(children.getFirst(), declaration(id, graph.contract(id).orElseThrow().valueType()));
+                });
+                case REBINDING -> {
+                    if (children.size() == 2) {
+                        WriteTarget.of(expression.children().getFirst(), graph).ifPresent(target -> writeRoute(children.get(1), target,
+                                graph.contract(target.declaration()).orElseThrow().valueType()));
+                        edge(children.get(1), result);
+                    }
+                }
+                case INDEX_ACCESS -> {
+                    if (expression.children().getFirst().type().withoutQualifiers() instanceof ArrayType)
+                        select(children.getFirst(), ProjectionPath.of(indexRoute(expression.children().get(1))), result, ProjectionPath.root());
+                }
+                case MEMBER_ACCESS -> {
+                    if (expression.tupleIndex().isPresent()) select(children.getFirst(),
+                            ProjectionPath.tupleMember(expression.tupleIndex().orElseThrow().intValueExact()), result, ProjectionPath.root());
+                    else expression.declarationId().ifPresent(id -> edge(declaration(id, expression.type()), result));
+                }
+                default -> { }
+            }
+            return result;
+        }
+
+        private void writeRoute(RouteNode value, WriteTarget write, LyraType rootType) {
+            RouteNode target = declaration(write.declaration(), rootType);
+            ProjectionPath route = write.route();
+            for (int index = 0; index < route.steps().size(); index++) {
+                if (route.steps().get(index) instanceof io.mindspice.lyra.compiler.semantic.flow.ProjectionStep.NominalMember member) {
+                    ResolvedNominal nominal = nominals.get(member.owner().canonicalSpelling());
+                    if (nominal != null) target = declaration(nominal.members().get(member.index()), member.type());
+                    route = route.suffix(index + 1);
+                    break;
+                }
+            }
+            edges.add(new RouteEdge(value, target, ProjectionPath.root(), route));
+        }
+
+        private RouteNode formulas(FormulaAlternatives alternatives) {
+            RouteNode result = node(alternatives.rootType());
+            for (ValueFormula formula : alternatives.formulas()) {
+                switch (formula) {
+                    case ValueFormula.Lambda lambda -> {
+                        result.proofs.add(new RouteProof(lambda.lambdaId(), lambda.resultRoute()));
+                        CallableSummary summary = summaries.summary(lambda.lambdaId()).orElse(null);
+                        lambda.capturedValues().forEach((id, value) -> {
+                            RouteNode capture = formulas(value);
+                            if (summary != null) summary.captures().stream()
+                                    .filter(placeholder -> placeholder.captureId().equals(id)).findFirst()
+                                    .ifPresent(placeholder -> edge(capture,
+                                            declaration(placeholder.declarationId(), placeholder.type())));
+                        });
+                    }
+                    case ValueFormula.Declaration declaration -> select(declaration(declaration.declarationId(), null),
+                            declaration.declarationRoute(), result, declaration.resultRoute());
+                    case ValueFormula.Parameter parameter -> select(declaration(parameter.declarationId(), null),
+                            parameter.parameterRoute(), result, parameter.resultRoute());
+                    case ValueFormula.Capture capture -> select(declaration(capture.declarationId(), null),
+                            capture.captureRoute(), result, capture.resultRoute());
+                    case ValueFormula.CallResult call -> {
+                        RouteNode source = calls.get(call.callId());
+                        if (source != null) select(source, call.callRoute(), result, call.resultRoute());
+                    }
+                    case ValueFormula.ObjectReference object -> {
+                        if (object.sourceRoute().isRoot()) result.proofs.add(new RouteProof(
+                                object.object().identity().allocationSite(), object.resultRoute()));
+                        else select(node(object.object().identity().type()), object.sourceRoute(), result, object.resultRoute());
+                    }
+                    case ValueFormula.Constructor ignored -> { }
+                    case ValueFormula.FreshAllocation ignored -> { }
+                    case ValueFormula.Scalar ignored -> { }
+                    case ValueFormula.Opaque ignored -> { }
+                }
+            }
+            return result;
+        }
+
+        private Set<RouteProof> derive() {
+            Set<RouteEdge> connected = new LinkedHashSet<>(edges);
+            boolean changed;
+            do {
+                changed = false;
+                for (RouteInvocation invocation : invocations) {
+                    for (RouteProof target : invocation.target().proofs) {
+                        if (!target.route().isRoot() || !(target.origin() instanceof LambdaId lambda)) continue;
+                        CallableSummary summary = summaries.summary(lambda).orElse(null);
+                        if (summary == null || summary.parameters().size() != invocation.arguments().size()) continue;
+                        changed |= connected.add(new RouteEdge(returns.get(lambda), invocation.result(), ProjectionPath.root(), ProjectionPath.root()));
+                        // Parameter routes belong to this invocation, never to a
+                        // global parameter bucket shared by unrelated call sites.
+                        for (ValueFormula formula : summary.returnFormula().alternatives().formulas()) {
+                            if (formula instanceof ValueFormula.Parameter parameter) {
+                                changed |= connected.add(new RouteEdge(invocation.arguments().get(parameter.parameterIndex()),
+                                        invocation.result(), parameter.parameterRoute(), parameter.resultRoute()));
+                            }
+                        }
+                    }
+                }
+                for (RouteEdge edge : connected) {
+                    for (RouteProof proof : List.copyOf(edge.source().proofs)) {
+                        Optional<ProjectionPath> suffix = edge.select().suffixOf(proof.route());
+                        if (suffix.isEmpty()) continue;
+                        RouteProof routed = new RouteProof(proof.origin(), edge.prefix().compose(suffix.orElseThrow()));
+                        if (accepts(edge.target(), routed)) changed |= edge.target().proofs.add(routed);
+                    }
+                }
+            } while (changed);
+            Set<RouteProof> result = new LinkedHashSet<>();
+            nodes.forEach(node -> result.addAll(node.proofs));
+            return Set.copyOf(result);
+        }
+
+        private static boolean accepts(RouteNode node, RouteProof proof) {
+            if (node.type == null) return true;
+            try {
+                LyraType type = ValueAlternative.typeAt(node.type, proof.route()).withoutQualifiers();
+                return proof.origin() instanceof FlowSiteId ? type instanceof NominalType : type instanceof FunctionType;
+            } catch (IllegalArgumentException invalidRoute) {
+                return false;
+            }
+        }
+    }
+
     private record CallableProofKey(
             Optional<LambdaId> lambda,
             Optional<DeclarationId> intrinsic,
+            ProjectionPath route,
             Map<DeclarationId, ValueAlternatives> capturedValues,
             Set<DeclarationId> sharedCells,
-            Optional<FlowSiteId> creationSite) {
+            Optional<FlowSiteId> creationSite,
+            Optional<FlowSiteId> retainedCellContext) {
         private CallableProofKey {
             lambda = Objects.requireNonNull(lambda, "lambda");
             intrinsic = Objects.requireNonNull(intrinsic, "intrinsic");
+            route = Objects.requireNonNull(route, "route");
             capturedValues = Map.copyOf(Objects.requireNonNull(capturedValues, "capturedValues"));
             sharedCells = Set.copyOf(Objects.requireNonNull(sharedCells, "sharedCells"));
             creationSite = Objects.requireNonNull(creationSite, "creationSite");
+            retainedCellContext = Objects.requireNonNull(
+                    retainedCellContext, "retainedCellContext");
+        }
+
+        private CallableProofKey atRoute(ProjectionPath route) {
+            return new CallableProofKey(lambda, intrinsic, route, capturedValues,
+                    sharedCells, creationSite, retainedCellContext);
         }
 
         private static CallableProofKey of(CallableFlow callable) {
             return new CallableProofKey(
-                    callable.lambdaId(), callable.intrinsicDeclarationId(),
+                    callable.lambdaId(), callable.intrinsicDeclarationId(), callable.route(),
                     callable.capturedValues(), callable.sharedCellSnapshots().keySet(),
-                    callable.creationSite());
+                    callable.creationSite(), callable.retainedCellContext());
         }
     }
 
@@ -1829,14 +4340,17 @@ public final class SessionFlowCertificate {
      */
     private record ObjectProofKey(
             io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity identity,
+            ProjectionPath route,
             String originKey) {
         private ObjectProofKey {
             Objects.requireNonNull(identity, "identity");
+            Objects.requireNonNull(route, "route");
             Objects.requireNonNull(originKey, "originKey");
         }
 
         private static ObjectProofKey of(NominalObjectFact fact) {
-            return new ObjectProofKey(fact.identity(), ownershipKey(fact.ownership()));
+            return new ObjectProofKey(fact.identity(), fact.route(),
+                    ownershipKey(fact.ownership()));
         }
     }
 

@@ -534,7 +534,7 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
             Function<ValueFormula.Declaration, Optional<FormulaAlternatives>>
                     declarationResolver) {
         return applySummary(summary, arguments, writeArguments, captures,
-                callSpan, declarationResolver, new LinkedHashSet<>());
+                callSpan, declarationResolver, new LinkedHashSet<>(), List.of());
     }
 
     private SummaryTransferResult applySummary(
@@ -545,7 +545,8 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
             SourceSpan callSpan,
             Function<ValueFormula.Declaration, Optional<FormulaAlternatives>>
                     declarationResolver,
-            LinkedHashSet<LambdaId> active) {
+            LinkedHashSet<LambdaId> active,
+            List<SummaryCallId> invocationPath) {
         if (arguments.size() != summary.signature().arity()
                 || writeArguments.size() != arguments.size()) {
             return failure(CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
@@ -585,7 +586,7 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
             ArrayList<CapturedCellWrite> writes = new ArrayList<>();
             ArrayList<OwnershipRequirement> ownershipRequirements = new ArrayList<>();
             ArrayList<EagerEffectWitness> effects = new ArrayList<>();
-            LinkedHashSet<SummaryCallId> appliedCalls = new CallMemo();
+            LinkedHashSet<SummaryCallId> appliedCalls = new CallMemo(invocationPath);
             boolean ordered = declarationResolver instanceof SummaryObjectResolver resolver
                     && resolver.orderedEffects();
             if (ordered) {
@@ -899,8 +900,7 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
                 substituted.put(entry.getKey(), new FormulaAlternatives(
                         entry.getValue().rootType(), values, valueOverrides));
             }
-            return Optional.of(List.of(new ValueFormula.Lambda(
-                    lambda.lambdaId(), lambda.functionType(), lambda.resultRoute(), substituted)));
+            return Optional.of(List.of(lambda.withCaptures(substituted)));
         }
         return Optional.of(List.of(formula));
     }
@@ -1028,6 +1028,19 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
 
     private static final class CallMemo extends LinkedHashSet<SummaryCallId> {
         private final Map<SummaryCallId, FormulaAlternatives> values = new java.util.HashMap<>();
+        private final List<SummaryCallId> invocationPath;
+
+        private CallMemo(List<SummaryCallId> invocationPath) {
+            this.invocationPath = List.copyOf(invocationPath);
+        }
+    }
+
+    private static List<SummaryCallId> callPath(
+            LinkedHashSet<SummaryCallId> activation, SummaryCallId call) {
+        ArrayList<SummaryCallId> path = new ArrayList<>();
+        if (activation instanceof CallMemo memo) path.addAll(memo.invocationPath);
+        path.add(call);
+        return List.copyOf(path);
     }
 
     private Optional<FormulaAlternatives> applyCall(
@@ -1089,7 +1102,8 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
         }
         if (call.kind() == CallableCallReference.Kind.CONSTRUCTION) {
             return declarationResolver instanceof SummaryObjectResolver resolver
-                    ? resolver.construct(call, callArguments, appliedCalls) : Optional.empty();
+                    ? resolver.construct(call, callArguments, appliedCalls,
+                    callPath(appliedCalls, call.id())) : Optional.empty();
         }
         if (call.repeat().isPresent()) {
             Optional<FormulaAlternatives> predicate = Optional.empty();
@@ -1108,7 +1122,8 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
                 environment.put(entry.getKey(), value.orElseThrow());
             }
             return applyRepeatedCall(call, target.orElseThrow(), predicate, callArguments, environment,
-                    declarationResolver, owner, active, writes, ownershipRequirements, effects);
+                    declarationResolver, owner, active, writes, ownershipRequirements, effects,
+                    appliedCalls);
         }
         TargetResolution resolution = targetAlternatives(target.orElseThrow());
         if (!resolution.complete() || resolution.alternatives().isEmpty()) {
@@ -1140,20 +1155,24 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
             }
             SummaryTransferResult result = applySummary(
                     callee, callArguments, callWriteArguments,
-                    candidate.captures(), call.span(), declarationResolver, active);
+                    candidate.captures(), call.span(), declarationResolver, active,
+                    callPath(appliedCalls, call.id()));
             if (result instanceof SummaryTransferResult.Failure failure) {
                 throw new NestedTransferFailure(failure);
             }
             SummaryTransferResult.Success success = (SummaryTransferResult.Success) result;
-            joined = joined == null ? success.returnValue() : joined.join(success.returnValue());
+            FormulaAlternatives returned = throughCall(success.returnValue(), call.id());
+            joined = joined == null ? returned : joined.join(returned);
             for (CapturedCellWrite write : success.writes()) {
-                writes.add(write.withSequence(CapturedCellWrite.sequenceAtEvent(
-                        call.id().sequence(), transferredWriteIndex++, limits)));
+                writes.add(write.withValue(throughCall(write.value(), call.id()))
+                        .withSequence(CapturedCellWrite.sequenceAtEvent(
+                                call.id().sequence(), transferredWriteIndex++, limits)));
             }
             for (OwnershipRequirement requirement
                     : success.ownershipRequirements()) {
-                ownershipRequirements.add(requirement.withSequence(
-                        CapturedCellWrite.sequenceAtEvent(
+                ownershipRequirements.add(requirement.withValue(
+                                throughCall(requirement.value(), call.id()))
+                        .withSequence(CapturedCellWrite.sequenceAtEvent(
                                 call.id().sequence(),
                                 transferredOwnershipIndex++, limits)));
             }
@@ -1176,13 +1195,44 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
         return Optional.ofNullable(joined);
     }
 
+    private FormulaAlternatives throughCall(
+            FormulaAlternatives values, SummaryCallId call) {
+        ArrayList<ValueFormula> formulas = new ArrayList<>(values.size());
+        Map<ValueFormula, ValueFormula> replacements = new java.util.HashMap<>();
+        for (ValueFormula formula : values.formulas()) {
+            ValueFormula replacement = throughCall(formula, call);
+            formulas.add(replacement);
+            replacements.put(formula, replacement);
+        }
+        List<FormulaAlternatives.ExactOverride> overrides = values.exactOverrides().stream()
+                .map(override -> new FormulaAlternatives.ExactOverride(
+                        replacements.get(override.formula()), override.route()))
+                .toList();
+        return new FormulaAlternatives(values.rootType(), formulas, overrides);
+    }
+
+    private ValueFormula throughCall(ValueFormula formula, SummaryCallId call) {
+        if (formula instanceof ValueFormula.FreshAllocation fresh) {
+            return fresh.throughCall(call);
+        }
+        if (formula instanceof ValueFormula.Lambda lambda) {
+            TreeMap<io.mindspice.lyra.compiler.identity.CaptureId, FormulaAlternatives> captures =
+                    new TreeMap<>();
+            lambda.captures().forEach((capture, value) ->
+                    captures.put(capture, throughCall(value, call)));
+            return lambda.withCaptures(captures).throughCall(call);
+        }
+        return formula;
+    }
+
     private Optional<FormulaAlternatives> applyRepeatedCall(
             CallableCallReference call, FormulaAlternatives action, Optional<FormulaAlternatives> predicate,
             List<FormulaAlternatives> arguments, Map<DeclarationId, FormulaAlternatives> environment,
             Function<ValueFormula.Declaration, Optional<FormulaAlternatives>> resolver,
             CallableSummary owner, LinkedHashSet<LambdaId> active,
             List<CapturedCellWrite> writes, List<OwnershipRequirement> requirements,
-            List<EagerEffectWitness> effects) {
+            List<EagerEffectWitness> effects,
+            LinkedHashSet<SummaryCallId> appliedCalls) {
         RepeatState state = new RepeatState(resolver);
         state.cells.putAll(environment);
         environment.values().forEach(state::seed);
@@ -1211,7 +1261,8 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
                     if (callee == null) return Optional.empty();
                     List<FormulaAlternatives> actual = index == callbacks.size() - 1 ? arguments : List.of();
                     SummaryTransferResult result = applySummary(callee, actual, actual, candidate.captures(),
-                            call.span(), state::resolve, active);
+                            call.span(), state::resolve, active,
+                            callPath(appliedCalls, call.id()));
                     if (result instanceof SummaryTransferResult.Failure failed) throw new NestedTransferFailure(failed);
                     SummaryTransferResult.Success success = (SummaryTransferResult.Success) result;
                     addCandidateCallWitness(effects, owner, call, Optional.of(id), callee.moduleId());

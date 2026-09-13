@@ -10,7 +10,9 @@ import io.mindspice.lyra.compiler.types.ArrayType;
 import io.mindspice.lyra.compiler.types.FunctionType;
 import io.mindspice.lyra.compiler.types.LyraType;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -292,18 +294,32 @@ public sealed interface ValueFormula extends Comparable<ValueFormula>
             LambdaId lambdaId,
             FunctionType functionType,
             ProjectionPath resultRoute,
-            Map<CaptureId, FormulaAlternatives> capturedValues) implements ValueFormula {
+            Map<CaptureId, FormulaAlternatives> capturedValues,
+            List<SummaryCallId> invocationPath,
+            Optional<FlowSiteId> retainedCellContext) implements ValueFormula {
         public Lambda {
             Objects.requireNonNull(lambdaId, "lambdaId");
             Objects.requireNonNull(functionType, "functionType");
             Objects.requireNonNull(resultRoute, "resultRoute");
             capturedValues = immutableCaptures(capturedValues);
+            invocationPath = immutableInvocationPath(invocationPath);
+            Objects.requireNonNull(retainedCellContext, "retainedCellContext");
+        }
+
+        public Lambda(
+                LambdaId lambdaId,
+                FunctionType functionType,
+                ProjectionPath resultRoute,
+                Map<CaptureId, FormulaAlternatives> capturedValues) {
+            this(lambdaId, functionType, resultRoute, capturedValues,
+                    List.of(), Optional.empty());
         }
 
         public Lambda(
                 LambdaId lambdaId,
                 FunctionType functionType) {
-            this(lambdaId, functionType, ProjectionPath.root(), Map.of());
+            this(lambdaId, functionType, ProjectionPath.root(), Map.of(),
+                    List.of(), Optional.empty());
         }
 
         @Override
@@ -320,13 +336,23 @@ public sealed interface ValueFormula extends Comparable<ValueFormula>
         }
 
         public Lambda withCaptures(Map<CaptureId, FormulaAlternatives> captures) {
-            return new Lambda(lambdaId, functionType, resultRoute, captures);
+            return new Lambda(lambdaId, functionType, resultRoute, captures,
+                    invocationPath, retainedCellContext);
+        }
+
+        public Lambda throughCall(SummaryCallId call) {
+            ArrayList<SummaryCallId> path = new ArrayList<>(invocationPath.size() + 1);
+            path.add(Objects.requireNonNull(call, "call"));
+            path.addAll(invocationPath);
+            return new Lambda(lambdaId, functionType, resultRoute, capturedValues,
+                    path, retainedCellContext);
         }
 
         @Override
         public Lambda withResultRoute(ProjectionPath route) {
             return new Lambda(lambdaId, functionType,
-                    Objects.requireNonNull(route, "route"), capturedValues);
+                    Objects.requireNonNull(route, "route"), capturedValues,
+                    invocationPath, retainedCellContext);
         }
 
         @Override
@@ -334,7 +360,9 @@ public sealed interface ValueFormula extends Comparable<ValueFormula>
             StringBuilder result = new StringBuilder("lambda/")
                     .append(lambdaId)
                     .append("/result=").append(resultRoute)
-                    .append("/type=").append(functionType.canonicalSpelling());
+                    .append("/type=").append(functionType.canonicalSpelling())
+                    .append("/invocations=").append(invocationPath)
+                    .append("/retained-cell-context=").append(retainedCellContext);
             capturedValues.forEach((capture, value) -> result
                     .append("/capture=").append(capture).append(':').append(value));
             return result.toString();
@@ -343,6 +371,20 @@ public sealed interface ValueFormula extends Comparable<ValueFormula>
         @Override
         public String toString() {
             return canonicalKey();
+        }
+
+        public Lambda withRetainedCellContext(Optional<FlowSiteId> context) {
+            return new Lambda(lambdaId, functionType, resultRoute, capturedValues,
+                    invocationPath, Objects.requireNonNull(context, "context"));
+        }
+
+        private static List<SummaryCallId> immutableInvocationPath(
+                List<SummaryCallId> values) {
+            values = List.copyOf(Objects.requireNonNull(values, "invocationPath"));
+            if (values.stream().anyMatch(Objects::isNull)) {
+                throw new IllegalArgumentException("invocation path contains null");
+            }
+            return values;
         }
 
         private static Map<CaptureId, FormulaAlternatives> immutableCaptures(
@@ -360,17 +402,26 @@ public sealed interface ValueFormula extends Comparable<ValueFormula>
     record FreshAllocation(
             FreshAllocationSite allocationSite,
             ArrayType arrayType,
-            ProjectionPath resultRoute) implements ValueFormula {
+            ProjectionPath resultRoute,
+            List<SummaryCallId> invocationPath) implements ValueFormula {
         public FreshAllocation {
             Objects.requireNonNull(allocationSite, "allocationSite");
             Objects.requireNonNull(arrayType, "arrayType");
             Objects.requireNonNull(resultRoute, "resultRoute");
+            invocationPath = Lambda.immutableInvocationPath(invocationPath);
+        }
+
+        public FreshAllocation(
+                FreshAllocationSite allocationSite,
+                ArrayType arrayType,
+                ProjectionPath resultRoute) {
+            this(allocationSite, arrayType, resultRoute, List.of());
         }
 
         public FreshAllocation(
                 FreshAllocationSite allocationSite,
                 ArrayType arrayType) {
-            this(allocationSite, arrayType, ProjectionPath.root());
+            this(allocationSite, arrayType, ProjectionPath.root(), List.of());
         }
 
         @Override
@@ -382,15 +433,23 @@ public sealed interface ValueFormula extends Comparable<ValueFormula>
             return allocationSite;
         }
 
+        public FreshAllocation throughCall(SummaryCallId call) {
+            ArrayList<SummaryCallId> path = new ArrayList<>(invocationPath.size() + 1);
+            path.add(Objects.requireNonNull(call, "call"));
+            path.addAll(invocationPath);
+            return new FreshAllocation(allocationSite, arrayType, resultRoute, path);
+        }
+
         @Override
         public FreshAllocation withResultRoute(ProjectionPath route) {
             return new FreshAllocation(allocationSite, arrayType,
-                    Objects.requireNonNull(route, "route"));
+                    Objects.requireNonNull(route, "route"), invocationPath);
         }
 
         @Override
         public String canonicalKey() {
             return "fresh/" + allocationSite + "/result=" + resultRoute
+                    + "/invocations=" + invocationPath
                     + "/type=" + arrayType.canonicalSpelling();
         }
 

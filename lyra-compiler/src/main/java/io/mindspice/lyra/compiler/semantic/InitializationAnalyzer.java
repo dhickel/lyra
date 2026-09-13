@@ -124,9 +124,14 @@ final class InitializationAnalyzer {
                 EagerEffectWitness witness = fact.witness();
                 ModuleId from = fact.initializerModule();
                 ModuleId target = witness.targetModule();
+                boolean certifiedPredecessor = !modules.contains(target)
+                        && graph.resolvedGraph().sessionFlowCertificate()
+                        .map(certificate -> certificate.containsSourceId(target.sourceId()))
+                        .orElse(false);
                 if (from.equals(target) || graph.resolvedGraph().isRetained(from)
                         || !modules.contains(target)
-                        && graph.resolvedGraph().retainedModules().module(target).isPresent()) {
+                        && (graph.resolvedGraph().retainedModules().module(target).isPresent()
+                        || certifiedPredecessor)) {
                     continue;
                 }
                 InitializationDependency dependency = new InitializationDependency(

@@ -1043,8 +1043,7 @@ public final class CallableSummarySolver {
                 captures.put(entry.getKey(), new FormulaAlternatives(
                         entry.getValue().rootType(), values, valueOverrides));
             }
-            return List.of(new ValueFormula.Lambda(
-                    lambda.lambdaId(), lambda.functionType(), lambda.resultRoute(), captures));
+            return List.of(lambda.withCaptures(captures));
         }
         if (!(formula instanceof ValueFormula.CallResult callResult)) {
             return List.of(formula);
@@ -1086,13 +1085,36 @@ public final class CallableSummarySolver {
                     ProjectionPath route = callResult.resultRoute()
                             .compose(substituted.resultRoute());
                     limits.requireProjectionDepth(route.depth());
-                    result.add(substituted.withResultRoute(route));
+                    result.add(throughCall(substituted, call.id()).withResultRoute(route));
                 }
             }
             return List.copyOf(result);
         } finally {
             activeCalls.remove(call.id());
         }
+    }
+
+    private static ValueFormula throughCall(
+            ValueFormula formula, SummaryCallId call) {
+        if (formula instanceof ValueFormula.FreshAllocation fresh) {
+            return fresh.throughCall(call);
+        }
+        if (formula instanceof ValueFormula.Lambda lambda) {
+            TreeMap<io.mindspice.lyra.compiler.identity.CaptureId, FormulaAlternatives> captures =
+                    new TreeMap<>();
+            lambda.captures().forEach((capture, values) -> {
+                List<ValueFormula> nested = values.formulas().stream()
+                        .map(value -> throughCall(value, call)).toList();
+                List<FormulaAlternatives.ExactOverride> overrides = values.exactOverrides().stream()
+                        .map(override -> new FormulaAlternatives.ExactOverride(
+                                throughCall(override.formula(), call), override.route()))
+                        .toList();
+                captures.put(capture, new FormulaAlternatives(
+                        values.rootType(), nested, overrides));
+            });
+            return lambda.withCaptures(captures).throughCall(call);
+        }
+        return formula;
     }
 
     private static List<ValueFormula> expand(
@@ -1165,8 +1187,7 @@ public final class CallableSummarySolver {
                 captures.put(entry.getKey(), new FormulaAlternatives(
                         entry.getValue().rootType(), values, valueOverrides));
             }
-            ValueFormula substituted = new ValueFormula.Lambda(
-                    lambda.lambdaId(), lambda.functionType(), lambda.resultRoute(), captures);
+            ValueFormula substituted = lambda.withCaptures(captures);
             return List.of(substituted.withResultRoute(
                     outerResultRoute.compose(substituted.resultRoute())));
         }
@@ -1250,8 +1271,7 @@ public final class CallableSummarySolver {
                 captures.put(entry.getKey(), new FormulaAlternatives(
                         entry.getValue().rootType(), values, valueOverrides));
             }
-            return List.of(new ValueFormula.Lambda(
-                    lambda.lambdaId(), lambda.functionType(), lambda.resultRoute(), captures));
+            return List.of(lambda.withCaptures(captures));
         }
         return List.of(formula);
     }

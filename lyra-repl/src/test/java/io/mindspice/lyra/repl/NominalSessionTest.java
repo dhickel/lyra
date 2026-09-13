@@ -3,12 +3,15 @@ package io.mindspice.lyra.repl;
 import io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes;
 import io.mindspice.lyra.runtime.NominalType;
 import io.mindspice.lyra.runtime.RuntimeIoEnvironment;
+import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -47,6 +50,370 @@ class NominalSessionTest {
             assertEquals("41", assertInstanceOf(ValueSnapshot.Scalar.class,
                     result.value().orElseThrow().data()).value());
         }
+    }
+
+    /** Runtime counterpart of RetainedNominalFlowCertificateTest's legal initializer inventory. */
+    @TestFactory
+    Stream<DynamicTest> retainedScalarInitializerInventoryConstructsAndEvaluatesAcrossGenerations() {
+        record Probe(String name, String type, String initializer, String expression,
+                     String expectedType, String expected) { }
+        List<Probe> probes = List.of(
+                new Probe("literal", "I32", "1I32", "box:.value", "I32", "1"),
+                new Probe("reference", "I32", "external", "box:.value", "I32", "1"),
+                new Probe("member access", "I32", "self:.seed", "box:.value", "I32", "1"),
+                new Probe("array length", "I32", "Array<I32>[1I32]:.length", "box:.value", "I32", "1"),
+                new Probe("string length", "I32", "\"x\":.length", "box:.value", "I32", "1"),
+                new Probe("lambda", "Fn<;I32>", "(=> || 1I32)", "box::value[]", "I32", "1"),
+                new Probe("callable call", "I32", "(zero)", "box:.value", "I32", "0"),
+                new Probe("direct call", "I32", "::inc[1I32]", "box:.value", "I32", "1"),
+                new Probe("array", "Array<I32>", "Array<I32>[1I32]", "box:.value[0I32]", "I32", "1"),
+                new Probe("tuple", "Tuple<I32>", "Tuple[1I32]", "box:.value:.0", "I32", "1"),
+                new Probe("construction", "Nested", "Nested[]", "box:.value:.value", "I32", "1"),
+                new Probe("operator", "I32", "(+ 1I32 2I32)", "box:.value", "I32", "3"),
+                new Probe("short circuit", "Bool", "(and #T #F)", "box:.value", "Bool", "false"),
+                new Probe("block/declaration/rebinding", "I32",
+                        "{ let @mut local :I32 = 1I32 local := 2I32 local }", "box:.value", "I32", "2"),
+                new Probe("conditional", "I32", "(maybe -> 1I32 : 2I32)", "box:.value", "I32", "2"),
+                new Probe("coalesce", "I32", "(maybe : 1I32)", "box:.value", "I32", "1"),
+                new Probe("match", "I32", "(match 1I32 ?? 1I32 -> 1I32 ?? _ -> 2I32)",
+                        "box:.value", "I32", "1"),
+                new Probe("array index", "I32", "Array<I32>[1I32][0I32]", "box:.value", "I32", "1"),
+                new Probe("string index", "Char", "\"x\"[0I32]", "box:.value", "Char", "x"),
+                new Probe("conversion", "I32", "I32[1I16]", "box:.value", "I32", "1"),
+                new Probe("predicate narrowing", "I32", "(maybe narrowed -> narrowed : 0I32)",
+                        "box:.value", "I32", "0"),
+                new Probe("range", "Range<I32>", "(0I32..2I32:1I32)",
+                        "box:.value", "Range<I32>", "(0..2:1)"),
+                new Probe("contextual operator composition", "I32", "(+ 1 2)", "box:.value", "I32", "3"),
+                new Probe("immutable block declaration composition", "I32", "{ let a :I32 = 1 a }",
+                        "box:.value", "I32", "1"),
+                new Probe("predicate operator composition", "I32", "((> 1 0) -> 1 : 2)",
+                        "box:.value", "I32", "1"),
+                new Probe("array indexing composition", "I32", "Array<I32>[1 2][0]",
+                        "box:.value", "I32", "1"));
+        return probes.stream().map(probe -> DynamicTest.dynamicTest(probe.name(), () -> {
+            try (LyraSession session = LyraSession.open()) {
+                success(session.submit(EvaluationSource.of("inventory-producer.lyra", """
+                        let inc :Fn<I32;I32> = (=> |value| value)
+                        let zero :Fn<;I32> = (=> || 0I32)
+                        let external :I32 = 1I32
+                        let @nil maybe :I32 = #NIL
+                        class Nested { let @pub value :I32 = 1I32 }
+                        class C {
+                            let seed :I32 = 1I32
+                            let @pub value :%s = %s
+                        }
+                        """.formatted(probe.type(), probe.initializer()))));
+                success(session.submit(EvaluationSource.of(
+                        "inventory-construction.lyra", "let box :C = C[]")));
+                EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
+                        "inventory-observation.lyra", probe.expression())));
+                assertEquals(probe.expectedType(), result.value().orElseThrow().canonicalType());
+                assertScalar(probe.expected(), result);
+            }
+        }));
+    }
+
+    /**
+     * Unit-typed (and effect-performing) member initializers are transferred
+     * and constructed in a later generation, but observing the retained object
+     * one generation after that currently fails at runtime with {@code LYR-LINK}.
+     * The defect predates the phase-2 transfer algebra work and is tracked as
+     * `.internal-dev/bugs/retained-nominal/unit-initializer-later-observation-linkage.md`
+     * (GitHub issue #7).  These cases pin the observed structured failure so the
+     * gap stays visible; flip them to value assertions when the linkage defect is
+     * fixed.
+     */
+    @TestFactory
+    Stream<DynamicTest> retainedUnitInitializerInventoryDocumentsKnownObservationLinkageGap() {
+        record Probe(String name, String type, String initializer, String expression,
+                     String constructionOutput) { }
+        List<Probe> probes = List.of(
+                new Probe("namespace member", "Fn<String;Unit>", "io->:.println",
+                        "box::value[\"member\"]", ""),
+                new Probe("namespace direct call", "Unit", "io->::println[\"\"]",
+                        "box:.value", "\n"),
+                new Probe("iter", "Unit", "::iter[(0I32..2I32:1I32) || ()]",
+                        "box:.value", ""),
+                new Probe("while", "Unit", "::while[|| #F || ()]",
+                        "box:.value", ""));
+        return probes.stream().map(probe -> DynamicTest.dynamicTest(probe.name(), () -> {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            SessionOptions options = SessionOptions.builder().ioEnvironment(new RuntimeIoEnvironment(
+                    new ByteArrayInputStream(new byte[0]), output, output, StandardCharsets.UTF_8)).build();
+            try (LyraSession session = LyraSession.open(options)) {
+                success(session.submit(EvaluationSource.of("unit-inventory-producer.lyra", """
+                        import std->io
+                        class C { let @pub value :%s = %s }
+                        """.formatted(probe.type(), probe.initializer()))));
+                assertEquals("", output.toString(StandardCharsets.UTF_8));
+                success(session.submit(EvaluationSource.of(
+                        "unit-inventory-construction.lyra", "let box :C = C[]")));
+                assertEquals(probe.constructionOutput(), output.toString(StandardCharsets.UTF_8));
+                EvaluationResult observation = session.submit(EvaluationSource.of(
+                        "unit-inventory-observation.lyra", probe.expression()));
+                EvaluationResult.RuntimeFailure failure = assertInstanceOf(
+                        EvaluationResult.RuntimeFailure.class, observation, observation::toString);
+                assertEquals("LYR-LINK", failure.code());
+                assertEquals("nominal object belongs to an unrelated artifact or session",
+                        failure.summary());
+            }
+        }));
+    }
+
+    @Test
+    void retainedMixedTupleInitializerPreservesScalarAndInvocableLambdaAcrossGenerations() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("mixed-tuple-producer.lyra", """
+                    class C { let @pub x :Tuple<I32,Fn<;I32>> = Tuple[1 (=> || 2)] }
+                    """)));
+            success(session.submit(EvaluationSource.of("mixed-tuple-construction.lyra", "let box :C = C[]")));
+            EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
+                    "mixed-tuple-observation.lyra", """
+                    let observed :Tuple<I32,I32> = Tuple[box:.x:.0 (box:.x:.1)]
+                    observed
+                    """)));
+            ValueSnapshot.Aggregate tuple = assertInstanceOf(ValueSnapshot.Aggregate.class,
+                    result.value().orElseThrow().data());
+            assertEquals(AggregateKind.TUPLE, tuple.kind());
+            assertEquals(List.of("I32", "I32"), tuple.elements().stream()
+                    .map(ValueSnapshot::canonicalType).toList());
+            assertEquals(List.of("1", "2"), tuple.elements().stream()
+                    .map(ValueSnapshot::data).map(ValueSnapshot.Scalar.class::cast)
+                    .map(ValueSnapshot.Scalar::value).toList());
+        }
+    }
+
+    @Test
+    void retainedInitializersTransferClosedExpressionAlgebraAcrossGenerations() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("algebra-1.lyra", """
+                    let inc :Fn<I32;I32> = (=> |value| (+ value 1I32))
+                    let source :Array<I32> = Array<I32>[1I32, ::inc[1I32]]
+                    class Inner { let @pub value :I32 = 9I32 }
+                    class Defaults {
+                        let @pub op :I32 = (+ ::inc[1I32] 2I32)
+                        let @pub converted :I32 = I32[3I16]
+                        let @pub values :Array<I32> = Array<I32>[1I32, ::inc[1I32]]
+                        let @pub index :I32 = source[1I32]
+                        let @pub tuple :Tuple<I32,I32> = Tuple[1I32, ::inc[2I32]]
+                        let @pub branch :I32 = (#T -> ::inc[3I32] : 0I32)
+                        let @pub block :I32 = { let @mut local :I32 = 1I32 local := ::inc[local] local }
+                        let @pub nested :Inner = Inner[]
+                    }
+                    """)));
+            success(session.submit(EvaluationSource.of("algebra-2.lyra", "let value :Defaults = Defaults[]")));
+            EvaluationResult.Success result = success(session.submit(EvaluationSource.of("algebra-3.lyra", """
+                    (+ (* value:.op 1000000I32) (* value:.converted 100000I32)
+                       (* value:.index 10000I32) (* value:.tuple:.1 1000I32)
+                       (* value:.branch 100I32) (* value:.block 10I32) value:.nested:.value)
+                    """)));
+            assertEquals("4323429", assertInstanceOf(ValueSnapshot.Scalar.class,
+                    result.value().orElseThrow().data()).value());
+        }
+    }
+
+    @Test
+    void retainedStructuredChildrenKeepTheirExactResolvedTypes() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("typed-children-1.lyra", """
+                    struct Inner { let values :Array<I32> }
+                    let candidate :Fn<;I32> = (=> || 3I32)
+                    class TypedDefaults {
+                        let @pub callable :Fn<;I32> = {
+                            let @mut selected :Fn<;I32> = (=> || 1I32)
+                            selected := (=> || 7I32)
+                            selected
+                        }
+                        let @pub values :Array<I32> = {
+                            let @mut selected :Array<I32> = Array<I32>[1I32]
+                            selected := Array<I32>[8I32]
+                            selected
+                        }
+                        let @pub nested :Inner = Inner[Array<I32>[9I32]]
+                        let @pub choice :Bool = (or candidate #F)
+                        let @pub looped :Unit = ::while[|| #F || ()]
+                    }
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "typed-children-2.lyra", "let value :TypedDefaults = TypedDefaults[]")));
+            assertScalar("7", success(session.submit(EvaluationSource.of(
+                    "typed-children-3.lyra", "value::callable[]"))));
+            assertScalar("8", success(session.submit(EvaluationSource.of(
+                    "typed-children-4.lyra", "value:.values[0I32]"))));
+            assertScalar("9", success(session.submit(EvaluationSource.of(
+                    "typed-children-5.lyra", "value:.nested:.values[0I32]"))));
+        }
+    }
+
+    @Test
+    void retainedMutableLocalCaptureKeepsItsExactSharedCell() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("local-cell-1.lyra", """
+                    let make :Fn<;Fn<;I32>> = (=> || {
+                        let @mut value :I32 = 1I32
+                        let readLocal :Fn<;I32> = (=> || value)
+                        value := 12I32
+                        readLocal
+                    })
+                    class CounterFactory { let @pub read :Fn<;I32> = ::make[] }
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "local-cell-2.lyra", "let value :CounterFactory = CounterFactory[]")));
+            assertScalar("12", success(session.submit(EvaluationSource.of(
+                    "local-cell-3.lyra", "value::read[]"))));
+        }
+    }
+
+    @Test
+    void retainedProducerLocalCellsAliasWithinOneConstructionButNotAcrossInstances() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("two-cells-1.lyra", """
+                    let make :Fn<;Tuple<Fn<;I32>,Fn<;Unit>>> = (=> || {
+                        let @mut value :I32 = 1I32
+                        Tuple[(=> || value) (=> || { value := (+ value 1I32) })]
+                    })
+                    class Counter { let @pub operations :Tuple<Fn<;I32>,Fn<;Unit>> = ::make[] }
+                    """)));
+            success(session.submit(EvaluationSource.of("two-cells-2.lyra", """
+                    let first :Counter = Counter[]
+                    let second :Counter = Counter[]
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "two-cells-3.lyra", "(first:.operations:.1)")));
+            assertScalar("21", success(session.submit(EvaluationSource.of("two-cells-4.lyra", """
+                    (+ (* (first:.operations:.0) 10I32) (second:.operations:.0))
+                    """))));
+        }
+    }
+
+    @Test
+    void retainedAlternativesRemovePredicateScopeAndKeepMatchSelectorContinuation() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("alternative-scope-1.lyra", """
+                    let @nil maybe :I32 = 4I32
+                    let @mut selected :Array<I32> = Array<I32>[1I32]
+                    class Choice {
+                        let @pub narrowed :I32 = (maybe present -> present : 0I32)
+                        let @pub matched :I32 = (match 0I32
+                            ?? { selected := Array<I32>[9I32] 1I32 } -> 0I32
+                            ?? _ -> selected[0I32])
+                    }
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "alternative-scope-2.lyra", "let value :Choice = Choice[]")));
+            assertScalar("4", success(session.submit(EvaluationSource.of(
+                    "alternative-scope-3.lyra", "value:.narrowed"))));
+            assertScalar("9", success(session.submit(EvaluationSource.of(
+                    "alternative-scope-4.lyra", "value:.matched"))));
+        }
+    }
+
+    @Test
+    void retainedNestedLambdaCallArgumentExecutesInLaterGeneration() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("nested-lambda-1.lyra", """
+                    let apply :Fn<Fn<;I32>;I32> = (=> |callable| (callable))
+                    class Box { let @pub value :I32 = ::apply[(=> || 31I32)] }
+                    """)));
+            success(session.submit(EvaluationSource.of("nested-lambda-2.lyra", "let box :Box = Box[]")));
+            assertScalar("31", success(session.submit(EvaluationSource.of(
+                    "nested-lambda-3.lyra", "box:.value"))));
+        }
+    }
+
+    @Test
+    void retainedCallableValueCallExecutesInLaterGeneration() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("callable-value-1.lyra", """
+                    let selected :Fn<;I32> = (=> || 32I32)
+                    class Box { let @pub value :I32 = (selected) }
+                    """)));
+            success(session.submit(EvaluationSource.of("callable-value-2.lyra", "let box :Box = Box[]")));
+            assertScalar("32", success(session.submit(EvaluationSource.of(
+                    "callable-value-3.lyra", "box:.value"))));
+        }
+    }
+
+    @Test
+    void retainedFactoryReferenceSurvivesLaterLexicalShadowing() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("shadow-1.lyra", """
+                    let source :Fn<;I32> = (=> || 41I32)
+                    class Box { let @pub value :I32 = ::source[] }
+                    """)));
+            success(session.submit(EvaluationSource.of("shadow-2.lyra",
+                    "let source :Fn<;I32> = (=> || 99I32)")));
+            success(session.submit(EvaluationSource.of("shadow-3.lyra", "let box :Box = Box[]")));
+            assertScalar("41", success(session.submit(EvaluationSource.of(
+                    "shadow-4.lyra", "box:.value"))));
+        }
+    }
+
+    @Test
+    void retainedFactoryObservesCurrentMethodSlotButSavedCallableKeepsOriginalSlot() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("slot-1.lyra", """
+                    class Counter { let @pub @mut read :Fn<;I32> = (=> || 1I32) }
+                    let @mut counter :Counter = Counter[]
+                    let saved :Fn<;I32> = counter:.read
+                    class Box {
+                        let @pub current :I32 = counter::read[]
+                        let @pub original :I32 = (saved)
+                    }
+                    """)));
+            success(session.submit(EvaluationSource.of("slot-2.lyra",
+                    "counter:.read := (=> || 7I32)")));
+            success(session.submit(EvaluationSource.of("slot-3.lyra", "let box :Box = Box[]")));
+            assertScalar("71", success(session.submit(EvaluationSource.of(
+                    "slot-4.lyra", "(+ (* box:.current 10I32) box:.original)"))));
+        }
+    }
+
+    @Test
+    void retainedCallableArrayAndTupleDefaultsKeepFunctionAndNilRoutes() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("callable-routes-1.lyra", """
+                    class Routes {
+                        let @pub array :Array<Fn<;I32>> = Array<Fn<;I32>>[(=> || 5I32)]
+                        let @pub tuple :Tuple<Fn<;I32>,Fn<;I32>> = Tuple[(=> || 6I32) (=> || 7I32)]
+                    }
+                    """)));
+            success(session.submit(EvaluationSource.of("callable-routes-2.lyra", "let routes :Routes = Routes[]")));
+            assertScalar("18", success(session.submit(EvaluationSource.of(
+                    "callable-routes-3.lyra", "(+ (+ (routes:.array[0I32]) (routes:.tuple:.0)) (routes:.tuple:.1))"))));
+        }
+    }
+
+    @Test
+    void retainedAlternativesKeepUnselectedWritesAndEffectsOutOfRuntimeWhileMatchingOrdinaryResults() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        SessionOptions options = SessionOptions.builder().ioEnvironment(new RuntimeIoEnvironment(
+                new ByteArrayInputStream(new byte[0]), output, output, StandardCharsets.UTF_8)).build();
+        String definitions = """
+                let @mut writes :I32 = 0I32
+                let @nil maybe :I32 = 7I32
+                class Choices {
+                    let @pub conditional :I32 = (#T -> 7I32 : { writes := 99I32 0I32 })
+                    let @pub coalesced :I32 = (maybe : { writes := 99I32 0I32 })
+                    let @pub matched :I32 = (match 1I32 ?? 1I32 -> 7I32 ?? _ -> { writes := 99I32 0I32 })
+                }
+                """;
+        try (LyraSession retained = LyraSession.open(options); LyraSession ordinary = LyraSession.open(options)) {
+            success(retained.submit(EvaluationSource.of("lazy-retained-1.lyra", definitions)));
+            assertScalar("777", success(retained.submit(EvaluationSource.of("lazy-retained-2.lyra", """
+                    let choices :Choices = Choices[]
+                    (+ (* (+ (* choices:.conditional 10I32) choices:.coalesced) 10I32) choices:.matched)
+                    """))));
+            assertScalar("0", success(retained.submit(EvaluationSource.of("lazy-retained-3.lyra", "writes"))));
+
+            assertScalar("777", success(ordinary.submit(EvaluationSource.of("lazy-ordinary.lyra", definitions + """
+                    let choices :Choices = Choices[]
+                    (+ (* (+ (* choices:.conditional 10I32) choices:.coalesced) 10I32) choices:.matched)
+                    """))));
+            assertScalar("0", success(ordinary.submit(EvaluationSource.of("lazy-ordinary-writes.lyra", "writes"))));
+        }
+        assertEquals("", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test
@@ -147,6 +514,22 @@ class NominalSessionTest {
     }
 
     @Test
+    void retainedNamespaceMemberCallableConstructsWithoutUnsupportedTransfer() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        SessionOptions options = SessionOptions.builder().ioEnvironment(new RuntimeIoEnvironment(
+                new ByteArrayInputStream(new byte[0]), output, output, StandardCharsets.UTF_8)).build();
+        try (LyraSession session = LyraSession.open(options)) {
+            success(session.submit(EvaluationSource.of("intrinsic-member-1.lyra", """
+                    import std->io
+                    class Printer { let @pub print :Fn<String;Unit> = io->:.println }
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "intrinsic-member-2.lyra", "let printer :Printer = Printer[]")));
+            assertEquals("", output.toString(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
     void retainedNamespaceIntrinsicDefaultsResolveAndExecute() {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         SessionOptions options = SessionOptions.builder()
@@ -233,6 +616,68 @@ class NominalSessionTest {
     }
 
     @Test
+    void currentGenerationWrappersDeriveRetainedAllocationsThroughDirectParameterAndCaptureCalls() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("wrapper-allocation-1.lyra", """
+                    let make :Fn<;Array<I32>> = (=> || Array<I32>[1I32])
+                    """)));
+            success(session.submit(EvaluationSource.of("wrapper-allocation-2.lyra", """
+                    let direct :Fn<;Array<I32>> = (=> || ::make[])
+                    let invoke :Fn<Fn<;Array<I32>>;Array<I32>> = (=> |factory| (factory))
+                    let parameter :Fn<;Array<I32>> = (=> || ::invoke[make])
+                    let capture :Fn<Fn<;Array<I32>>;Fn<;Array<I32>>> =
+                        (=> |factory| (=> || (factory)))
+                    let captured :Fn<;Array<I32>> = ::capture[make]
+                    class Outer {
+                        let @pub directValue :Array<I32> = ::direct[]
+                        let @pub parameterValue :Array<I32> = ::parameter[]
+                        let @pub capturedValue :Array<I32> = ::captured[]
+                    }
+                    let outer :Outer = Outer[]
+                    """)));
+            assertScalar("3", success(session.submit(EvaluationSource.of(
+                    "wrapper-allocation-3.lyra", """
+                            (+ outer:.directValue[0] outer:.parameterValue[0]
+                               outer:.capturedValue[0])
+                            """))));
+        }
+    }
+
+    @Test
+    void retainedMutableCallableDefaultUsesTheValueSelectedAtEachConstruction() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("mutable-callable-default-1.lyra", """
+                    let @mut selected :Fn<;I32> = (=> || 1I32)
+                    class C { let @pub value :I32 = (selected) }
+                    """)));
+            assertScalar("1", success(session.submit(EvaluationSource.of(
+                    "mutable-callable-default-2.lyra", "let first :C = C[] first:.value"))));
+            assertScalar("9", success(session.submit(EvaluationSource.of(
+                    "mutable-callable-default-3.lyra", """
+                            selected := (=> || 9I32)
+                            let second :C = C[]
+                            second:.value
+                            """))));
+        }
+    }
+
+    @Test
+    void nestedCallableReturnedThroughCurrentWrapperRemainsExactlyCertified() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("nested-returned-callable-1.lyra", """
+                    let make :Fn<;Fn<;I32>> = (=> || (=> || 14I32))
+                    """)));
+            success(session.submit(EvaluationSource.of("nested-returned-callable-2.lyra", """
+                    let wrapper :Fn<;Fn<;I32>> = (=> || ::make[])
+                    class Box { let @pub read :Fn<;I32> = ::wrapper[] }
+                    let box :Box = Box[]
+                    """)));
+            assertScalar("14", success(session.submit(EvaluationSource.of(
+                    "nested-returned-callable-3.lyra", "box::read[]"))));
+        }
+    }
+
+    @Test
     void objectStateAndReplacedMethodsPersistAcrossThreeSubmissions() {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of(
@@ -282,6 +727,11 @@ class NominalSessionTest {
             assertEquals("Secret", clazz.alias().orElseThrow());
             assertTrue(clazz.elements().isEmpty());
         }
+    }
+
+    private static void assertScalar(String expected, EvaluationResult.Success result) {
+        assertEquals(expected, assertInstanceOf(ValueSnapshot.Scalar.class,
+                result.value().orElseThrow().data()).value());
     }
 
     private static EvaluationResult.Success success(EvaluationResult result) {

@@ -27,7 +27,8 @@ public record CallableFlow(
         ProjectionPath route,
         Map<DeclarationId, ValueAlternatives> capturedValues,
         Map<DeclarationId, ValueAlternatives> sharedCellSnapshots,
-        Optional<FlowSiteId> creationSite)
+        Optional<FlowSiteId> creationSite,
+        Optional<FlowSiteId> retainedCellContext)
         implements Comparable<CallableFlow> {
     public CallableFlow {
         Objects.requireNonNull(lambdaId, "lambdaId");
@@ -40,6 +41,7 @@ public record CallableFlow(
         capturedValues = immutableSnapshots(capturedValues, "captured");
         sharedCellSnapshots = immutableSnapshots(sharedCellSnapshots, "shared cell");
         Objects.requireNonNull(creationSite, "creationSite");
+        Objects.requireNonNull(retainedCellContext, "retainedCellContext");
         if (intrinsicDeclarationId.isPresent()
                 && (!capturedValues.isEmpty() || !sharedCellSnapshots.isEmpty())) {
             throw new IllegalArgumentException("an intrinsic callable cannot capture values");
@@ -52,6 +54,18 @@ public record CallableFlow(
         }
     }
 
+    /** Compatibility constructor for facts without a retained cell scope. */
+    public CallableFlow(
+            Optional<LambdaId> lambdaId,
+            Optional<DeclarationId> intrinsicDeclarationId,
+            ProjectionPath route,
+            Map<DeclarationId, ValueAlternatives> capturedValues,
+            Map<DeclarationId, ValueAlternatives> sharedCellSnapshots,
+            Optional<FlowSiteId> creationSite) {
+        this(lambdaId, intrinsicDeclarationId, route, capturedValues,
+                sharedCellSnapshots, creationSite, Optional.empty());
+    }
+
     /** Compatibility constructor for facts without an exact creation site. */
     public CallableFlow(
             Optional<LambdaId> lambdaId,
@@ -60,7 +74,7 @@ public record CallableFlow(
             Map<DeclarationId, ValueAlternatives> capturedValues,
             Map<DeclarationId, ValueAlternatives> sharedCellSnapshots) {
         this(lambdaId, intrinsicDeclarationId, route, capturedValues,
-                sharedCellSnapshots, Optional.empty());
+                sharedCellSnapshots, Optional.empty(), Optional.empty());
     }
 
     public CallableFlow(
@@ -68,7 +82,7 @@ public record CallableFlow(
             ProjectionPath route,
             Map<DeclarationId, ValueAlternatives> capturedValues) {
         this(Optional.of(Objects.requireNonNull(lambdaId, "lambdaId")),
-                Optional.empty(), route, capturedValues, Map.of(), Optional.empty());
+                Optional.empty(), route, capturedValues, Map.of(), Optional.empty(), Optional.empty());
     }
 
     public CallableFlow(
@@ -78,7 +92,7 @@ public record CallableFlow(
             Map<DeclarationId, ValueAlternatives> sharedCellSnapshots) {
         this(Optional.of(Objects.requireNonNull(lambdaId, "lambdaId")),
                 Optional.empty(), route, capturedValues, sharedCellSnapshots,
-                Optional.empty());
+                Optional.empty(), Optional.empty());
     }
 
     public static CallableFlow atRoot(
@@ -103,7 +117,7 @@ public record CallableFlow(
                 Optional.of(Objects.requireNonNull(lambdaId, "lambdaId")),
                 Optional.empty(), ProjectionPath.root(), capturedValues,
                 sharedCellSnapshots,
-                Optional.of(Objects.requireNonNull(creationSite, "creationSite")));
+                Optional.of(Objects.requireNonNull(creationSite, "creationSite")), Optional.empty());
     }
 
     public static CallableFlow intrinsicAtRoot(DeclarationId declarationId) {
@@ -113,7 +127,7 @@ public record CallableFlow(
                 ProjectionPath.root(),
                 Map.of(),
                 Map.of(),
-                Optional.empty());
+                Optional.empty(), Optional.empty());
     }
 
     public Optional<LambdaId> lambda() {
@@ -127,11 +141,19 @@ public record CallableFlow(
     public CallableFlow withRoute(ProjectionPath replacement) {
         return new CallableFlow(
                 lambdaId, intrinsicDeclarationId, replacement,
-                capturedValues, sharedCellSnapshots, creationSite);
+                capturedValues, sharedCellSnapshots, creationSite, retainedCellContext);
     }
 
     public CallableFlow prefixedBy(ProjectionPath prefix) {
         return withRoute(Objects.requireNonNull(prefix, "prefix").compose(route));
+    }
+
+    /** Marks producer-local shared cells as scoped to one retained construction/invocation. */
+    public CallableFlow withRetainedCellContext(FlowSiteId context) {
+        if (sharedCellSnapshots.isEmpty()) return this;
+        return new CallableFlow(lambdaId, intrinsicDeclarationId, route,
+                capturedValues, sharedCellSnapshots, creationSite,
+                Optional.of(Objects.requireNonNull(context, "context")));
     }
 
     /** Replaces snapshots only for stable cells already captured by this callable. */
@@ -147,7 +169,7 @@ public record CallableFlow(
                 currentCells.getOrDefault(cell, snapshot));
         return new CallableFlow(
                 lambdaId, intrinsicDeclarationId, route,
-                capturedValues, refreshed, creationSite);
+                capturedValues, refreshed, creationSite, retainedCellContext);
     }
 
     public String canonicalKey() {
@@ -162,6 +184,7 @@ public record CallableFlow(
             result.append("/cell:").append(entry.getKey()).append('=').append(entry.getValue());
         }
         creationSite.ifPresent(value -> result.append("/site:").append(value));
+        retainedCellContext.ifPresent(value -> result.append("/retained-cell-context:").append(value));
         return result.toString();
     }
 

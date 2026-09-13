@@ -8,6 +8,9 @@ public interface SummaryObjectResolver extends Function<ValueFormula.Declaration
     boolean orderedEffects();
     void applyWrite(CapturedCellWrite write, CallableSummary owner, Object activation);
     Optional<FormulaAlternatives> resolveObject(ValueFormula.ObjectReference reference);
-    Optional<FormulaAlternatives> construct(CallableCallReference call, java.util.List<FormulaAlternatives> arguments,
-                                          Object activation);
+    Optional<FormulaAlternatives> construct(
+            CallableCallReference call,
+            java.util.List<FormulaAlternatives> arguments,
+            Object activation,
+            java.util.List<SummaryCallId> invocationPath);
 }

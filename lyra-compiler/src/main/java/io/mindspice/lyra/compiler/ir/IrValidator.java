@@ -458,14 +458,24 @@ public final class IrValidator {
                     }
                 }
             }
+            var retainedCallables = semantic.resolvedGraph().sessionFlowCertificate()
+                    .map(certificate -> certificate.callableTransferVerifier(
+                            semantic, semantic.flowFacts().callableSummaries()))
+                    .orElse(null);
             for (var callable : metadata.callableFlows()) {
                 if (callable.lambdaId().isEmpty()) {
                     continue;
                 }
-                boolean retained = semantic.resolvedGraph().sessionFlowCertificate()
-                        .map(certificate -> certificate.certifiesCallableTransfer(callable)
-                                && certificate.callableSummaries()
+                // The semantic validator owns creation-site exactness for a
+                // lambda of this generation.  Only a foreign (retained) lambda
+                // falls back to predecessor-certificate or exact
+                // consumer-derived route evidence.
+                boolean retained = retainedCallables != null
+                        && semantic.resolvedGraph().sessionFlowCertificate()
+                        .filter(certificate -> certificate.callableSummaries()
                                 .summary(callable.lambdaId().orElseThrow()).isPresent())
+                        .map(certificate -> retainedCallables.test(callable)
+                                || certificate.certifiesLinkedCallable(callable))
                         .orElse(false);
                 if (callable.creationSite().isEmpty()) {
                     if (!retained) {
@@ -522,13 +532,18 @@ public final class IrValidator {
                 // evidence instead; the session never re-synthesizes a
                 // session-owned identity for such storage.
                 if (!modules.contains(aggregate.identity().ownerModule())) {
+                    var fact = new io.mindspice.lyra.compiler.semantic.flow.AggregateIdentityFact(
+                            aggregate.identity(), aggregate.route(), aggregate.witness());
+                    boolean sealedCurrentFact = semantic.flowFacts().events().stream()
+                            .filter(event -> event.span().equals(aggregate.witness().useSpan()))
+                            .flatMap(event -> event.value().alternatives().stream())
+                            .flatMap(value -> value.aggregateIdentities().stream())
+                            .anyMatch(fact::equals);
                     boolean certified = aggregate.identity().isImported()
-                            && semantic.resolvedGraph().sessionFlowCertificate()
-                            .map(certificate -> certificate.certifiesAggregate(
-                                    new io.mindspice.lyra.compiler.semantic.flow.AggregateIdentityFact(
-                                            aggregate.identity(), aggregate.route(),
-                                            aggregate.witness())))
-                            .orElse(false);
+                            && (sealedCurrentFact
+                            || semantic.resolvedGraph().sessionFlowCertificate()
+                            .map(certificate -> certificate.certifiesAggregate(fact))
+                            .orElse(false));
                     if (!certified) {
                         add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK,
                                 aggregate.witness().sourceSpan(),

@@ -7,6 +7,7 @@ import io.mindspice.lyra.compiler.identity.LambdaId;
 import io.mindspice.lyra.compiler.identity.ReferenceId;
 import io.mindspice.lyra.compiler.identity.ScopeId;
 import io.mindspice.lyra.compiler.api.SessionFlowCertificate;
+import io.mindspice.lyra.compiler.api.SessionFlowCertificate.RetainedInitializerTransfer;
 import io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes;
 import io.mindspice.lyra.compiler.diagnostic.Diagnostic;
 import io.mindspice.lyra.compiler.diagnostic.RelatedSpan;
@@ -32,6 +33,7 @@ import io.mindspice.lyra.compiler.semantic.flow.OwnershipRequirement;
 import io.mindspice.lyra.compiler.semantic.flow.OwnershipWitness;
 import io.mindspice.lyra.compiler.semantic.flow.ProjectionPath;
 import io.mindspice.lyra.compiler.semantic.flow.ProjectionStep;
+import io.mindspice.lyra.compiler.semantic.flow.RetainedAllocationDerivation;
 import io.mindspice.lyra.compiler.semantic.flow.SemanticFlowEvent;
 import io.mindspice.lyra.compiler.semantic.flow.SemanticFlowFacts;
 import io.mindspice.lyra.compiler.semantic.flow.SemanticFlowResult;
@@ -371,6 +373,8 @@ public final class SemanticFlowAnalyzer {
         private final Map<DeclarationId, ScopeId> allocationScopes = new TreeMap<>();
         private final Map<DeclarationId, SourceSpan> allocationSpans = new TreeMap<>();
         private final Map<DeclarationId, FlowSiteId> allocationFlowSites = new TreeMap<>();
+        private final Map<DeclarationId, RetainedAllocationDerivation> retainedDeclarationDerivations = new TreeMap<>();
+        private final Map<FlowSiteId, RetainedAllocationDerivation> retainedFlowDerivations = new TreeMap<>();
         private final Map<DeclarationId, List<CaptureBinding>> sharedCaptures = new TreeMap<>();
         private final Map<DeclarationId, ValueAlternatives> declarationValues =
                 new TreeMap<>();
@@ -378,6 +382,10 @@ public final class SemanticFlowAnalyzer {
                 ownershipDiagnosticOrigins = new TreeMap<>();
         private final Map<OwnershipOccurrence, Set<SourceSpan>>
                 ownershipOccurrenceOrigins = new TreeMap<>();
+        private final java.util.ArrayDeque<FlowSiteId> retainedConstructionContexts =
+                new java.util.ArrayDeque<>();
+        private final java.util.ArrayDeque<FlowSiteId> retainedInvocationContexts =
+                new java.util.ArrayDeque<>();
         /** True while the canonical engine is executing a top-level initializer. */
         private boolean initializationEvaluation;
 
@@ -532,6 +540,89 @@ public final class SemanticFlowAnalyzer {
                 allocationSpans.put(allocation, site.span());
                 allocationFlowSites.put(allocation, graph.flowSiteId(expression));
             }
+        }
+
+        private DeclarationId retainedArrayAllocation(
+                FlowSiteId context, FlowSiteId producerSite, SourceSpan span) {
+            RetainedAllocationDerivation derivation = RetainedAllocationDerivation.of(
+                    RetainedAllocationDerivation.Kind.ARRAY, context, producerSite);
+            RetainedAllocationDerivation previous = retainedDeclarationDerivations.putIfAbsent(
+                    new DeclarationId(derivation.ordinal()), derivation);
+            if (previous != null && !previous.equals(derivation)) {
+                throw failure(CallableSummaryResult.InternalFailure.Kind.DOMAIN_LIMIT,
+                        "retained array derivation collided in the finite identity domain", span);
+            }
+            return new DeclarationId(derivation.ordinal());
+        }
+
+        private FlowSiteId retainedObjectSite(
+                FlowSiteId context, FlowSiteId producerSite, SourceSpan span) {
+            RetainedAllocationDerivation derivation = RetainedAllocationDerivation.of(
+                    RetainedAllocationDerivation.Kind.OBJECT_SITE, context, producerSite);
+            RetainedAllocationDerivation previous = retainedFlowDerivations.putIfAbsent(
+                    new FlowSiteId(derivation.ordinal()), derivation);
+            if (previous != null && !previous.equals(derivation)) {
+                throw failure(CallableSummaryResult.InternalFailure.Kind.DOMAIN_LIMIT,
+                        "retained object derivation collided in the finite identity domain", span);
+            }
+            return new FlowSiteId(derivation.ordinal());
+        }
+
+        private DeclarationId retainedObjectAllocation(
+                FlowSiteId context, FlowSiteId producerSite, SourceSpan span) {
+            RetainedAllocationDerivation derivation = RetainedAllocationDerivation.of(
+                    RetainedAllocationDerivation.Kind.OBJECT_ALLOCATION, context, producerSite);
+            RetainedAllocationDerivation previous = retainedDeclarationDerivations.putIfAbsent(
+                    new DeclarationId(derivation.ordinal()), derivation);
+            if (previous != null && !previous.equals(derivation)) {
+                throw failure(CallableSummaryResult.InternalFailure.Kind.DOMAIN_LIMIT,
+                        "retained object allocation derivation collided in the finite identity domain", span);
+            }
+            return new DeclarationId(derivation.ordinal());
+        }
+
+        private FlowSiteId retainedInvocationContext(
+                FlowSiteId context, FlowSiteId producerSite, SourceSpan span) {
+            return registerRetainedInvocation(RetainedAllocationDerivation.of(
+                    RetainedAllocationDerivation.Kind.INVOCATION_CONTEXT,
+                    context, producerSite), span);
+        }
+
+        private FlowSiteId retainedInvocationContext(
+                FlowSiteId context, SummaryCallId call, FlowSiteId producerSite,
+                SourceSpan span) {
+            RetainedAllocationDerivation derivation = new RetainedAllocationDerivation(
+                    RetainedAllocationDerivation.Kind.INVOCATION_CONTEXT, context,
+                    "summary/" + call.canonicalKey() + "/site/" + producerSite.ordinal(),
+                    RetainedAllocationDerivation.invocationContext(
+                            context, call, producerSite).ordinal());
+            return registerRetainedInvocation(derivation, span);
+        }
+
+        private FlowSiteId registerRetainedInvocation(
+                RetainedAllocationDerivation derivation, SourceSpan span) {
+            RetainedAllocationDerivation previous = retainedFlowDerivations.putIfAbsent(
+                    new FlowSiteId(derivation.ordinal()), derivation);
+            if (previous != null && !previous.equals(derivation)) {
+                throw failure(CallableSummaryResult.InternalFailure.Kind.DOMAIN_LIMIT,
+                        "retained invocation derivation collided in the finite identity domain", span);
+            }
+            return new FlowSiteId(derivation.ordinal());
+        }
+
+        private DeclarationId retainedSharedCell(
+                FlowSiteId context, DeclarationId producerCell, SourceSpan span) {
+            DeclarationId derived = RetainedAllocationDerivation.sharedCell(context, producerCell);
+            RetainedAllocationDerivation derivation = new RetainedAllocationDerivation(
+                    RetainedAllocationDerivation.Kind.SHARED_CELL, context,
+                    "cell/" + producerCell.ordinal(), derived.ordinal());
+            RetainedAllocationDerivation previous = retainedDeclarationDerivations.putIfAbsent(
+                    derived, derivation);
+            if (previous != null && !previous.equals(derivation)) {
+                throw failure(CallableSummaryResult.InternalFailure.Kind.DOMAIN_LIMIT,
+                        "retained shared-cell derivation collided in the finite identity domain", span);
+            }
+            return derived;
         }
 
         private void collectFreshSites(
@@ -1210,7 +1301,7 @@ public final class SemanticFlowAnalyzer {
                     if (retainedFactory) {
                         Eval retainedInitializer = retainedNominalInitializer(
                                 nominal, index, identity, object, current, caller,
-                                attributionCall);
+                                attributionCall, construction.site());
                         current = retainedInitializer.state;
                         current = current.withObject(identity, current.objects().get(identity).write(
                                 index, retainedInitializer.value, true));
@@ -1242,7 +1333,8 @@ public final class SemanticFlowAnalyzer {
                                         "retained nominal constructor has no callable summary",
                                         construction.span()));
                         CallableFlow callable = retainedNominalCallable(
-                                nominal, constructor, object, current, construction.span());
+                                nominal, constructor, object, current, construction.site(),
+                                construction.span());
                         FormulaAlternatives[] actualFormulas = new FormulaAlternatives[arguments.size()];
                         for (int index = 0; index < arguments.size(); index++) {
                             actualFormulas[index] = toFormulas(
@@ -1272,7 +1364,7 @@ public final class SemanticFlowAnalyzer {
                     io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity identity,
                     ValueAlternatives self,
                     io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
-                    Frame caller, TypedExpression construction) {
+                    Frame caller, TypedExpression construction, FlowSiteId constructionContext) {
                 SourceSpan span = construction.span();
                 var retained = retainedNominalDefinition(nominal, span);
                 SessionFlowCertificate.RetainedInitializerTransfer transfer = retained
@@ -1280,8 +1372,13 @@ public final class SemanticFlowAnalyzer {
                         .orElseThrow(() -> failure(
                                 CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
                                 "retained nominal member initializer has no certified transfer", span));
-                return retainedTransfer(nominal, identity, self, state, caller, construction,
-                        nominal.schema().members().get(memberIndex).type(), transfer);
+                retainedConstructionContexts.addLast(constructionContext);
+                try {
+                    return retainedTransfer(nominal, identity, self, state, caller, construction,
+                            transfer.type(), transfer);
+                } finally {
+                    retainedConstructionContexts.removeLast();
+                }
             }
 
             /** Evaluates one closed retained transfer against current consumer state. */
@@ -1292,23 +1389,444 @@ public final class SemanticFlowAnalyzer {
                     io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
                     Frame caller, TypedExpression construction, LyraType type,
                     SessionFlowCertificate.RetainedInitializerTransfer transfer) {
-                return switch (transfer) {
+                if (!type.withoutQualifiers().equals(transfer.type().withoutQualifiers())) {
+                    throw failure(CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
+                            "retained transfer declared type differs from its exact node type",
+                            construction.span());
+                }
+                rememberPrefix(caller, state);
+                Eval result = switch (transfer) {
                     case SessionFlowCertificate.RetainedInitializerTransfer.Lambda lambda ->
-                            new Eval(ValueAlternatives.singleton(ValueAlternative.callable(type,
+                            new Eval(ValueAlternatives.singleton(ValueAlternative.callable(lambda.type(),
                                     retainedNominalCallable(nominal, lambda.lambda(), self, state,
-                                            construction.span()))), state, List.of(), List.of());
+                                            retainedConstructionContexts.getLast(), construction.span()))),
+                                    state, List.of(), List.of());
                     case SessionFlowCertificate.RetainedInitializerTransfer.Value value ->
-                            new Eval(retainedForeignValues(value.value(), type,
+                            new Eval(retainedForeignValues(value.value(), value.type(),
                                     caller.module.moduleId(), construction.span()),
                                     state, List.of(), List.of());
                     case SessionFlowCertificate.RetainedInitializerTransfer.Reference reference ->
-                            new Eval(retainedReference(nominal, identity, self, state, reference, type,
+                            new Eval(retainedReference(nominal, identity, self, state, reference, reference.type(),
                                     caller.module.moduleId(), construction.span()),
                                     state, List.of(), List.of());
                     case SessionFlowCertificate.RetainedInitializerTransfer.Call call ->
                             retainedInitializerCall(nominal, identity, self, state, caller,
                                     construction, type, call);
+                    case SessionFlowCertificate.RetainedInitializerTransfer.Composite composite ->
+                            retainedComposite(nominal, identity, self, state, caller, construction, composite);
+                    case SessionFlowCertificate.RetainedInitializerTransfer.Apply apply ->
+                            retainedApply(nominal, identity, self, state, caller, construction, apply);
+                    case SessionFlowCertificate.RetainedInitializerTransfer.Alternative alternative ->
+                            retainedAlternative(nominal, identity, self, state, caller, construction, alternative);
+                    case SessionFlowCertificate.RetainedInitializerTransfer.Sequence sequence ->
+                            retainedSequence(nominal, identity, self, state, caller, construction, sequence);
+                    case SessionFlowCertificate.RetainedInitializerTransfer.Declare declare ->
+                            retainedDeclare(nominal, identity, self, state, caller, construction, declare);
+                    case SessionFlowCertificate.RetainedInitializerTransfer.Rebind rebind ->
+                            retainedRebind(nominal, identity, self, state, caller, construction, rebind);
+                    case SessionFlowCertificate.RetainedInitializerTransfer.Project project ->
+                            retainedProject(nominal, identity, self, state, caller, construction, project.type(), project);
+                    case SessionFlowCertificate.RetainedInitializerTransfer.Construct nested ->
+                            retainedConstruct(nominal, identity, self, state, caller, construction, nested);
+                    case SessionFlowCertificate.RetainedInitializerTransfer.CallableCall call ->
+                            retainedCallableCall(nominal, identity, self, state, caller, construction, call.type(), call);
+                    case SessionFlowCertificate.RetainedInitializerTransfer.Loop loop ->
+                            retainedLoop(nominal, identity, self, state, caller, construction, loop);
                 };
+                rememberPrefix(caller, result.state);
+                return result;
+            }
+
+            private Eval retainedComposite(
+                    ResolvedNominal nominal, io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity identity,
+                    ValueAlternatives self, io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
+                    Frame caller, TypedExpression construction,
+                    SessionFlowCertificate.RetainedInitializerTransfer.Composite composite) {
+                List<PartialValue> combinations = List.of(new PartialValue(List.of(), List.of(), List.of()));
+                var current = state;
+                var effects = new ArrayList<EagerEffectWitness>();
+                for (int index = 0; index < composite.elements().size(); index++) {
+                    RetainedInitializerTransfer childTransfer = composite.elements().get(index);
+                    Eval child = retainedTransfer(nominal, identity, self, current, caller, construction,
+                            childTransfer.type(), childTransfer);
+                    current = child.state;
+                    effects.addAll(child.effects);
+                    ProjectionPath route = composite.arrayLiteral() ? ProjectionPath.arrayElement(index)
+                            : ProjectionPath.tupleMember(index);
+                    List<PartialValue> next = new ArrayList<>();
+                    for (PartialValue prefix : combinations) for (ValueAlternative member : child.value) {
+                        var facts = new ArrayList<>(prefix.facts);
+                        facts.addAll(member.aggregateIdentities().stream().map(value -> value.prefixedBy(route)).toList());
+                        var callables = new ArrayList<>(prefix.callables);
+                        callables.addAll(member.callableFlows().stream().map(value -> value.prefixedBy(route)).toList());
+                        var nils = new ArrayList<>(prefix.nils);
+                        nils.addAll(member.nilProvenance().stream().map(value -> value.prefixedBy(route)).toList());
+                        var objects = new ArrayList<>(prefix.objects);
+                        objects.addAll(member.objects().stream().map(value -> value.prefixedBy(route)).toList());
+                        next.add(new PartialValue(facts, callables, nils, objects));
+                    }
+                    requireCombinationCount(next.size(), construction.span());
+                    combinations = next;
+                }
+                List<ValueAlternative> values = new ArrayList<>();
+                for (PartialValue combination : combinations) {
+                    var facts = new ArrayList<>(combination.facts);
+                    composite.allocation().ifPresent(allocation -> {
+                        FlowSiteId context = retainedConstructionContexts.getLast();
+                        DeclarationId derived = retainedArrayAllocation(
+                                context, allocation.site(), construction.span());
+                        facts.add(new AggregateIdentityFact(
+                                ArrayIdentity.localAllocation(allocation.moduleId(), derived, allocation.type()),
+                                ProjectionPath.root(), OwnershipWitness.local(allocation.moduleId(), derived,
+                                        allocation.scopeId(), allocation.span()).withOriginSite(allocation.site())));
+                    });
+                    values.add(ValueAlternative.of(composite.type(), facts, combination.callables,
+                            combination.nils, combination.objects));
+                }
+                return new Eval(retainedForeignValues(new ValueAlternatives(values), composite.type(),
+                        caller.module.moduleId(), construction.span()), current, List.of(), distinctEffects(effects));
+            }
+
+            private LyraType elementType(LyraType type, boolean array, int index) {
+                LyraType plain = type.withoutQualifiers();
+                if (array && plain instanceof ArrayType value) return value.elementType();
+                if (!array && plain instanceof TupleType value) return value.elementTypes().get(index);
+                throw failure(CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
+                        "retained composite type differs from its elements", graph.resolvedGraph().moduleGraph().module(
+                                graph.resolvedGraph().moduleGraph().rootModule()).orElseThrow().program().span());
+            }
+
+            private Eval retainedApply(
+                    ResolvedNominal nominal, io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity identity,
+                    ValueAlternatives self, io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
+                    Frame caller, TypedExpression construction,
+                    SessionFlowCertificate.RetainedInitializerTransfer.Apply apply) {
+                var current = state;
+                Eval last = null;
+                var effects = new ArrayList<EagerEffectWitness>();
+                io.mindspice.lyra.compiler.semantic.flow.BindingFlowState resultState = null;
+                for (RetainedInitializerTransfer operand : apply.operands()) {
+                    last = retainedTransfer(nominal, identity, self, current, caller, construction,
+                            operand.type(), operand);
+                    current = last.state;
+                    effects.addAll(last.effects);
+                    resultState = resultState == null ? current
+                            : apply.kind() == SessionFlowCertificate.RetainedInitializerTransfer.ApplyKind.SHORT_CIRCUIT
+                            ? resultState.join(current) : current;
+                }
+                ValueAlternatives value = (apply.kind() == SessionFlowCertificate.RetainedInitializerTransfer.ApplyKind.CONVERSION
+                        || apply.kind() == SessionFlowCertificate.RetainedInitializerTransfer.ApplyKind.NARROWING)
+                        ? retag(last.value, apply.type()) : scalarValue(apply.type());
+                return new Eval(value, resultState == null ? state : resultState,
+                        List.of(), distinctEffects(effects));
+            }
+
+            private Eval retainedAlternative(
+                    ResolvedNominal nominal, io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity identity,
+                    ValueAlternatives self, io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
+                    Frame caller, TypedExpression construction,
+                    SessionFlowCertificate.RetainedInitializerTransfer.Alternative alternative) {
+                var postPrefix = state;
+                var effects = new ArrayList<EagerEffectWitness>();
+                Eval prefixValue = new Eval(scalarValue(PrimitiveType.UNIT), state, List.of(), List.of());
+                for (var step : alternative.prefix()) {
+                    prefixValue = retainedTransfer(nominal, identity, self, postPrefix, caller, construction,
+                            step.type(), step.transfer());
+                    postPrefix = prefixValue.state;
+                    effects.addAll(prefixValue.effects);
+                }
+
+                List<Eval> branches = new ArrayList<>();
+                var continuation = postPrefix;
+                for (int index = 0; index < alternative.branches().size(); index++) {
+                    var branch = alternative.branches().get(index);
+                    var tested = alternative.kind() == RetainedInitializerTransfer.AlternativeKind.MATCH
+                            ? continuation : postPrefix;
+                    if (alternative.kind() == RetainedInitializerTransfer.AlternativeKind.CONDITIONAL
+                            && index == 0 && alternative.predicateBinding().isPresent()) {
+                        var binding = alternative.predicateBinding().orElseThrow();
+                        ValueAlternatives value = retag(prefixValue.value, binding.contract().valueType());
+                        tested = tested.binding(binding.declaration()).isPresent()
+                                ? tested.replaceWholeBinding(binding.declaration(), value)
+                                : tested.bind(binding.declaration(), binding.contract(), value);
+                        rememberPrefix(caller, tested);
+                    }
+                    if (branch.pattern().isPresent()) {
+                        var pattern = branch.pattern().orElseThrow();
+                        Eval selected = retainedTransfer(nominal, identity, self, tested, caller, construction,
+                                pattern.type(), pattern.transfer());
+                        tested = selected.state;
+                        effects.addAll(selected.effects);
+                    }
+                    var selected = tested;
+                    if (branch.guard().isPresent()) {
+                        var guard = branch.guard().orElseThrow();
+                        Eval guarded = retainedTransfer(nominal, identity, self, tested, caller, construction,
+                                guard.type(), guard.transfer());
+                        selected = guarded.state;
+                        effects.addAll(guarded.effects);
+                        continuation = branch.wildcard()
+                                ? guarded.state : tested.branchJoin(guarded.state);
+                    } else if (alternative.kind() == RetainedInitializerTransfer.AlternativeKind.MATCH) {
+                        continuation = tested;
+                    }
+                    Eval result = branch.result().isPresent()
+                            ? retainedTransfer(nominal, identity, self, selected, caller, construction,
+                            branch.result().orElseThrow().type(), branch.result().orElseThrow().transfer())
+                            : new Eval(scalarValue(PrimitiveType.UNIT), selected, List.of(), List.of());
+                    if (alternative.kind() == RetainedInitializerTransfer.AlternativeKind.CONDITIONAL
+                            && index == 0 && alternative.predicateBinding().isPresent()) {
+                        result = new Eval(result.value,
+                                result.state.withoutBinding(alternative.predicateBinding().orElseThrow().declaration()),
+                                result.events, result.effects);
+                    }
+                    branches.add(result);
+                    effects.addAll(result.effects);
+                }
+
+                if (alternative.kind() == RetainedInitializerTransfer.AlternativeKind.COALESCE) {
+                    Eval fallback = branches.getFirst();
+                    return new Eval(retag(prefixValue.value.coalesceJoin(fallback.value), alternative.type()),
+                            prefixValue.state.coalesceJoin(fallback.state), List.of(), distinctEffects(effects));
+                }
+                var joined = branches.getFirst().state;
+                ValueAlternatives values = branches.getFirst().value;
+                for (int index = 1; index < branches.size(); index++) {
+                    joined = joined.branchJoin(branches.get(index).state);
+                    values = values.join(branches.get(index).value);
+                }
+                if (alternative.kind() == RetainedInitializerTransfer.AlternativeKind.CONDITIONAL
+                        && alternative.branches().get(1).result().isEmpty()) {
+                    values = scalarValue(PrimitiveType.UNIT);
+                }
+                return new Eval(retag(values, alternative.type()), joined, List.of(), distinctEffects(effects));
+            }
+
+            private Eval retainedSequence(
+                    ResolvedNominal nominal, io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity identity,
+                    ValueAlternatives self, io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
+                    Frame caller, TypedExpression construction,
+                    SessionFlowCertificate.RetainedInitializerTransfer.Sequence sequence) {
+                var current = state;
+                Eval last = new Eval(scalarValue(PrimitiveType.UNIT), state, List.of(), List.of());
+                var effects = new ArrayList<EagerEffectWitness>();
+                for (RetainedInitializerTransfer step : sequence.steps()) {
+                    last = retainedTransfer(nominal, identity, self, current, caller, construction, step.type(), step);
+                    current = last.state; effects.addAll(last.effects);
+                }
+                // Producer-local block identities are valid only while the retained sequence executes.
+                // Do not publish a binding whose contract belongs to the absent producer graph.
+                for (RetainedInitializerTransfer step : sequence.steps()) {
+                    if (step instanceof RetainedInitializerTransfer.Declare declare) {
+                        current = current.withoutBinding(declare.declaration());
+                    }
+                }
+                return new Eval(retag(last.value, sequence.type()), current, List.of(), distinctEffects(effects));
+            }
+
+            private Eval retainedDeclare(
+                    ResolvedNominal nominal, io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity identity,
+                    ValueAlternatives self, io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
+                    Frame caller, TypedExpression construction,
+                    SessionFlowCertificate.RetainedInitializerTransfer.Declare declare) {
+                Eval initializer = retainedTransfer(nominal, identity, self, state, caller, construction,
+                        declare.initializer().type(), declare.initializer());
+                ValueAlternatives value = retag(initializer.value, declare.contract().valueType());
+                var next = initializer.state.binding(declare.declaration()).isPresent()
+                        ? initializer.state.replaceWholeBinding(declare.declaration(), value)
+                        : initializer.state.bind(declare.declaration(), declare.contract(), value);
+                if (declare.sharedCell().isPresent()) {
+                    DeclarationId cell = retainedSharedCell(
+                            retainedConstructionContexts.getLast(),
+                            declare.sharedCell().orElseThrow(), construction.span());
+                    next = next.replaceSharedCell(cell, value);
+                }
+                return new Eval(scalarValue(declare.type()), next, List.of(), initializer.effects);
+            }
+
+            private Eval retainedRebind(
+                    ResolvedNominal nominal, io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity identity,
+                    ValueAlternatives self, io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
+                    Frame caller, TypedExpression construction,
+                    SessionFlowCertificate.RetainedInitializerTransfer.Rebind rebind) {
+                Eval value = retainedTransfer(nominal, identity, self, state, caller, construction,
+                        rebind.value().type(), rebind.value());
+                var updated = applyUpdate(value.state, new TargetPath(originDeclaration(rebind.target().declaration()),
+                        rebind.target().route()), value.value, construction.span());
+                if (rebind.sharedCell().isPresent()) {
+                    ValueAlternatives snapshot = updated.requireBinding(
+                            originDeclaration(rebind.target().declaration())).alternatives();
+                    DeclarationId cell = retainedSharedCell(
+                            retainedConstructionContexts.getLast(),
+                            rebind.sharedCell().orElseThrow(), construction.span());
+                    updated = updated.replaceSharedCell(cell, snapshot);
+                }
+                return new Eval(scalarValue(rebind.type()), updated, List.of(), value.effects);
+            }
+
+            private Eval retainedProject(
+                    ResolvedNominal nominal, io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity identity,
+                    ValueAlternatives self, io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
+                    Frame caller, TypedExpression construction, LyraType type,
+                    SessionFlowCertificate.RetainedInitializerTransfer.Project project) {
+                Eval base = retainedTransfer(nominal, identity, self, state, caller, construction,
+                        project.base().type(), project.base());
+                var current = base.state;
+                var effects = new ArrayList<>(base.effects);
+                if (project.index().isPresent()) {
+                    RetainedInitializerTransfer indexTransfer = project.index().orElseThrow();
+                    Eval index = retainedTransfer(nominal, identity, self, current, caller, construction,
+                            indexTransfer.type(), indexTransfer);
+                    current = index.state; effects.addAll(index.effects);
+                }
+                if (project.kind() == SessionFlowCertificate.RetainedInitializerTransfer.ProjectionKind.LENGTH
+                        || project.kind()
+                        == SessionFlowCertificate.RetainedInitializerTransfer.ProjectionKind.STRING_INDEX) {
+                    return new Eval(scalarValue(project.type()), current, List.of(), distinctEffects(effects));
+                }
+                ValueAlternatives selected = project.route().steps().stream()
+                        .anyMatch(ProjectionStep.NominalMember.class::isInstance)
+                        ? selectObjectRoute(base.value, project.route(), current, construction.span())
+                        : selectOrScalar(base.value, project.route(), type);
+                return new Eval(retainedForeignValues(selected, type, caller.module.moduleId(), construction.span()), current,
+                        List.of(), distinctEffects(effects));
+            }
+
+            private Eval retainedConstruct(
+                    ResolvedNominal nominal, io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity identity,
+                    ValueAlternatives self, io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
+                    Frame caller, TypedExpression construction,
+                    SessionFlowCertificate.RetainedInitializerTransfer.Construct nested) {
+                var current = state;
+                var arguments = new ArrayList<ValueAlternatives>();
+                var effects = new ArrayList<EagerEffectWitness>();
+                for (RetainedInitializerTransfer argument : nested.arguments()) {
+                    Eval evaluated = retainedTransfer(nominal, identity, self, current, caller, construction,
+                            argument.type(), argument);
+                    current = evaluated.state; arguments.add(evaluated.value); effects.addAll(evaluated.effects);
+                }
+                var site = nested.site();
+                FlowSiteId context = retainedConstructionContexts.getLast();
+                FlowSiteId derivedSite = retainedObjectSite(context, site.site(), construction.span());
+                DeclarationId derivedAllocation = retainedObjectAllocation(
+                        context, site.site(), construction.span());
+                ConstructionEvidence evidence = new ConstructionEvidence(site.nominalDeclaration(), site.moduleId(),
+                        site.scopeId(), site.span(), derivedSite, derivedAllocation, site.argumentTargets());
+                Eval initialized = initializeNominal(
+                        evidence, construction, caller, current, arguments, List.of(), effects);
+                return new Eval(retainedForeignValues(initialized.value, nested.type(),
+                        caller.module.moduleId(), construction.span()), initialized.state,
+                        initialized.events, initialized.effects);
+            }
+
+            private Eval retainedCallableCall(
+                    ResolvedNominal nominal, io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity identity,
+                    ValueAlternatives self, io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
+                    Frame caller, TypedExpression construction, LyraType type,
+                    SessionFlowCertificate.RetainedInitializerTransfer.CallableCall call) {
+                Eval target = retainedTransfer(nominal, identity, self, state, caller, construction,
+                        call.target().type(), call.target());
+                FlowSiteId invocationContext = retainedInvocationContext(
+                        retainedConstructionContexts.getLast(), call.site(), construction.span());
+                retainedInvocationContexts.addLast(invocationContext);
+                try {
+                    return retainedInvoke(nominal, identity, self, target, caller, construction, type,
+                            call.function(), call.arguments(), call.argumentTargets());
+                } finally {
+                    retainedInvocationContexts.removeLast();
+                }
+            }
+
+            private Eval retainedLoop(
+                    ResolvedNominal nominal, io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity identity,
+                    ValueAlternatives self, io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
+                    Frame caller, TypedExpression construction,
+                    SessionFlowCertificate.RetainedInitializerTransfer.Loop loop) {
+                Eval input = retainedTransfer(nominal, identity, self, state, caller, construction,
+                        loop.input().type(), loop.input());
+                Eval action = retainedTransfer(nominal, identity, self, input.state, caller, construction,
+                        loop.action().type(), loop.action());
+                var head = action.state;
+                var exits = action.state;
+                var effects = new ArrayList<EagerEffectWitness>(concat(input.effects, action.effects));
+                List<ValueAlternatives> actionArguments = loop.actionFunction().arity() == 0 ? List.of()
+                        : List.of(scalarValue(loop.actionFunction().parameterType(0)));
+                FlowSiteId invocationContext = retainedInvocationContext(
+                        retainedConstructionContexts.getLast(), loop.site(), construction.span());
+                retainedInvocationContexts.addLast(invocationContext);
+                try {
+                for (int iteration = 1; ; iteration++) {
+                    if (iteration > limits.maxFixedPointIterations()) {
+                        throw failure(CallableSummaryResult.InternalFailure.Kind.DOMAIN_LIMIT,
+                                "retained callback loop exceeds the finite flow fixed-point budget", construction.span());
+                    }
+                    var continuing = head;
+                    if (loop.kind() == TypedExpressionKind.WHILE) {
+                        Eval predicate = retainedInvokeValues(
+                                new Eval(input.value, continuing, List.of(), List.of()),
+                                caller, construction, PrimitiveType.BOOL,
+                                loop.inputFunction().orElseThrow(), List.of(), List.of());
+                        continuing = predicate.state;
+                        exits = iteration == 1 ? continuing : exits.join(continuing);
+                        effects.addAll(predicate.effects);
+                    }
+                    Eval body = retainedInvokeValues(new Eval(action.value, continuing, List.of(), List.of()),
+                            caller, construction, PrimitiveType.UNIT, loop.actionFunction(), actionArguments,
+                            java.util.Collections.nCopies(loop.actionFunction().arity(), Optional.empty()));
+                    effects.addAll(body.effects);
+                    var next = head.join(body.state);
+                    if (loop.kind() == TypedExpressionKind.ITER) exits = next;
+                    if (next.equals(head)) break;
+                    head = next;
+                }
+                return new Eval(scalarValue(loop.type()), exits, List.of(), distinctEffects(effects));
+                } finally {
+                    retainedInvocationContexts.removeLast();
+                }
+            }
+
+            private Eval retainedInvoke(
+                    ResolvedNominal nominal, io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity identity,
+                    ValueAlternatives self, Eval target, Frame caller, TypedExpression construction, LyraType type,
+                    FunctionType function, List<RetainedInitializerTransfer> transfers,
+                    List<Optional<WriteTarget>> targets) {
+                var current = target.state;
+                var arguments = new ArrayList<ValueAlternatives>();
+                var effects = new ArrayList<EagerEffectWitness>(target.effects);
+                for (int index = 0; index < transfers.size(); index++) {
+                    Eval argument = retainedTransfer(nominal, identity, self, current, caller, construction,
+                            transfers.get(index).type(), transfers.get(index));
+                    current = argument.state; arguments.add(argument.value); effects.addAll(argument.effects);
+                }
+                return retainedInvokeValues(new Eval(target.value, current, List.of(), effects), caller,
+                        construction, type, function, arguments, targets);
+            }
+
+            private Eval retainedInvokeValues(
+                    Eval target, Frame caller, TypedExpression construction, LyraType type, FunctionType function,
+                    List<ValueAlternatives> arguments, List<Optional<WriteTarget>> targets) {
+                if (arguments.size() != function.arity() || targets.size() != function.arity()) {
+                    throw failure(CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
+                            "retained callable argument count differs from its contract", construction.span());
+                }
+                List<CallableFlow> candidates = callableCandidates(refresh(target.value, target.state));
+                if (candidates.isEmpty()) throw failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                        "retained callable has no recoverable callable fact", construction.span());
+                FormulaAlternatives[] formulas = new FormulaAlternatives[arguments.size()];
+                for (int index = 0; index < arguments.size(); index++) {
+                    formulas[index] = toFormulas(arguments.get(index), caller.module.moduleId(), construction.span());
+                }
+                io.mindspice.lyra.compiler.semantic.flow.BindingFlowState joined = null;
+                ValueAlternatives values = ValueAlternatives.empty();
+                var callEffects = new ArrayList<EagerEffectWitness>();
+                for (CallableFlow candidate : candidates) {
+                    CallBranch branch = invokeCandidate(candidate, construction, arguments, formulas, caller, target.state,
+                            function, target.effects, targets, function.returnType());
+                    joined = joined == null ? branch.state : joined.join(branch.state);
+                    values = values.join(branch.value); callEffects.addAll(branch.effects);
+                }
+                return new Eval(retag(values, type), joined, List.of(),
+                        distinctEffects(concat(target.effects, callEffects)));
             }
 
             /**
@@ -1335,15 +1853,22 @@ public final class SemanticFlowAnalyzer {
                 var certificate = graph.resolvedGraph().sessionFlowCertificate().orElseThrow(() ->
                         failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
                                 "retained nominal factory has no session certificate", span));
-                ValueAlternatives retained = state.sharedCell(declaration)
+                Optional<ValueAlternatives> retainedValue = state.sharedCell(declaration)
                         .or(() -> state.binding(declaration).map(
                                 io.mindspice.lyra.compiler.semantic.flow.BindingFlowValue::alternatives))
                         .or(() -> certificate.sharedCell(declaration))
-                        .or(() -> certificate.value(declaration))
-                        .orElseThrow(() -> failure(
-                                CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
-                                "retained initializer reference has no certified value: "
-                                        + declaration, span));
+                        .or(() -> certificate.value(declaration));
+                if (retainedValue.isEmpty() && reference.route().isRoot()
+                        && type.withoutQualifiers() instanceof FunctionType function
+                        && summaries.intrinsicDeclarations().containsKey(declaration)) {
+                    retainedValue = Optional.of(ValueAlternatives.singleton(
+                            ValueAlternative.callable(function,
+                                    CallableFlow.intrinsicAtRoot(declaration))));
+                }
+                ValueAlternatives retained = retainedValue.orElseThrow(() -> failure(
+                        CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
+                        "retained initializer reference has no certified value: "
+                                + declaration, span));
                 return retainedForeignValues(
                         applyRetainedRoute(retained, reference.route(), state, span), type,
                         contextModule, span);
@@ -1382,9 +1907,14 @@ public final class SemanticFlowAnalyzer {
                                                 fact.identity().arrayType()),
                                         fact.route(), witness);
                             }).toList();
+                    List<NominalObjectFact> objects = value.objects().stream()
+                            .map(object -> new NominalObjectFact(
+                                    object.identity(), object.route(),
+                                    object.ownership().atUse(useSpan)))
+                            .toList();
                     return ValueAlternative.of(
                             value.type(), facts, value.callableFlows(),
-                            value.nilProvenance(), value.objects());
+                            value.nilProvenance(), objects);
                 }).toList();
                 return retag(new ValueAlternatives(alternatives), type);
             }
@@ -1424,7 +1954,7 @@ public final class SemanticFlowAnalyzer {
                 var effects = new ArrayList<EagerEffectWitness>();
                 for (int index = 0; index < call.arguments().size(); index++) {
                     Eval argument = retainedTransfer(nominal, identity, self, current, caller,
-                            construction, function.parameterType(index), call.arguments().get(index));
+                            construction, call.arguments().get(index).type(), call.arguments().get(index));
                     current = argument.state;
                     argumentValues.add(argument.value);
                     effects.addAll(argument.effects);
@@ -1443,14 +1973,21 @@ public final class SemanticFlowAnalyzer {
                 io.mindspice.lyra.compiler.semantic.flow.BindingFlowState joinedState = null;
                 ValueAlternatives joinedValue = ValueAlternatives.empty();
                 var allCallEffects = new ArrayList<EagerEffectWitness>();
-                for (CallableFlow candidate : candidates) {
-                    CallBranch branch = invokeCandidate(candidate, construction, argumentValues,
-                            actualFormulas, caller, current, function, effects,
-                            call.argumentTargets(), function.returnType());
-                    joinedState = joinedState == null
-                            ? branch.state : joinedState.join(branch.state);
-                    joinedValue = joinedValue.join(branch.value);
-                    allCallEffects.addAll(branch.effects);
+                FlowSiteId invocationContext = retainedInvocationContext(
+                        retainedConstructionContexts.getLast(), call.site(), construction.span());
+                retainedInvocationContexts.addLast(invocationContext);
+                try {
+                    for (CallableFlow candidate : candidates) {
+                        CallBranch branch = invokeCandidate(candidate, construction, argumentValues,
+                                actualFormulas, caller, current, function, effects,
+                                call.argumentTargets(), function.returnType());
+                        joinedState = joinedState == null
+                                ? branch.state : joinedState.join(branch.state);
+                        joinedValue = joinedValue.join(branch.value);
+                        allCallEffects.addAll(branch.effects);
+                    }
+                } finally {
+                    retainedInvocationContexts.removeLast();
                 }
                 if (joinedState == null || joinedValue.isEmpty()) {
                     throw failure(
@@ -1504,7 +2041,7 @@ public final class SemanticFlowAnalyzer {
             private CallableFlow retainedNominalCallable(
                     ResolvedNominal nominal, LambdaId lambda, ValueAlternatives self,
                     io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
-                    SourceSpan span) {
+                    FlowSiteId retainedContext, SourceSpan span) {
                 var certificate = graph.resolvedGraph().sessionFlowCertificate().orElseThrow();
                 CallableSummary summary = certificate.callableSummaries().summary(lambda).orElseThrow(() ->
                         failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
@@ -1516,7 +2053,9 @@ public final class SemanticFlowAnalyzer {
                         captures.put(capture.declarationId(), self);
                     } else if (capture.isSharedCell()) {
                         DeclarationId cell = capture.sharedCellId().orElseThrow();
-                        ValueAlternatives value = state.sharedCell(cell)
+                        DeclarationId actualCell = retainedActualCell(
+                                capture, retainedContext, span);
+                        ValueAlternatives value = state.sharedCell(actualCell)
                                 .or(() -> certificate.sharedCell(cell)).orElseThrow(() ->
                                         failure(CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
                                                 "retained nominal initializer lost a shared capture", span));
@@ -1530,8 +2069,10 @@ public final class SemanticFlowAnalyzer {
                         captures.put(capture.declarationId(), value);
                     }
                 }
-                return new CallableFlow(Optional.of(lambda), Optional.empty(),
+                CallableFlow callable = new CallableFlow(Optional.of(lambda), Optional.empty(),
                         ProjectionPath.root(), captures, cells, Optional.empty());
+                return cells.isEmpty() ? callable
+                        : callable.withRetainedCellContext(retainedContext);
             }
 
             private Eval reference(
@@ -2181,13 +2722,22 @@ public final class SemanticFlowAnalyzer {
                     LyraType resultType) {
                 io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state = seedCells(
                         baseline, candidate, call.span());
-                rememberPrefix(frame, state);
+                rememberPrefix(frame, retainedPublishableState(state, candidate));
                 ArrayList<EagerEffectWitness> effects = new ArrayList<>(precedingEffects);
                 ArrayList<SemanticFlowEvent> events = new ArrayList<>();
                 ArrayList<CapturedCellWrite> writes = new ArrayList<>();
                 ModuleId targetModule = callableModule(candidate, call.span());
                 boolean predecessorCallable = candidate.lambdaId().isPresent()
                         && !lambdas.containsKey(candidate.lambdaId().orElseThrow());
+                // A local wrapper can transitively invoke a predecessor summary
+                // through a direct target, parameter, or capture. Every summary
+                // invocation therefore needs the exact consumer-owned base site;
+                // local-only formulas simply never consume it.
+                FlowSiteId retainedAllocationContext = !retainedInvocationContexts.isEmpty()
+                        ? retainedInvocationContexts.getLast()
+                        : !retainedConstructionContexts.isEmpty()
+                        ? retainedConstructionContexts.getLast()
+                        : graph.flowSiteId(call);
                 if (!predecessorCallable
                         && !targetModule.equals(frame.module.moduleId())
                         && graph.module(targetModule).isPresent()) {
@@ -2228,11 +2778,14 @@ public final class SemanticFlowAnalyzer {
                                 @Override public boolean orderedEffects() { return orderedHeapEffects; }
                                 @Override public void applyWrite(CapturedCellWrite write, CallableSummary owner, Object activation) {
                                     ValueAlternatives replacement = fromFormulas(
-                                            write.value(), frame.module.moduleId(), call.span());
-                                    declarationState[0] = applyTransferredWrite(declarationState[0], owner, write,
+                                            write.value(), frame.module.moduleId(), call.span(),
+                                            Optional.ofNullable(retainedAllocationContext));
+                                    declarationState[0] = applyTransferredWrite(
+                                            declarationState[0], candidate, owner, write,
                                             replacement, argumentTargets, call.span());
                                     declarationFormulas.clear();
-                                    rememberPrefix(frame, declarationState[0]);
+                                    rememberPrefix(frame, retainedPublishableState(
+                                            declarationState[0], candidate));
                                 }
                                 @Override public Optional<FormulaAlternatives> apply(ValueFormula.Declaration declaration) {
                                     return resolveCallableDeclaration(declaration, candidate, frame,
@@ -2244,8 +2797,11 @@ public final class SemanticFlowAnalyzer {
                                             object.sourceRoute(), declarationState[0], call.span());
                                     return Optional.of(toFormulas(selected, frame.module.moduleId(), call.span()));
                                 }
-                                @Override public Optional<FormulaAlternatives> construct(CallableCallReference constructorCall,
-                                        List<FormulaAlternatives> constructorArguments, Object activation) {
+                                @Override public Optional<FormulaAlternatives> construct(
+                                        CallableCallReference constructorCall,
+                                        List<FormulaAlternatives> constructorArguments,
+                                        Object activation,
+                                        List<SummaryCallId> invocationPath) {
                                     var cache = constructed.computeIfAbsent(activation, ignored -> new TreeMap<>());
                                     FormulaAlternatives prior = cache.get(constructorCall.id());
                                     if (prior != null) return Optional.of(prior);
@@ -2259,7 +2815,8 @@ public final class SemanticFlowAnalyzer {
                                                 "constructor transfer changed its nominal source target", constructorCall.span());
                                     }
                                     List<ValueAlternatives> actuals = constructorArguments.stream().map(argument ->
-                                            fromFormulas(argument, frame.module.moduleId(), constructorCall.span())).toList();
+                                            fromFormulas(argument, frame.module.moduleId(), constructorCall.span(),
+                                                    Optional.ofNullable(retainedAllocationContext))).toList();
                                     Eval initialized;
                                     if (source != null) {
                                         initialized = initializeNominal(source,
@@ -2274,10 +2831,22 @@ public final class SemanticFlowAnalyzer {
                                                         CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
                                                         "constructor transfer has no certified producer source site",
                                                         constructorCall.span()));
+                                        if (retainedAllocationContext == null) {
+                                            throw failure(CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
+                                                    "retained constructor transfer has no consumer allocation context",
+                                                    constructorCall.span());
+                                        }
+                                        FlowSiteId invocationContext = retainedPathContext(
+                                                retainedAllocationContext, invocationPath,
+                                                constructorCall.span());
+                                        FlowSiteId derivedSite = retainedObjectSite(invocationContext,
+                                                retained.site(), constructorCall.span());
+                                        DeclarationId derivedAllocation = retainedObjectAllocation(invocationContext,
+                                                retained.site(), constructorCall.span());
                                         ConstructionEvidence evidence = new ConstructionEvidence(
                                                 retained.target(), retained.moduleId(), retained.scopeId(),
-                                                retained.call().span(), retained.site(),
-                                                retained.allocation(), retained.argumentTargets());
+                                                retained.call().span(), derivedSite,
+                                                derivedAllocation, retained.argumentTargets());
                                         initialized = initializeNominal(evidence, call, frame,
                                                 declarationState[0], actuals,
                                                 new ArrayList<>(), new ArrayList<>());
@@ -2307,16 +2876,16 @@ public final class SemanticFlowAnalyzer {
                         addCallBoundaryOrigins(
                                 diagnosticOrigins,
                                 fromOwnershipFormulas(
-                                        requirement.value(),
-                                        frame.module.moduleId(),
-                                        requirement.span()),
+                                        requirement.value(), frame.module.moduleId(),
+                                        requirement.span(), Optional.ofNullable(retainedAllocationContext)),
                                 call, frame.module.moduleId());
                     }
                     rejectImportedOwnershipRequirements(
                             success.ownershipRequirements(), frame.module.moduleId(),
                             diagnosticOrigins, Optional.of(targetModule), initializationEvaluation);
                     value = fromFormulas(
-                            success.returnValue(), frame.module.moduleId(), call.span());
+                            success.returnValue(), frame.module.moduleId(), call.span(),
+                            Optional.ofNullable(retainedAllocationContext));
                     addCallBoundaryOrigins(
                             diagnosticOrigins, value, call,
                             frame.module.moduleId());
@@ -2324,17 +2893,18 @@ public final class SemanticFlowAnalyzer {
                             value, frame.module.moduleId(), diagnosticOrigins);
                     for (CapturedCellWrite write : success.writes()) {
                         ValueAlternatives replacement = fromFormulas(
-                                write.value(), frame.module.moduleId(), call.span());
+                                write.value(), frame.module.moduleId(), call.span(),
+                                Optional.ofNullable(retainedAllocationContext));
                         addCallBoundaryOrigins(
                                 diagnosticOrigins, replacement, call,
                                 frame.module.moduleId());
                         rememberTransferredOwnershipOrigins(
                                 replacement, frame.module.moduleId(), diagnosticOrigins);
                         if (!orderedHeapEffects) state = applyTransferredWrite(
-                                state, summary, write, replacement,
+                                state, candidate, summary, write, replacement,
                                 argumentTargets, call.span());
                         // Calls can fail/cancel between ordered writes, not only on return.
-                        rememberPrefix(frame, state);
+                        rememberPrefix(frame, retainedPublishableState(state, candidate));
                         writes.add(write);
                     }
                     for (EagerEffectWitness effect : success.effects()) {
@@ -2354,6 +2924,19 @@ public final class SemanticFlowAnalyzer {
                         // exact declaration/lambda/site provenance is retained.
                         effects.addAll(expandEffect(
                                 attributed, frame, state, call.span(), callSite));
+                    }
+                }
+                if (predecessorCallable && candidate.lambdaId().isPresent()) {
+                    CallableSummary retainedSummary = summaries.summary(
+                            candidate.lambdaId().orElseThrow()).orElseThrow();
+                    SessionFlowCertificate certificate = graph.resolvedGraph()
+                            .sessionFlowCertificate().orElseThrow();
+                    for (CallableSummary.CapturePlaceholder capture : retainedSummary.captures()) {
+                        DeclarationId declaration = originDeclaration(capture.declarationId());
+                        if (capture.isSharedCell()
+                                && certificate.boundaryState().binding(declaration).isEmpty()) {
+                            state = state.withoutBinding(declaration);
+                        }
                     }
                 }
                 events.add(new SemanticFlowEvent(
@@ -2624,6 +3207,25 @@ public final class SemanticFlowAnalyzer {
                         write.span());
             }
 
+            private io.mindspice.lyra.compiler.semantic.flow.BindingFlowState retainedPublishableState(
+                    io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
+                    CallableFlow candidate) {
+                if (candidate.lambdaId().isEmpty()
+                        || lambdas.containsKey(candidate.lambdaId().orElseThrow())) return state;
+                SessionFlowCertificate certificate = graph.resolvedGraph()
+                        .sessionFlowCertificate().orElseThrow();
+                CallableSummary summary = summaries.summary(candidate.lambdaId().orElseThrow()).orElseThrow();
+                var result = state;
+                for (CallableSummary.CapturePlaceholder capture : summary.captures()) {
+                    DeclarationId declaration = originDeclaration(capture.declarationId());
+                    if (capture.isSharedCell()
+                            && certificate.boundaryState().binding(declaration).isEmpty()) {
+                        result = result.withoutBinding(declaration);
+                    }
+                }
+                return result;
+            }
+
             private io.mindspice.lyra.compiler.semantic.flow.BindingFlowState seedCells(
                     io.mindspice.lyra.compiler.semantic.flow.BindingFlowState baseline,
                     CallableFlow candidate,
@@ -2644,11 +3246,12 @@ public final class SemanticFlowAnalyzer {
                 io.mindspice.lyra.compiler.semantic.flow.BindingFlowState result = baseline;
                 for (Map.Entry<DeclarationId, ValueAlternatives> entry
                         : candidate.sharedCellSnapshots().entrySet()) {
-                    DeclarationId cell = entry.getKey();
-                    CallableSummary.CapturePlaceholder capture = sharedCaptures.get(cell);
+                    DeclarationId producerCell = entry.getKey();
+                    CallableSummary.CapturePlaceholder capture = sharedCaptures.get(producerCell);
                     ValueAlternatives snapshot = Objects.requireNonNull(
                             entry.getValue(), "retained shared-cell snapshot");
                     requireRetainedCaptureType(capture, snapshot, span);
+                    DeclarationId cell = retainedActualCell(candidate, capture, span);
                     result = result.replaceSharedCell(cell, snapshot);
                     DeclarationId declaration = originDeclaration(capture.declarationId());
                     io.mindspice.lyra.compiler.semantic.flow.BindingFlowValue existing =
@@ -2734,7 +3337,8 @@ public final class SemanticFlowAnalyzer {
                     if (placeholder.isSharedCell()) {
                         values = candidate.sharedCellSnapshots().get(placeholder.cellId().orElseThrow());
                         if (values == null) {
-                            values = state.sharedCell(placeholder.cellId().orElseThrow()).orElse(null);
+                            values = state.sharedCell(retainedActualCell(
+                                    candidate, placeholder, span)).orElse(null);
                         }
                     } else {
                         values = candidate.capturedValues().get(placeholder.declarationId());
@@ -2749,6 +3353,42 @@ public final class SemanticFlowAnalyzer {
                     result.put(placeholder.captureId(), toFormulas(values, module, span));
                 }
                 return result;
+            }
+
+            private DeclarationId retainedActualCell(
+                    CallableFlow callable,
+                    CallableSummary.CapturePlaceholder capture,
+                    SourceSpan span) {
+                return retainedActualCell(callable, capture.cellId().orElseThrow(),
+                        capture.declarationId(), span);
+            }
+
+            private DeclarationId retainedActualCell(
+                    CallableFlow callable,
+                    DeclarationId producerCell,
+                    DeclarationId declaration,
+                    SourceSpan span) {
+                if (callable.retainedCellContext().isEmpty()) return producerCell;
+                SessionFlowCertificate certificate = graph.resolvedGraph()
+                        .sessionFlowCertificate().orElseThrow();
+                if (certificate.boundaryState().binding(
+                        originDeclaration(declaration)).isPresent()) {
+                    return producerCell;
+                }
+                return retainedSharedCell(callable.retainedCellContext().orElseThrow(),
+                        producerCell, span);
+            }
+
+            private DeclarationId retainedActualCell(
+                    CallableSummary.CapturePlaceholder capture,
+                    FlowSiteId context,
+                    SourceSpan span) {
+                DeclarationId producerCell = capture.cellId().orElseThrow();
+                SessionFlowCertificate certificate = graph.resolvedGraph()
+                        .sessionFlowCertificate().orElseThrow();
+                DeclarationId declaration = originDeclaration(capture.declarationId());
+                return certificate.boundaryState().binding(declaration).isPresent()
+                        ? producerCell : retainedSharedCell(context, producerCell, span);
             }
 
             private FormulaAlternatives writeTargetArgument(
@@ -2766,6 +3406,7 @@ public final class SemanticFlowAnalyzer {
 
             private io.mindspice.lyra.compiler.semantic.flow.BindingFlowState applyTransferredWrite(
                     io.mindspice.lyra.compiler.semantic.flow.BindingFlowState state,
+                    CallableFlow candidate,
                     CallableSummary summary,
                     CapturedCellWrite write,
                     ValueAlternatives replacement,
@@ -2798,8 +3439,15 @@ public final class SemanticFlowAnalyzer {
                     if (seeded.binding(declaration).isEmpty()) {
                         BindingContract contract = transferredCellContract(
                                 summary, write, declaration);
-                        ValueAlternatives initial = write.sharedCellId()
-                                .flatMap(state::sharedCell)
+                        CallableSummary.CapturePlaceholder cellCapture = summary.captures().stream()
+                                .filter(capture -> capture.sharedCellId()
+                                        .filter(write.sharedCellId().orElseThrow()::equals)
+                                        .isPresent())
+                                .findFirst().orElse(null);
+                        ValueAlternatives initial = cellCapture == null
+                                ? scalarValue(contract.valueType())
+                                : state.sharedCell(retainedActualCell(
+                                        candidate, cellCapture, callSpan))
                                 .orElseGet(() -> scalarValue(contract.valueType()));
                         seeded = seeded.bind(declaration, contract, initial);
                     }
@@ -2814,7 +3462,9 @@ public final class SemanticFlowAnalyzer {
                     io.mindspice.lyra.compiler.semantic.flow.BindingFlowState updated = applyUpdate(
                             seeded, target, replacement, write.span());
                     return write.isCaptureCellWrite()
-                            ? updated.replaceSharedCell(write.sharedCellId().orElseThrow(),
+                            ? updated.replaceSharedCell(retainedActualCell(
+                                    candidate, write.sharedCellId().orElseThrow(),
+                                    write.declarationId(), callSpan),
                             updated.requireBinding(declaration).alternatives())
                             : updated;
                 }
@@ -3322,7 +3972,7 @@ public final class SemanticFlowAnalyzer {
                         cells.put(cell, state.sharedCell(cell).orElse(refresh(value, state))));
                 return new CallableFlow(
                         callable.lambdaId(), callable.intrinsicDeclarationId(), callable.route(),
-                        captured, cells, callable.creationSite());
+                        captured, cells, callable.creationSite(), callable.retainedCellContext());
             }
 
             private ModuleId callableModule(CallableFlow callable, SourceSpan span) {
@@ -4111,13 +4761,15 @@ public final class SemanticFlowAnalyzer {
                 }
                 captured.put(placeholder.captureId(), toFormulas(values, contextModule, span));
             }
-            return new ValueFormula.Lambda(lambdaId, function, route, captured);
+            return new ValueFormula.Lambda(lambdaId, function, route, captured)
+                    .withRetainedCellContext(callable.retainedCellContext());
         }
 
         private CallableFlow callableFromFormula(
                 ValueFormula.Lambda formula,
                 ModuleId contextModule,
-                SourceSpan span) {
+                SourceSpan span,
+                Optional<FlowSiteId> retainedContext) {
             LambdaId lambdaId = formula.lambdaId();
             CallableSummary summary = summaries.summary(lambdaId).orElseThrow(() -> failure(
                     CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
@@ -4134,7 +4786,7 @@ public final class SemanticFlowAnalyzer {
                                     + placeholder.captureId(), span);
                 }
                 ValueAlternatives values = fromFormulas(
-                        capturedFormula, contextModule, span);
+                        capturedFormula, contextModule, span, retainedContext);
                 if (placeholder.isSharedCell()) {
                     cells.put(placeholder.cellId().orElseThrow(), values);
                 } else {
@@ -4158,22 +4810,45 @@ public final class SemanticFlowAnalyzer {
                             CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
                             "returned lambda has no producer-certified closure: " + lambdaId,
                             span));
-            return producer.withRoute(formula.resultRoute())
+            CallableFlow result = producer.withRoute(formula.resultRoute())
                     .withSharedCellSnapshots(cells);
+            if (!cells.isEmpty()) {
+                Optional<FlowSiteId> cellContext = formula.retainedCellContext();
+                if (cellContext.isEmpty() && retainedContext.isPresent()) {
+                    cellContext = Optional.of(retainedPathContext(
+                            retainedContext.orElseThrow(), formula.invocationPath(), span));
+                }
+                if (cellContext.isPresent()) {
+                    result = result.withRetainedCellContext(cellContext.orElseThrow());
+                }
+            }
+            return result;
         }
 
         private ValueAlternatives fromFormulas(
                 FormulaAlternatives alternatives,
                 ModuleId contextModule,
                 SourceSpan span) {
-            return fromFormulas(alternatives, contextModule, span, true, false);
+            return fromFormulas(alternatives, contextModule, span, Optional.empty());
+        }
+
+        private ValueAlternatives fromFormulas(
+                FormulaAlternatives alternatives, ModuleId contextModule,
+                SourceSpan span, Optional<FlowSiteId> retainedContext) {
+            return fromFormulas(alternatives, contextModule, span, true, false, retainedContext);
         }
 
         private ValueAlternatives fromOwnershipFormulas(
                 FormulaAlternatives alternatives,
                 ModuleId contextModule,
                 SourceSpan span) {
-            return fromFormulas(alternatives, contextModule, span, false, true);
+            return fromOwnershipFormulas(alternatives, contextModule, span, Optional.empty());
+        }
+
+        private ValueAlternatives fromOwnershipFormulas(
+                FormulaAlternatives alternatives, ModuleId contextModule,
+                SourceSpan span, Optional<FlowSiteId> retainedContext) {
+            return fromFormulas(alternatives, contextModule, span, false, true, retainedContext);
         }
 
         private ValueAlternatives fromFormulas(
@@ -4181,7 +4856,8 @@ public final class SemanticFlowAnalyzer {
                 ModuleId contextModule,
                 SourceSpan span,
                 boolean validateReturnedCallables,
-                boolean applyAttachableBoundary) {
+                boolean applyAttachableBoundary,
+                Optional<FlowSiteId> retainedContext) {
             ArrayList<io.mindspice.lyra.compiler.semantic.flow.AggregateIdentityFact> facts = new ArrayList<>();
             ArrayList<CallableFlow> callables = new ArrayList<>();
             ArrayList<NilProvenance> nils = new ArrayList<>();
@@ -4191,10 +4867,12 @@ public final class SemanticFlowAnalyzer {
                     if (!object.sourceRoute().isRoot()) throw failure(
                             CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
                             "object projection was not resolved against caller heap", span);
-                    objects.add(object.object().withRoute(object.resultRoute()));
+                    NominalObjectFact fact = object.object().withRoute(object.resultRoute());
+                    objects.add(new NominalObjectFact(fact.identity(), fact.route(),
+                            fact.ownership().atUse(span)));
                 } else if (formula instanceof ValueFormula.FreshAllocation fresh) {
-                    DeclarationId allocation = summaryAllocationIds.get(fresh.allocationSite());
-                    if (allocation == null) {
+                    DeclarationId producerAllocation = summaryAllocationIds.get(fresh.allocationSite());
+                    if (producerAllocation == null) {
                         throw failure(
                                 CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
                                 "fresh summary allocation has no canonical identity", span);
@@ -4213,20 +4891,29 @@ public final class SemanticFlowAnalyzer {
                         if (!provenance.arrayType().equals(fresh.arrayType())
                                 || !provenance.sourceSpan().equals(
                                         fresh.allocationSite().span())
-                                || !provenance.allocation().equals(allocation)) {
+                                || !provenance.allocation().equals(producerAllocation)) {
                             throw failure(
                                     CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
                                     "retained summary allocation disagrees with its producer evidence",
                                     span);
                         }
+                        FlowSiteId context = retainedPathContext(
+                                retainedContext.orElseThrow(() -> new SourceDiagnosticFailure(
+                                        Diagnostic.error(
+                                                CompilerDiagnosticCodes.SESSION_EXTERNAL_BINDING_UNSUPPORTED,
+                                                span,
+                                                "retained callable allocation has no exact consumer derivation context"))),
+                                fresh.invocationPath(), span);
+                        DeclarationId allocation = retainedArrayAllocation(
+                                context, provenance.originSite(), span);
                         if (provenance.moduleId().equals(contextModule)) {
                             OwnershipWitness witness = OwnershipWitness.local(
-                                            provenance.moduleId(), provenance.allocation(),
+                                            provenance.moduleId(), allocation,
                                             provenance.scopeId(), provenance.sourceSpan())
                                     .withOriginSite(provenance.originSite());
                             facts.add(new AggregateIdentityFact(
                                     ArrayIdentity.localAllocation(provenance.moduleId(),
-                                            provenance.allocation(), fresh.arrayType()),
+                                            allocation, fresh.arrayType()),
                                     fresh.resultRoute(), witness));
                         } else {
                             // The producer allocation identity remains exact,
@@ -4235,19 +4922,20 @@ public final class SemanticFlowAnalyzer {
                             // from laundering producer storage into local
                             // aggregate mutation authority.
                             var export = exportFor(provenance.moduleId(),
-                                    provenance.allocation(), fresh.arrayType());
+                                    allocation, fresh.arrayType());
                             OwnershipWitness witness = OwnershipWitness.crossModule(
-                                            provenance.moduleId(), provenance.allocation(),
+                                            provenance.moduleId(), allocation,
                                             provenance.scopeId(), provenance.sourceSpan(), export)
                                     .atUse(span)
                                     .withOriginSite(provenance.originSite());
                             facts.add(new AggregateIdentityFact(
                                     ArrayIdentity.crossModuleOrigin(
-                                            provenance.moduleId(), provenance.allocation(), export,
+                                            provenance.moduleId(), allocation, export,
                                             fresh.arrayType()),
                                     fresh.resultRoute(), witness));
                         }
                     } else {
+                        DeclarationId allocation = producerAllocation;
                         ModuleId owner = typedOwner.moduleId();
                         ScopeId ownerScope = allocationScopes.get(allocation);
                         FlowSiteId ownerSite = allocationFlowSites.get(allocation);
@@ -4302,6 +4990,32 @@ public final class SemanticFlowAnalyzer {
                         }
                         facts.add(sessionArrayFact(external, declaration.declarationRoute(),
                                 declaration.resultRoute(), arrayType, span));
+                        continue;
+                    }
+                    Optional<AggregateIdentityFact> retainedExisting = graph.resolvedGraph()
+                            .sessionFlowCertificate().flatMap(certificate -> certificate.matchingAggregate(
+                                    declaration.declarationId(), arrayType,
+                                    declaration.declarationRoute()));
+                    if (retainedExisting.isPresent()) {
+                        AggregateIdentityFact producer = retainedExisting.orElseThrow();
+                        AggregateIdentityFact transported = producer;
+                        if (!producer.isImported()
+                                && !producer.identity().ownerModule().equals(contextModule)) {
+                            var export = exportFor(producer.identity().ownerModule(),
+                                    producer.identity().originDeclaration(), producer.identity().arrayType());
+                            OwnershipWitness witness = OwnershipWitness.crossModule(
+                                            producer.identity().ownerModule(),
+                                            producer.identity().originDeclaration(),
+                                            producer.witness().scopeId(), producer.witness().sourceSpan(), export)
+                                    .atUse(span);
+                            if (producer.witness().originSite().isPresent()) {
+                                witness = witness.withOriginSite(producer.witness().originSite().orElseThrow());
+                            }
+                            transported = new AggregateIdentityFact(ArrayIdentity.crossModuleOrigin(
+                                    producer.identity().ownerModule(), producer.identity().originDeclaration(),
+                                    export, producer.identity().arrayType()), ProjectionPath.root(), witness);
+                        }
+                        facts.add(transported.withRoute(declaration.resultRoute()));
                         continue;
                     }
                     SourceSpan originSpan = ownershipOriginSpan(
@@ -4411,7 +5125,7 @@ public final class SemanticFlowAnalyzer {
                 } else if (formula instanceof ValueFormula.Lambda lambda
                         && validateReturnedCallables) {
                     CallableFlow returnedCallable = callableFromFormula(
-                            lambda, contextModule, span);
+                            lambda, contextModule, span, retainedContext);
                     CallableSummary returnedSummary = summaries.summary(
                             lambda.lambdaId()).orElseThrow(() -> failure(
                             CallableSummaryResult.InternalFailure.Kind.MISSING_CALLABLE_FACT,
@@ -4447,6 +5161,26 @@ public final class SemanticFlowAnalyzer {
             return new ValueAlternatives(List.of(
                     ValueAlternative.of(
                             alternatives.rootType(), facts, callables, nils, objects)));
+        }
+
+        private FlowSiteId retainedPathContext(
+                FlowSiteId base, List<SummaryCallId> path, SourceSpan span) {
+            FlowSiteId context = base;
+            for (SummaryCallId id : path) {
+                CallableSummary owner = summaries.summary(id.ownerLambda()).orElseThrow(() -> failure(
+                        CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
+                        "retained invocation path names an absent summary: " + id, span));
+                CallableCallReference call = owner.callReferences().stream()
+                        .filter(candidate -> candidate.id().equals(id)).findFirst()
+                        .orElseThrow(() -> failure(
+                                CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
+                                "retained invocation path names an absent call: " + id, span));
+                FlowSiteId site = call.siteId().orElseThrow(() -> failure(
+                        CallableSummaryResult.InternalFailure.Kind.INCONSISTENT_SUMMARY,
+                        "retained invocation path call has no exact source site: " + id, span));
+                context = retainedInvocationContext(context, id, site, span);
+            }
+            return context;
         }
 
         private ScopeId declarationScope(DeclarationId declaration, SourceSpan span) {
