@@ -148,6 +148,14 @@ expression-list    ::= (argument (comma-list argument)*)? ;
 operator-bracket   ::= operator argument-list ;
 ```
 
+Postfix parsing is greedy and whitespace is not an expression boundary. If one
+item in an `argument-list` or `expression-list` ends in an ordinary direct call
+and the next item begins with `::`, the `::` is otherwise parsed as a postfix
+receiver call on the preceding item. Such adjacent direct-call items require the
+optional comma to become explicit, for example `(+ ::left[], ::right[])` or
+`+[::left[], ::right[]]`. Parentheses do not group expressions; `(::left[])`
+would instead call the value returned by `left`.
+
 The conditional alternatives are, in source notation,
 `(predicate -> then : else)` and `(predicate -> then)`, with an optional
 unannotated predicate binding immediately before `->`.  The other colon form,

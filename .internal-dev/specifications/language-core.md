@@ -305,6 +305,23 @@ Calls have exact positional arity. There is no partial application, automatic cu
 - `->` qualifies modules/namespaces; a qualified access ends with `::` for direct call or `:.` for value access.
 - Static/member legality follows static type information. These distinctions must survive parsing and semantic analysis.
 
+Because whitespace does not terminate an expression and `::name[...]` is also a
+postfix receiver call, a following sibling expression that begins with ordinary
+`::` would otherwise attach to the preceding expression. A comma is therefore
+required between adjacent direct-call expressions in comma-capable argument or
+operand lists:
+
+```lyra
+(+ ::left[], ::right[])
++[::left[], ::right[]]
+```
+
+Without the comma, `::right[]` is parsed as a receiver call on the value returned
+by `::left[]`, leaving `+` with one operand. This rule does not make commas
+generally mandatory. When the surrounding construct has no comma separator, use
+a declaration or block boundary. Parentheses are callable application, not
+expression grouping, so `(::left[])` is not a grouping workaround.
+
 The current built-in value members are tuple numeric fields plus the read-only `:.length` member on strings and arrays. Additional member-bearing types and their accessible members require a later user-type or interop specification; this section fixes the accessor syntax and value-versus-call distinction.
 
 ### Evaluation and blocks

@@ -253,9 +253,20 @@ Fixtures are discovered recursively and sorted; no hand-maintained filename list
 can silently omit a new fixture.
 
 For expression examples, remember that parentheses denote a callable application;
-`(::f[])` tries to call the value returned by `f`. Use `(f)` for a zero-argument
-callable call, or delimit neighboring `::` calls with declarations/arguments.
-Whitespace alone does not stop a postfix member accessor.
+`(::f[])` tries to call the value returned by `f`, so parentheses cannot group a
+direct call. Whitespace alone does not stop a postfix accessor. In a comma-capable
+argument or operand list, adjacent sibling expressions that begin with `::` need
+a comma so the second call does not attach to the first call's result:
+
+```lyra
+(+ ::left[], ::right[])
++[::left[], ::right[]]
+```
+
+Without the comma, the grammar reads the second call as
+`(::left[])::right[]`, and the enclosing operator consequently has one operand.
+Use `(f)` for a zero-argument callable-value call. Where commas are not available,
+separate neighboring direct calls with declarations or block boundaries.
 
 ## Security boundary
 
