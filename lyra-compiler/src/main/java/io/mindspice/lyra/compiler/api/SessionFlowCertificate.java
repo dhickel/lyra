@@ -995,6 +995,39 @@ public final class SessionFlowCertificate {
         return false;
     }
 
+    private boolean matchesDerivedObjectArguments(
+            NominalObjectFact fact, FlowSiteId context,
+            ProjectionPath prefix, List<RetainedInitializerTransfer> arguments,
+            Set<LambdaId> targets) {
+        Optional<ProjectionPath> destination = prefix.suffixOf(fact.route());
+        if (destination.isEmpty()) return false;
+        for (LambdaId target : targets) {
+            CallableSummary summary = callableSummaries.summary(target).orElse(null);
+            if (summary == null) continue;
+            List<FormulaAlternatives> destinations = new ArrayList<>();
+            destinations.add(summary.returnFormula().alternatives());
+            summary.writes().forEach(write -> destinations.add(write.value()));
+            for (FormulaAlternatives formulas : destinations) {
+                FormulaAlternatives selected;
+                try {
+                    selected = formulas.select(destination.orElseThrow());
+                } catch (IllegalArgumentException invalidRoute) {
+                    continue;
+                }
+                for (ValueFormula formula : selected.formulas()) {
+                    if (!(formula instanceof ValueFormula.Parameter parameter)
+                            || parameter.parameterIndex() >= arguments.size()) continue;
+                    NominalObjectFact sourceFact = new NominalObjectFact(
+                            fact.identity(), parameter.parameterRoute(), fact.ownership());
+                    if (matchesDerivedObject(
+                            arguments.get(parameter.parameterIndex()), context,
+                            ProjectionPath.root(), sourceFact)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private boolean matchesDerivedAggregateSequence(
             RetainedInitializerTransfer.Sequence sequence, FlowSiteId context,
             ProjectionPath prefix, AggregateIdentityFact fact,
@@ -1011,7 +1044,13 @@ public final class SessionFlowCertificate {
             if (step instanceof RetainedInitializerTransfer.Declare declare) {
                 bindings.put(declare.declaration(), declare.initializer());
             } else if (step instanceof RetainedInitializerTransfer.Rebind rebind) {
-                if (matchesDerivedAggregateResult(
+                // A rebind into an aggregate/object slot is a genuine state
+                // write and certifies its value; a rebind of a root binding is
+                // only local flow that may be overwritten before the result,
+                // so it updates the binding map and lets the final result walk
+                // decide which stored value is actually reachable.
+                if (!rebind.target().route().isRoot()
+                        && matchesDerivedAggregateResult(
                         rebind.value(), context, prefix, fact, bindings, activeBindings)) {
                     return true;
                 }
@@ -1083,6 +1122,18 @@ public final class SessionFlowCertificate {
                     project.kind() == RetainedInitializerTransfer.ProjectionKind.ROUTE
                             ? ProjectionPath.root() : prefix,
                     sourceFact, bindings, activeBindings);
+        }
+        if (transfer instanceof RetainedInitializerTransfer.Apply apply) {
+            // Conversions and narrowings pass their operand through; the
+            // operand itself may be a sequence-local reference whose identity
+            // only the enclosing sequence bindings can resolve.
+            if (apply.kind() != RetainedInitializerTransfer.ApplyKind.CONVERSION
+                    && apply.kind() != RetainedInitializerTransfer.ApplyKind.NARROWING) {
+                return false;
+            }
+            return matchesDerivedAggregateResult(
+                    apply.operands().getLast(), context, prefix, fact,
+                    bindings, activeBindings);
         }
         return matchesDerivedAggregate(transfer, context, prefix, fact);
     }
@@ -1646,19 +1697,23 @@ public final class SessionFlowCertificate {
                 yield matched;
             }
             case RetainedInitializerTransfer.Call call -> {
+                Set<LambdaId> targets = retainedTargetLambdas(
+                        call.target(), call.function());
+                boolean matched = matchesDerivedObjectArguments(
+                        fact, context, prefix, call.arguments(), targets);
                 FlowSiteId invocation = RetainedAllocationDerivation.invocationContext(context, call.site());
-                yield call.arguments().stream().anyMatch(argument -> matchesDerivedObject(
-                        argument, context, prefix, fact))
-                        || retainedTargetLambdas(call.target(), call.function()).stream()
-                        .anyMatch(lambda -> matchesSummaryDerivedObject(
+                yield matched || targets.stream().anyMatch(lambda ->
+                        matchesSummaryDerivedObject(
                                 fact, invocation, prefix, lambda, new LinkedHashSet<>()));
             }
             case RetainedInitializerTransfer.CallableCall call -> {
+                Set<LambdaId> targets = retainedTargetLambdas(call.target());
+                boolean matched = matchesDerivedObjectArguments(
+                        fact, context, prefix, call.arguments(), targets);
                 FlowSiteId invocation = RetainedAllocationDerivation.invocationContext(context, call.site());
                 yield matchesDerivedObject(call.target(), context, prefix, fact)
-                        || call.arguments().stream().anyMatch(argument -> matchesDerivedObject(
-                        argument, context, prefix, fact))
-                        || retainedTargetLambdas(call.target()).stream()
+                        || matched
+                        || targets.stream()
                         .anyMatch(lambda -> matchesSummaryDerivedObject(
                                 fact, invocation, prefix, lambda, new LinkedHashSet<>()));
             }

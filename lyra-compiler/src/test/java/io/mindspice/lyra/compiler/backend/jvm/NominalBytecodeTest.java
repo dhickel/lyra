@@ -44,6 +44,780 @@ class NominalBytecodeTest {
         }
     }
 
+    @Test void selfAliasAggregateMutationsRequireTheExactConstructor() throws Throwable {
+        // Immutable-self provenance must survive alias bindings, captures,
+        // and parameters that receive self.  Only the exact constructor
+        // lambda for the nominal may mutate an aggregate through the root.
+        String[] rejected = {
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub poke :Fn<;I32> = (=> || {
+                        let @mut alias :Box = self
+                        alias:.values[0] := 7
+                        0
+                    })
+                }
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut poke :Fn<;I32> = (=> || 0)
+                }
+                let install :Fn<@mut Box;Unit> = (=> |@mut box| {
+                    box:.poke := (=> || {
+                        let @mut alias :Box = self
+                        alias:.values[0] := 7
+                        0
+                    })
+                })
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let transfer :Fn<@mut Box;I32> = (=> |@mut alias| {
+                        alias:.values[0] := 7
+                        0
+                    })
+                    let @pub poke :Fn<;I32> = (=> || self::transfer[self])
+                }
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub poke :Fn<;I32> = (=> || {
+                        let @mut alias :Box = self
+                        let mutate :Fn<;I32> = (=> :I32 || { alias:.values[0] := 7  0 })
+                        ::mutate[]
+                    })
+                }
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub poke :Fn<;I32> = (=> || {
+                        let @mut alias :Array<I32> = self:.values
+                        alias[0] := 7
+                        alias[0]
+                    })
+                }
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub poke :Fn<;I32> = (=> || {
+                        let selected :Fn<;Array<I32>> = (=> || self:.values)
+                        let @mut alias :Array<I32> = ::selected[]
+                        alias[0] := 7
+                        alias[0]
+                    })
+                }
+                """};
+        for (String source : rejected) {
+            CompileResult.Failure failure = assertInstanceOf(
+                    CompileResult.Failure.class,
+                    LyraCompiler.compile(CompileRequest.builder()
+                            .source("alias-self-mutation.lyra", source).build()),
+                    source);
+            assertEquals(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
+                    failure.diagnostics().getFirst().code(), source);
+        }
+
+        // The exact constructor lambda still owns its nominal's root, both
+        // directly and through a local alias, and the writes execute.
+        var artifact = compile("""
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut aliasValues :Array<I32> = Array<I32>[3 4]
+                    Box = (=> || {
+                        self:.values[0] := 7
+                        let @mut alias :Box = self
+                        alias:.aliasValues[0] := 8
+                    })
+                }
+                let @pub make :Fn<;Box> = (=> || Box[])
+                """);
+        var nominal = artifact.metadata().nominalSchemas().schemas().getFirst().type();
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            var make = module.export("make", "Fn<;" + nominal + ">").methodHandle();
+            Object box = make.invokeWithArguments();
+            int[] values = (int[]) box.getClass()
+                    .getMethod("$lyra$public$get$0").invoke(box);
+            int[] aliasValues = (int[]) box.getClass()
+                    .getMethod("$lyra$public$get$1").invoke(box);
+            assertEquals(7, values[0]);
+            assertEquals(2, values[1]);
+            assertEquals(8, aliasValues[0]);
+            assertEquals(4, aliasValues[1]);
+        }
+    }
+
+    @Test void branchMergedAliasesJoinEveryBranchProvenance() {
+        // A control-flow merge must join the provenance of every reachable
+        // branch.  A rebind inside one conditional/match arm may not remove
+        // the self provenance the other path still carries; the mutation
+        // after the merge must reject exactly like the direct alias form.
+        String[] rejected = {
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut poke :Fn<;I32> = (=> || 0)
+                }
+                let @pub make :Fn<;Box> = (=> || Box[])
+                let install :Fn<@mut Box,Bool;Unit> = (=> |@mut box cond| {
+                    box:.poke := (=> || {
+                        let @mut alias :Box = self
+                        (cond -> (alias := Box[]))
+                        alias:.values[0] := 7
+                        0
+                    })
+                })
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut poke :Fn<;I32> = (=> || 0)
+                }
+                let @pub make :Fn<;Box> = (=> || Box[])
+                let install :Fn<@mut Box,I32;Unit> = (=> |@mut box selector| {
+                    box:.poke := (=> || {
+                        let @mut alias :Box = self
+                        (match selector ?? 0I32 -> (alias := Box[]) ?? _ -> ())
+                        alias:.values[0] := 7
+                        0
+                    })
+                })
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut poke :Fn<;I32> = (=> || 0)
+                }
+                let @pub make :Fn<;Box> = (=> || Box[])
+                let install :Fn<@mut Box;Unit> = (=> |@mut box| {
+                    box:.poke := (=> || {
+                        let @mut alias :Box = self
+                        (#NIL -> (alias := Box[]))
+                        alias:.values[0] := 7
+                        0
+                    })
+                })
+                """};
+        for (String source : rejected) {
+            CompileResult.Failure failure = assertInstanceOf(
+                    CompileResult.Failure.class,
+                    LyraCompiler.compile(CompileRequest.builder()
+                            .source("branch-merged-self-alias.lyra", source).build()),
+                    source);
+            assertEquals(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
+                    failure.diagnostics().getFirst().code(), source);
+        }
+    }
+
+    @Test void twoLevelCallableForwardingRejectsMutationThroughForwardedSelf() {
+        // self -> forward.param -> mutate.param must propagate to the
+        // fixed point, not just to the immediate callee.
+        String source = """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let mutate :Fn<@mut Box;Unit> = (=> |@mut inner| { inner:.values[0] := 7 })
+                    let forward :Fn<@mut Box;Unit> = (=> |@mut outer| { self::mutate[outer] })
+                    let @pub poke :Fn<;I32> = (=> || {
+                        let @mut alias :Box = self
+                        alias::forward[alias]
+                        0
+                    })
+                }
+                let @pub make :Fn<;Box> = (=> || Box[])
+                """;
+        CompileResult.Failure failure = assertInstanceOf(
+                CompileResult.Failure.class,
+                LyraCompiler.compile(CompileRequest.builder()
+                        .source("two-level-forwarding.lyra", source).build()),
+                source);
+        assertEquals(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
+                failure.diagnostics().getFirst().code(), source);
+        int start = source.indexOf("inner:.values[0]");
+        assertEquals(io.mindspice.lyra.compiler.source.SourceSpan.of(
+                        io.mindspice.lyra.compiler.source.SourceId.path(
+                                "two-level-forwarding.lyra"),
+                        start, start + "inner:.values[0]".length()),
+                failure.diagnostics().getFirst().primarySpan());
+    }
+
+    @Test void identityCallResultsCarrySelfProvenance() {
+        // A call result conservatively carries the union of its target and
+        // argument provenance; an identity-returning callable cannot launder
+        // self through its result.
+        String source = """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let id :Fn<Box;Box> = (=> |value| value)
+                    let @pub poke :Fn<;I32> = (=> || {
+                        let @mut alias :Box = self::id[self]
+                        alias:.values[0] := 7
+                        0
+                    })
+                }
+                let @pub make :Fn<;Box> = (=> || Box[])
+                """;
+        CompileResult.Failure failure = assertInstanceOf(
+                CompileResult.Failure.class,
+                LyraCompiler.compile(CompileRequest.builder()
+                        .source("identity-self-alias.lyra", source).build()),
+                source);
+        assertEquals(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
+                failure.diagnostics().getFirst().code(), source);
+        int start = source.indexOf("alias:.values[0]");
+        assertEquals(io.mindspice.lyra.compiler.source.SourceSpan.of(
+                        io.mindspice.lyra.compiler.source.SourceId.path(
+                                "identity-self-alias.lyra"),
+                        start, start + "alias:.values[0]".length()),
+                failure.diagnostics().getFirst().primarySpan());
+    }
+
+    @Test void closureCallResultsCarrySelfBodyProvenance() throws Throwable {
+        // A call whose target resolves to a lambda in the analyzed graph
+        // must carry that lambda's body-result provenance: a closure that
+        // returns captured self-derived state cannot launder it through its
+        // call result, a direct alias of the closure, a higher-order
+        // argument, a tuple projection or a field-stored call.
+        String[] rejected = {
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub poke :Fn<;I32> = (=> || {
+                        let id :Fn<;Box> = (=> || self)
+                        let @mut alias :Box = ::id[]
+                        alias:.values[0] := 7
+                        alias:.values[0]
+                    })
+                }
+                let @pub run :Fn<;I32> = (=> || { let box :Box = Box[] box::poke[] })
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let id :Fn<;Box> = (=> || self)
+                    let @pub poke :Fn<;I32> = (=> || {
+                        let @mut alias :Box = self::id[]
+                        alias:.values[0] := 7
+                        alias:.values[0]
+                    })
+                }
+                let @pub run :Fn<;I32> = (=> || { let box :Box = Box[] box::poke[] })
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub poke :Fn<;I32> = (=> || {
+                        let pair :Fn<;Tuple<Box,I32>> = (=> || Tuple[self 1])
+                        let @mut alias :Box = ::pair[]:.0
+                        alias:.values[0] := 7
+                        alias:.values[0]
+                    })
+                }
+                let @pub run :Fn<;I32> = (=> || { let box :Box = Box[] box::poke[] })
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub poke :Fn<;I32> = (=> || {
+                        let id :Fn<;Box> = (=> || self)
+                        let aliasOf :Fn<;Box> = id
+                        let @mut alias :Box = ::aliasOf[]
+                        alias:.values[0] := 7
+                        alias:.values[0]
+                    })
+                }
+                let @pub run :Fn<;I32> = (=> || { let box :Box = Box[] box::poke[] })
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub poke :Fn<;I32> = (=> || {
+                        let id :Fn<;Box> = (=> || self)
+                        let apply :Fn<Fn<;Box>;Box> = (=> |h| ::h[])
+                        let @mut alias :Box = ::apply[id]
+                        alias:.values[0] := 7
+                        alias:.values[0]
+                    })
+                }
+                let @pub run :Fn<;I32> = (=> || { let box :Box = Box[] box::poke[] })
+                """};
+        for (String source : rejected) {
+            CompileResult.Failure failure = assertInstanceOf(
+                    CompileResult.Failure.class,
+                    LyraCompiler.compile(CompileRequest.builder()
+                            .source("closure-self-alias.lyra", source).build()),
+                    source);
+            assertEquals(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
+                    failure.diagnostics().getFirst().code(), source);
+            int start = source.indexOf("alias:.values[0]");
+            assertEquals(io.mindspice.lyra.compiler.source.SourceSpan.of(
+                            io.mindspice.lyra.compiler.source.SourceId.path(
+                                    "closure-self-alias.lyra"),
+                            start, start + "alias:.values[0]".length()),
+                    failure.diagnostics().getFirst().primarySpan(), source);
+        }
+
+        // The closure over-approximation must not reject constructor-owned
+        // forms: a self-returning closure called inside the exact
+        // constructor keeps its mutation authority and still compiles
+        // (executing a closure that captures an uninitialized nominal self
+        // remains a separate pre-existing runtime limitation), while the
+        // constructor-local alias and the direct constructor write keep
+        // compiling and executing.
+        CompileResult closure = LyraCompiler.compile(CompileRequest.builder()
+                .source("constructor-closure-alias.lyra", """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    Box = (=> || {
+                        let id :Fn<;Box> = (=> || self)
+                        let @mut alias :Box = ::id[]
+                        alias:.values[0] := 7
+                    })
+                }
+                let @pub make :Fn<;Box> = (=> || Box[])
+                """).build());
+        assertInstanceOf(CompileResult.Success.class, closure);
+        var artifact = compile("""
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut aliasValues :Array<I32> = Array<I32>[3 4]
+                    Box = (=> || {
+                        let @mut alias :Box = self
+                        alias:.aliasValues[0] := 8
+                        self:.values[0] := 7
+                    })
+                }
+                let @pub make :Fn<;Box> = (=> || Box[])
+                """);
+        var nominal = artifact.metadata().nominalSchemas().schemas().getFirst().type();
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            var make = module.export("make", "Fn<;" + nominal + ">").methodHandle();
+            Object box = make.invokeWithArguments();
+            int[] values = (int[]) box.getClass()
+                    .getMethod("$lyra$public$get$0").invoke(box);
+            int[] aliasValues = (int[]) box.getClass()
+                    .getMethod("$lyra$public$get$1").invoke(box);
+            assertEquals(7, values[0]);
+            assertEquals(2, values[1]);
+            assertEquals(8, aliasValues[0]);
+            assertEquals(4, aliasValues[1]);
+        }
+    }
+
+    @Test void boundedSelfProvenanceAnalysisFailsClosedOnDeepForwarding() {
+        // Eight backward-ordered forwarding levels do not converge inside
+        // the eight-pass bound; the analysis must fail closed with the
+        // structured resolver diagnostic mapped to the forwarding call site
+        // that was still moving at the bound, never publish a partial state.
+        StringBuilder members = new StringBuilder();
+        members.append(
+                "let g9 :Fn<@mut Box;Unit> = (=> |@mut x9| { x9:.values[0] := 7 })\n");
+        for (int i = 8; i >= 1; i--) {
+            members.append("let g").append(i).append(" :Fn<@mut Box;Unit> = (=> |@mut x")
+                    .append(i).append("| { self::g").append(i + 1).append("[x")
+                    .append(i).append("] })\n");
+        }
+        String source = """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                %s
+                    let @pub poke :Fn<;I32> = (=> || {
+                        let @mut alias :Box = self
+                        self::g1[alias]
+                        self:.values[0]
+                    })
+                }
+                let @pub run :Fn<;I32> = (=> || { let box :Box = Box[] box::poke[] })
+                """.formatted(members.toString().stripTrailing());
+        CompileResult.Failure failure = assertInstanceOf(
+                CompileResult.Failure.class,
+                LyraCompiler.compile(CompileRequest.builder()
+                        .source("deep-forwarding-self-alias.lyra", source).build()),
+                source);
+        assertEquals(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
+                failure.diagnostics().getFirst().code());
+        assertTrue(failure.diagnostics().getFirst().summary().contains(
+                        "could not be decided within the bounded analysis"),
+                failure.diagnostics().getFirst().summary());
+        int start = source.indexOf("self::g8[x7]");
+        assertEquals(io.mindspice.lyra.compiler.source.SourceSpan.of(
+                        io.mindspice.lyra.compiler.source.SourceId.path(
+                                "deep-forwarding-self-alias.lyra"),
+                        start, start + "self::g8[x7]".length()),
+                failure.diagnostics().getFirst().primarySpan());
+    }
+
+    @Test void constructorCallResultAliasesStayLegalInsideTheExactConstructor() throws Throwable {
+        // Constructor-owned self stays legal for direct roots, local
+        // aliases and conditional-merged aliases, and the writes execute.
+        var artifact = compile("""
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut aliasValues :Array<I32> = Array<I32>[3 4]
+                    Box = (=> || {
+                        self:.values[0] := 7
+                        let @mut alias :Box = (#T -> self : self)
+                        alias:.values[1] := 8
+                        let @mut direct :Box = self
+                        direct:.aliasValues[0] := 9
+                    })
+                }
+                let @pub make :Fn<;Box> = (=> || Box[])
+                """);
+        var nominal = artifact.metadata().nominalSchemas().schemas().getFirst().type();
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            var make = module.export("make", "Fn<;" + nominal + ">").methodHandle();
+            Object box = make.invokeWithArguments();
+            int[] values = (int[]) box.getClass()
+                    .getMethod("$lyra$public$get$0").invoke(box);
+            int[] aliasValues = (int[]) box.getClass()
+                    .getMethod("$lyra$public$get$1").invoke(box);
+            assertEquals(7, values[0]);
+            assertEquals(8, values[1]);
+            assertEquals(9, aliasValues[0]);
+            assertEquals(4, aliasValues[1]);
+        }
+    }
+
+    @Test void ordinaryMutableAggregatesAndAliasRebindsKeepTheirBehavior() throws Throwable {
+        // Non-self mutable aggregates, alias rebinds and tuple-member
+        // rebinds are not self provenance and keep compiling and executing.
+        var artifact = compile("""
+                let @mut values :Array<I32> = Array<I32>[1 2]
+                let @pub run :Fn<;I32> = (=> || {
+                    let @mut local :Array<I32> = Array<I32>[1 2]
+                    (local := Array<I32>[3 4])
+                    (local[0] := 7)
+                    values[0] := 9
+                    (+ local[0] values[0])
+                })
+                """);
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            var run = module.export("run", "Fn<;I32>").methodHandle();
+            assertEquals(16, (int) run.invokeExact());
+        }
+    }
+
+    @Test void reboundMemberSelfClosuresTaintTheMemberSlot() {
+        // Assigning a self-returning closure (or any self-carrying value)
+        // into a member slot taints the member declaration, so a later
+        // call through the member slot - on the same instance, a different
+        // instance, or through a tuple projection of the result - carries
+        // the taint and cannot launder a mutation through it.
+        String[] rejected = {
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut poke :Fn<;Box> = (=> || Box[])
+                }
+                let install :Fn<@mut Box;Unit> = (=> |@mut box| { box:.poke := (=> || self) })
+                let @pub run :Fn<;I32> = (=> || {
+                    let @mut box :Box = Box[]
+                    (install box)
+                    let @mut alias :Box = box::poke[]
+                    alias:.values[0] := 7
+                    alias:.values[0]
+                })
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut poke :Fn<;Tuple<Box,I32>> = (=> || Tuple[Box[] 0])
+                }
+                let install :Fn<@mut Box;Unit> = (=> |@mut box| { box:.poke := (=> || Tuple[self 1]) })
+                let @pub run :Fn<;I32> = (=> || {
+                    let @mut box :Box = Box[]
+                    (install box)
+                    let @mut alias :Box = box::poke[]:.0
+                    alias:.values[0] := 7
+                    alias:.values[0]
+                })
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut poke :Fn<;Box> = (=> || Box[])
+                }
+                let install :Fn<@mut Box;Unit> = (=> |@mut box| { box:.poke := (=> || self) })
+                let @pub run :Fn<;I32> = (=> || {
+                    let @mut first :Box = Box[]
+                    let @mut second :Box = Box[]
+                    (install first)
+                    let @mut alias :Box = second::poke[]
+                    alias:.values[0] := 7
+                    alias:.values[0]
+                })
+                """};
+        for (String source : rejected) {
+            CompileResult.Failure failure = assertInstanceOf(
+                    CompileResult.Failure.class,
+                    LyraCompiler.compile(CompileRequest.builder()
+                            .source("rebound-member-self-closure.lyra", source).build()),
+                    source);
+            assertEquals(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
+                    failure.diagnostics().getFirst().code(), source);
+            int start = source.indexOf("alias:.values[0]");
+            assertEquals(io.mindspice.lyra.compiler.source.SourceSpan.of(
+                            io.mindspice.lyra.compiler.source.SourceId.path(
+                                    "rebound-member-self-closure.lyra"),
+                            start, start + "alias:.values[0]".length()),
+                    failure.diagnostics().getFirst().primarySpan(), source);
+        }
+    }
+
+    @Test void aliasedMemberAggregatesPreserveOriginTaint() {
+        // A member-backed aggregate keeps the originating member declaration
+        // when copied through a local or aggregate projection. Writing a
+        // self-returning closure through either alias taints later reads of
+        // that member on every instance.
+        String[] rejected = {
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut slots :Array<Fn<;Box>> = Array[(=> || Box[])]
+                    let @pub run :Fn<;I32> = (=> || {
+                        let closure :Fn<;Box> = (=> || self)
+                        let @mut other :Box = Box[]
+                        let @mut aggregate :Array<Fn<;Box>> = other:.slots
+                        aggregate[0] := closure
+                        let @mut alias :Box = (other:.slots[0])
+                        alias:.values[0] := 7
+                        self:.values[0]
+                    })
+                }
+                let @pub go :Fn<;I32> = (=> || { let @mut box :Box = Box[] box::run[] })
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut slots :Array<Fn<;Box>> = Array[(=> || Box[])]
+                    let @pub run :Fn<;I32> = (=> || {
+                        let closure :Fn<;Box> = (=> || self)
+                        let @mut other :Box = Box[]
+                        let pair :Tuple<Array<Fn<;Box>>> = Tuple[other:.slots]
+                        let @mut aggregate :Array<Fn<;Box>> = pair:.0
+                        aggregate[0] := closure
+                        let @mut alias :Box = (other:.slots[0])
+                        alias:.values[0] := 7
+                        self:.values[0]
+                    })
+                }
+                let @pub go :Fn<;I32> = (=> || { let @mut box :Box = Box[] box::run[] })
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut slots :Array<Fn<;Box>> = Array[(=> || Box[])]
+                    let @pub run :Fn<;I32> = (=> || {
+                        let closure :Fn<;Box> = (=> || self)
+                        let @mut other :Box = Box[]
+                        let @mut holder :Array<Array<Fn<;Box>>> =
+                                Array[Array[(=> || Box[])]]
+                        holder[0] := other:.slots
+                        let @mut aggregate :Array<Fn<;Box>> = holder[0]
+                        aggregate[0] := closure
+                        let @mut alias :Box = (other:.slots[0])
+                        alias:.values[0] := 7
+                        self:.values[0]
+                    })
+                }
+                let @pub go :Fn<;I32> = (=> || { let @mut box :Box = Box[] box::run[] })
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut slots :Array<Fn<;Box>> = Array[(=> || Box[])]
+                    let install :Fn<@mut Array<Fn<;Box>>,Fn<;Box>;Unit> =
+                            (=> |@mut aggregate closure| { aggregate[0] := closure })
+                    let @pub run :Fn<;I32> = (=> || {
+                        let closure :Fn<;Box> = (=> || self)
+                        let @mut other :Box = Box[]
+                        let @mut aggregate :Array<Fn<;Box>> = other:.slots
+                        self::install[aggregate closure]
+                        let @mut alias :Box = (other:.slots[0])
+                        alias:.values[0] := 7
+                        self:.values[0]
+                    })
+                }
+                let @pub go :Fn<;I32> = (=> || { let @mut box :Box = Box[] box::run[] })
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut slots :Array<Fn<;Box>> = Array[(=> || Box[])]
+                    let @pub @mut forwarded :Array<Fn<;Box>> = Array[(=> || Box[])]
+                    let @pub run :Fn<;I32> = (=> || {
+                        let closure :Fn<;Box> = (=> || self)
+                        let @mut other :Box = Box[]
+                        let @mut carrier :Box = Box[]
+                        carrier:.forwarded := other:.slots
+                        let @mut aggregate :Array<Fn<;Box>> = carrier:.forwarded
+                        aggregate[0] := closure
+                        let @mut alias :Box = (other:.slots[0])
+                        alias:.values[0] := 7
+                        self:.values[0]
+                    })
+                }
+                let @pub go :Fn<;I32> = (=> || { let @mut box :Box = Box[] box::run[] })
+                """,
+                """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut slots :Array<Fn<;Box>> = Array[(=> || Box[])]
+                    let @pub run :Fn<;I32> = (=> || {
+                        let closure :Fn<;Box> = (=> || self)
+                        let @mut other :Box = Box[]
+                        let @mut aggregate :Array<Fn<;Box>> = other:.slots
+                        (:= aggregate[0] closure)
+                        let @mut alias :Box = (other:.slots[0])
+                        alias:.values[0] := 7
+                        self:.values[0]
+                    })
+                }
+                let @pub go :Fn<;I32> = (=> || { let @mut box :Box = Box[] box::run[] })
+                """};
+        for (String source : rejected) {
+            CompileResult.Failure failure = assertInstanceOf(
+                    CompileResult.Failure.class,
+                    LyraCompiler.compile(CompileRequest.builder()
+                            .source("aliased-member-aggregate.lyra", source).build()),
+                    source);
+            assertEquals(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
+                    failure.diagnostics().getFirst().code(), source);
+            int start = source.indexOf("alias:.values[0]");
+            assertEquals(io.mindspice.lyra.compiler.source.SourceSpan.of(
+                            io.mindspice.lyra.compiler.source.SourceId.path(
+                                    "aliased-member-aggregate.lyra"),
+                            start, start + "alias:.values[0]".length()),
+                    failure.diagnostics().getFirst().primarySpan(), source);
+        }
+    }
+
+    @Test void memberStorageTransfersPreserveTheMutationPosition() {
+        String source = """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub run :Fn<;I32> = (=> || {
+                        let @mut other :Box = Box[]
+                        other:.values := self:.values
+                        other:.values[0] := 7
+                        self:.values[0]
+                    })
+                }
+                let @pub go :Fn<;I32> = (=> || { let box :Box = Box[] box::run[] })
+                """;
+        CompileResult.Failure failure = assertInstanceOf(
+                CompileResult.Failure.class,
+                LyraCompiler.compile(CompileRequest.builder()
+                        .source("member-storage-transfer.lyra", source).build()),
+                source);
+        assertEquals(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
+                failure.diagnostics().getFirst().code());
+        int start = source.indexOf("other:.values[0]");
+        assertEquals(io.mindspice.lyra.compiler.source.SourceSpan.of(
+                        io.mindspice.lyra.compiler.source.SourceId.path(
+                                "member-storage-transfer.lyra"),
+                        start, start + "other:.values[0]".length()),
+                failure.diagnostics().getFirst().primarySpan());
+    }
+
+    @Test void explicitNominalFunctionArrayLiteralsCompileAndExecute() throws Throwable {
+        var artifact = compile("""
+                class Box {
+                    let @pub value :I32 = 7
+                }
+                let @pub run :Fn<;I32> = (=> || {
+                    let makers :Array<Fn<;Box>> = Array<Fn<;Box>>[(=> || Box[])]
+                    let box :Box = (makers[0])
+                    box:.value
+                })
+                """);
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            var run = module.export("run", "Fn<;I32>").methodHandle();
+            assertEquals(7, (int) run.invokeExact());
+        }
+    }
+
+    @Test void constructorInstalledMemberValuesStayLegalInsideTheExactConstructor() throws Throwable {
+        // A member tainted by an assignment stays usable inside the exact
+        // constructor: a self-returning closure installed by the constructor
+        // and read back through the member slot still compiles (executing a
+        // closure that captures an uninitialized nominal self remains a
+        // separate pre-existing runtime limitation), and an aggregate
+        // installed by the constructor and read back through the member
+        // slot compiles and executes.
+        CompileResult closure = LyraCompiler.compile(CompileRequest.builder()
+                .source("constructor-member-closure.lyra", """
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut poke :Fn<;Box> = (=> || Box[])
+                    Box = (=> || {
+                        self:.poke := (=> || self)
+                        let @mut alias :Box = self::poke[]
+                        alias:.values[0] := 7
+                    })
+                }
+                let @pub make :Fn<;Box> = (=> || Box[])
+                """).build());
+        assertInstanceOf(CompileResult.Success.class, closure);
+        var artifact = compile("""
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut extra :Array<I32> = Array<I32>[3 4]
+                    Box = (=> || {
+                        self:.extra := self:.values
+                        let @mut alias :Array<I32> = self:.extra
+                        alias[0] := 7
+                        self:.values[1] := 8
+                    })
+                }
+                let @pub make :Fn<;Box> = (=> || Box[])
+                """);
+        var nominal = artifact.metadata().nominalSchemas().schemas().getFirst().type();
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            var make = module.export("make", "Fn<;" + nominal + ">").methodHandle();
+            Object box = make.invokeWithArguments();
+            int[] values = (int[]) box.getClass()
+                    .getMethod("$lyra$public$get$0").invoke(box);
+            int[] extra = (int[]) box.getClass()
+                    .getMethod("$lyra$public$get$1").invoke(box);
+            assertEquals(7, values[0]);
+            assertEquals(8, values[1]);
+            // extra aliases values after the constructor rebind.
+            assertEquals(7, extra[0]);
+            assertEquals(8, extra[1]);
+        }
+    }
+
+    @Test void freshObjectClosureMemberSlotsStayLegal() throws Throwable {
+        // A member slot holding a fresh-object-returning closure carries no
+        // self provenance: installing it by rebind and calling it through
+        // the member slot keeps compiling and executing.
+        var artifact = compile("""
+                class Box {
+                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    let @pub @mut poke :Fn<;Box> = (=> || Box[])
+                }
+                let install :Fn<@mut Box;Unit> = (=> |@mut box| { box:.poke := (=> || Box[]) })
+                let @pub run :Fn<;I32> = (=> || {
+                    let @mut first :Box = Box[]
+                    let @mut second :Box = Box[]
+                    (install first)
+                    let @mut alias :Box = second::poke[]
+                    alias:.values[0] := 7
+                    alias:.values[0]
+                })
+                """);
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            var run = module.export("run", "Fn<;I32>").methodHandle();
+            assertEquals(7, (int) run.invokeExact());
+        }
+    }
+
     @Test void failedSourceFactoryInvalidatesItsTicketAndLeavesProducerUsable() throws Throwable {
         var artifact = compile("""
                 class Fallible {

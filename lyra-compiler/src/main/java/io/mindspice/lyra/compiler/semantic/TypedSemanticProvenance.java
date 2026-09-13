@@ -1015,6 +1015,23 @@ final class TypedSemanticProvenance {
             return PrimitiveType.fromSpelling(primitive.name())
                     .orElseThrow(() -> invalid("unknown primitive type"));
         }
+        if (syntax instanceof SyntaxNode.NamedType named) {
+            return resolved.syntaxLinks().stream()
+                    .filter(link -> link.kind() == SyntaxLinkKind.TYPE
+                            && link.span().equals(named.span())
+                            && link.declarationId().isPresent())
+                    .map(link -> resolved.declaration(
+                                    link.declarationId().orElseThrow())
+                            .orElseThrow(() -> invalid(
+                                    "named type declaration is absent"))
+                            .effectiveContract()
+                            .orElseThrow(() -> invalid(
+                                    "named type declaration has no contract"))
+                            .valueType())
+                    .findFirst()
+                    .orElseThrow(() -> invalid(
+                            "named type lacks its exact resolved declaration"));
+        }
         if (syntax instanceof SyntaxNode.ArrayType array) {
             return ArrayType.of(syntaxType(array.elementType(), TypePosition.NESTED_VALUE));
         }

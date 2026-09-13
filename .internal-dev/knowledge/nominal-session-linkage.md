@@ -152,6 +152,146 @@ session generations.
   formulas route the parameter to the destination; unused arguments do not. Conditional
   transfer evidence records statically reachable result branches, while conservative
   eager-effect evidence may still include every branch.
+- Conversion and narrowing transfer nodes must stay transparent in the derived
+  result walk. A tuple element such as `Tuple[selected 3]` inside a retained block is
+  an `Apply` over a sequence-local `Reference`; routing the apply to the plain transfer
+  walk loses the sequence bindings and the consumer compilation dies with
+  `aggregate owner module is foreign` instead of accepting the rebind-then-tuple proof.
+- A rebind of a root binding is transient local flow: only the final-result walk may
+  certify its value, so an intermediate value overwritten before the result mints no
+  identity. A rebind whose target is a non-root (field/slot) route is a genuine state
+  write and keeps certifying its value eagerly.
+- Derived-object argument traversal must be return/write-formula and
+  destination-route aware, mirroring the aggregate walk: an object argument the callee
+  neither returns nor writes is not reachable and must not mint a certified object
+  identity.
+- Immutable-`self` provenance survives alias bindings, captures and parameters that
+  receive `self` at exact call/construction sites, and it is a conservative
+  forward may-alias property, not a per-site exactness proof. Control-flow
+  merges join the provenance of every reachable branch: a conditional, match or
+  coalesce result unions branch provenance, and a rebind inside one arm must
+  merge the branch-end states back into the pre-merge state (then-only
+  conditionals include the skipped path) or the last-walked arm silently erases
+  the other path's provenance.
+- Call results conservatively carry the union of their target and argument
+  provenance unless the call is a construction, which mints a fresh object and
+  must return none. Do not use callable-body analysis to prove non-identity;
+  an identity-returning callable is covered by its argument union, and a
+  self-returning closure is covered by its recorded body-result provenance.
+- Callable-parameter transfer needs fixed-point iteration, not a single
+  source-order pass: `self -> f.param -> g.param` only resolves when later
+  passes carry the newly learned parameter facts back through the call sites.
+  Iterate with a small explicit bound, stop when a pass adds no new provenance,
+  and use one shared engine for the resolver closing sweep, topology validation
+  and IR validation so no layer accepts a mutation another layer rejects. A
+  live single-pass map stays a sound early filter only when every live fact is
+  a subset of the fixed-point facts (joins and unions only grow it). The same
+  subset property applies to the live member-taint mirror: live member facts
+  are union-merged from live value facts, so a fact the live filter rejects
+  is always a fact the closing sweep rejects; the sweep remains authoritative
+  and may reject more.
+- Branch-merge and call-result provenance must never accept what the direct
+  form rejects; over-approximation is allowed and only rejects more mutation
+  sites, while under-approximation is the actual bypass.
+- A closure body is a provenance channel even without full body analysis:
+  record each analyzed lambda's body-result provenance while walking it
+  (result-position walks already join every branch), union it into the call
+  result of every call whose target resolves to that lambda, and make the
+  lambda expression itself carry its body provenance so the closure value
+  keeps the taint through alias bindings and higher-order arguments. This is
+  a sound bounded over-approximation: it only rejects mutation sites the
+  direct form would reject if the returned value were named; scalar-typed
+  taint is inert because only array-element mutations consult provenance.
+- A fixed point that only iterates parameter facts cannot propagate through
+  declaration-to-declaration and closure-to-closure edges: seed the entire
+  alias map plus the per-lambda result map each pass and converge on full-map
+  equality, or backward-ordered forwarding chains stop one level short and
+  self-returning closures launder provenance. Forward-ordered chains resolve
+  in a single pass; only backward/cyclic edges need iteration.
+- The bounded analysis must converge or fail closed. When the pass bound is
+  exhausted with facts still changing, emit the structured resolver diagnostic
+  (LYC-RESOLVE-021) with a message that provenance could not be decided within
+  the bounded analysis, mapped to the first call site that added provenance in
+  the final pass (a member-slot assignment or lambda-result growth site as
+  fallback). Publishing the
+  last partial state silently admits mutations the converged state rejects.
+  Do not raise the bound instead; it must decide or reject.
+- Internal validation layers (`ResolvedTopologyValidator`, `IrValidator`)
+  share the engine through a converged-only entry point that raises an
+  invariant on non-convergence, so every layer re-checks the same rule on
+  graphs the resolver already gated.
+- Member rebinds are tracked through member-slot assignment provenance, not
+  per-instance slot contents: when an assignment targets a member declaration
+  (through `recv:.member` or an element write through a member aggregate) with
+  a value that carries self provenance - a closure whose recorded body-result
+  provenance is non-empty, a direct self alias, or any already-tainted value -
+  the member declaration is marked self-tainted in one declaration-keyed map
+  that is union-merged, monotone and iterated inside the same bounded fixed
+  point. Every read of a self-tainted member carries the taint, including a
+  call through the member slot, which otherwise resolves to the declaration's
+  original lambda and would launder the rebound closure's provenance (observed
+  result 7 before the rule). The member map must join the same convergence
+  comparison and bound-exhaustion fail-closed path as the alias and
+  lambda-result maps. The rule is deliberately flow-insensitive: a member
+  tainted by any assignment in the graph taints every read on every instance,
+  which only over-rejects; the under-approximating alternative (instance-local
+  slot tracking) is the actual bypass. Contextual replacement `self`
+  declarations carry the nominal's exact schema contract, so ownership checks
+  must recognize a `self` by `effectiveContract.valueType()` matching the
+  nominal schema type in addition to the nominal's own `self` identity, or
+  constructor-installed closures carrying contextual-self taint are rejected
+  inside the exact constructor.
+- A declaration-wide self set plus a declaration-wide member taint is not enough
+  for aggregate aliases. A read such as `other:.slots` must retain `slots` as a
+  storage back-reference when copied into a local, tuple, array, call parameter
+  or another member. Otherwise an element write through the copy changes the
+  real member storage without tainting the member declaration, and a later read
+  launders a self-returning closure.
+- The closed approximation now used by `SelfAliasProvenance` is a finite
+  declaration-keyed value-position lattice with four joined components: direct
+  receiver aliases, receiver-backed storage, possible originating member
+  declarations, and known lambda identities. Lambda identity and body-result
+  provenance stay separate until a call; this avoids treating a closure object
+  as the receiver it may return while still preserving body provenance through
+  callable aliases and aggregate storage. Both assignment spellings weakly
+  update every possible member origin, and element writes weakly update the
+  local aggregate root so a later projection cannot erase the route. The
+  concrete mutation target also needs its own provenance fact. Opaque or
+  retained calls conservatively treat every self-aliasing target/argument as
+  a possible source of self-backed result storage; a known body may add facts
+  but never erase that route. Checking only
+  the root declaration misses `other:.values[0]` after
+  `other:.values := self:.values`, because `other` is fresh while the selected
+  member storage is not.
+- Aggregate positions and member instances are intentionally collapsed. Any
+  sibling projection may inherit the union of origins, any instance read of a
+  written member may inherit its stored facts, and a rebind never clears a prior
+  may-alias fact. This is the explicit precision cost of the bounded sound
+  approximation. The maps remain monotone and deterministic; all four components,
+  member values and lambda results participate in the existing eight-pass
+  convergence comparison and fail-closed `LYC-RESOLVE-021` path.
+- Direct self aliases and self-backed member storage are distinct facts. A local
+  callable aggregate may contain a closure that returns `self` without itself
+  being the nominal receiver; later invocation materializes the lambda result.
+  In contrast, `let alias = self:.values` records receiver-backed storage and
+  remains unauthorized outside the exact constructor even though the alias type
+  is `Array<I32>` rather than the nominal type.
+- Typed semantic provenance must resolve `SyntaxNode.NamedType` through the exact
+  resolver-issued `TYPE` syntax link, just as `TypeChecker.typeFromSyntax` does.
+  Nominal type environments validate an already-resolved identity and cannot map
+  source spelling. Missing this branch makes explicit nested forms such as
+  `Array<Fn<;Box>>[...]` raise an invariant while inferred forms happen to pass.
+- Constructor-local closures that receive or return incomplete nominal `self`
+  currently compile but fail when invoked during construction with `LYR-INIT`.
+  This is a runtime construction-capability boundary, not immutable-self
+  provenance. Do not weaken initialization validation to turn it into a positive;
+  a successful runtime contract would need a separately authorized capability
+  path across compiler and runtime production code.
+- The resolver can only run the frozen-graph sweep before topology validation
+  if graph publication supports deferring that one validator; otherwise the
+  topology invariant fires before the structured resolver diagnostic can be
+  emitted. Deferring must keep every other publication path validating
+  immediately.
 - REPL runtime frames keep an internal session `SourceId` while `SourceOrigin.label`
   carries the caller label. Exact producer-frame tests should assert the mapped UTF-16
   offsets, caller origin range and line/column derived from the registered producer

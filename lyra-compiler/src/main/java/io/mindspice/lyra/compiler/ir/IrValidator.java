@@ -134,6 +134,7 @@ public final class IrValidator {
     private static final class State {
         private final TypedIr ir;
         private final TypedSemanticGraph semantic;
+        private final io.mindspice.lyra.compiler.semantic.SelfAliasProvenance selfAliasProvenance;
         private final List<Diagnostic> diagnostics = new ArrayList<>();
         private final Set<ModuleId> modules = new TreeSet<>();
         private final Set<DeclarationId> declarations = new TreeSet<>();
@@ -148,6 +149,8 @@ public final class IrValidator {
         private State(TypedIr ir) {
             this.ir = ir;
             this.semantic = ir.semanticGraph();
+            this.selfAliasProvenance = io.mindspice.lyra.compiler.semantic.SelfAliasProvenance
+                    .of(semantic.resolvedGraph());
             semantic.modules().forEach(module -> modules.add(module.moduleId()));
             semantic.declarations().forEach(declaration -> declarations.add(declaration.id()));
             semantic.references().forEach(reference -> references.add(reference.id()));
@@ -1012,6 +1015,17 @@ public final class IrValidator {
                     if (!declaration.isMutable() && !permittedImmutableSelfMutation) {
                         add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, node.span(),
                                 "IR rebinds an immutable declaration");
+                    }
+                    if (declaration.kind() != DeclarationKind.SELF
+                            && node.mutationKind().filter(kind -> kind == MutationKind.ARRAY_ELEMENT).isPresent()) {
+                        semantic.resolvedGraph().mutations().stream()
+                                .filter(mutation -> mutation.span().equals(node.target().span()))
+                                .findFirst()
+                                .filter(mutation -> !selfAliasProvenance.permitsMutation(
+                                        semantic.resolvedGraph(), mutation))
+                                .ifPresent(mutation -> add(CompilerDiagnosticCodes.IR_INVALID_GRAPH,
+                                        node.span(),
+                                        "IR array-element mutation through a self alias is not constructor-owned"));
                     }
                 });
             }

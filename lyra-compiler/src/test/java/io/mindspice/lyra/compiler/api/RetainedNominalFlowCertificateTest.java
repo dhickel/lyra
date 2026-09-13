@@ -2,6 +2,7 @@ package io.mindspice.lyra.compiler.api;
 
 import io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes;
 import io.mindspice.lyra.compiler.identity.DeclarationId;
+import io.mindspice.lyra.compiler.identity.FlowSiteId;
 import io.mindspice.lyra.compiler.semantic.TypedDeclaration;
 import io.mindspice.lyra.compiler.semantic.TypedExpression;
 import io.mindspice.lyra.compiler.semantic.TypedExpressionKind;
@@ -291,6 +292,267 @@ final class RetainedNominalFlowCertificateTest {
         assertTrue(certificate(producer).certifiesDerivedAggregate(
                 derivedArrayFact(selectedArray, context, construction.span()),
                 context, construction, Set.of()));
+    }
+
+    @Test
+    void rebindThenTupleRetainedInitializerCompilesWithExactMemberRouting() {
+        // A conversion wrapping a sequence-local reference must keep the
+        // post-rebind aggregate identity through tuple-member routing; the
+        // consumer compilation used to die with an internal
+        // "aggregate owner module is foreign" bug exception.
+        SessionCompileResult.Success producer = compile("rebind-tuple-producer.lyra", """
+                class Holder {
+                    let @pub pair :Tuple<Array<I32>,I32> = {
+                        let @mut selected :Array<I32> = Array<I32>[1 2]
+                        Tuple[selected 3]
+                    }
+                }
+                """, SessionSnapshot.empty());
+        SessionFlowCertificate.RetainedNominal holder = nominal(certificate(producer), "Holder");
+        var sequence = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Sequence.class,
+                transfer(holder, "pair"));
+        var declared = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Declare.class,
+                sequence.steps().getFirst());
+        var selectedArray = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                declared.initializer()).allocation().orElseThrow();
+        var tuple = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                sequence.steps().getLast());
+        var converted = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Apply.class,
+                tuple.elements().getFirst());
+        assertTrue(converted.kind() == SessionFlowCertificate.RetainedInitializerTransfer.ApplyKind.CONVERSION
+                        || converted.kind() == SessionFlowCertificate.RetainedInitializerTransfer.ApplyKind.NARROWING,
+                "the tuple element is the conversion over the sequence reference");
+        assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Reference.class,
+                converted.operands().getLast());
+
+        SessionCompileResult.Success consumer = compile("rebind-tuple-consumer.lyra",
+                "let holder :Holder = Holder[]", producer.stagedSnapshot());
+        TypedExpression construction = consumer.typedGraph().expressions().stream()
+                .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
+                .findFirst().orElseThrow();
+        var context = consumer.typedGraph().flowSiteId(construction);
+        AggregateIdentityFact expected = derivedCrossModuleArrayFact(
+                selectedArray, context, construction.span()).prefixedBy(
+                ProjectionPath.tupleMember(0));
+        assertTrue(certificate(producer).certifiesDerivedAggregate(
+                expected, context, construction, Set.of()));
+
+        var pairValue = certificate(consumer).boundaryState().objects().values().stream()
+                .filter(object -> object.schema().type().id().name().equals("Holder"))
+                .findFirst().orElseThrow().fields().get(0).only();
+        assertEquals(List.of(expected), pairValue.aggregateIdentities(),
+                "the consumer state keeps the exact producer array at tuple route .0");
+    }
+
+    @Test
+    void derivedCertificationRejectsOverwrittenRebindAllocations() {
+        SessionCompileResult.Success producer = compile("overwritten-rebind-producer.lyra", """
+                class Box {
+                    let @pub values :Array<I32> = {
+                        let @mut selected :Array<I32> = Array<I32>[1 2]
+                        selected := Array<I32>[3 4]
+                        selected := Array<I32>[5 6]
+                        selected
+                    }
+                }
+                """, SessionSnapshot.empty());
+        var sequence = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Sequence.class,
+                transfer(nominal(certificate(producer), "Box"), "values"));
+        var initial = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Declare.class,
+                        sequence.steps().get(0)).initializer()).allocation().orElseThrow();
+        var overwritten = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Rebind.class,
+                        sequence.steps().get(1)).value()).allocation().orElseThrow();
+        var current = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Rebind.class,
+                        sequence.steps().get(2)).value()).allocation().orElseThrow();
+        SessionCompileResult.Success consumer = compile("overwritten-rebind-consumer.lyra",
+                "let box :Box = Box[]", producer.stagedSnapshot());
+        TypedExpression construction = consumer.typedGraph().expressions().stream()
+                .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
+                .findFirst().orElseThrow();
+        var context = consumer.typedGraph().flowSiteId(construction);
+
+        assertFalse(certificate(producer).certifiesDerivedAggregate(
+                derivedArrayFact(initial, context, construction.span()),
+                context, construction, Set.of()));
+        assertFalse(certificate(producer).certifiesDerivedAggregate(
+                derivedArrayFact(overwritten, context, construction.span()),
+                context, construction, Set.of()),
+                "an intermediate rebind value overwritten before the result must not certify");
+        assertTrue(certificate(producer).certifiesDerivedAggregate(
+                derivedArrayFact(current, context, construction.span()),
+                context, construction, Set.of()));
+        assertEquals(List.of(derivedCrossModuleArrayFact(
+                        current, context, construction.span())),
+                certificate(consumer).boundaryState().objects().values().stream()
+                        .filter(object -> object.schema().type().id().name().equals("Box"))
+                        .findFirst().orElseThrow().fields().get(0).only()
+                        .aggregateIdentities(),
+                "only the final returned rebind value inhabits the consumer field");
+    }
+
+    @Test
+    void derivedCertificationKeepsReachableRebindPositives() {
+        // The value of the final returned binding still certifies after a
+        // rebind chain resolves through the sequence bindings.
+        SessionCompileResult.Success returned = compile("returned-rebind-producer.lyra", """
+                class Box {
+                    let @pub values :Array<I32> = {
+                        let @mut selected :Array<I32> = Array<I32>[1 2]
+                        selected := Array<I32>[3 4]
+                        selected
+                    }
+                }
+                """, SessionSnapshot.empty());
+        var returnedSequence = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Sequence.class,
+                transfer(nominal(certificate(returned), "Box"), "values"));
+        var first = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Declare.class,
+                        returnedSequence.steps().get(0)).initializer()).allocation().orElseThrow();
+        var second = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Rebind.class,
+                        returnedSequence.steps().get(1)).value()).allocation().orElseThrow();
+        SessionCompileResult.Success returnedConsumer = compile("returned-rebind-consumer.lyra",
+                "let box :Box = Box[]", returned.stagedSnapshot());
+        TypedExpression returnedConstruction = returnedConsumer.typedGraph().expressions().stream()
+                .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
+                .findFirst().orElseThrow();
+        var returnedContext = returnedConsumer.typedGraph().flowSiteId(returnedConstruction);
+        assertFalse(certificate(returned).certifiesDerivedAggregate(
+                derivedArrayFact(first, returnedContext, returnedConstruction.span()),
+                returnedContext, returnedConstruction, Set.of()));
+        assertTrue(certificate(returned).certifiesDerivedAggregate(
+                derivedArrayFact(second, returnedContext, returnedConstruction.span()),
+                returnedContext, returnedConstruction, Set.of()));
+
+        // A rebind that writes into an object field is a genuine state write
+        // and keeps certifying the written value.
+        SessionCompileResult.Success fieldWrite = compile("field-write-rebind-producer.lyra", """
+                class Box {
+                    let @pub @mut sink :Array<I32> = Array<I32>[0]
+                    let @pub values :Array<I32> = {
+                        self:.sink := Array<I32>[1 2]
+                        Array<I32>[3 4]
+                    }
+                }
+                """, SessionSnapshot.empty());
+        var writtenSequence = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Sequence.class,
+                transfer(nominal(certificate(fieldWrite), "Box"), "values"));
+        var writtenRebind = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Rebind.class,
+                writtenSequence.steps().get(0));
+        assertFalse(writtenRebind.target().route().isRoot(),
+                "the field write target keeps its nominal member route");
+        var written = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                writtenRebind.value()).allocation().orElseThrow();
+        SessionCompileResult.Success fieldConsumer = compile("field-write-rebind-consumer.lyra",
+                "let box :Box = Box[]", fieldWrite.stagedSnapshot());
+        TypedExpression fieldConstruction = fieldConsumer.typedGraph().expressions().stream()
+                .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
+                .findFirst().orElseThrow();
+        var fieldContext = fieldConsumer.typedGraph().flowSiteId(fieldConstruction);
+        assertTrue(certificate(fieldWrite).certifiesDerivedAggregate(
+                derivedArrayFact(written, fieldContext, fieldConstruction.span()),
+                fieldContext, fieldConstruction, Set.of()));
+        var sinkValue = certificate(fieldConsumer).boundaryState().objects().values().stream()
+                .filter(object -> object.schema().type().id().name().equals("Box"))
+                .findFirst().orElseThrow().fields().get(0).only();
+        assertEquals(List.of(derivedCrossModuleArrayFact(
+                        written, fieldContext, fieldConstruction.span())),
+                sinkValue.aggregateIdentities(),
+                "the written array lands in the consumer sink field");
+    }
+
+    @Test
+    void derivedObjectCertificationRequiresReturnOrWriteDestinations() {
+        // A nominal object argument the callee neither returns nor writes
+        // must not mint a certified derived object identity.
+        SessionCompileResult.Success ignored = compile("ignored-object-argument-producer.lyra", """
+                class Inner { let @pub value :I32 = 5 }
+                let pick :Fn<Inner;Inner> = (=> |ignored| Inner[])
+                class Box {
+                    let @pub nested :Inner = ::pick[Inner[]]
+                }
+                """, SessionSnapshot.empty());
+        SessionCompileResult.Success ignoredConsumer = compile("ignored-object-argument-consumer.lyra",
+                "let box :Box = Box[]", ignored.stagedSnapshot());
+        assertFalse(derivedArgumentObjectCertified(ignored, ignoredConsumer, "nested"),
+                "an object argument the summary ignores must not certify");
+
+        // Returned and written arguments keep certifying.
+        SessionCompileResult.Success returned = compile("returned-object-argument-producer.lyra", """
+                class Inner { let @pub value :I32 = 5 }
+                let keep :Fn<Inner;Inner> = (=> |kept| kept)
+                class Box {
+                    let @pub nested :Inner = ::keep[Inner[]]
+                }
+                """, SessionSnapshot.empty());
+        SessionCompileResult.Success returnedConsumer = compile("returned-object-argument-consumer.lyra",
+                "let box :Box = Box[]", returned.stagedSnapshot());
+        assertTrue(derivedArgumentObjectCertified(returned, returnedConsumer, "nested"),
+                "an object argument the summary returns must certify");
+
+        SessionCompileResult.Success written = compile("written-object-argument-producer.lyra", """
+                class Inner { let @pub value :I32 = 5 }
+                let @mut @nil sink :Inner = #NIL
+                let store :Fn<Inner;Unit> = (=> |kept| { sink := kept })
+                class Box {
+                    let @pub nested :Inner = { ::store[Inner[]] Inner[] }
+                }
+                """, SessionSnapshot.empty());
+        SessionCompileResult.Success writtenConsumer = compile("written-object-argument-consumer.lyra",
+                "let box :Box = Box[]", written.stagedSnapshot());
+        assertTrue(derivedArgumentObjectCertified(written, writtenConsumer, "nested"),
+                "an object argument the summary writes must certify");
+    }
+
+    private static boolean derivedArgumentObjectCertified(
+            SessionCompileResult.Success producer, SessionCompileResult.Success consumer,
+            String memberName) {
+        var certificate = certificate(producer);
+        var box = certificate.retainedNominals().values().stream()
+                .filter(value -> value.name().equals("Box")).findFirst().orElseThrow();
+        var transfer = transfer(box, memberName);
+        SessionFlowCertificate.RetainedInitializerTransfer.Call call;
+        if (transfer instanceof SessionFlowCertificate.RetainedInitializerTransfer.Call direct) {
+            call = direct;
+        } else {
+            call = assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Call.class,
+                    assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Sequence.class,
+                            transfer).steps().get(0));
+        }
+        var argument = assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Construct.class,
+                call.arguments().getFirst());
+        var site = argument.site();
+        TypedExpression construction = consumer.typedGraph().expressions().stream()
+                .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
+                .findFirst().orElseThrow();
+        FlowSiteId context = consumer.typedGraph().flowSiteId(construction);
+        var derivedSite = RetainedAllocationDerivation.objectSite(context, site.site());
+        var derivedAllocation = RetainedAllocationDerivation.objectAllocation(context, site.site());
+        NominalObjectFact fact = new NominalObjectFact(
+                new io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity(
+                        site.moduleId(), derivedSite, site.nominalType()),
+                ProjectionPath.root(), OwnershipWitness.local(
+                        site.moduleId(), derivedAllocation, site.scopeId(), site.span())
+                .withOriginSite(derivedSite).atUse(construction.span()));
+        return certificate.certifiesDerivedObject(fact, context, construction, Set.of());
     }
 
     @Test

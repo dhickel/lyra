@@ -10,11 +10,9 @@ Baseline: `c6f4274f96d0193da2f9428eae436ade08473836`
 
 ## Change Summary
 
-Checkpointed the phase-3 constructor/runtime integration slice after reproducing failing retained-constructor paths and repairing the initial compiler validation and provenance defects. Added focused coverage for constructor compositions and ordering, exactly-once factory emission, failure and cancellation cleanup, source mapping, attachment, recovery, and owner lifetime. No runtime production change was retained. Two independent review rounds then demonstrated remaining proof-closure defects recorded in `.internal-dev/bugs/retained-nominal/phase3-constructor-proof-closure.md`; this changelog is an explicit WIP checkpoint and not a completion claim.
+Completed the phase-3 constructor/runtime integration slice. Added focused coverage for constructor compositions and ordering, exactly-once factory emission, failure and cancellation cleanup, source mapping, attachment, recovery, owner lifetime, nested retained construction contexts, destination-sensitive aggregate and object certification, explicit nominal function-array literals, and immutable-`self` alias provenance. No runtime production change was retained.
 
-Confirmed fixed by the second round: nested retained construction contexts (four-level `Outer -> Middle -> Leaf -> Deep` chains execute across generations under their exact derived context), exact certificate destination assertions, and exact producer source-map assertions.
-
-Still open (recorded in the bug report with reproductions): a mutable alias of immutable `self` bypasses the constructor-only mutation narrowing; a valid rebind-then-tuple retained initializer fails consumer compilation; an overwritten intermediate rebind allocation is still certified; and a nominal object passed to a callable that ignores it is falsely accepted by derived-object certification.
+Four independent review rounds drove the proof closure. The initial round repaired constructor scope, nested construction contexts, destination reachability and exact assertions; two follow-up rounds closed the immutable-`self` provenance family (branch joins, multi-level forwarding, identity-returning calls, closures returning captured `self` including tuple/alias/higher-order variants, fail-closed bound exhaustion, and member-slot taint); and one escalated senior round replaced the route-by-route engine with a declaration-keyed value-position provenance lattice that preserves member identity through aggregates, closes the remaining escape routes, and fixes `TypedSemanticProvenance.syntaxType` for explicit `Array<Fn<;Box>>[...]` literals. Final independent validation passed and confirmed no tested escape remains. The full history is recorded in `.internal-dev/bugs/retained-nominal/phase3-constructor-proof-closure.md`, now closed.
 
 ## Files
 
@@ -43,18 +41,18 @@ Specification Impact: none. The changes repair implementation and proof coverage
 
 ## Risks
 
-- Independent review demonstrated three unresolved defects: the immutable-`self` mutation exception is broader than constructor scope; nested retained constructors do not recursively execute/certify under the exact nested object context; and derivation checks may accept discarded allocations by subtree membership. The current passing suite does not close those gaps.
+- Immutable-`self` provenance is a deliberately conservative, flow-insensitive over-approximation: aggregate sibling positions collapse, member taint is declaration-wide and instance-insensitive, rebinds never clear prior may-alias facts, opaque calls may keep self-derived taint, and alias chains deeper than the eight-pass bound fail closed rather than resolving. Legal code in those shapes can therefore be rejected; no soundness escape was demonstrated after the lattice rewrite.
+- Retained opaque callable bodies are not walked for body-result provenance; no executing escape was found, but the analysis does not cover them.
 - Retained Unit/intrinsic-initialized nominal observation issue #7 remains open. A nominal-only same-workspace runtime experiment fixed Unit reads but failed at the callable authority boundary; widening that boundary would violate existing closure-authority tests, so the experiment was reverted.
 
 ## Follow-up Items
 
-- Resolve `.internal-dev/bugs/retained-nominal/phase3-constructor-proof-closure.md` before phase-3 completion or broader qualification.
-- Design issue #7 as a route-scoped nominal-member/session-root authority capability rather than a broad `sourceLocal` or closure-authentication relaxation.
+- Design issue #7 as a route-scoped nominal-member/session-root authority capability rather than a broad `sourceLocal` or closure-authentication relaxation; the four pinned `LYR-LINK` inventory cases stay as the acceptance signal.
 - Phase 4 remains responsible for the comprehensive independent retained-nominal compiler/session campaigns described by the active plan.
 
 Validation evidence:
 
 - Focused compiler, runtime, closure-authority, nominal-session, attachment, cancellation, lifetime, bytecode and failure suites: PASS.
-- Fresh full-reactor `mvn -q test`: 1,656 tests, 0 failures, 0 errors, 2 editor UI skips.
+- Fresh full-reactor `mvn -q test` after the final repair round: runtime 42, compiler 1,217, repl 333, cli 66, editor 24 with 2 expected graphical skips; 0 failures and 0 errors (1,682 tests).
 - `tools/fuzz-language.sh -q`: PASS; four language fuzz tests at 1,800 cases each (7,200 cases total), plus the script's nominal compiler/runtime matrix.
 - Source whitespace scan: no trailing whitespace in the changed source, documentation, or development records.

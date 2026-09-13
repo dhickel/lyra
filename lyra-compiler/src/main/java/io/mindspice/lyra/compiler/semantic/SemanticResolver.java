@@ -215,7 +215,13 @@ public final class SemanticResolver {
             return PhaseResult.failure(diagnostic);
         }
         try {
-            return PhaseResult.success(state.freeze());
+            ResolvedSemanticGraph frozen = state.freeze();
+            state.enforceSelfAliasMutations(frozen);
+            if (failed()) {
+                return PhaseResult.failure(diagnostic);
+            }
+            ResolvedTopologyValidator.validate(frozen);
+            return PhaseResult.success(frozen);
         } catch (IllegalArgumentException | IllegalStateException failure) {
             // A malformed phase-local state is an implementation invariant, not
             // an expected source error.  It must not become a partial artifact.
@@ -301,6 +307,20 @@ public final class SemanticResolver {
         private BindingFlowState ownershipProjectionState = BindingFlowState.empty();
         /** False after an opaque call until canonical typed flow takes authority. */
         private boolean ownershipProjectionAuthoritative = true;
+        /**
+         * Immutable-{@code self} alias provenance: each binding may alias the
+         * listed {@code SELF} declarations.  Declaration identities are unique,
+         * so one flat map is exact; entries are added by {@code let} bindings,
+         * rebindings, and call/construction sites that pass an aliased value
+         * into a lambda parameter.
+         */
+        private final Map<DeclarationId, Set<DeclarationId>> selfAliasMap = new LinkedHashMap<>();
+        /**
+         * Self-tainted member slots, keyed by member declaration.  Union-
+         * merged and monotone so it stays a subset of the closing sweep's
+         * fixed-point member map; the sweep is authoritative.
+         */
+        private final Map<DeclarationId, Set<DeclarationId>> memberSelfTaints = new LinkedHashMap<>();
 
         private State(ModuleGraph graph, IdentityAllocator allocator) {
             this.graph = graph;
@@ -1930,6 +1950,45 @@ public final class SemanticResolver {
             }
         }
 
+        /**
+         * Authoritative closing sweep over the frozen graph.  The live
+         * checks during resolution are a conservative early filter; this
+         * sweep recomputes immutable-{@code self} provenance with the
+         * same fixed-point engine the topology and IR validators use, so
+         * no layer accepts a mutation another layer rejects.
+         */
+        private void enforceSelfAliasMutations(ResolvedSemanticGraph frozen) {
+            SelfAliasProvenance.Analysis analysis = SelfAliasProvenance.analyze(frozen);
+            if (analysis.undecidedSite().isPresent()) {
+                // The bounded fixed point must either converge or fail closed:
+                // publishing a partial provenance state would silently admit
+                // mutations the converged state rejects.
+                fail(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
+                        analysis.undecidedSite().orElseThrow(),
+                        "immutable-self alias provenance could not be decided within the bounded analysis",
+                        List.of());
+                return;
+            }
+            SelfAliasProvenance provenance = analysis.provenance();
+            for (ResolvedMutation mutation : frozen.mutations()) {
+                if (mutation.kind() != MutationKind.ARRAY_ELEMENT) {
+                    continue;
+                }
+                ResolvedDeclaration root = frozen.declaration(
+                        mutation.rootDeclaration()).orElse(null);
+                if (root == null || root.kind() == DeclarationKind.SELF) {
+                    continue;
+                }
+                if (!provenance.permitsMutation(frozen, mutation)) {
+                    fail(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
+                            mutation.span(),
+                            "aggregate mutation through a self alias requires the exact nominal constructor",
+                            List.of(RelatedSpan.of(root.nameSpan(), "self alias")));
+                    return;
+                }
+            }
+        }
+
         private void resolveForm(
                 SyntaxNode.Form form,
                 ScopeDraft scope,
@@ -1952,6 +2011,7 @@ public final class SemanticResolver {
                 Use initializer = resolveExpression(
                         let.initializer(), scope, work, lambda, Optional.of(declaration.id), expected);
                 replaceBindingOwnershipProjection(declaration, initializer);
+                recordSelfAlias(declaration.id, initializer);
             } else if (form instanceof SyntaxNode.NominalDeclaration syntax) {
                 DeclDraft declaration = nominalDeclarations.get(syntax);
                 addLink(SyntaxLink.declaration(syntax.name().span(), declaration.id));
@@ -2235,6 +2295,27 @@ public final class SemanticResolver {
                         assignment.value(), scope, work, lambda, currentDeclaration,
                         target.type.flatMap(this::expectedLambdaSignature));
                 applyOwnershipProjectionUpdate(target, assignment.target(), value.ownershipValues, scope);
+                if (assignment.target() instanceof SyntaxNode.Identifier
+                        && target.declaration.isPresent()) {
+                    // Rebinding the alias local replaces its provenance: the
+                    // new value decides whether the binding still may hold
+                    // self.  Field/element writes do not retarget the binding.
+                    recordSelfAlias(target.declaration.orElseThrow().id, value);
+                } else if (!value.selfAliases.isEmpty()) {
+                    // A member-slot assignment with a self-carrying value
+                    // taints the member declaration; the closing sweep
+                    // recomputes the same union-merged rule on the frozen
+                    // graph, so this early filter only ever rejects facts
+                    // the fixed point also rejects.
+                    DeclDraft field = selectedMembers.get(memberTargetSpan(
+                            assignment.target()));
+                    if (field != null) {
+                        LinkedHashSet<DeclarationId> merged = new LinkedHashSet<>(
+                                memberSelfTaints.getOrDefault(field.id, Set.of()));
+                        merged.addAll(value.selfAliases);
+                        memberSelfTaints.put(field.id, Set.copyOf(merged));
+                    }
+                }
                 return Use.empty();
             }
             if (expression instanceof SyntaxNode.Lambda lambdaSyntax) {
@@ -2249,8 +2330,10 @@ public final class SemanticResolver {
                         call.target(), scope, work, lambda, currentDeclaration, Optional.empty());
                 Optional<LyraSignature> targetSignature = signatureOf(target);
                 addCallLink(call.span(), target, selectedMembers.get(call.target().span()));
-                resolveArguments(
+                List<Use> argumentUses = resolveArguments(
                         call.argumentExpressions(), targetSignature, scope, work, lambda, currentDeclaration);
+                propagateSelfAliasArguments(target,
+                        selectedMembers.get(call.target().span()), argumentUses);
                 return targetSignature.map(this::opaqueCallResult)
                         .orElseGet(Use::empty);
             }
@@ -2270,8 +2353,11 @@ public final class SemanticResolver {
                 }
                 Optional<LyraSignature> targetSignature = signatureOf(target);
                 addCallLink(call.span(), target);
-                resolveArguments(
+                List<Use> argumentUses = resolveArguments(
                         call.argumentExpressions(), targetSignature, scope, work, lambda, currentDeclaration);
+                propagateSelfAliasArguments(target,
+                        call.receiver().isPresent() ? selectedMembers.get(call.span()) : null,
+                        argumentUses);
                 return targetSignature.map(this::opaqueCallResult)
                         .orElseGet(Use::empty);
             }
@@ -2296,8 +2382,9 @@ public final class SemanticResolver {
                         ReferenceKind.NAMESPACE_DIRECT_CALL, scope, work, lambda);
                 Optional<LyraSignature> targetSignature = signatureOf(target);
                 addCallLink(call.span(), target);
-                resolveArguments(
+                List<Use> argumentUses = resolveArguments(
                         call.argumentExpressions(), targetSignature, scope, work, lambda, currentDeclaration);
+                propagateSelfAliasArguments(target, null, argumentUses);
                 return targetSignature.map(this::opaqueCallResult)
                         .orElseGet(Use::empty);
             }
@@ -2545,8 +2632,9 @@ public final class SemanticResolver {
                 fail(CompilerDiagnosticCodes.RESOLVE_INVALID_SIGNATURE, span, "constructor argument count does not match required parameters");
                 return Use.empty();
             }
-            resolveArguments(arguments, Optional.of(signature), scope, work, lambda, currentDeclaration);
+            List<Use> argumentUses = resolveArguments(arguments, Optional.of(signature), scope, work, lambda, currentDeclaration);
             addLink(SyntaxLink.call(span, Optional.empty(), Optional.of(constructor.declaration()), Optional.empty(), Optional.empty()));
+            propagateSelfAliasParameters(constructor.constructor(), argumentUses);
             return Use.value(constructor.schema().type());
         }
 
@@ -2578,9 +2666,19 @@ public final class SemanticResolver {
                         selectedMembers.put(span, field);
                         addLink(new SyntaxLink(span, SyntaxLinkKind.ACCESS, Optional.empty(), Optional.of(field.id),
                                 Optional.empty(), Optional.empty(), Optional.empty(), Optional.of(AccessKind.MEMBER_VALUE)));
+                        Set<DeclarationId> memberTaint =
+                                memberSelfTaints.getOrDefault(field.id, Set.of());
+                        Set<DeclarationId> memberSelfAliases = receiver.selfAliases;
+                        if (!memberTaint.isEmpty()) {
+                            LinkedHashSet<DeclarationId> merged =
+                                    new LinkedHashSet<>(memberSelfAliases);
+                            merged.addAll(memberTaint);
+                            memberSelfAliases = Set.copyOf(merged);
+                        }
                         return new Use(receiver.declaration, receiver.module, receiver.export,
                                 functionType(contract.type()).map(FunctionType::signature), receiver.reference,
-                                Optional.of(contract.type()), ValueAlternatives.singleton(ValueAlternative.scalar(contract.type())), List.of());
+                                Optional.of(contract.type()), ValueAlternatives.singleton(ValueAlternative.scalar(contract.type())), List.of(),
+                                memberSelfAliases);
                     }
                     if (member.name().equals("length")
                             && (base == PrimitiveType.STRING || base instanceof ArrayType)) {
@@ -2622,13 +2720,14 @@ public final class SemanticResolver {
             return Use.empty();
         }
 
-        private void resolveArguments(
+        private List<Use> resolveArguments(
                 List<SyntaxNode.Expression> arguments,
                 Optional<LyraSignature> signature,
                 ScopeDraft scope,
                 ModuleWork work,
                 Optional<LambdaId> lambda,
                 Optional<DeclarationId> currentDeclaration) {
+            List<Use> uses = new ArrayList<>();
             for (int index = 0; index < arguments.size(); index++) {
                 int argumentIndex = index;
                 Optional<LyraType> expectedType = signature
@@ -2637,10 +2736,11 @@ public final class SemanticResolver {
                 rememberExpected(arguments.get(argumentIndex), expectedType);
                 Optional<LyraSignature> expected = expectedType.flatMap(
                         this::expectedLambdaSignature);
-                resolveExpression(
+                uses.add(resolveExpression(
                         arguments.get(argumentIndex), scope, work, lambda,
-                        currentDeclaration, expected);
+                        currentDeclaration, expected));
             }
+            return uses;
         }
 
         private void rememberExpected(
@@ -3256,7 +3356,10 @@ public final class SemanticResolver {
                                     .map(BindingContract::valueType)
                                     .filter(type -> type instanceof NominalType || type instanceof RangeType || type instanceof PrimitiveType primitive && primitive.isNumeric())),
                     ownershipValues,
-                    List.of());
+                    List.of(),
+                    target.kind == DeclarationKind.SELF
+                            ? Set.of(target.id)
+                            : selfAliasMap.getOrDefault(target.id, Set.of()));
         }
 
         private Use resolveNamespaceAccess(
@@ -3320,7 +3423,8 @@ public final class SemanticResolver {
                     Optional.of(referenceId),
                     Optional.of(export.contract().valueType()),
                     ownershipValues,
-                    List.of());
+                    List.of(),
+                    Set.of());
         }
 
         private Use resolveNamespacePath(
@@ -3374,7 +3478,8 @@ public final class SemanticResolver {
                         Optional.of(referenceId),
                         Optional.empty(),
                         ValueAlternatives.empty(),
-                        List.of());
+                        List.of(),
+                        Set.of());
             }
             LogicalModuleId logical;
             try {
@@ -3423,12 +3528,135 @@ public final class SemanticResolver {
             return new Use(
                     Optional.empty(), Optional.of(target), Optional.empty(), Optional.empty(),
                     Optional.of(referenceId), Optional.empty(),
-                    ValueAlternatives.empty(), List.of());
+                    ValueAlternatives.empty(), List.of(), Set.of());
         }
 
         private void replaceBindingOwnershipProjection(DeclDraft declaration, Use value) {
             ownershipProjectionState = bindOwnershipProjectionValue(
                     ownershipProjectionState, declaration, value.ownershipValues);
+        }
+
+        /**
+         * Records that a mutable root binding may now hold one of the listed
+         * {@code SELF} declarations.  A rebind replaces the recorded sources;
+         * a first binding adds them.  The map is flat and declaration-keyed,
+         * so it needs no scope save/restore.
+         */
+        private void recordSelfAlias(DeclarationId declaration, Use value) {
+            recordSelfAlias(declaration, value.selfAliases);
+        }
+
+        private void recordSelfAlias(DeclarationId declaration, Set<DeclarationId> aliases) {
+            if (aliases.isEmpty()) {
+                selfAliasMap.remove(declaration);
+            } else {
+                selfAliasMap.put(declaration, Set.copyOf(aliases));
+            }
+        }
+
+        /**
+         * Passes may-alias {@code self} provenance from exact call arguments
+         * into the callee lambda's parameters.  The callee is the member's
+         * declaring lambda, the target declaration's owned lambda, or the
+         * export's origin lambda; intrinsic/opaque targets propagate nothing.
+         */
+        private void propagateSelfAliasArguments(
+                Use target, DeclDraft member, List<Use> arguments) {
+            DeclDraft owner = member;
+            if (owner == null && target.declaration.isPresent()) {
+                owner = target.declaration.orElseThrow();
+            }
+            if (owner == null && target.export.isPresent()) {
+                owner = declarationsById.get(target.export.orElseThrow().originDeclaration());
+            }
+            if (owner == null) {
+                return;
+            }
+            LambdaDraft callee = null;
+            for (LambdaDraft candidate : lambdasById.values()) {
+                if (candidate.ownerDeclaration.equals(Optional.of(owner.id))
+                        && target.signature.map(signature -> candidate.signature
+                        .filter(signature::equals).isPresent()).orElse(true)) {
+                    callee = candidate;
+                    break;
+                }
+            }
+            if (callee != null) {
+                propagateSelfAliasParameters(
+                        Optional.of(callee.id), arguments, callee.parameterDeclarations);
+            }
+        }
+
+        private void propagateSelfAliasParameters(
+                Optional<LambdaId> lambda, List<Use> arguments) {
+            if (lambda.isEmpty()) {
+                return;
+            }
+            LambdaDraft callee = lambdasById.get(lambda.orElseThrow());
+            if (callee != null) {
+                propagateSelfAliasParameters(lambda, arguments, callee.parameterDeclarations);
+            }
+        }
+
+        private void propagateSelfAliasParameters(
+                Optional<LambdaId> lambda, List<Use> arguments,
+                List<DeclDraft> parameters) {
+            if (lambda.isEmpty()) {
+                return;
+            }
+            for (int index = 0; index < Math.min(arguments.size(), parameters.size()); index++) {
+                Set<DeclarationId> aliases = arguments.get(index).selfAliases;
+                if (aliases.isEmpty()) {
+                    continue;
+                }
+                DeclarationId parameter = parameters.get(index).id;
+                LinkedHashSet<DeclarationId> merged = new LinkedHashSet<>(
+                        selfAliasMap.getOrDefault(parameter, Set.of()));
+                merged.addAll(aliases);
+                selfAliasMap.put(parameter, Set.copyOf(merged));
+            }
+        }
+
+        private SourceSpan memberTargetSpan(SyntaxNode.Expression target) {
+            if (target instanceof SyntaxNode.MemberAccess member) {
+                return member.span();
+            }
+            if (target instanceof SyntaxNode.IndexAccess index
+                    && index.receiver() instanceof SyntaxNode.MemberAccess member) {
+                return member.span();
+            }
+            return null;
+        }
+
+        /**
+         * The immutable-{@code self} rule for one mutation: a non-field
+         * mutation whose root may alias {@code self} is legal only when every
+         * aliased {@code self} belongs to a nominal whose exact constructor
+         * lambda contains the mutation.  A nominal's own {@code self} and a
+         * contextual replacement {@code self} carrying the nominal's exact
+         * schema contract both belong to the nominal.
+         */
+        private boolean selfAliasMutationAllowed(
+                DeclarationId root, Optional<LambdaId> lambda) {
+            Set<DeclarationId> aliasedSelfs = selfAliasMap.getOrDefault(root, Set.of());
+            if (aliasedSelfs.isEmpty()) {
+                return true;
+            }
+            return lambda.isPresent() && aliasedSelfs.stream().allMatch(selfId ->
+                    nominals.values().stream().anyMatch(nominal ->
+                            nominal.constructor().equals(lambda)
+                                    && (nominal.self().equals(selfId)
+                                    || matchesSelfContract(nominal, selfId))));
+        }
+
+        private boolean matchesSelfContract(
+                ResolvedNominal nominal, DeclarationId selfId) {
+            DeclDraft declaration = declarationsById.get(selfId);
+            if (declaration == null || declaration.effectiveContract.isEmpty()) {
+                return false;
+            }
+            return declaration.effectiveContract.orElseThrow().valueType()
+                    .equals(nominal.schema().type());
         }
 
         private ProjectionPath aggregateProjectionPath(
@@ -3601,6 +3829,15 @@ public final class SemanticResolver {
                         targetSpan,
                         "mutation requires an @mut binding or parameter",
                         List.of(RelatedSpan.of(declaration.nameSpan, "immutable binding")));
+                return;
+            }
+            if (targetSyntax instanceof SyntaxNode.IndexAccess
+                    && declaration.kind != DeclarationKind.SELF
+                    && !selfAliasMutationAllowed(declaration.id, lambda)) {
+                fail(CompilerDiagnosticCodes.RESOLVE_MUTATION_NOT_ALLOWED,
+                        targetSpan,
+                        "aggregate mutation through a self alias requires the exact nominal constructor",
+                        List.of(RelatedSpan.of(declaration.nameSpan, "self alias")));
                 return;
             }
             mutations.add(new ResolvedMutation(
@@ -4022,7 +4259,9 @@ public final class SemanticResolver {
                     graph.modules().stream()
                             .filter(node -> retained(node.moduleId()))
                             .map(ModuleGraph.Node::moduleId)
-                            .collect(java.util.stream.Collectors.toUnmodifiableSet()), List.copyOf(nominals.values()));
+                            .collect(java.util.stream.Collectors.toUnmodifiableSet()),
+                    List.copyOf(nominals.values()),
+                    true);
         }
 
         private List<FunctionScc> functionSccs(
@@ -4475,7 +4714,8 @@ public final class SemanticResolver {
             Optional<ReferenceId> reference,
             Optional<LyraType> type,
             ValueAlternatives ownershipValues,
-            List<AggregateIdentityFact> mutationContainerFacts) {
+            List<AggregateIdentityFact> mutationContainerFacts,
+            Set<DeclarationId> selfAliases) {
         private Use {
             declaration = Objects.requireNonNull(declaration, "declaration");
             module = Objects.requireNonNull(module, "module");
@@ -4485,6 +4725,7 @@ public final class SemanticResolver {
             type = Objects.requireNonNull(type, "type");
             ownershipValues = Objects.requireNonNull(ownershipValues, "ownershipValues");
             mutationContainerFacts = canonicalFacts(mutationContainerFacts);
+            selfAliases = Set.copyOf(selfAliases);
         }
 
         private static List<AggregateIdentityFact> canonicalFacts(
@@ -4499,21 +4740,21 @@ public final class SemanticResolver {
         private static Use empty() {
             return new Use(Optional.empty(), Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.empty(), Optional.empty(),
-                    ValueAlternatives.empty(), List.of());
+                    ValueAlternatives.empty(), List.of(), Set.of());
         }
 
         private static Use lambda(LyraSignature signature) {
             FunctionType type = signature.asFunctionType();
             return new Use(Optional.empty(), Optional.empty(), Optional.empty(),
                     Optional.of(signature), Optional.empty(), Optional.of(type),
-                    ValueAlternatives.singleton(ValueAlternative.scalar(type)), List.of());
+                    ValueAlternatives.singleton(ValueAlternative.scalar(type)), List.of(), Set.of());
         }
 
         private static Use value(LyraType type) {
             LyraType valueType = Objects.requireNonNull(type, "type");
             return new Use(Optional.empty(), Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.empty(), Optional.of(valueType),
-                    ValueAlternatives.singleton(ValueAlternative.scalar(valueType)), List.of());
+                    ValueAlternatives.singleton(ValueAlternative.scalar(valueType)), List.of(), Set.of());
         }
 
         private static Use aggregateValue(LyraType type, List<Use> members) {
@@ -4569,7 +4810,9 @@ public final class SemanticResolver {
             }
             return new Use(Optional.empty(), Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.empty(), type,
-                    new ValueAlternatives(aggregateAlternatives), List.of());
+                    new ValueAlternatives(aggregateAlternatives), List.of(),
+                    members.stream().map(Use::selfAliases)
+                            .flatMap(Set::stream).collect(java.util.stream.Collectors.toSet()));
         }
 
         private static Use mergedValue(LyraType type, List<Use> values) {
@@ -4588,12 +4831,14 @@ public final class SemanticResolver {
                         ValueAlternative.scalar(type.orElseThrow()));
             }
             return new Use(Optional.empty(), Optional.empty(), Optional.empty(),
-                    Optional.empty(), Optional.empty(), type, ownershipValues, List.of());
+                    Optional.empty(), Optional.empty(), type, ownershipValues, List.of(),
+                    values.stream().map(Use::selfAliases)
+                            .flatMap(Set::stream).collect(java.util.stream.Collectors.toSet()));
         }
 
         private Use withOwnershipValues(ValueAlternatives values) {
             return new Use(declaration, module, export, signature, reference, type,
-                    values, mutationContainerFacts);
+                    values, mutationContainerFacts, selfAliases);
         }
 
         private Use selectedProjection(
@@ -4607,7 +4852,7 @@ public final class SemanticResolver {
                     .filter(fact -> fact.route().isRoot())
                     .toList();
             return new Use(declaration, module, export, Optional.empty(), reference,
-                    selectedType, selected, containers);
+                    selectedType, selected, containers, selfAliases);
         }
 
         private static ValueAlternatives selectAggregateValues(

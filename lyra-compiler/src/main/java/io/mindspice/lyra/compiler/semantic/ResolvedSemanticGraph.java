@@ -196,13 +196,34 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
             Optional<SessionFlowCertificate> sessionFlowCertificate, IdentityAllocator allocator,
             boolean sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules,
             Set<ModuleId> retainedModuleIds, List<ResolvedNominal> nominals) {
+        return publish(moduleGraph, scopeTree, modules, declarations, references, lambdas, imports, exports,
+                captures, mutations, syntaxLinks, functionLinkage, referenceTopology, sessionFlowCertificate,
+                allocator, sessionGraph, retainedModules, retainedModuleIds, nominals, false);
+    }
+
+    /**
+     * Publishes a graph while optionally deferring topology validation.
+     * The resolver uses the deferred path so it can run the immutable-
+     * {@code self} closing sweep on the frozen graph first and report the
+     * structured resolver diagnostic instead of the topology invariant.
+     */
+    static ResolvedSemanticGraph publish(ModuleGraph moduleGraph, ScopeTree scopeTree,
+            List<ResolvedModule> modules, List<ResolvedDeclaration> declarations,
+            List<ResolvedReference> references, List<ResolvedLambda> lambdas,
+            List<ResolvedImportBinding> imports, List<ResolvedExport> exports,
+            List<ResolvedCapture> captures, List<ResolvedMutation> mutations, List<SyntaxLink> syntaxLinks,
+            FunctionSignatureLinkage functionLinkage, ResolvedReferenceTopology referenceTopology,
+            Optional<SessionFlowCertificate> sessionFlowCertificate, IdentityAllocator allocator,
+            boolean sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules,
+            Set<ModuleId> retainedModuleIds, List<ResolvedNominal> nominals,
+            boolean deferTopologyValidation) {
         ResolvedReferenceTopology authority = Objects.requireNonNull(
                 referenceTopology, "referenceTopology");
         ResolvedSemanticGraph graph = new ResolvedSemanticGraph(
                 moduleGraph, scopeTree, modules, declarations, references, lambdas,
                 imports, exports, captures, mutations, syntaxLinks, functionLinkage,
                 Optional.of(authority), sessionFlowCertificate, allocator, sessionGraph, retainedModules,
-                retainedModuleIds, nominals);
+                retainedModuleIds, nominals, deferTopologyValidation);
         authority.bind(graph);
         return graph;
     }
@@ -253,6 +274,21 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
             Optional<SessionFlowCertificate> sessionFlowCertificate, IdentityAllocator allocator,
             boolean sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules,
             Set<ModuleId> retainedModuleIds, List<ResolvedNominal> nominals) {
+        this(moduleGraph, scopeTree, modules, declarations, references, lambdas, imports, exports, captures,
+                mutations, syntaxLinks, functionLinkage, referenceTopology, sessionFlowCertificate, allocator,
+                sessionGraph, retainedModules, retainedModuleIds, nominals, false);
+    }
+
+    private ResolvedSemanticGraph(ModuleGraph moduleGraph, ScopeTree scopeTree,
+            List<ResolvedModule> modules, List<ResolvedDeclaration> declarations,
+            List<ResolvedReference> references, List<ResolvedLambda> lambdas,
+            List<ResolvedImportBinding> imports, List<ResolvedExport> exports,
+            List<ResolvedCapture> captures, List<ResolvedMutation> mutations, List<SyntaxLink> syntaxLinks,
+            FunctionSignatureLinkage functionLinkage, Optional<ResolvedReferenceTopology> referenceTopology,
+            Optional<SessionFlowCertificate> sessionFlowCertificate, IdentityAllocator allocator,
+            boolean sessionGraph, io.mindspice.lyra.compiler.session.SessionModuleEnvironment retainedModules,
+            Set<ModuleId> retainedModuleIds, List<ResolvedNominal> nominals,
+            boolean deferTopologyValidation) {
         this.retainedModules = Objects.requireNonNull(retainedModules, "retainedModules");
         Objects.requireNonNull(retainedModuleIds, "retainedModuleIds");
         if (!retainedModules.modulesById().keySet().containsAll(retainedModuleIds)
@@ -349,6 +385,9 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
             declaration.effectiveContract().ifPresent(contract -> nominalTypes.validateReferences(contract.valueType()));
         }
         validateMembership();
+        if (!deferTopologyValidation) {
+            ResolvedTopologyValidator.validate(this);
+        }
     }
 
     /** Compatibility constructor for callers that do not yet consume mutation records. */
@@ -761,7 +800,6 @@ public final class ResolvedSemanticGraph implements ImmutablePhaseArtifact {
                 || !moduleExports.equals(Set.copyOf(exports))) {
             throw new IllegalArgumentException("semantic module indexes are incomplete");
         }
-        ResolvedTopologyValidator.validate(this);
     }
 
     private boolean retainedProducerContains(DeclarationId declaration, ModuleId referringModule) {

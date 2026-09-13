@@ -36,10 +36,12 @@ final class ResolvedTopologyValidator {
             new LinkedHashMap<>();
     private final Map<ReferenceId, SyntaxLink> referenceLinks = new LinkedHashMap<>();
     private final Map<ScopeId, Integer> scopeDepths = new HashMap<>();
+    private final SelfAliasProvenance selfAliasProvenance;
 
     private ResolvedTopologyValidator(ResolvedSemanticGraph resolved) {
         this.resolved = Objects.requireNonNull(resolved, "resolved");
         this.moduleGraph = resolved.moduleGraph();
+        this.selfAliasProvenance = SelfAliasProvenance.of(resolved);
     }
 
     static void validate(ResolvedSemanticGraph resolved) {
@@ -929,6 +931,11 @@ final class ResolvedTopologyValidator {
                         ? binding.allowsRebinding() : binding.allowsAggregateMutation();
                 if (!allowed) throw invalid("external mutation exceeds the supplied assignment authority");
             });
+            if (rootDeclaration.kind() != DeclarationKind.SELF
+                    && mutation.kind() == MutationKind.ARRAY_ELEMENT
+                    && !selfAliasProvenance.permitsMutation(resolved, mutation)) {
+                throw invalid("array-element mutation through a self alias is not constructor-owned");
+            }
         }
     }
 
