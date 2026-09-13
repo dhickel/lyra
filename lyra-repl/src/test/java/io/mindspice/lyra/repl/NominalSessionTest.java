@@ -184,6 +184,37 @@ class NominalSessionTest {
         }
     }
 
+    /**
+     * Runtime counterpart of the phase-4 crash shape: a {@code @nil}-element
+     * array indexed inside a retained member initializer.  The selected member
+     * evaluates to the non-nil element, and the retained array still exposes
+     * both elements, including the exact nil value.
+     */
+    @Test
+    void nilableElementArrayIndexInitializerConstructsAndObservesAcrossGenerations() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("nilable-index-producer.lyra", """
+                    class C {
+                        let @pub all :Array<@nil I32> = Array<@nil I32>[#NIL 1I32]
+                        let @pub picked :@nil I32 = Array<@nil I32>[#NIL 1I32][1I32]
+                    }
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "nilable-index-construction.lyra", "let box :C = C[]")));
+            EvaluationResult.Success picked = success(session.submit(EvaluationSource.of(
+                    "nilable-index-picked.lyra", "box:.picked")));
+            assertEquals("1", assertInstanceOf(ValueSnapshot.Scalar.class,
+                    picked.value().orElseThrow().data()).value());
+            EvaluationResult.Success first = success(session.submit(EvaluationSource.of(
+                    "nilable-index-first.lyra", "box:.all[0I32]")));
+            assertInstanceOf(ValueSnapshot.Nil.class, first.value().orElseThrow().data());
+            EvaluationResult.Success second = success(session.submit(EvaluationSource.of(
+                    "nilable-index-second.lyra", "box:.all[1I32]")));
+            assertEquals("1", assertInstanceOf(ValueSnapshot.Scalar.class,
+                    second.value().orElseThrow().data()).value());
+        }
+    }
+
     @Test
     void retainedInitializersTransferClosedExpressionAlgebraAcrossGenerations() {
         try (LyraSession session = LyraSession.open()) {

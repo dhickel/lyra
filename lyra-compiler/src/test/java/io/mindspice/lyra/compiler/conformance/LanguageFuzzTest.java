@@ -3,6 +3,7 @@ package io.mindspice.lyra.compiler.conformance;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -45,8 +46,34 @@ class LanguageFuzzTest {
                         + " -Dlyra.fuzz.replay=" + reduced + "\n" + result.output());
             }
             assertTrue(result.output().contains("FUZZ PASS"), "Worker exited without a completion marker");
-            assertTrue(Files.isRegularFile(directory.resolve("summary.txt")), "Worker omitted coverage evidence");
+            Path summary = directory.resolve("summary.txt");
+            assertTrue(Files.isRegularFile(summary), "Worker omitted coverage evidence");
+            validateSummary(summary);
         }));
+    }
+
+    /**
+     * A missing retained family, a zeroed operation count, a removed profile
+     * or a removed retained operation name must fail the bounded default run.
+     */
+    static void validateSummary(Path summary) throws IOException {
+        String text = Files.readString(summary);
+        int operations = Integer.parseInt(lineValue(text, "retained.ops="));
+        assertTrue(operations > 0, "Retained campaign summary reported zero operations");
+        for (String profile : RetainedNominalModel.PROFILES) {
+            int count = Integer.parseInt(lineValue(text, "retained.profile." + profile + "="));
+            assertTrue(count > 0, "Retained profile missing from the campaign summary: " + profile);
+        }
+        for (String operation : RetainedNominalModel.ALL_OPS) {
+            int count = Integer.parseInt(lineValue(text, "retained.op." + operation + "="));
+            assertTrue(count > 0, "Retained operation missing from the campaign summary: " + operation);
+        }
+    }
+
+    private static String lineValue(String text, String prefix) {
+        return text.lines().filter(line -> line.startsWith(prefix))
+                .map(line -> line.substring(prefix.length())).findFirst()
+                .orElseThrow(() -> new AssertionError("Summary line missing: " + prefix));
     }
 
     static int integerProperty(String name, int fallback, int minimum, int maximum) {

@@ -1,15 +1,33 @@
 package io.mindspice.lyra.compiler.conformance;
 
 import io.mindspice.lyra.compiler.api.CompileRequest;
+import io.mindspice.lyra.compiler.api.LyraCompiler;
+import io.mindspice.lyra.compiler.api.SessionCompileRequest;
+import io.mindspice.lyra.compiler.api.SessionCompileResult;
+import io.mindspice.lyra.compiler.api.SessionFlowCertificate;
 import io.mindspice.lyra.compiler.api.SourceResolver;
 import io.mindspice.lyra.compiler.diagnostic.PhaseResult;
+import io.mindspice.lyra.compiler.ir.IrNode;
 import io.mindspice.lyra.compiler.lex.Lexer;
 import io.mindspice.lyra.compiler.lex.TokenKind;
+import io.mindspice.lyra.compiler.semantic.DeclarationKind;
+import io.mindspice.lyra.compiler.semantic.DeclarationVisibility;
+import io.mindspice.lyra.compiler.semantic.flow.NominalObjectFact;
+import io.mindspice.lyra.compiler.semantic.flow.NominalObjectIdentity;
+import io.mindspice.lyra.compiler.semantic.flow.OwnershipWitness;
+import io.mindspice.lyra.compiler.semantic.flow.ProjectionPath;
+import io.mindspice.lyra.compiler.session.SessionSnapshot;
 import io.mindspice.lyra.compiler.source.LogicalModuleId;
 import io.mindspice.lyra.compiler.source.PhysicalSourceKey;
 import io.mindspice.lyra.compiler.source.ResolvedSource;
 import io.mindspice.lyra.compiler.source.SourceId;
 import io.mindspice.lyra.compiler.source.SourceSnapshot;
+import io.mindspice.lyra.runtime.LoadOptions;
+import io.mindspice.lyra.runtime.LyraLinkException;
+import io.mindspice.lyra.runtime.LyraRuntime;
+import io.mindspice.lyra.runtime.LyraRuntimeException;
+import io.mindspice.lyra.runtime.RuntimeIoEnvironment;
+import io.mindspice.lyra.runtime.SessionStorageDomain;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -19,7 +37,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.SplittableRandom;
 import java.util.TreeMap;
 
@@ -27,7 +48,7 @@ import static io.mindspice.lyra.compiler.conformance.LanguageTestSupport.*;
 
 /** Test-only process entry point. Fuzzed execution never runs on the Maven/JUnit owner thread. */
 public final class LanguageFuzzWorker {
-    static final List<String> MODES = List.of("numeric", "state", "mutation", "grammar", "modules", "bytes", "runtime", "artifact", "io", "match", "loops");
+    static final List<String> MODES = List.of("numeric", "state", "mutation", "grammar", "modules", "bytes", "runtime", "artifact", "io", "match", "loops", "retained");
     static final int MINIMUM_CASES = MODES.size() * NumericModel.values().length;
     private static final String[] TOKENS = {"let", "@pub", "@mut", "@nil", "a", "b", "I32", "Array", "Tuple",
             "Fn", "#T", "#F", "#NIL", "0", "255U8", "18446744073709551615U64", "1.0e-99", "'x'",
@@ -69,6 +90,8 @@ public final class LanguageFuzzWorker {
         List<LanguageCorpus.Case> corpus = LanguageCorpus.read();
         TreeMap<String, Integer> coverage = new TreeMap<>();
         TreeMap<NumericModel, Integer> numericCoverage = new TreeMap<>();
+        TreeMap<String, Integer> retainedOps = new TreeMap<>();
+        TreeMap<String, Integer> retainedProfiles = new TreeMap<>();
         for (int index = 0; index < count; index++) {
             // Index-local seeds preserve the first N cases when the budget grows and enable sharding.
             long caseSeed = mix(seed + index);
@@ -91,6 +114,14 @@ public final class LanguageFuzzWorker {
                     artifact.put("offset", random.nextInt(1_000_000));
                     yield artifact;
                 }
+                case "retained" -> {
+                    int retainedOrdinal = index / MODES.size();
+                    for (String op : RetainedNominalModel.opsAt(retainedOrdinal)) {
+                        retainedOps.merge(op, 1, Integer::sum);
+                    }
+                    retainedProfiles.merge(RetainedNominalModel.profileAt(retainedOrdinal), 1, Integer::sum);
+                    yield retained(random, retainedOrdinal);
+                }
                 default -> throw new AssertionError(mode);
             };
             test.put("seed", seed); test.put("index", index); test.put("caseSeed", caseSeed);
@@ -103,10 +134,20 @@ public final class LanguageFuzzWorker {
         require(coverage.keySet().containsAll(MODES), "Campaign omitted a generator family");
         require(numericCoverage.keySet().containsAll(List.of(NumericModel.values())),
                 "Campaign omitted a numeric kind");
-        Files.writeString(directory.resolve("summary.txt"), "seed=" + seed + " cases=" + count + "\n"
-                + coverage + "\nnumeric=" + numericCoverage + "\n");
+        require(retainedOps.keySet().containsAll(RetainedNominalModel.ALL_OPS),
+                "Campaign omitted a retained nominal operation");
+        require(retainedProfiles.keySet().containsAll(RetainedNominalModel.PROFILES),
+                "Campaign omitted a retained nominal profile");
+        int retainedTotal = retainedOps.values().stream().mapToInt(Integer::intValue).sum();
+        StringBuilder summary = new StringBuilder("seed=" + seed + " cases=" + count + "\n"
+                + coverage + "\nnumeric=" + numericCoverage + "\nretained=" + retainedOps
+                + "\n" + retainedProfiles + "\nretained.ops=" + retainedTotal + "\n");
+        retainedOps.forEach((op, total) -> summary.append("retained.op.").append(op).append('=').append(total).append('\n'));
+        retainedProfiles.forEach((profile, total) -> summary.append("retained.profile.").append(profile)
+                .append('=').append(total).append('\n'));
+        Files.writeString(directory.resolve("summary.txt"), summary);
         System.out.println("FUZZ PASS seed=" + seed + " cases=" + count + " " + coverage
-                + " numeric=" + numericCoverage);
+                + " numeric=" + numericCoverage + " retained=" + retainedOps + " retainedOps=" + retainedTotal);
     }
 
     static long mix(long value) {
@@ -174,6 +215,42 @@ public final class LanguageFuzzWorker {
 
     private static String signedLoopLiteral(int value) {
         return value < 0 ? "(- " + (-value) + ")" : Integer.toString(value);
+    }
+
+    /** Number of completed mode rotations before this index; retained cases rotate profiles per ordinal. */
+    static int retainedOrdinalAt(int index) {
+        if (!modeAt(index).equals("retained")) throw new IllegalArgumentException("Not a retained case index: " + index);
+        return index / MODES.size();
+    }
+
+    static FuzzCase retained(SplittableRandom random, int retainedOrdinal) {
+        RetainedNominalModel.Plan plan = RetainedNominalModel.generate(random, retainedOrdinal);
+        FuzzCase test = new FuzzCase("retained", plan.producer());
+        test.put("retained.profile", plan.profile());
+        test.put("retained.ordinal", retainedOrdinal);
+        test.put("retained.memberCount", plan.members().size());
+        for (int i = 0; i < plan.members().size(); i++) {
+            RetainedNominalModel.MemberExpectation member = plan.members().get(i);
+            test.put("retained.member." + i, member.nominal() + "|" + member.member()
+                    + "|" + member.variant() + "|" + member.structure());
+        }
+        test.put("retained.stepCount", plan.steps().size());
+        for (int i = 0; i < plan.steps().size(); i++) {
+            RetainedNominalModel.Step step = plan.steps().get(i);
+            test.put("retained.step." + i + ".source", step.source());
+            test.put("retained.step." + i + ".outcome", step.outcome());
+            test.put("retained.step." + i + ".type", step.type());
+            test.put("retained.step." + i + ".expected", step.expected());
+            test.put("retained.step." + i + ".opCount", step.ops().size());
+            for (int j = 0; j < step.ops().size(); j++) {
+                test.put("retained.step." + i + ".op." + j, step.ops().get(j));
+            }
+        }
+        test.put("retained.output", plan.output());
+        List<String> ops = plan.ops();
+        test.put("retained.opCount", ops.size());
+        for (int i = 0; i < ops.size(); i++) test.put("retained.op." + i, ops.get(i));
+        return test;
     }
 
     static FuzzCase match(SplittableRandom random) {
@@ -468,6 +545,7 @@ public final class LanguageFuzzWorker {
             case "bytes" -> checkBytes(Base64.getDecoder().decode(test.get("bytes")));
             case "runtime" -> checkRuntime(test);
             case "artifact" -> checkArtifact(test);
+            case "retained" -> runRetained(test);
             case "io" -> {
                 var output = new java.io.ByteArrayOutputStream();
                 var error = new java.io.ByteArrayOutputStream();
@@ -482,6 +560,413 @@ public final class LanguageFuzzWorker {
             }
             default -> throw new IllegalArgumentException("Unknown fuzz mode: " + test.get("mode"));
         }
+    }
+
+    /**
+     * Drives one retained-nominal case through the real session storage domain:
+     * producer compile/execute/publication, certificate checks against the
+     * independent model, then each modeled construction/observation generation.
+     * Expected values and failure codes come only from the saved replay data.
+     */
+    private static void runRetained(FuzzCase test) throws Throwable {
+        List<RetainedNominalModel.MemberExpectation> members = new ArrayList<>();
+        int memberCount = Integer.parseInt(test.get("retained.memberCount"));
+        for (int i = 0; i < memberCount; i++) {
+            String[] parts = test.get("retained.member." + i).split("\\|", -1);
+            members.add(new RetainedNominalModel.MemberExpectation(
+                    parts[0], parts[1], parts[2], Integer.parseInt(parts[3])));
+        }
+        List<RetainedNominalModel.Step> steps = new ArrayList<>();
+        int stepCount = Integer.parseInt(test.get("retained.stepCount"));
+        for (int i = 0; i < stepCount; i++) {
+            List<String> stepOps = new ArrayList<>();
+            int stepOpCount = Integer.parseInt(test.get("retained.step." + i + ".opCount"));
+            for (int j = 0; j < stepOpCount; j++) {
+                stepOps.add(test.get("retained.step." + i + ".op." + j));
+            }
+            steps.add(new RetainedNominalModel.Step(
+                    test.get("retained.step." + i + ".source"),
+                    test.get("retained.step." + i + ".outcome"),
+                    test.get("retained.step." + i + ".type"),
+                    test.get("retained.step." + i + ".expected"), stepOps));
+        }
+        List<String> expectedOps = new ArrayList<>();
+        int opCount = Integer.parseInt(test.get("retained.opCount"));
+        for (int i = 0; i < opCount; i++) expectedOps.add(test.get("retained.op." + i));
+        require(!expectedOps.isEmpty(), "Retained case carried no operation inventory");
+        require(test.get("retained.profile") != null, "Retained case lost its profile identity");
+        List<String> canonicalOps = RetainedNominalModel.opsAt(Integer.parseInt(test.get("retained.ordinal")));
+        require(canonicalOps.equals(expectedOps),
+                "Retained operation inventory drifted from the deterministic model rotation");
+        boolean forgeChecks = test.get("retained.profile").equals("values");
+        int executedOps = 0;
+
+        var output = new java.io.ByteArrayOutputStream();
+        var environment = new RuntimeIoEnvironment(
+                java.io.InputStream.nullInputStream(), output, output, StandardCharsets.UTF_8);
+        try (var domain = new SessionStorageDomain()) {
+            var workspace = new RetainedWorkspace();
+            long revision = 0;
+            var producer = compileSessionExpectSuccess(
+                    "retained-producer.lyra", test.get("source"), SessionSnapshot.empty());
+            executedOps += checkCertificate(producer, members, forgeChecks);
+            var producerLoaded = loadRetained(domain, workspace, revision, producer, environment);
+            var producerPrepared = io.mindspice.lyra.runtime.LyraRuntime.prepareSubmission(producerLoaded);
+            io.mindspice.lyra.runtime.LyraRuntime.executeSubmission(producerPrepared);
+            stageRetained(domain, workspace, revision, producer, producerPrepared);
+            revision++;
+            var snapshot = producer.stagedSnapshot();
+            for (int i = 0; i < steps.size(); i++) {
+                RetainedNominalModel.Step step = steps.get(i);
+                var compiled = compileSessionExpectSuccess(
+                        "retained-step-" + i + ".lyra", step.source(), snapshot);
+                if (step.outcome().equals("failure")) {
+                    var loaded = loadRetained(domain, workspace, revision, compiled, environment);
+                    var module = io.mindspice.lyra.runtime.LyraRuntime.prepareSubmission(loaded);
+                    try {
+                        io.mindspice.lyra.runtime.LyraRuntime.executeSubmission(module);
+                        throw new AssertionError("Expected " + step.expected()
+                                + " but the retained submission executed: " + step.source());
+                    } catch (LyraRuntimeException failure) {
+                        equal(step.expected(), failure.code(),
+                                "Retained runtime failure category, step " + i + ": " + step.source());
+                    }
+                    // A failed submission publishes nothing and never advances the revision.
+                } else {
+                    if (forgeChecks && i == 0) executedOps += forgedLinkCheck(domain, workspace, revision, compiled);
+                    var loaded = loadRetained(domain, workspace, revision, compiled, environment);
+                    var module = io.mindspice.lyra.runtime.LyraRuntime.prepareSubmission(loaded);
+                    io.mindspice.lyra.runtime.LyraRuntime.executeSubmission(module);
+                    stageRetained(domain, workspace, revision, compiled, module);
+                    revision++;
+                    snapshot = compiled.stagedSnapshot();
+                    if (step.outcome().equals("value")) {
+                        Object actual = io.mindspice.lyra.runtime.LyraRuntime.readSubmissionResult(
+                                module, io.mindspice.lyra.runtime.LyraType.parse(step.type()));
+                        equal(parseExpected(step.type(), step.expected()), actual,
+                                "Retained observation oracle mismatch, step " + i + "\n" + step.source());
+                    }
+                }
+                executedOps += step.ops().size();
+            }
+            if (!test.get("retained.output").isEmpty()) {
+                equal(test.get("retained.output"), output.toString(StandardCharsets.UTF_8),
+                        "Retained construction intrinsic output mismatch");
+            }
+            require(executedOps == expectedOps.size(), "Retained case executed " + executedOps
+                    + " operations but the model inventory lists " + expectedOps.size());
+        }
+    }
+
+    private record RetainedWorkspace(
+            Map<Long, SessionStorageDomain.Binding> bindings,
+            Map<Long, SessionStorageDomain.NominalFactory> factories) {
+        RetainedWorkspace() { this(new LinkedHashMap<>(), new LinkedHashMap<>()); }
+    }
+
+    private static SessionCompileResult.Success compileSessionExpectSuccess(
+            String label, String source, SessionSnapshot snapshot) {
+        var result = LyraCompiler.compileSession(new SessionCompileRequest(label, source, snapshot));
+        if (!(result instanceof SessionCompileResult.Success success)) {
+            throw new AssertionError("Expected successful session compilation of " + label
+                    + ": " + result.diagnostics());
+        }
+        require(success.diagnostics().stream().noneMatch(d -> d.severity().isError()),
+                "Successful session compilation carried errors: " + success.diagnostics());
+        return success;
+    }
+
+    /** Mirrors the REPL's exact storage and retained-factory requirement derivation. */
+    private static List<SessionStorageDomain.Requirement> dataRequirements(SessionCompileResult.Success compiled) {
+        LinkedHashMap<Long, SessionStorageDomain.Requirement> index = new LinkedHashMap<>();
+        compiled.typedIr().declarations().stream()
+                .flatMap(declaration -> declaration.externalBinding().stream())
+                .map(binding -> new SessionStorageDomain.Requirement(
+                        binding.declarationId().ordinal(), binding.storageIdentity()
+                        .map(value -> value.ordinal()).orElse(-1L),
+                        binding.name(), binding.type().canonicalSpelling(),
+                        binding.allowsRebinding()))
+                .forEach(required -> index.put(required.id(), required));
+        compiled.typedIr().sessionExecution().orElseThrow().externalAccesses().stream()
+                .map(access -> {
+                    var declaration = access.target().declaration();
+                    boolean mutable = declaration.contract().orElseThrow().isMutable();
+                    return new SessionStorageDomain.Requirement(
+                            declaration.id().ordinal(), mutable ? declaration.id().ordinal() : -1L,
+                            declaration.name(), declaration.contract().orElseThrow()
+                            .valueType().canonicalSpelling(), access.writableFacade());
+                })
+                .forEach(required -> index.putIfAbsent(required.id(), required));
+        return List.copyOf(index.values());
+    }
+
+    private static List<SessionStorageDomain.NominalFactoryRequirement> factoryRequirements(
+            SessionCompileResult.Success compiled) {
+        var currentNominals = compiled.typedIr().modules().stream()
+                .flatMap(irModule -> irModule.body().forms().stream())
+                .filter(IrNode.NominalDeclaration.class::isInstance)
+                .map(IrNode.NominalDeclaration.class::cast)
+                .collect(java.util.stream.Collectors.toMap(
+                        value -> value.declarationId().ordinal(), value -> value));
+        return compiled.resolvedGraph().nominals().stream()
+                .filter(nominal -> !currentNominals.containsKey(nominal.declaration().ordinal()))
+                .map(nominal -> new SessionStorageDomain.NominalFactoryRequirement(
+                        nominal.declaration().ordinal(),
+                        nominal.schema().type().canonicalSpelling()))
+                .toList();
+    }
+
+    private static io.mindspice.lyra.runtime.LoadedArtifact loadRetained(
+            SessionStorageDomain domain, RetainedWorkspace workspace, long revision,
+            SessionCompileResult.Success compiled, RuntimeIoEnvironment environment) {
+        var options = LoadOptions.defaults().withIoEnvironment(environment);
+        var requirements = dataRequirements(compiled);
+        var capabilities = requirements.stream()
+                .map(required -> workspace.bindings().get(required.id())).toList();
+        var factories = factoryRequirements(compiled);
+        var factoryCapabilities = factories.stream()
+                .map(required -> workspace.factories().get(required.declarationId())).toList();
+        var linkage = domain.link(compiled.artifact(), revision, requirements, capabilities,
+                factories, factoryCapabilities);
+        return LyraRuntime.loadSubmission(compiled.artifact(), options, linkage);
+    }
+
+    /** Mirrors the REPL's staged publication of root bindings and retained factories. */
+    private static void stageRetained(SessionStorageDomain domain, RetainedWorkspace workspace,
+                                      long revision, SessionCompileResult.Success compiled,
+                                      io.mindspice.lyra.runtime.ModuleHandle module) {
+        Map<Long, SessionStorageDomain.Binding> stagedStorage = new LinkedHashMap<>();
+        for (var declaration : compiled.typedIr().declarations()) {
+            if (declaration.kind() != DeclarationKind.LET || declaration.contract().isEmpty()
+                    || !declaration.scopeId().equals(compiled.resolvedGraph()
+                    .module(declaration.moduleId()).orElseThrow().rootScope())
+                    || declaration.imported()) {
+                continue;
+            }
+            boolean stagedRoot = compiled.stagedDeclarations().contains(declaration.id());
+            boolean newProducer = compiled.executionPlan().module(declaration.moduleId())
+                    .filter(work -> work.isNew() && !work.scratch()).isPresent()
+                    && declaration.visibility() == DeclarationVisibility.PUBLIC;
+            if (!stagedRoot && !newProducer) continue;
+            var required = new SessionStorageDomain.Requirement(
+                    declaration.id().ordinal(), declaration.isMutable()
+                    ? declaration.id().ordinal() : -1L,
+                    declaration.name(), declaration.contract().orElseThrow()
+                    .valueType().canonicalSpelling(), declaration.isMutable());
+            stagedStorage.put(required.id(), domain.register(module,
+                    toRuntimeModuleId(declaration.moduleId()), required));
+        }
+        var currentNominals = compiled.typedIr().modules().stream()
+                .flatMap(irModule -> irModule.body().forms().stream())
+                .filter(IrNode.NominalDeclaration.class::isInstance)
+                .map(IrNode.NominalDeclaration.class::cast)
+                .collect(java.util.stream.Collectors.toMap(
+                        value -> value.declarationId().ordinal(), value -> value));
+        Map<Long, SessionStorageDomain.NominalFactory> stagedFactories = new LinkedHashMap<>();
+        for (var nominal : currentNominals.values()) {
+            var required = new SessionStorageDomain.NominalFactoryRequirement(
+                    nominal.declarationId().ordinal(),
+                    nominal.schema().type().canonicalSpelling());
+            stagedFactories.put(required.declarationId(), domain.registerNominalFactory(module,
+                    toRuntimeModuleId(nominal.schema().type().id().module().moduleId()), required));
+        }
+        domain.commit(revision, List.copyOf(stagedStorage.values()),
+                List.copyOf(stagedFactories.values()));
+        workspace.bindings().putAll(stagedStorage);
+        workspace.factories().putAll(stagedFactories);
+    }
+
+    private static io.mindspice.lyra.runtime.ModuleId toRuntimeModuleId(
+            io.mindspice.lyra.compiler.source.ModuleId moduleId) {
+        return moduleId.isUri()
+                ? io.mindspice.lyra.runtime.ModuleId.uri(moduleId.asUri())
+                : io.mindspice.lyra.runtime.ModuleId.path(moduleId.value());
+    }
+
+    /** Independent certificate verification: guard silence, exact inventories, forged routes and inventories. */
+    private static int checkCertificate(SessionCompileResult.Success producer,
+                                        List<RetainedNominalModel.MemberExpectation> members,
+                                        boolean forgeChecks) {
+        var certificate = producer.flowCertificate();
+        require(SessionFlowCertificate.retainedInitializerDiagnostic(producer.typedGraph()).isEmpty(),
+                "Fail-closed retained preflight guard rejected a legal generated producer");
+        var retained = certificate.retainedNominals();
+        require(!members.isEmpty(), "Retained case carried no member expectations");
+        for (var member : members) {
+            var nominal = retained.values().stream()
+                    .filter(value -> value.name().equals(member.nominal())).findFirst().orElse(null);
+            require(nominal != null, "Certificate omitted nominal " + member.nominal());
+            for (int index = 0; index < nominal.memberInitializers().size(); index++) {
+                equal(nominal.nominal().schema().members().get(index).hasInitializer(),
+                        nominal.memberInitializer(index).isPresent(),
+                        "Retained initializer inventory drifted for " + member.nominal());
+            }
+            var transfer = memberTransfer(nominal, member.member()).orElseThrow(
+                    () -> new AssertionError("Certificate omitted transfer for "
+                            + member.nominal() + "." + member.member()));
+            equal(member.variant(), transfer.getClass().getSimpleName(),
+                    "Retained transfer variant mismatch for " + member.nominal() + "." + member.member());
+            equal(member.structure(), structureOf(transfer),
+                    "Retained transfer structure mismatch for " + member.nominal() + "." + member.member());
+        }
+        // Forged or mismatched certification evidence must never certify.
+        int routeForgeChecks = 0;
+        if (forgeChecks) {
+            var construction = certificate.callableSummaries().orderedSummaries().stream()
+                    .flatMap(summary -> summary.callReferences().stream())
+                    .map(certificate::retainedConstruction).flatMap(Optional::stream)
+                    .findFirst().orElse(null);
+            if (construction == null) {
+                throw new AssertionError("Retained forge profile carried no retained construction evidence");
+            }
+            var root = new NominalObjectFact(
+                    new NominalObjectIdentity(construction.moduleId(), construction.site(),
+                            construction.nominalType()),
+                    ProjectionPath.root(), OwnershipWitness.local(construction.moduleId(),
+                            construction.allocation(), construction.scopeId(),
+                            construction.call().span()).withOriginSite(construction.site()));
+            require(certificate.certifiesObject(root), "Exact retained object route was not certified");
+            require(certificate.certifiesObject(root.prefixedBy(ProjectionPath.tupleMember(0))),
+                    "Exact retained tuple-member route was not certified");
+            require(!certificate.certifiesObject(root.prefixedBy(ProjectionPath.tupleMember(99))),
+                    "Forged retained tuple-member route was certified");
+            require(!certificate.certifiesObject(root.prefixedBy(ProjectionPath.arrayElement(0))),
+                    "Forged retained array route was certified");
+            require(!certificate.certifiesObject(root.prefixedBy(ProjectionPath.unknownArrayElement())),
+                    "Forged retained unknown-element route was certified");
+            routeForgeChecks = 1;
+        }
+        var box = retained.values().stream()
+                .filter(value -> value.memberInitializers().stream().anyMatch(Optional::isPresent))
+                .findFirst().orElse(null);
+        require(box != null, "Retained forge profile carried no initializer-bearing nominal");
+        int inventoryForgeChecks = 0;
+        if (forgeChecks) {
+            requireIllegalInventory(() -> new SessionFlowCertificate.RetainedNominal(
+                    box.name(), box.nominal(), box.visibility(), box.constructorLambda(), List.of()));
+            List<Optional<SessionFlowCertificate.RetainedInitializerTransfer>> flipped =
+                    new ArrayList<>(box.memberInitializers());
+            int present = 0;
+            while (flipped.get(present).isEmpty()) present++;
+            flipped.set(present, Optional.empty());
+            requireIllegalInventory(() -> new SessionFlowCertificate.RetainedNominal(
+                    box.name(), box.nominal(), box.visibility(), box.constructorLambda(), flipped));
+            var foreign = producer.typedGraph().declarations().stream()
+                    .filter(declaration -> declaration.name().equals("shared"))
+                    .findFirst()
+                    .flatMap(declaration -> certificate.value(declaration.id())
+                            .map(value -> new SessionFlowCertificate.RetainedInitializerTransfer.Value(
+                                    declaration.contract().orElseThrow().valueType(), value)))
+                    .orElse(null);
+            if (foreign != null) {
+                int presentIndex = present;
+                var forgedValue = foreign;
+                var boxValue = box;
+                requireIllegalInventory(() -> new SessionFlowCertificate.RetainedNominal(
+                        boxValue.name(), boxValue.nominal(), boxValue.visibility(),
+                        boxValue.constructorLambda(),
+                        wrongTypedInventory(boxValue, presentIndex, forgedValue)));
+            }
+            inventoryForgeChecks = 1;
+        }
+        // guard-silent + inventory-exact, one per member verification, plus the executed forge checks
+        return 2 + members.size() + routeForgeChecks + inventoryForgeChecks;
+    }
+
+    private static List<Optional<SessionFlowCertificate.RetainedInitializerTransfer>> wrongTypedInventory(
+            SessionFlowCertificate.RetainedNominal nominal, int index,
+            SessionFlowCertificate.RetainedInitializerTransfer forged) {
+        List<Optional<SessionFlowCertificate.RetainedInitializerTransfer>> wrongTyped =
+                new ArrayList<>(nominal.memberInitializers());
+        wrongTyped.set(index, Optional.of(forged));
+        return wrongTyped;
+    }
+
+    private static void requireIllegalInventory(Runnable forged) {
+        try {
+            forged.run();
+            throw new AssertionError("Forged retained nominal inventory was accepted");
+        } catch (IllegalArgumentException expected) {
+            require(expected.getMessage() != null && !expected.getMessage().isBlank(),
+                    "Forged inventory rejection lost its reason");
+        }
+    }
+
+    private static int structureOf(SessionFlowCertificate.RetainedInitializerTransfer transfer) {
+        return switch (transfer) {
+            case SessionFlowCertificate.RetainedInitializerTransfer.Call call -> call.arguments().size();
+            case SessionFlowCertificate.RetainedInitializerTransfer.CallableCall call -> call.arguments().size();
+            case SessionFlowCertificate.RetainedInitializerTransfer.Composite composite -> composite.elements().size();
+            case SessionFlowCertificate.RetainedInitializerTransfer.Apply apply -> apply.operands().size();
+            case SessionFlowCertificate.RetainedInitializerTransfer.Alternative alternative -> alternative.branches().size();
+            case SessionFlowCertificate.RetainedInitializerTransfer.Sequence sequence -> sequence.steps().size();
+            case SessionFlowCertificate.RetainedInitializerTransfer.Project project -> project.index().isPresent() ? 1 : 0;
+            case SessionFlowCertificate.RetainedInitializerTransfer.Construct construct -> construct.arguments().size();
+            default -> 0;
+        };
+    }
+
+    /** Rejects one mismatched data or factory capability before the real construction link. */
+    private static int forgedLinkCheck(SessionStorageDomain domain, RetainedWorkspace workspace,
+                                       long revision, SessionCompileResult.Success compiled) {
+        var requirements = dataRequirements(compiled);
+        var capabilities = requirements.stream()
+                .map(required -> workspace.bindings().get(required.id())).toList();
+        var factories = factoryRequirements(compiled);
+        var factoryCapabilities = factories.stream()
+                .map(required -> workspace.factories().get(required.declarationId())).toList();
+        if (!requirements.isEmpty()) {
+            var first = requirements.getFirst();
+            var forged = new SessionStorageDomain.Requirement(first.id(), first.storageIdentity() + 1,
+                    first.name(), first.type(), first.writable());
+            List<SessionStorageDomain.Requirement> forgedList = new ArrayList<>(requirements);
+            forgedList.set(0, forged);
+            try {
+                domain.link(compiled.artifact(), revision, forgedList, capabilities,
+                        factories, factoryCapabilities);
+                throw new AssertionError("Mismatched storage identity was accepted");
+            } catch (LyraLinkException expected) {
+                equal("LYR-LINK", expected.code(), "Mismatched storage link failure category");
+            }
+        } else if (!factories.isEmpty()) {
+            var first = factories.getFirst();
+            var forged = new SessionStorageDomain.NominalFactoryRequirement(
+                    first.declarationId() + 1, first.type());
+            List<SessionStorageDomain.NominalFactoryRequirement> forgedFactories =
+                    new ArrayList<>(factories);
+            forgedFactories.set(0, forged);
+            try {
+                domain.link(compiled.artifact(), revision, requirements, capabilities,
+                        forgedFactories, factoryCapabilities);
+                throw new AssertionError("Mismatched nominal factory identity was accepted");
+            } catch (LyraLinkException expected) {
+                equal("LYR-LINK", expected.code(), "Mismatched factory link failure category");
+            }
+        } else {
+            require(false, "Retained construction exposed no data or factory requirement to forge");
+        }
+        return 1;
+    }
+
+    private static Optional<SessionFlowCertificate.RetainedInitializerTransfer> memberTransfer(
+            SessionFlowCertificate.RetainedNominal nominal, String memberName) {
+        for (int index = 0; index < nominal.nominal().members().size(); index++) {
+            if (memberName.equals(nominal.nominal().schema().members().get(index).name())) {
+                return nominal.memberInitializer(index);
+            }
+        }
+        throw new IllegalArgumentException("Unknown member: " + memberName);
+    }
+
+    private static Object parseExpected(String type, String expected) {
+        return switch (type) {
+            case "I32" -> Integer.parseInt(expected);
+            case "I64" -> Long.parseLong(expected);
+            case "Bool" -> Boolean.parseBoolean(expected);
+            case "Char" -> expected.charAt(0);
+            case "String" -> expected;
+            default -> throw new IllegalArgumentException("Unsupported retained observation type: " + type);
+        };
     }
 
     private static void checkRuntime(FuzzCase test) throws Throwable {

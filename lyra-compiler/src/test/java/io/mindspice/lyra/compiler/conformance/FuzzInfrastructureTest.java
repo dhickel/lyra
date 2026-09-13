@@ -90,16 +90,27 @@ class FuzzInfrastructureTest {
     }
 
     @Test void minimumCampaignBudgetBalancesEveryModeAndNumericKind() {
-        assertEquals(110, LanguageFuzzWorker.MINIMUM_CASES);
+        assertEquals(120, LanguageFuzzWorker.MINIMUM_CASES);
         int[] modeCounts = new int[LanguageFuzzWorker.MODES.size()];
         EnumSet<NumericModel> numericKinds = EnumSet.noneOf(NumericModel.class);
+        java.util.Set<String> retainedProfiles = new java.util.HashSet<>();
+        java.util.Set<String> retainedOps = new java.util.HashSet<>();
         for (int index = 0; index < LanguageFuzzWorker.MINIMUM_CASES; index++) {
             String mode = LanguageFuzzWorker.modeAt(index);
             modeCounts[LanguageFuzzWorker.MODES.indexOf(mode)]++;
             if (mode.equals("numeric")) numericKinds.add(LanguageFuzzWorker.numericTypeAt(index));
+            if (mode.equals("retained")) {
+                int retainedOrdinal = LanguageFuzzWorker.retainedOrdinalAt(index);
+                retainedProfiles.add(RetainedNominalModel.profileAt(retainedOrdinal));
+                retainedOps.addAll(RetainedNominalModel.opsAt(retainedOrdinal));
+            }
         }
         for (int count : modeCounts) assertEquals(10, count, "Minimum budget must balance every mode");
         assertEquals(EnumSet.allOf(NumericModel.class), numericKinds);
+        assertEquals(java.util.Set.copyOf(RetainedNominalModel.PROFILES), retainedProfiles,
+                "Minimum budget must execute every retained profile in every seed");
+        assertEquals(java.util.Set.copyOf(RetainedNominalModel.ALL_OPS), retainedOps,
+                "Minimum budget must execute every retained operation in every seed");
         assertThrows(IllegalArgumentException.class, () -> LanguageFuzzWorker.numericTypeAt(1));
 
         System.setProperty("lyra.fuzz.minimumBudget", "99");
@@ -109,6 +120,83 @@ class FuzzInfrastructureTest {
         } finally {
             System.clearProperty("lyra.fuzz.minimumBudget");
         }
+    }
+
+    @Test void retainedRotationCoversEveryOperationAndPinsTheKnownLinkageShapes() {
+        java.util.Set<String> pinned = java.util.Set.of("loop-iter", "loop-while",
+                "namespace-direct", "namespace-member", "construction-effects");
+        java.util.Set<String> negatives = java.util.Set.of("forge-route", "forge-inventory", "link-mismatch");
+        java.util.Set<String> covered = new java.util.HashSet<>();
+        java.util.Set<String> profiles = new java.util.HashSet<>();
+        for (int retainedOrdinal = 0; retainedOrdinal < RetainedNominalModel.PROFILES.size(); retainedOrdinal++) {
+            String profile = RetainedNominalModel.profileAt(retainedOrdinal);
+            profiles.add(profile);
+            covered.addAll(RetainedNominalModel.opsAt(retainedOrdinal));
+            if (profile.equals("pinned-unit")) {
+                assertTrue(RetainedNominalModel.opsAt(retainedOrdinal).containsAll(pinned),
+                        "The pinned issue-#7 LYR-LINK shapes must stay in the retained rotation");
+            }
+            if (profile.equals("values")) {
+                assertTrue(RetainedNominalModel.opsAt(retainedOrdinal).containsAll(negatives),
+                        "Route/inventory/link negatives must stay in the retained rotation");
+            }
+        }
+        assertEquals(java.util.Set.copyOf(RetainedNominalModel.PROFILES), profiles);
+        assertEquals(java.util.Set.copyOf(RetainedNominalModel.ALL_OPS), covered,
+                "A removed retained operation must fail the bounded default run");
+        for (int retainedOrdinal = 0; retainedOrdinal < RetainedNominalModel.PROFILES.size() * 2; retainedOrdinal++) {
+            assertFalse(RetainedNominalModel.opsAt(retainedOrdinal).isEmpty());
+        }
+    }
+
+    @Test void retainedReplayPreservesGenerationsExpectationsAndFailures() throws Throwable {
+        // One representative per distinct runner path: certificate forges, identity observation,
+        // pinned LYR-LINK failures, and multi-step rebind/construction state.
+        for (String profile : List.of("values", "fresh", "pinned-unit", "slots")) {
+            FuzzCase generated = null;
+            int usedOrdinal = -1;
+            for (int retainedOrdinal = 0; retainedOrdinal < RetainedNominalModel.PROFILES.size(); retainedOrdinal++) {
+                if (RetainedNominalModel.profileAt(retainedOrdinal).equals(profile)) {
+                    usedOrdinal = retainedOrdinal;
+                    generated = LanguageFuzzWorker.retained(new SplittableRandom(1000 + retainedOrdinal), retainedOrdinal);
+                    break;
+                }
+            }
+            assertNotNull(generated, "Profile missing from the rotation: " + profile);
+            Path directory = temp.resolve("retained-replay-" + profile);
+            generated.save(directory);
+            FuzzCase loaded = FuzzCase.read(directory.resolve("current.properties"));
+            assertEquals(generated.data, loaded.data, "Replay properties drifted for " + profile);
+            assertEquals(generated.get("source"), Files.readString(directory.resolve("current.lyra")));
+            assertEquals("retained", loaded.get("mode"));
+            assertEquals(profile, loaded.get("retained.profile"));
+            assertEquals(RetainedNominalModel.opsAt(usedOrdinal).size(),
+                    Integer.parseInt(loaded.get("retained.opCount")));
+            LanguageFuzzWorker.run(loaded);
+        }
+    }
+
+    @Test void retainedSummaryValidationRejectsZeroedAndMissingCoverage() throws Exception {
+        Path summary = temp.resolve("summary.txt");
+        StringBuilder valid = new StringBuilder("retained.ops=50\n");
+        RetainedNominalModel.PROFILES.forEach(profile -> valid.append("retained.profile.")
+                .append(profile).append("=1\n"));
+        RetainedNominalModel.ALL_OPS.forEach(operation -> valid.append("retained.op.")
+                .append(operation).append("=1\n"));
+        Files.writeString(summary, valid);
+        LanguageFuzzTest.validateSummary(summary);
+
+        Files.writeString(summary, valid.toString().replace("retained.ops=50", "retained.ops=0"));
+        assertThrows(AssertionError.class, () -> LanguageFuzzTest.validateSummary(summary),
+                "A zeroed retained operation count must fail the bounded default run");
+        Files.writeString(summary, valid.toString().replaceFirst(
+                "retained.op.guard-silent=1\\n", ""));
+        assertThrows(AssertionError.class, () -> LanguageFuzzTest.validateSummary(summary),
+                "A removed retained operation must fail the bounded default run");
+        Files.writeString(summary, valid.toString().replaceFirst(
+                "retained.profile.fresh=1\\n", ""));
+        assertThrows(AssertionError.class, () -> LanguageFuzzTest.validateSummary(summary),
+                "A removed retained profile must fail the bounded default run");
     }
 
     @Test void recursiveNumericMatchShapeHasKnownSourceAndLazyIndependentModelForEveryType() {

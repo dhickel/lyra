@@ -3035,34 +3035,99 @@ public final class SessionFlowCertificate {
 
     private static boolean containsNil(
             RetainedInitializerTransfer transfer, NilProvenance nil, Set<Object> visited) {
+        return containsNilRoute(transfer, nil, ProjectionPath.root(), nil.route(), visited);
+    }
+
+    /**
+     * Prefix-aware transfer walk.  The consumer replays a retained composite by
+     * prefixing each element's nil provenance with the element route, and a
+     * retained projection by rebasing selected nil provenance below the
+     * projection route with the same wildcard overlap semantics as ordinary
+     * evaluation.  Certification must follow the same rebasing instead of
+     * demanding an exact root-relative route; site and span stay exact.
+     */
+    private static boolean containsNilRoute(
+            RetainedInitializerTransfer transfer, NilProvenance nil,
+            ProjectionPath prefix, ProjectionPath route, Set<Object> visited) {
         return switch (transfer) {
             case RetainedInitializerTransfer.Lambda ignored -> false;
             case RetainedInitializerTransfer.Reference ignored -> false;
-            case RetainedInitializerTransfer.Value value -> containsNil(value.value(), nil, visited);
+            case RetainedInitializerTransfer.Value value -> {
+                if (prefix.isRoot()) {
+                    yield containsNil(value.value(), nil, visited);
+                }
+                ProjectionPath remaining = route.suffix(prefix.depth());
+                yield value.value().alternatives().stream().anyMatch(alternative ->
+                        alternative.nilProvenance().stream().anyMatch(candidate ->
+                                candidate.sourceSite().equals(nil.sourceSite())
+                                        && candidate.sourceSpan().equals(nil.sourceSpan())
+                                        && routesOverlap(candidate.route(), remaining)));
+            }
             case RetainedInitializerTransfer.Call call -> call.arguments().stream()
-                    .anyMatch(argument -> containsNil(argument, nil, visited));
-            case RetainedInitializerTransfer.Composite composite -> composite.elements().stream()
-                    .anyMatch(element -> containsNil(element, nil, visited));
+                    .anyMatch(argument -> containsNilRoute(argument, nil, prefix, route, visited));
+            case RetainedInitializerTransfer.Composite composite -> {
+                ProjectionPath remaining = route.suffix(prefix.depth());
+                boolean matched = false;
+                for (int index = 0; !matched && index < composite.elements().size(); index++) {
+                    ProjectionPath member = composite.arrayLiteral()
+                            ? ProjectionPath.arrayElement(index)
+                            : ProjectionPath.tupleMember(index);
+                    if (!remaining.isRoot()
+                            && member.steps().getFirst().overlaps(remaining.steps().getFirst())) {
+                        matched = containsNilRoute(composite.elements().get(index), nil,
+                                prefix.compose(member), route, visited);
+                    }
+                }
+                yield matched;
+            }
             case RetainedInitializerTransfer.Apply apply -> apply.operands().stream()
-                    .anyMatch(operand -> containsNil(operand, nil, visited));
+                    .anyMatch(operand -> containsNilRoute(operand, nil, prefix, route, visited));
             case RetainedInitializerTransfer.Alternative alternative -> alternative.prefix().stream()
-                    .anyMatch(step -> containsNil(step.transfer(), nil, visited))
+                    .anyMatch(step -> containsNilRoute(step.transfer(), nil, prefix, route, visited))
                     || alternative.branches().stream().anyMatch(branch ->
-                    branch.selectors().stream().anyMatch(step -> containsNil(step.transfer(), nil, visited))
-                            || branch.result().stream().anyMatch(step -> containsNil(step.transfer(), nil, visited)));
+                    branch.selectors().stream().anyMatch(step ->
+                            containsNilRoute(step.transfer(), nil, prefix, route, visited))
+                            || branch.result().stream().anyMatch(step ->
+                            containsNilRoute(step.transfer(), nil, prefix, route, visited)));
             case RetainedInitializerTransfer.Sequence sequence -> sequence.steps().stream()
-                    .anyMatch(step -> containsNil(step, nil, visited));
-            case RetainedInitializerTransfer.Declare declare -> containsNil(declare.initializer(), nil, visited);
-            case RetainedInitializerTransfer.Rebind rebind -> containsNil(rebind.value(), nil, visited);
-            case RetainedInitializerTransfer.Project project -> containsNil(project.base(), nil, visited)
-                    || project.index().stream().anyMatch(index -> containsNil(index, nil, visited));
+                    .anyMatch(step -> containsNilRoute(step, nil, prefix, route, visited));
+            case RetainedInitializerTransfer.Declare declare ->
+                    containsNilRoute(declare.initializer(), nil, prefix, route, visited);
+            case RetainedInitializerTransfer.Rebind rebind ->
+                    containsNilRoute(rebind.value(), nil, prefix, route, visited);
+            case RetainedInitializerTransfer.Project project -> {
+                ProjectionPath remaining = route.suffix(prefix.depth());
+                ProjectionPath baseRoute = prefix.compose(project.route().compose(remaining));
+                boolean matched = containsNilRoute(project.base(), nil, prefix, baseRoute, visited);
+                if (!matched && project.index().isPresent()) {
+                    matched = containsNilRoute(project.index().orElseThrow(),
+                            nil, prefix, route, visited);
+                }
+                yield matched;
+            }
             case RetainedInitializerTransfer.Construct construct -> construct.arguments().stream()
-                    .anyMatch(argument -> containsNil(argument, nil, visited));
-            case RetainedInitializerTransfer.CallableCall call -> containsNil(call.target(), nil, visited)
-                    || call.arguments().stream().anyMatch(argument -> containsNil(argument, nil, visited));
-            case RetainedInitializerTransfer.Loop loop -> containsNil(loop.input(), nil, visited)
-                    || containsNil(loop.action(), nil, visited);
+                    .anyMatch(argument -> containsNilRoute(argument, nil, prefix, route, visited));
+            case RetainedInitializerTransfer.CallableCall call ->
+                    containsNilRoute(call.target(), nil, prefix, route, visited)
+                            || call.arguments().stream().anyMatch(argument ->
+                            containsNilRoute(argument, nil, prefix, route, visited));
+            case RetainedInitializerTransfer.Loop loop ->
+                    containsNilRoute(loop.input(), nil, prefix, route, visited)
+                            || containsNilRoute(loop.action(), nil, prefix, route, visited);
         };
+    }
+
+    /** Same-depth stepwise overlap, mirroring ordinary selection rebasing. */
+    private static boolean routesOverlap(ProjectionPath left, ProjectionPath right) {
+        if (left.depth() != right.depth()) {
+            return false;
+        }
+        for (int index = 0; index < left.depth(); index++) {
+            if (!left.steps().get(index).overlaps(right.steps().get(index))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static boolean containsNil(
@@ -3798,10 +3863,11 @@ public final class SessionFlowCertificate {
                     } catch (IllegalArgumentException invalidRoute) {
                         throw new IllegalArgumentException("retained projection route differs from its base type", invalidRoute);
                     }
-                    // The element type reached through an array route carries the
-                    // storage mutability qualifier, while a member contract type
-                    // does not; compare the resolved shape exactly.
-                    if (route.isRoot() || !sameType(routed.withoutQualifiers(), type)
+                    // The resolved element/member type and the access result
+                    // type must agree exactly, including nilability: a route
+                    // that reaches a @nil element may only certify a nilable
+                    // result, and an incompatible route stays rejected.
+                    if (route.isRoot() || !sameType(routed, type)
                             || index.isPresent() != route.steps().getLast().isArrayElement()
                             || index.stream().anyMatch(value ->
                             value.type().isNilable() || !value.type().isInteger())) {

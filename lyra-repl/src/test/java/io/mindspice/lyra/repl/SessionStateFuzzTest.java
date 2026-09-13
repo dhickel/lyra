@@ -54,11 +54,19 @@ public class SessionStateFuzzTest {
             initialize(session);
             int count = 0;
             int[] current = {1, 2, 3}, alias = current;
+            // Independent retained-nominal state model.
+            List<Integer> boxes = new ArrayList<>();
+            List<Integer> replacedReads = new ArrayList<>();
+            List<Integer> savedReads = new ArrayList<>();
+            int nominalEffects = 0;
+            int savedCounter = 0;
+            int orderedCounter = 0;
+            int freshCounter = 0;
             for (int step = 0; step < steps; step++) {
                 int delta = random.nextInt(1, 20), index = random.nextInt(3);
                 System.out.println("STEP " + step + " seed=" + seed);
                 // Cycle through every operation; random values and alias histories still differ by seed.
-                switch (step % 12) {
+                switch (step % 20) {
                     case 0 -> { success(session, "count := (+ count " + delta + ")"); count += delta; }
                     case 1 -> { count++; assertEquals(Integer.toString(count), scalar(session, "(inc)")); }
                     case 2 -> { success(session, "items[" + index + "] := " + delta); current[index] = delta; }
@@ -99,12 +107,102 @@ public class SessionStateFuzzTest {
                         count++; assertEquals(Integer.toString(count), scalar(session, "(functions[0])"));
                     }
                     case 11 -> {
-                        // Observations also retain source records. Exercise reset before the default 256-record cap.
-                        if (step % 24 == 23 || random.nextBoolean()) {
-                            System.out.println("RESET"); System.out.flush(); session.reset();
-                            assertTrue(session.workspaceState().bindings().isEmpty());
-                            initialize(session); count = 0; current = new int[]{1, 2, 3}; alias = current;
+                        // Observations also retain source records: one per submission. Resetting every
+                        // 20-step cycle keeps the bounded default 256-record registry well under budget.
+                        System.out.println("RESET"); System.out.flush(); session.reset();
+                        assertTrue(session.workspaceState().bindings().isEmpty());
+                        initialize(session); count = 0; current = new int[]{1, 2, 3}; alias = current;
+                        boxes.clear(); replacedReads.clear(); savedReads.clear();
+                        nominalEffects = 0; savedCounter = 0; orderedCounter = 0; freshCounter = 0;
+                    }
+                    case 12 -> {
+                        // Retained construction: a fresh generation observes an exact new instance value.
+                        int value = delta;
+                        success(session, "let @mut box" + boxes.size() + " :SessionBox = SessionBox[" + value + "]");
+                        boxes.add(value); replacedReads.add(-1);
+                        int last = boxes.size() - 1;
+                        if (boxes.size() > 1) {
+                            assertEquals("false", scalar(session,
+                                    "(eq? box" + (last - 1) + " box" + last + ")"));
                         }
+                        assertEquals(Integer.toString(value), scalar(session, "box" + last + ":.value"));
+                    }
+                    case 13 -> {
+                        // Shared alias: mutation through the alias is visible through the original name.
+                        int last = boxes.size() - 1;
+                        success(session, "let @mut aliasBox" + last + " :SessionBox = box" + last);
+                        assertEquals("true", scalar(session, "(eq? aliasBox" + last + " box" + last + ")"));
+                        success(session, "aliasBox" + last + ":.value := " + delta);
+                        boxes.set(last, delta);
+                    }
+                    case 14 -> {
+                        // Member replacement while saving the pre-replacement callable.
+                        int last = boxes.size() - 1;
+                        success(session, "let savedRead" + savedCounter + " :Fn<;I32> = box" + last + ":.read");
+                        savedReads.add(last);
+                        success(session, "box" + last + ":.read := (=> || " + delta + ")");
+                        replacedReads.set(last, delta);
+                        savedCounter++;
+                    }
+                    case 15 -> {
+                        // Saved callable keeps the original self reader; the current slot returns the replacement.
+                        int last = savedReads.get(savedReads.size() - 1);
+                        int savedValue = boxes.get(last);
+                        int currentValue = replacedReads.get(last);
+                        assertEquals(Integer.toString(savedValue + 10 * currentValue),
+                                scalar(session, "(+ (savedRead" + (savedCounter - 1) + ") (* box"
+                                        + last + "::read[] 10I32))"));
+                    }
+                    case 16 -> {
+                        // Ordered constructor/default effects and a callable-bearing composite.
+                        nominalEffects += 11;
+                        success(session, "let ordered" + orderedCounter
+                                + " :SessionOrdered = SessionOrdered[" + delta + "]");
+                        assertEquals(Integer.toString(nominalEffects), scalar(session, "constructorEffects"));
+                        int last = boxes.size() - 1;
+                        int readValue = replacedReads.get(last) >= 0 ? replacedReads.get(last) : boxes.get(last);
+                        success(session, "let callables" + orderedCounter
+                                + " :Array<Fn<;I32>> = Array<Fn<;I32>>[box" + last
+                                + ":.read (=> || " + delta + ")]");
+                        assertEquals(Integer.toString(readValue), scalar(session, "(callables" + orderedCounter + "[0])"));
+                        assertEquals(Integer.toString(delta), scalar(session, "(callables" + orderedCounter + "[1])"));
+                        orderedCounter++;
+                    }
+                    case 17 -> {
+                        // Failure publication: completed default effects are retained, no name is published.
+                        nominalEffects += 1;
+                        var before = session.workspaceState();
+                        assertInstanceOf(EvaluationResult.RuntimeFailure.class,
+                                submit(session, "let stagedFail" + freshCounter
+                                        + " :SessionFragile = SessionFragile[]"));
+                        assertEquals(before, session.workspaceState());
+                        assertFalse(session.workspaceState().bindings().containsKey("stagedFail" + freshCounter));
+                        assertEquals(Integer.toString(nominalEffects), scalar(session, "constructorEffects"));
+                    }
+                    case 18 -> {
+                        // Recovery: repairing the divisor re-runs defaults and publishes the instance.
+                        success(session, "divisor := 1");
+                        nominalEffects += 1;
+                        success(session, "let stagedRecover" + freshCounter
+                                + " :SessionFragile = SessionFragile[]");
+                        assertEquals("1", scalar(session,
+                                "(+ stagedRecover" + freshCounter + ":.touched stagedRecover"
+                                        + freshCounter + ":.broken)"));
+                        assertEquals(Integer.toString(nominalEffects), scalar(session, "constructorEffects"));
+                    }
+                    case 19 -> {
+                        // Shared versus fresh identities across retained constructions.
+                        success(session, "let freshA" + freshCounter + " :SessionFresh = SessionFresh[]"
+                                + " let freshB" + freshCounter + " :SessionFresh = SessionFresh[]");
+                        assertEquals("false", scalar(session, "(eq? freshA" + freshCounter
+                                + " freshB" + freshCounter + ")"));
+                        assertEquals("true", scalar(session, "(eq? freshA" + freshCounter
+                                + " freshA" + freshCounter + ")"));
+                        assertEquals("false", scalar(session, "(eq? freshA" + freshCounter
+                                + ":.values freshB" + freshCounter + ":.values)"));
+                        assertEquals("true", scalar(session, "(eq? freshA" + freshCounter
+                                + ":.values freshA" + freshCounter + ":.values)"));
+                        freshCounter++;
                     }
                     default -> throw new AssertionError();
                 }
@@ -134,6 +232,17 @@ public class SessionStateFuzzTest {
         success(session, "let @mut count :I32 = 0 let inc :Fn<;I32> = (=> || { count := (++ count) count })");
         success(session, "let @mut items :Array<I32> = Array<I32>[1 2 3] let @mut alias :Array<I32> = items");
         success(session, "let @mut @nil maybe :I32 = #NIL let label :String = \"original\" let readLabel :Fn<;String> = (=> || label)");
+        success(session, "let @mut constructorEffects :I32 = 0 let @mut divisor :I32 = 0"
+                + " let touch :Fn<I32;I32> = (=> |v| { constructorEffects := (++ constructorEffects) v })"
+                + " class SessionBox { let @pub @mut value :I32 = 0"
+                + " let @pub @mut read :Fn<;I32> = (=> || self:.value)"
+                + " SessionBox = (=> |start :I32| { self:.value := start }) }"
+                + " class SessionOrdered { let @pub @mut value :I32 = 0"
+                + " let @pub first :I32 = ::touch[1I32]"
+                + " SessionOrdered = (=> |start :I32| { constructorEffects := (+ constructorEffects 10I32) self:.value := start }) }"
+                + " class SessionFragile { let @pub touched :I32 = ::touch[1I32]"
+                + " let @pub broken :I32 = (% 8 divisor) }"
+                + " class SessionFresh { let @pub values :Array<I32> = Array<I32>[1I32 2I32] }");
     }
 
     private static EvaluationResult submit(LyraSession session, String source) {

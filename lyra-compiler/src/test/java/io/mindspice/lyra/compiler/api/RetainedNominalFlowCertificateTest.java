@@ -11,14 +11,17 @@ import io.mindspice.lyra.compiler.semantic.flow.NilProvenance;
 import io.mindspice.lyra.compiler.semantic.flow.NominalObjectFact;
 import io.mindspice.lyra.compiler.semantic.flow.OwnershipWitness;
 import io.mindspice.lyra.compiler.semantic.flow.ProjectionPath;
+import io.mindspice.lyra.compiler.semantic.flow.ProjectionStep;
 import io.mindspice.lyra.compiler.semantic.flow.RetainedAllocationDerivation;
 import io.mindspice.lyra.compiler.semantic.flow.ValueAlternative;
 import io.mindspice.lyra.compiler.semantic.flow.ValueAlternatives;
 import io.mindspice.lyra.compiler.session.SessionSnapshot;
 import io.mindspice.lyra.compiler.source.SourceId;
 import io.mindspice.lyra.compiler.source.SourceSpan;
+import io.mindspice.lyra.compiler.types.ArrayType;
 import io.mindspice.lyra.compiler.types.FunctionType;
 import io.mindspice.lyra.compiler.types.PrimitiveType;
+import io.mindspice.lyra.compiler.types.TupleType;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -1488,6 +1491,119 @@ final class RetainedNominalFlowCertificateTest {
         SessionCompileResult.Success consumer = compile("supported-guard-2.lyra",
                 "let guard :Guard = Guard[]", producer.stagedSnapshot());
         assertInstanceOf(SessionCompileResult.Success.class, consumer);
+    }
+
+    /**
+     * The phase-4 crash shape: a {@code @nil}-element array indexed inside a
+     * retained member initializer.  The projection result type and the routed
+     * element type both carry the nil qualifier; the certificate must issue
+     * and replay that projection instead of rejecting valid source with an
+     * INCONSISTENT_SUMMARY compiler crash.  The composite base keeps both
+     * elements: the exact {@code #NIL} provenance and the widened {@code 1I32}
+     * literal, and the constructed member selects the non-nil element.
+     */
+    @Test
+    void nilableElementArrayIndexInitializerTransfersAndConstructsAcrossGenerations() {
+        SessionCompileResult.Success producer = compile("nilable-index-producer.lyra", """
+                class C { let @pub x :@nil I32 = Array<@nil I32>[#NIL 1I32][1I32] }
+                """, SessionSnapshot.empty());
+        SessionFlowCertificate.RetainedNominal retained = nominal(certificate(producer), "C");
+        var project = assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Project.class,
+                transfer(retained, "x"));
+        assertEquals(PrimitiveType.I32.nilable(), project.type());
+        assertEquals(ProjectionPath.of(ProjectionStep.arrayElement(1)), project.route());
+        assertTrue(project.index().isPresent());
+        var base = assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
+                project.base());
+        assertEquals(2, base.elements().size());
+        var nilElement = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Value.class,
+                base.elements().getFirst());
+        assertEquals(PrimitiveType.I32.nilable(), nilElement.type());
+        assertEquals(1, nilElement.value().alternatives().size());
+        assertFalse(nilElement.value().alternatives().getFirst().nilProvenance().isEmpty(),
+                "the #NIL element must keep its exact nil provenance");
+        var oneElement = assertInstanceOf(
+                SessionFlowCertificate.RetainedInitializerTransfer.Apply.class,
+                base.elements().get(1));
+        assertEquals(SessionFlowCertificate.RetainedInitializerTransfer.ApplyKind.CONVERSION,
+                oneElement.kind());
+        assertEquals(1, oneElement.operands().size());
+        assertEquals(PrimitiveType.I32, oneElement.operands().getFirst().type());
+
+        SessionCompileResult.Success consumer = compile("nilable-index-consumer.lyra",
+                "let value :C = C[]", producer.stagedSnapshot());
+        ValueAlternative field = certificate(consumer).boundaryState().objects().values().stream()
+                .filter(object -> object.schema().type().id().name().equals("C"))
+                .flatMap(object -> object.fields().values().stream())
+                .flatMap(values -> values.alternatives().stream())
+                .findFirst().orElseThrow();
+        assertEquals(PrimitiveType.I32.nilable(), field.type());
+        assertTrue(field.nilProvenance().isEmpty(),
+                "the selected 1I32 element is non-nil, so the member value carries no nil provenance");
+    }
+
+    /**
+     * A retained composite member that stores a {@code #NIL} element must keep
+     * certifying that element after construction prefixes it with the element
+     * route.  Before the prefix-aware nil walk this valid source crashed the
+     * consumer generation with a flow-site/span mismatch.
+     */
+    @Test
+    void nilableElementCompositeMemberCertifiesNilAcrossGenerations() {
+        SessionCompileResult.Success producer = compile("nilable-composite-producer.lyra", """
+                class C { let @pub all :Array<@nil I32> = Array<@nil I32>[#NIL 1I32] }
+                """, SessionSnapshot.empty());
+        SessionCompileResult.Success consumer = compile("nilable-composite-consumer.lyra",
+                "let value :C = C[]", producer.stagedSnapshot());
+        ValueAlternative field = certificate(consumer).boundaryState().objects().values().stream()
+                .filter(object -> object.schema().type().id().name().equals("C"))
+                .flatMap(object -> object.fields().values().stream())
+                .flatMap(values -> values.alternatives().stream())
+                .findFirst().orElseThrow();
+        assertEquals(ArrayType.of(PrimitiveType.I32.nilable()), field.type());
+        assertEquals(1, field.nilProvenance().size());
+        assertEquals(ProjectionPath.arrayElement(0), field.nilProvenance().getFirst().route());
+    }
+
+    @Test
+    void projectTransfersRejectGenuinelyIncompatibleRoutes() {
+        var arrayType = ArrayType.of(PrimitiveType.I32);
+        var nilableArrayType = ArrayType.of(PrimitiveType.I32.nilable());
+        var tupleType = TupleType.of(List.of(PrimitiveType.I32));
+        var base = new SessionFlowCertificate.RetainedInitializerTransfer.Value(
+                arrayType, ValueAlternatives.singleton(ValueAlternative.scalar(arrayType)));
+        var nilableBase = new SessionFlowCertificate.RetainedInitializerTransfer.Value(
+                nilableArrayType, ValueAlternatives.singleton(ValueAlternative.scalar(nilableArrayType)));
+        var tupleBase = new SessionFlowCertificate.RetainedInitializerTransfer.Value(
+                tupleType, ValueAlternatives.singleton(ValueAlternative.scalar(tupleType)));
+        var index = new SessionFlowCertificate.RetainedInitializerTransfer.Value(
+                PrimitiveType.I32, ValueAlternatives.singleton(ValueAlternative.scalar(PrimitiveType.I32)));
+
+        // A route reaching an I32 element cannot certify a Char result.
+        assertThrows(IllegalArgumentException.class, () ->
+                new SessionFlowCertificate.RetainedInitializerTransfer.Project(
+                        PrimitiveType.CHAR, base, arrayType,
+                        SessionFlowCertificate.RetainedInitializerTransfer.ProjectionKind.ROUTE,
+                        ProjectionPath.of(ProjectionStep.arrayElement(1)), Optional.of(index)));
+        // A route reaching a @nil element cannot certify a non-nilable result.
+        assertThrows(IllegalArgumentException.class, () ->
+                new SessionFlowCertificate.RetainedInitializerTransfer.Project(
+                        PrimitiveType.I32, nilableBase, nilableArrayType,
+                        SessionFlowCertificate.RetainedInitializerTransfer.ProjectionKind.ROUTE,
+                        ProjectionPath.of(ProjectionStep.arrayElement(1)), Optional.of(index)));
+        // A tuple-member route cannot carry an index transfer.
+        assertThrows(IllegalArgumentException.class, () ->
+                new SessionFlowCertificate.RetainedInitializerTransfer.Project(
+                        PrimitiveType.I32, tupleBase, tupleType,
+                        SessionFlowCertificate.RetainedInitializerTransfer.ProjectionKind.ROUTE,
+                        ProjectionPath.of(ProjectionStep.tupleMember(0)), Optional.of(index)));
+        // A root route is not a projection.
+        assertThrows(IllegalArgumentException.class, () ->
+                new SessionFlowCertificate.RetainedInitializerTransfer.Project(
+                        PrimitiveType.I32, base, arrayType,
+                        SessionFlowCertificate.RetainedInitializerTransfer.ProjectionKind.ROUTE,
+                        ProjectionPath.root(), Optional.of(index)));
     }
 
     private static SessionCompileResult.Success producer() {

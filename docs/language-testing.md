@@ -24,13 +24,17 @@ mvn -pl lyra-compiler -am test \
   '-Dtest=Language*Test,RangeIntegrationTest,FuzzInfrastructureTest,TypedIrTest' \
   -Dsurefire.failIfNoSpecifiedTests=false
 
-# Extended campaign: 1,800 cases for each of four seeds
+# Extended campaign: 1,800 cases per seed across four compiler seeds plus the
+# persistent-session model at 240 steps across three session seeds. One Maven
+# reactor invocation; a failure in either model fails the whole command.
 ./tools/fuzz-language.sh
 
-# Change seeds and budget; the generator is deterministic for a fixed revision
+# Change seeds and budgets; the generator is deterministic for a fixed revision
 ./tools/fuzz-language.sh -Dlyra.fuzz.seeds=42,99 -Dlyra.fuzz.cases=9000
+./tools/fuzz-language.sh -Dlyra.sessionFuzz.seeds=137 -Dlyra.sessionFuzz.steps=500
 
-# Replay saved SOURCE and expectations, independent of later generator changes
+# Replay saved SOURCE and expectations, independent of later generator changes.
+# The nominal matrix and the session model still run alongside the replay.
 ./tools/fuzz-language.sh -Dlyra.fuzz.replay=/absolute/path/current.properties
 
 # Persistent-session campaign (include a compiler test for its fail-if-no-tests policy)
@@ -38,6 +42,10 @@ mvn -pl lyra-repl -am test \
   -Dtest=SessionStateFuzzTest,LanguageCoverageTest \
   -Dsurefire.failIfNoSpecifiedTests=false \
   -Dlyra.sessionFuzz.seeds=137 -Dlyra.sessionFuzz.steps=96
+
+# The session model has no file replay: replay a failed session by seed and
+# step budget; its transcript is in lyra-repl/target/session-fuzz/seed-<seed>-*/
+# worker.log (the failure output already names the exact command).
 ```
 
 Run Java 25; Maven and child workers use the active Java installation. All arbitrary
@@ -78,8 +86,9 @@ seed. The Java harness lives in
 | JVM operations | Typed method descriptors; class verification; every sealed IR node represented by supported source | `TypedIrTest` compares observed nodes against `IrNode.getPermittedSubclasses()`; existing `Phase23StructuralBytecodeTest` checks primitive bytecode and boxing/allocation constraints |
 | Runtime authority/lifecycle | Existing exact handle, facade, callable authentication, initialization, owner and close assertions | Random action histories check wrong-thread refusal before mutation, forged SAM refusal before callback execution, retained live closure cells, failed-invocation effects, idempotent close and rejected stale handles |
 | Artifact loading | Existing deterministic classes/thin/bundled packaging, CLI and direct Java consumers | Truncated metadata/debug maps, broken class magic, missing/truncated classes; failure must be `LYR-COMPAT`, `LYR-LINK` or `LYR-VERIFY`; a clean load must still succeed afterwards |
-| Persistent sessions | Existing scalar/aggregate/callable/linkage/import/reload and protocol suites | `SessionStateFuzzTest`: Java model of original storage, array aliases/rebinding, closure captures, nil, failed publication versus completed effects, non-executing `:type`, reset and independent generations |
+| Persistent sessions | Existing scalar/aggregate/callable/linkage/import/reload and protocol suites | `SessionStateFuzzTest`: Java model of original storage, array aliases/rebinding, closure captures, nil, failed publication versus completed effects, non-executing `:type`, reset and independent generations. Its 20-operation rotation also covers retained nominal declarations, cross-generation construction with exact instance values, shared aliases versus fresh identities, member replacement with saved-versus-current callables, ordered constructor/default effects, callable-bearing composites, runtime-failure publication (nothing staged, completed effects retained), recovery, and reset with full model re-initialization |
 | Nominal types | `NominalTypeIdTest` and `NominalTypeTest`: identity, invariant types and recursive schemas. `NominalSyntaxTest`: grammar/replay and malformed source. `NominalSemanticsTest`: schemas, privacy, constructors, typed/IR field and method flow, immutable initialization, incomplete-self escape, saved-slot/alias behavior, transitive factory calls, ordered constructor effects, contextual replacement self and class-versus-struct identity typing. `TypedIrTest` retains exhaustive source-produced variant coverage including nominal declarations/construction. `RetainedNominalFlowCertificateTest` proves constructor-summary derivation for nested objects and tuple-routed arrays. `NominalBytecodeTest` executes construction, core member operations, receiver-bound replacements and cycle-safe equality. `NominalSessionTest` proves retained instances, methods, constructors, ordered arguments/defaults/bodies, captured and helper-returned closure installation, failure cleanup/source frames and snapshots across three submissions | Four grammar seeds × 240 cases, four semantic field/signature models × 100 cases, three independent branch-set initialization models × 36 cases, and three factory callable-slot ordering models × 24 cases (1,800 per seed in extended campaigns). The excluded class fixture tests inheritance; the older public-API deferred-class negative now checks an actually uninitialized class. |
+| Retained nominal transfer/certification | `RetainedNominalFlowCertificateTest` and `NominalSessionTest` cover the closed initializer algebra, exact routes/provenance, per-construction fresh allocations, alias preservation, slot selection, failure publication and the pinned issue-#7 `LYR-LINK` Unit/intrinsic observation gap | The compiler fuzzer's retained family is a deterministic three-generation session model: a producer generation declares nominals with member initializers from every legal transfer variant (literals, immutable/mutable references, lambdas, direct/namespace/callable calls, arrays/tuples, operators/conversions/ranges, conditionals/coalesce/match with guards, blocks with declarations/rebinding/shadowing, projections/indexing/length, nested construction, iter/while loops); a construction generation instantiates the factories through the authenticated storage domain; observation generations read members, identities (`eq?`), saved-versus-current slots, shadowed factories, and expected failures. Independent plain-Java arithmetic supplies every expected value; forged routes, forged/mismatched inventories and mismatched link capabilities must be rejected; the fail-closed preflight guard must stay silent on legal source; the four pinned Unit/intrinsic shapes must keep failing with the structured `LYR-LINK` diagnostic. Ten profiles rotate deterministically, so the minimum 120-case budget per seed executes every profile, every operation name, and every pinned shape |
 | Nominal runtime contracts | `NominalTypeContractTest`: explicit closed schema parsing, recursive fields, data restrictions, unknown/duplicate/forged contracts. `JvmAbiMapperTest`: exact compiler/runtime nominal descriptor parity, nullable/array positions and wrong-family/origin negatives | Two recursive-schema seeds × 80 cases (1,800 per seed in extended campaigns), complemented by generated-object execution and retained-constructor session tests. |
 | Nominal artifact schemas | `NominalArtifactMetadataTest`: schema-2 recursive/export round-trips, identity/order/version/member corruption and full-schema revision binding; existing legacy/debug schema-1 tests remain unchanged | Two schema-publication seeds × 60 cases (1,800 per seed extended), varying recursive layouts and checking field-name tampering against an unchanged revision. Live-object authority is covered by construction, bytecode and session suites. |
 | Compiler/runtime nominal projection | `GeneratedTypePlannerTest`: source-to-IR schema projection preserves recursive fields, nullable arrays, private/public fields and exact mutable method contracts | Two field-contract seeds × 24 cases (1,800 per seed extended). Expected field types, mutability and constructor parameter order come from an independent source model; no nominal emitter failure is accepted as execution. |
@@ -91,8 +100,9 @@ seed. The Java harness lives in
 ## Fuzzer architecture and oracles
 
 `LanguageFuzzTest` runs four fixed seeds (`1`, `24301`, `8675309`, and
-`9223372036854775807`), 180 cases each. Ten families rotate, so the default 720
-cases include every family and every numeric kind. Each numeric program is invoked
+`9223372036854775807`), 180 cases each. Twelve families rotate, so the default
+720 cases include every family, every numeric kind, and every retained nominal
+profile/operation. Each numeric program is invoked
 with six independently chosen argument pairs in both equivalent operator spellings.
 The case count therefore differs from the much larger invocation/assertion count.
 
@@ -135,7 +145,28 @@ The case count therefore differs from the much larger invocation/assertion count
     zero/one-argument callbacks, and a while predicate that counts every test.
     Independent Java arithmetic predicts traversal sums and the final false test.
     Exact source and expected results are saved in the ordinary replay format.
-    The balanced minimum campaign is now 110 cases (eleven modes × ten numeric kinds).
+12. **Retained nominal transfer/certification:** every case drives a real
+    three-generation session through the authenticated storage domain: producer
+    compile/certificate issuance/publication, retained construction, and
+    observation. Ten deterministic profiles cover every closed transfer variant
+    (values, references, lambdas, direct/namespace/callable calls, composites,
+    applies, alternatives, sequences, projections, nested construction, loops),
+    cross-generation identities (`eq?` alias preservation, shared producer
+    storage, per-construction fresh composites, same-slot stability, distinct
+    instances), block and factory shadowing, saved-versus-current callable slots,
+    constructor/default effect ordering, runtime-failure publication and
+    recovery, the four pinned issue-#7 `LYR-LINK` Unit/intrinsic observation
+    shapes (which must keep failing structurally, never silently succeed), and
+    negative certification evidence: forged object routes, forged/mismatched
+    `RetainedNominal` inventories, and mismatched storage/factory link
+    capabilities must all be rejected. Expected values, variant kinds, shapes
+    and codes come only from the test-only model; every legal producer must also
+    keep the fail-closed `retainedInitializerDiagnostic` preflight guard silent.
+    The balanced minimum campaign is now 120 cases (twelve modes × ten numeric
+    kinds); the ten retained profiles rotate so the minimum budget already
+    executes every profile and every operation name in each seed. The driver
+    fails any run whose summary zeroes or drops a retained operation, profile,
+    category or family count.
 
 This is deterministic generational, mutation, differential, metamorphic and state
 model fuzzing. It does not use coverage-guided instrumentation or claim exhaustive
@@ -148,7 +179,7 @@ type predicates and actual result must never become the reference expectation.
 | Property | Default | Meaning |
 |---|---|---|
 | `lyra.fuzz.seeds` | Four seeds above | Comma-separated signed Java long values; decimal/hex accepted |
-| `lyra.fuzz.cases` | `180` | Cases per seed; minimum `100` preserves all ten families and numeric kinds; maximum `1000000` |
+| `lyra.fuzz.cases` | `180` | Cases per seed; minimum `120` preserves all twelve families, every numeric kind, every retained profile and operation; maximum `1000000` |
 | `lyra.fuzz.caseTimeoutSeconds` | `20` | Deadline between saved case checkpoints; allowed `1..300` |
 | `lyra.fuzz.minimizeAttempts` | `12` | Maximum fresh-worker reduction attempts for mutation/grammar/byte failures; `0` disables reduction, never testing |
 | `lyra.fuzz.replay` | unset | Absolute path to a self-contained replay properties file |
@@ -181,8 +212,8 @@ Session transcripts under `lyra-repl/target/session-fuzz/seed-*/worker.log` reco
 every submission, query and reset before execution. Failure output includes the
 seed and step-budget command. Preserve the transcript and repository revision for
 reproduction, and turn a failing sequence into an ordinary named regression test.
-State histories reset at least every 24 steps because observation submissions also
-consume the default 256 source-record budget. A separate small-budget scenario
+State histories reset every 20-step operation cycle because observation submissions
+also consume the default 256 source-record budget. A separate small-budget scenario
 asserts structured admission refusal without publication and capacity recovery
 after reset. Its existing session `LYC-EMIT-001` budget diagnostic is distinct from
 an emitter failure compiling valid source through the ordinary compiler API.
