@@ -6,7 +6,7 @@
 
 ## Git Commit
 
-`ac6c84a0ff7284ad8679d0e18d48a6c3bc779950` (current HEAD before the Tranche-2 commit)
+`54a07335d69a07bbb062ea84ab7051ed8fec462d` (Tranche-2 implementation commit)
 
 ## Change Summary
 
@@ -52,7 +52,7 @@ No new language behavior was invented. The repair completes existing language-co
 
 ## Risks
 
-Broader fuzz, performance, graphical-editor, and release-audit evidence remains intentionally unrun under the tranche constraints. The worktree contains substantial coordinated Tranche-2 migration edits, which remain uncommitted until this closeout.
+Broader fuzz, performance, graphical-editor, and release-audit evidence remains intentionally unrun under the tranche constraints. The coordinated Tranche-2 migration edits are committed in `54a07335d69a07bbb062ea84ab7051ed8fec462d`.
 
 ## Follow-up Items
 
