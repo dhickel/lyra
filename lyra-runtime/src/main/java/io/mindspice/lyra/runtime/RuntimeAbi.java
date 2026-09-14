@@ -5,7 +5,8 @@ import java.util.Objects;
 /** Version of the runtime ABI understood by generated Lyra artifacts. */
 public record RuntimeAbi(int major, int minor) implements Comparable<RuntimeAbi> {
     public static final int CURRENT_MAJOR = 1;
-    public static final int CURRENT_MINOR = 0;
+    /** Minor 1 adds occurrence-scoped retained nominal member route delegates. */
+    public static final int CURRENT_MINOR = 1;
     public static final int MAJOR = CURRENT_MAJOR;
     public static final int MINOR = CURRENT_MINOR;
     public static final String VERSION = CURRENT_MAJOR + "." + CURRENT_MINOR;

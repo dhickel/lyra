@@ -1312,8 +1312,60 @@ public final class SessionStorageDomain implements AutoCloseable {
             return rootLifetime;
         }
 
+        SessionStorageDomain domain() {
+            return domain;
+        }
+
+        long epoch() {
+            return epoch;
+        }
+
         Map<Long, LinkEntry> entries() {
             return entries;
+        }
+    }
+
+    /**
+     * Anchors one constructed nominal object to its exact session/root
+     * identity, independent of the importing-graph {@code sourceLocal}
+     * classifier.  This is nominal-object ownership only: it never widens
+     * callable {@code sameSession} authentication, and it checks active
+     * epoch/root lifetime on every use.
+     */
+    static final class NominalAnchor {
+        private final Linkage linkage;
+        private final RootLifetime rootLifetime;
+
+        private NominalAnchor(Linkage linkage) {
+            this.linkage = Objects.requireNonNull(linkage, "linkage");
+            this.rootLifetime = linkage.rootLifetime();
+        }
+
+        static NominalAnchor of(LyraOwnershipToken token) {
+            Linkage linkage = token.sessionLinkage();
+            return linkage == null ? null : new NominalAnchor(linkage);
+        }
+
+        /**
+         * Accepts a caller token only when its active linkage belongs to the
+         * same standalone session epoch or the same explicit root lifetime.
+         * A retired epoch, a closed root, or another session/root is rejected.
+         */
+        boolean authenticates(LyraOwnershipToken caller) {
+            Linkage other = caller.sessionLinkage();
+            if (other == null) return false;
+            if (rootLifetime == null
+                    ? linkage.domain() != other.domain() || linkage.epoch() != other.epoch()
+                    : rootLifetime != other.rootLifetime()) {
+                return false;
+            }
+            linkage.checkOpen();
+            other.checkOpen();
+            return true;
+        }
+
+        void checkActive() {
+            linkage.checkOpen();
         }
     }
 }

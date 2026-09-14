@@ -115,28 +115,27 @@ class NominalSessionTest {
     }
 
     /**
-     * Unit-typed (and effect-performing) member initializers are transferred
-     * and constructed in a later generation, but observing the retained object
-     * one generation after that currently fails at runtime with {@code LYR-LINK}.
-     * The defect predates the phase-2 transfer algebra work and is tracked as
-     * `.internal-dev/bugs/retained-nominal/unit-initializer-later-observation-linkage.md`
-     * (GitHub issue #7).  These cases pin the observed structured failure so the
-     * gap stays visible; flip them to value assertions when the linkage defect is
-     * fixed.
+     * The four issue-#7 retained Unit/intrinsic inventory cases flip together:
+     * a producer generation that imports {@code std->io} declares the nominal,
+     * a later generation constructs it (executing each member initializer
+     * exactly once), and a third generation observes the exact Unit member
+     * values and actually invokes the namespace-member callable.  Object
+     * ownership now anchors to the session identity, and the callable read
+     * carries occurrence-scoped route evidence.
      */
     @TestFactory
-    Stream<DynamicTest> retainedUnitInitializerInventoryDocumentsKnownObservationLinkageGap() {
+    Stream<DynamicTest> retainedUnitInitializerInventoryConstructsAndEvaluatesAcrossGenerations() {
         record Probe(String name, String type, String initializer, String expression,
-                     String constructionOutput) { }
+                     String constructionOutput, String observationOutput) { }
         List<Probe> probes = List.of(
                 new Probe("namespace member", "Fn<String;Unit>", "io->:.println",
-                        "box::value[\"member\"]", ""),
+                        "box::value[\"member\"]", "", "member\n"),
                 new Probe("namespace direct call", "Unit", "io->::println[\"\"]",
-                        "box:.value", "\n"),
+                        "box:.value", "\n", ""),
                 new Probe("iter", "Unit", "iter[(0I32..2I32:1I32) || ()]",
-                        "box:.value", ""),
+                        "box:.value", "", ""),
                 new Probe("while", "Unit", "while[|| #F || ()]",
-                        "box:.value", ""));
+                        "box:.value", "", ""));
         return probes.stream().map(probe -> DynamicTest.dynamicTest(probe.name(), () -> {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             SessionOptions options = SessionOptions.builder().ioEnvironment(new RuntimeIoEnvironment(
@@ -147,18 +146,334 @@ class NominalSessionTest {
                         class C { let @pub value :%s = %s }
                         """.formatted(probe.type(), probe.initializer()))));
                 assertEquals("", output.toString(StandardCharsets.UTF_8));
+                // Construction executes the initializer exactly once.
                 success(session.submit(EvaluationSource.of(
                         "unit-inventory-construction.lyra", "let box :C = :C[]")));
                 assertEquals(probe.constructionOutput(), output.toString(StandardCharsets.UTF_8));
-                EvaluationResult observation = session.submit(EvaluationSource.of(
-                        "unit-inventory-observation.lyra", probe.expression()));
-                EvaluationResult.RuntimeFailure failure = assertInstanceOf(
-                        EvaluationResult.RuntimeFailure.class, observation, observation::toString);
-                assertEquals("LYR-LINK", failure.code());
-                assertEquals("nominal object belongs to an unrelated artifact or session",
-                        failure.summary());
+                // A later generation observes the exact Unit value; the
+                // namespace-member case invokes the retained callable.
+                EvaluationResult.Success observation = success(session.submit(EvaluationSource.of(
+                        "unit-inventory-observation.lyra", probe.expression())));
+                assertEquals("Unit", observation.value().orElseThrow().canonicalType());
+                assertInstanceOf(ValueSnapshot.Unit.class, observation.value().orElseThrow().data());
+                assertEquals(probe.constructionOutput() + probe.observationOutput(),
+                        output.toString(StandardCharsets.UTF_8));
+                // A second read still selects and authenticates the same slot.
+                EvaluationResult.Success again = success(session.submit(EvaluationSource.of(
+                        "unit-inventory-observation-again.lyra", probe.expression())));
+                assertInstanceOf(ValueSnapshot.Unit.class, again.value().orElseThrow().data());
+                assertEquals(probe.constructionOutput() + probe.observationOutput()
+                        + probe.observationOutput(), output.toString(StandardCharsets.UTF_8));
             }
         }));
+    }
+
+    @Test
+    void importedRawCallableStaysRejectedBeforeAndAfterDelegatedMemberUse() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        SessionOptions options = SessionOptions.builder().ioEnvironment(new RuntimeIoEnvironment(
+                new ByteArrayInputStream(new byte[0]), output, output, StandardCharsets.UTF_8)).build();
+        try (LyraSession session = LyraSession.open(options)) {
+            success(session.submit(EvaluationSource.of("anti-launder-producer.lyra", """
+                    import std->io
+                    class Box { let @pub printer :Fn<String;Unit> = io->:.println }
+                    let @pub raw :Fn<String;Unit> = io->:.println
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "anti-launder-construction.lyra", "let box :Box = :Box[]")));
+            // The same raw imported closure is rejected before any delegated use.
+            EvaluationResult before = session.submit(EvaluationSource.of(
+                    "anti-launder-before.lyra", "(raw \"before\")"));
+            EvaluationResult.RuntimeFailure rawBefore = assertInstanceOf(
+                    EvaluationResult.RuntimeFailure.class, before, before::toString);
+            assertEquals("LYR-LINK", rawBefore.code());
+            // The field-derived occurrence is separately usable.
+            EvaluationResult.Success delegated = success(session.submit(EvaluationSource.of(
+                    "anti-launder-delegated.lyra", "box::printer[\"delegated\"]")));
+            assertInstanceOf(ValueSnapshot.Unit.class, delegated.value().orElseThrow().data());
+            assertEquals("delegated\n", output.toString(StandardCharsets.UTF_8));
+            // The delegated use did not globally bless the raw closure.
+            EvaluationResult after = session.submit(EvaluationSource.of(
+                    "anti-launder-after.lyra", "(raw \"after\")"));
+            EvaluationResult.RuntimeFailure rawAfter = assertInstanceOf(
+                    EvaluationResult.RuntimeFailure.class, after, after::toString);
+            assertEquals("LYR-LINK", rawAfter.code());
+            assertEquals("delegated\n", output.toString(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    void delegatedAndRawCallablesCoexistInAggregatesWithoutCrossBlessing() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        SessionOptions options = SessionOptions.builder().ioEnvironment(new RuntimeIoEnvironment(
+                new ByteArrayInputStream(new byte[0]), output, output, StandardCharsets.UTF_8)).build();
+        try (LyraSession session = LyraSession.open(options)) {
+            success(session.submit(EvaluationSource.of("coexist-producer.lyra", """
+                    import std->io
+                    class Box { let @pub printer :Fn<String;Unit> = io->:.println }
+                    let @pub raw :Fn<String;Unit> = io->:.println
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "coexist-construction.lyra", "let box :Box = :Box[]")));
+            success(session.submit(EvaluationSource.of("coexist-pair.lyra", """
+                    let @pub pair :Tuple<Fn<String;Unit>,Fn<String;Unit>> = Tuple[box:.printer raw]
+                    """)));
+            // The routed occurrence executes from the same aggregate later.
+            success(session.submit(EvaluationSource.of(
+                    "coexist-routed.lyra", "(pair:.0 \"routed\")")));
+            assertEquals("routed\n", output.toString(StandardCharsets.UTF_8));
+            // The raw occurrence in the very same aggregate stays rejected.
+            EvaluationResult result = session.submit(EvaluationSource.of(
+                    "coexist-raw.lyra", "(pair:.1 \"raw\")"));
+            EvaluationResult.RuntimeFailure failure = assertInstanceOf(
+                    EvaluationResult.RuntimeFailure.class, result, result::toString);
+            assertEquals("LYR-LINK", failure.code());
+            assertEquals("routed\n", output.toString(StandardCharsets.UTF_8));
+            // Later generations keep the same distinction.
+            success(session.submit(EvaluationSource.of(
+                    "coexist-routed-later.lyra", "(pair:.0 \"routed-again\")")));
+            EvaluationResult later = session.submit(EvaluationSource.of(
+                    "coexist-raw-later.lyra", "(pair:.1 \"again\")"));
+            EvaluationResult.RuntimeFailure again = assertInstanceOf(
+                    EvaluationResult.RuntimeFailure.class, later, later::toString);
+            assertEquals("LYR-LINK", again.code());
+            assertEquals("routed\nrouted-again\n", output.toString(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    void delegatedMemberCallablesSurviveSavedCapturedParameterReturnedAndReboundPropagation() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        SessionOptions options = SessionOptions.builder().ioEnvironment(new RuntimeIoEnvironment(
+                new ByteArrayInputStream(new byte[0]), output, output, StandardCharsets.UTF_8)).build();
+        try (LyraSession session = LyraSession.open(options)) {
+            success(session.submit(EvaluationSource.of("propagation-producer.lyra", """
+                    import std->io
+                    class Box { let @pub printer :Fn<String;Unit> = io->:.println }
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "propagation-construction.lyra", "let box :Box = :Box[]")));
+            // Assignment, aggregate storage, a callable-parameter transfer, a
+            // callable-return transfer, and a captured invocation all keep
+            // the exact carried route evidence.  Transporters are invoked in
+            // their own generation; the importing graph intentionally has no
+            // general cross-generation callable bridge.
+            success(session.submit(EvaluationSource.of("propagation-save.lyra", """
+                    let @pub saved :Fn<String;Unit> = box:.printer
+                    let @pub bag :Array<Fn<String;Unit>> = Array<Fn<String;Unit>>[box:.printer]
+                    let @pub round :Fn<String;Unit> = {
+                        let held :Fn<String;Unit> = box:.printer
+                        let mk :Fn<;Fn<String;Unit>> = (=> || held)
+                        (mk)
+                    }
+                    { let apply :Fn<Fn<String;Unit>,String;Unit> = (=> |f s| (f s))
+                      (apply box:.printer "param") }
+                    { let held :Fn<String;Unit> = box:.printer
+                      let cap :Fn<;Unit> = (=> || (held "captured")) (cap) }
+                    """)));
+            assertEquals("param\ncaptured\n", output.toString(StandardCharsets.UTF_8));
+            success(session.submit(EvaluationSource.of("propagation-direct.lyra", "(saved \"direct\")")));
+            success(session.submit(EvaluationSource.of("propagation-array.lyra", "(bag[0I32] \"array\")")));
+            success(session.submit(EvaluationSource.of(
+                    "propagation-returned.lyra", "(round \"returned\")")));
+            assertEquals("param\ncaptured\ndirect\narray\nreturned\n",
+                    output.toString(StandardCharsets.UTF_8));
+            success(session.submit(EvaluationSource.of(
+                    "propagation-later.lyra", "(saved \"later\")")));
+            assertEquals("param\ncaptured\ndirect\narray\nreturned\nlater\n",
+                    output.toString(StandardCharsets.UTF_8));
+        }
+    }
+
+    @TestFactory
+    Stream<DynamicTest> directRetainedMemberCallableReadsSurviveLambdaSummaries() {
+        record Probe(String name, String expression) { }
+        List<Probe> probes = List.of(
+                new Probe("direct capture", """
+                        { let cap :Fn<;I32> = (=> || (box:.f)) (cap) }
+                        """),
+                new Probe("direct return", """
+                        { let mk :Fn<;Fn<;I32>> = (=> || box:.f)
+                          let returned :Fn<;I32> = (mk)
+                          (returned) }
+                        """),
+                new Probe("direct invocation", """
+                        { let cap :Fn<;I32> = (=> || box::f[]) (cap) }
+                        """));
+        return probes.stream().map(probe -> DynamicTest.dynamicTest(probe.name(), () -> {
+            try (LyraSession session = LyraSession.open()) {
+                success(session.submit(EvaluationSource.of("lambda-member-producer.lyra", """
+                        import std->io
+                        class Box { let @pub f :Fn<;I32> = (=> || 7I32) }
+                        """)));
+                success(session.submit(EvaluationSource.of(
+                        "lambda-member-construction.lyra", "let box :Box = :Box[]")));
+                assertScalar("7", success(session.submit(EvaluationSource.of(
+                        "lambda-member-observation.lyra", probe.expression()))));
+            }
+        }));
+    }
+
+    @Test
+    void fieldReplacementKeepsSavedSelectionAndReadsSelectTheReplacement() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        SessionOptions options = SessionOptions.builder().ioEnvironment(new RuntimeIoEnvironment(
+                new ByteArrayInputStream(new byte[0]), output, output, StandardCharsets.UTF_8)).build();
+        try (LyraSession session = LyraSession.open(options)) {
+            success(session.submit(EvaluationSource.of("replacement-producer.lyra", """
+                    import std->io
+                    class Box { let @pub @mut printer :Fn<String;Unit> = io->:.println }
+                    let @pub quiet :Fn<String;Unit> = (=> |s| ())
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "replacement-construction.lyra", "let @pub @mut box :Box = :Box[]")));
+            success(session.submit(EvaluationSource.of(
+                    "replacement-save.lyra", "let @pub saved :Fn<String;Unit> = box:.printer")));
+            success(session.submit(EvaluationSource.of(
+                    "replacement-write.lyra", "box:.printer := quiet")));
+            assertEquals("", output.toString(StandardCharsets.UTF_8));
+            // The saved occurrence keeps the originally selected value.
+            success(session.submit(EvaluationSource.of("replacement-saved.lyra", "(saved \"old\")")));
+            assertEquals("old\n", output.toString(StandardCharsets.UTF_8));
+            // A new read selects and authenticates the replacement (silent).
+            success(session.submit(EvaluationSource.of(
+                    "replacement-read.lyra", "box::printer[\"new\"]")));
+            success(session.submit(EvaluationSource.of(
+                    "replacement-again.lyra", "(box:.printer \"again\")")));
+            assertEquals("old\n", output.toString(StandardCharsets.UTF_8));
+            // The saved selection is still the original value, not the slot.
+            success(session.submit(EvaluationSource.of(
+                    "replacement-saved-again.lyra", "(saved \"still-old\")")));
+            assertEquals("old\nstill-old\n", output.toString(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    void delegatedReadsPreserveSelectedClosureIdentityWithoutAuthorizingRawUse() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("occurrence-producer.lyra", """
+                    import std->io
+                    class Box { let @pub @mut printer :Fn<String;Unit> = io->:.println }
+                    let @pub raw :Fn<String;Unit> = io->:.println
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "occurrence-construction.lyra", "let @mut box :Box = :Box[]")));
+            EvaluationResult.Success snapshot = success(session.submit(EvaluationSource.of(
+                    "occurrence-snapshot.lyra", "box:.printer")));
+            assertInstanceOf(ValueSnapshot.Function.class, snapshot.value().orElseThrow().data());
+            EvaluationResult.Success aliases = success(session.submit(EvaluationSource.of(
+                    "occurrence-snapshot-aliases.lyra",
+                    "Tuple[box:.printer box:.printer]")));
+            ValueSnapshot.Aggregate aliasTuple = assertInstanceOf(ValueSnapshot.Aggregate.class,
+                    aliases.value().orElseThrow().data());
+            assertInstanceOf(ValueSnapshot.Function.class, aliasTuple.elements().get(0).data());
+            assertEquals(new ValueSnapshot.Reference("fn1"), aliasTuple.elements().get(1).data());
+            assertScalar("true", success(session.submit(EvaluationSource.of(
+                    "occurrence-repeat.lyra", "(eq? box:.printer box:.printer)"))));
+            assertScalar("true", success(session.submit(EvaluationSource.of(
+                    "occurrence-raw.lyra", "(eq? box:.printer raw)"))));
+            assertScalar("true", success(session.submit(EvaluationSource.of(
+                    "occurrence-same.lyra",
+                    "{ let held :Fn<String;Unit> = box:.printer (eq? held held) }"))));
+            success(session.submit(EvaluationSource.of(
+                    "occurrence-replacement.lyra", "box:.printer := (=> |s| ())")));
+            assertScalar("false", success(session.submit(EvaluationSource.of(
+                    "occurrence-changed.lyra", "(eq? box:.printer raw)"))));
+            EvaluationResult rejected = session.submit(EvaluationSource.of(
+                    "occurrence-raw-invoke.lyra", "(raw \"still-raw\")"));
+            assertEquals("LYR-LINK", assertInstanceOf(
+                    EvaluationResult.RuntimeFailure.class, rejected, rejected::toString).code());
+        }
+    }
+
+    @Test
+    void consumerLambdaCanReplaceCallableFieldWhileSavedSelectionStaysOld() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("consumer-replacement-producer.lyra", """
+                    import std->io
+                    class Box { let @pub @mut f :Fn<;I32> = (=> || 1I32) }
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "consumer-replacement-construction.lyra", "let @mut box :Box = :Box[]")));
+            success(session.submit(EvaluationSource.of(
+                    "consumer-replacement-save.lyra", "let saved :Fn<;I32> = box:.f")));
+            success(session.submit(EvaluationSource.of(
+                    "consumer-replacement-write.lyra", "box:.f := (=> || 2I32)")));
+            assertScalar("1", success(session.submit(EvaluationSource.of(
+                    "consumer-replacement-old.lyra", "(saved)"))));
+            assertScalar("2", success(session.submit(EvaluationSource.of(
+                    "consumer-replacement-new.lyra", "(box:.f)"))));
+            assertScalar("2", success(session.submit(EvaluationSource.of(
+                    "consumer-replacement-new-again.lyra", "box::f[]"))));
+        }
+    }
+
+    @Test
+    void nestedCallableLeavesInsideAggregateMembersStayRawAndRejected() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        SessionOptions options = SessionOptions.builder().ioEnvironment(new RuntimeIoEnvironment(
+                new ByteArrayInputStream(new byte[0]), output, output, StandardCharsets.UTF_8)).build();
+        try (LyraSession session = LyraSession.open(options)) {
+            success(session.submit(EvaluationSource.of("nested-producer.lyra", """
+                    import std->io
+                    class Box { let @pub pair :Tuple<Fn<String;Unit>,I32> = Tuple[io->:.println 7I32] }
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "nested-construction.lyra", "let box :Box = :Box[]")));
+            // The data leaf of the same member is still readable.
+            assertScalar("7", success(session.submit(EvaluationSource.of(
+                    "nested-data.lyra", "box:.pair:.1"))));
+            // Only an exact callable field route carries delegation evidence;
+            // a callable leaf selected through an aggregate projection stays
+            // the raw imported closure and is rejected before invocation.
+            EvaluationResult result = session.submit(EvaluationSource.of(
+                    "nested-leaf.lyra", "(box:.pair:.0 \"nested\")"));
+            EvaluationResult.RuntimeFailure failure = assertInstanceOf(
+                    EvaluationResult.RuntimeFailure.class, result, result::toString);
+            assertEquals("LYR-LINK", failure.code());
+            assertEquals("", output.toString(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    void privateCallableMembersStayLexicallyPrivateAcrossGenerations() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("private-producer.lyra", """
+                    import std->io
+                    class Box { let printer :Fn<String;Unit> = io->:.println }
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "private-construction.lyra", "let box :Box = :Box[]")));
+            EvaluationResult result = session.submit(EvaluationSource.of(
+                    "private-read.lyra", "box:.printer"));
+            assertInstanceOf(EvaluationResult.CompilationFailure.class, result, result::toString);
+        }
+    }
+
+    @Test
+    void nestedNominalCallableRoutesDelegateThroughTheObjectAnchor() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        SessionOptions options = SessionOptions.builder().ioEnvironment(new RuntimeIoEnvironment(
+                new ByteArrayInputStream(new byte[0]), output, output, StandardCharsets.UTF_8)).build();
+        try (LyraSession session = LyraSession.open(options)) {
+            success(session.submit(EvaluationSource.of("nested-route-producer.lyra", """
+                    import std->io
+                    class Inner { let @pub printer :Fn<String;Unit> = io->:.println }
+                    class Outer { let @pub inner :Inner = :Inner[] }
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "nested-route-construction.lyra", "let outer :Outer = :Outer[]")));
+            assertEquals("", output.toString(StandardCharsets.UTF_8));
+            // The nested nominal rides the session anchor; its callable member
+            // read carries its own occurrence-scoped route evidence.
+            success(session.submit(EvaluationSource.of(
+                    "nested-route-invoke.lyra", "outer:.inner::printer[\"nested\"]")));
+            assertEquals("nested\n", output.toString(StandardCharsets.UTF_8));
+            success(session.submit(EvaluationSource.of(
+                    "nested-route-saved.lyra",
+                    "{ let held :Fn<String;Unit> = outer:.inner:.printer (held \"saved-nested\") }")));
+            assertEquals("nested\nsaved-nested\n", output.toString(StandardCharsets.UTF_8));
+        }
     }
 
     @Test
@@ -590,6 +905,82 @@ class NominalSessionTest {
                     "nil-default-3.lyra", "maybe:.value")));
             assertInstanceOf(ValueSnapshot.Nil.class,
                     result.value().orElseThrow().data());
+        }
+    }
+
+    /**
+     * Issue #8: cross-generation nilable member reads must derive their
+     * contracts independently at sealing and IR validation and execute under
+     * current nil rules, without any valid form reaching {@code LYC-IR-003}.
+     */
+    @Test
+    void nilableMemberReadContractsCompileAndExecuteAcrossGenerations() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of("nilable-member-1.lyra", """
+                    class Empty { let @pub @nil n :I32 = #NIL }
+                    class Full { let @pub @nil n :I32 = 5I32 }
+                    """)));
+            success(session.submit(EvaluationSource.of(
+                    "nilable-member-2.lyra", "let empty :Empty = :Empty[] let full :Full = :Full[]")));
+            EvaluationResult.Success annotated = success(session.submit(EvaluationSource.of(
+                    "nilable-member-3.lyra", """
+                    let v :@nil I32 = empty:.n
+                    v
+                    """)));
+            assertInstanceOf(ValueSnapshot.Nil.class, annotated.value().orElseThrow().data());
+            assertScalar("0", success(session.submit(EvaluationSource.of(
+                    "nilable-member-4.lyra", """
+                    let v :@nil I32 = empty:.n
+                    ((!= v #NIL) -> 1I32 : 0I32)
+                    """))));
+            assertScalar("1", success(session.submit(EvaluationSource.of(
+                    "nilable-member-5.lyra", """
+                    let v :@nil I32 = full:.n
+                    ((!= v #NIL) -> 1I32 : 0I32)
+                    """))));
+            assertScalar("7", success(session.submit(EvaluationSource.of(
+                    "nilable-member-6.lyra", "(empty:.n : 7I32)"))));
+            assertScalar("5", success(session.submit(EvaluationSource.of(
+                    "nilable-member-7.lyra", "(full:.n : 7I32)"))));
+            assertScalar("5", success(session.submit(EvaluationSource.of(
+                    "nilable-member-8.lyra", "(full:.n narrowed -> narrowed : 0I32)"))));
+            assertScalar("0", success(session.submit(EvaluationSource.of(
+                    "nilable-member-9.lyra", "(empty:.n narrowed -> narrowed : 0I32)"))));
+            assertScalar("1", success(session.submit(EvaluationSource.of(
+                    "nilable-member-10.lyra", "(match empty:.n #NIL -> 1I32 _ -> 0I32)"))));
+            assertScalar("9", success(session.submit(EvaluationSource.of(
+                    "nilable-member-11.lyra", "(match full:.n #NIL -> 1I32 _ -> 9I32)"))));
+        }
+    }
+
+    @Test
+    void nilableMemberReadNegativesStayStructuredAcrossGenerations() {
+        try (LyraSession session = LyraSession.open()) {
+            success(session.submit(EvaluationSource.of(
+                    "nilable-negative-1.lyra", "class Empty { let @pub @nil n :I32 = #NIL }")));
+            success(session.submit(EvaluationSource.of(
+                    "nilable-negative-2.lyra", "let empty :Empty = :Empty[]")));
+
+            EvaluationResult.CompilationFailure mismatched = assertInstanceOf(
+                    EvaluationResult.CompilationFailure.class, session.submit(EvaluationSource.of(
+                            "nilable-negative-3.lyra", "let v :I32 = empty:.n")));
+            assertEquals(CompilerDiagnosticCodes.TYPE_MISMATCH,
+                    mismatched.diagnostics().getFirst().code());
+            assertTrue(mismatched.diagnostics().stream().noneMatch(diagnostic ->
+                            diagnostic.code().value().equals("LYC-IR-003")),
+                    "mismatched annotation reached the IR boundary");
+
+            EvaluationResult.CompilationFailure inventedNarrowing = assertInstanceOf(
+                    EvaluationResult.CompilationFailure.class, session.submit(EvaluationSource.of(
+                            "nilable-negative-4.lyra", "(match empty:.n 4I32 -> 1I32 _ -> 0I32)")));
+            assertEquals(CompilerDiagnosticCodes.TYPE_NIL_CONTEXT,
+                    inventedNarrowing.diagnostics().getFirst().code());
+
+            EvaluationResult.CompilationFailure nilReceiver = assertInstanceOf(
+                    EvaluationResult.CompilationFailure.class, session.submit(EvaluationSource.of(
+                            "nilable-negative-5.lyra", "let @nil maybe :Empty = #NIL let v :@nil I32 = maybe:.n")));
+            assertEquals(CompilerDiagnosticCodes.TYPE_INVALID_ACCESS,
+                    nilReceiver.diagnostics().getFirst().code());
         }
     }
 

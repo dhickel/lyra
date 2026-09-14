@@ -260,6 +260,39 @@ Construction and initialization:
   issuance with the structured `LYC-SESSION-001` diagnostic at the member span;
   no currently legal form is unrepresented, so the guard is now a safety net
   rather than an active rejection path.
+- Nilable member reads keep their producer-certified nil provenance across
+  generations. A later submission that consumes a nilable member read with an
+  explicit `@nil` annotation, nil coalescing, predicate narrowing or `#NIL`
+  value match derives the member contract from the exact retained schema slot
+  at typed semantic provenance sealing and IR validation; the retained nil
+  provenance is certified by the session certificate, never re-created from
+  consumer source. Nilable receivers, mismatched annotations/contracts,
+  forged member links and invented match narrowing remain structured
+  failures.
+- Cross-generation reads of retained nominals authenticate the exact object,
+  schema, producer and compiler-certified field route through the object's
+  session/root ownership anchor, independent of the importing-graph
+  `sourceLocal` classifier; the anchor never widens callable
+  same-session authentication or private access. A callable member read that
+  crosses artifact boundaries without the source-local bridge yields an
+  occurrence-scoped route delegate that implements the member's exact
+  function interface and accepts only opaque compiler-issued evidence binding
+  the exact schema field and selected value. The delegate retains one raw
+  selected closure plus a flat immutable identity-deduplicated list of every
+  source/index/signature route dependency. Reads and assignments extend and
+  validate that list iteratively, never by nesting delegates or rereading a
+  field. It remains an ordinary saved value through assignment, capture,
+  aggregate storage, parameter/return propagation and later submissions.
+  Its wrapper occurrence does not create a new function identity: `eq?`
+  compares the selected raw closure identity without granting invocation
+  authority, so unchanged-slot reads preserve identity and replacement
+  changes only new-read identity. An exact mutable callable-field write
+  authenticates the field route and replacement under the generated caller,
+  retains every source and replacement producer lifetime, and does not widen
+  `sourceLocal` or general callable authentication. Wrong, private, immutable,
+  schema/root-mismatched or retired routes reject. Only exact callable field
+  routes carry delegation evidence; callable leaves selected through aggregate
+  projections stay raw.
 - Retained constructors keep the Unit contract: a transferred constructor body
   returns Unit and the construction expression returns the new instance, never
   a value produced by the constructor body. Ordered execution is preserved
@@ -356,6 +389,18 @@ Calls have exact positional arity. There is no partial application, automatic cu
 - `::callee[arg1 arg2]` promotes a local or imported name as a direct call target.
 - `receiver::method[arg1 arg2]` directly calls a method with an implicit receiver.
 - `receiver:.field` reads a value/field.
+- A nominal member read derives its result contract from the exact resolved
+  schema member, including `@nil`: `box:.n` where the member contract is
+  `@nil I32` yields `@nil I32` in every generation, so explicit annotations
+  (`let v :@nil I32 = box:.n`), nil coalescing, predicate narrowing and
+  `#NIL` value match consume member reads exactly like any other nilable
+  expression. The sealing provenance and IR validators re-derive this
+  contract independently from the schema slot rather than trusting the
+  published typed expression; a member read whose type, name, declaration
+  identity or nilability differs from its exact schema slot is rejected.
+  Retained generations carry the producer-certified nil provenance of a
+  nilable member initializer, and the IR validator accepts that provenance
+  only through the compiler-issued session certificate.
 - `receiver:.method` obtains a receiver-bound callable value and may be assigned or invoked as `(receiver:.method args)`.
 - `::` without a following bracket call is invalid and never produces a method value.
 - `->` qualifies modules/namespaces; a qualified access ends with `::` for direct call or `:.` for value access.

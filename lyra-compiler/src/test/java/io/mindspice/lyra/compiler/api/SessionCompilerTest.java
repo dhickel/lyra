@@ -15,6 +15,7 @@ import io.mindspice.lyra.compiler.types.PrimitiveType;
 import io.mindspice.lyra.runtime.LyraRuntime;
 import org.junit.jupiter.api.Test;
 
+import java.lang.classfile.ClassFile;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -62,6 +63,55 @@ final class SessionCompilerTest {
                     target, target + "self:.values[0]".length()),
                     failure.diagnostics().getFirst().primarySpan());
         }
+    }
+
+    /**
+     * Session artifacts emit one shared structural route-delegate class per
+     * callable nominal member; ordinary AOT artifacts keep their exact class
+     * inventory with no delegate classes, since only session generations need
+     * occurrence-scoped cross-artifact read evidence.
+     */
+    @Test
+    void callableNominalMembersEmitSessionOnlyRouteDelegateClasses() {
+        String source = """
+                import std->io
+                class Holder { let @pub printer :Fn<String;Unit> = io->:.println }
+                """;
+        var session = assertInstanceOf(SessionCompileResult.Success.class,
+                LyraCompiler.compileSession(new SessionCompileRequest(
+                        "delegate-inventory.lyra", source, SessionSnapshot.empty())));
+        Map<String, byte[]> sessionClasses = session.artifact().classes();
+        List<String> delegates = sessionClasses.keySet().stream()
+                .filter(name -> name.contains(".$lyra$delegate$")).toList();
+        assertEquals(1, delegates.size(),
+                "one callable schema field must emit exactly one route delegate");
+        String nominalHash = session.artifact().metadata().nominalSchemas().schemas().getFirst()
+                .type().id().stableHash();
+        assertTrue(delegates.getFirst().endsWith(".$lyra$delegate$" + nominalHash + "$0"));
+        var delegate = ClassFile.of().parse(sessionClasses.get(delegates.getFirst()));
+        assertEquals("io/mindspice/lyra/runtime/LyraNominalMemberDelegate",
+                delegate.superclass().orElseThrow().asInternalName());
+        assertEquals(1, delegate.interfaces().size());
+        assertEquals("(Ljava/lang/Object;)V", delegate.methods().stream()
+                .filter(method -> method.methodName().equalsString("<init>"))
+                .findFirst().orElseThrow().methodType().stringValue());
+        assertEquals("(Ljava/lang/String;)V", delegate.methods().stream()
+                .filter(method -> method.methodName().equalsString("invoke"))
+                .findFirst().orElseThrow().methodType().stringValue());
+        assertTrue(sessionClasses.keySet().stream().anyMatch(name ->
+                        name.endsWith(".$lyra$nominal$" + nominalHash)),
+                "session artifact must emit the exact nominal representation");
+        assertTrue(sessionClasses.keySet().stream()
+                        .anyMatch(name -> name.contains(".$lyra$fn$")),
+                "session artifact must emit the callable member's function interface");
+
+        var ordinary = LyraCompiler.compile(CompileRequest.source(
+                "delegate-inventory-aot.lyra", source));
+        var artifact = assertInstanceOf(CompileResult.Success.class, ordinary,
+                ordinary::toString).artifact();
+        assertTrue(artifact.classes().keySet().stream()
+                        .noneMatch(name -> name.contains(".$lyra$delegate$")),
+                "ordinary AOT artifacts must not emit route delegate classes");
     }
 
     @Test

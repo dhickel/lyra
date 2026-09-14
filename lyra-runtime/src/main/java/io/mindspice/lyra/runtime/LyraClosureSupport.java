@@ -18,6 +18,9 @@ public final class LyraClosureSupport {
         Objects.requireNonNull(expectedOwner, "expectedOwner");
         Objects.requireNonNull(expectedSignature, "expectedSignature");
         expectedOwner.checkOpen();
+        if (candidate instanceof LyraNominalMemberDelegate delegate) {
+            return delegate.requireRoute(expectedOwner, expectedSignature, false);
+        }
         if (!(candidate instanceof LyraClosure closure)) {
             throw new LyraLinkException("function value is not an authenticated Lyra closure");
         }
@@ -36,6 +39,9 @@ public final class LyraClosureSupport {
         Objects.requireNonNull(expectedOwner, "expectedOwner");
         Objects.requireNonNull(expectedSignature, "expectedSignature");
         expectedOwner.token().checkGeneratedInvocation();
+        if (candidate instanceof LyraNominalMemberDelegate delegate) {
+            return delegate.requireRoute(expectedOwner, expectedSignature, true);
+        }
         if (!(candidate instanceof LyraClosure closure)) {
             throw new LyraLinkException("function value is not an authenticated Lyra closure");
         }
@@ -47,6 +53,26 @@ public final class LyraClosureSupport {
             throw new LyraLinkException("Lyra closure signature does not match the required contract");
         }
         return closure;
+    }
+
+    /**
+     * Compares the logical identity of two callable values without granting
+     * invocation authority or returning either callable. Route delegates use
+     * the identity of their one raw selected closure; nil compares only with
+     * nil. Lifecycle and route checks remain mandatory at invocation/storage
+     * boundaries and are deliberately not performed here.
+     */
+    public static boolean sameIdentity(Object left, Object right) {
+        if (left == null || right == null) return left == right;
+        return identityOf(left).equals(identityOf(right));
+    }
+
+    private static LyraClosureIdentity identityOf(Object candidate) {
+        if (candidate instanceof LyraClosure closure) return closure.identity();
+        if (candidate instanceof LyraNominalMemberDelegate delegate) {
+            return delegate.selectedIdentity();
+        }
+        throw new LyraLinkException("function value has no Lyra closure identity");
     }
 
     public static LyraClosure requireAuthenticated(LyraClosure candidate,

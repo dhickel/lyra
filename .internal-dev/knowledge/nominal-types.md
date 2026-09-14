@@ -36,9 +36,10 @@ resolution are implemented. The retained-factory completion (plan
 in commits `432121b`, `c6f4274`, `df6e1d5`, `2c3602a` and `2b49f7c`: closed
 initializer transfer, consumer-scoped fresh provenance, constructor/runtime
 integration with the immutable-`self` provenance lattice, and the independent
-compiler/session campaigns. Open issues #7 (Unit/intrinsic member observation
-`LYR-LINK`) and #8 (annotated nilable member reads `LYC-IR-003`) remain tracked
-under `bugs/retained-nominal/`.
+compiler/session campaigns. Follow-up issues #7 and #8 are implemented in the current Tranche 3 worktree:
+retained Unit/intrinsic member observation uses exact occurrence-scoped route
+authority, and nilable member reads derive their exact schema contracts. Their
+active bug records remain unarchived until integrated validation and closeout.
 
 - Unary brackets retain IndexAccess syntax; non-unary brackets retain
   BracketApplication. Both must resolve the target's type/value role later. An

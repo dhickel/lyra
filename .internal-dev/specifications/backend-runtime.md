@@ -268,6 +268,68 @@ Generated callable signatures resolve through the producer-scoped metadata cache
 Artifact/Java surfaces and persistent sessions retain these exact identities,
 schemas, representations, callable facts and producer-bound factories.
 
+Session-linked nominal objects anchor their ownership to the exact session
+identity at construction: the standalone domain/epoch or the explicit root
+lifetime. Generated member reads from a later active generation of that same
+session authenticate the exact object, schema, producer and compiler-certified
+field route through this anchor, independent of the importing-graph
+`sourceLocal` classifier. The anchor never widens callable `sameSession`
+authentication, never grants private member access, and checks active
+epoch/root lifetime on every use; retired epochs, closed roots and closed or
+failed producers reject old evidence before any invocation.
+
+Callable-typed member reads that cross artifact boundaries without the
+source-local session bridge return an occurrence-scoped route delegate: a
+generated shared structural class per callable member implementing the exact
+function interface and accepting only an opaque single-use route issued by the
+authenticated generated field-read boundary. That route binds the source
+object, exact schema field index/signature and exact value selected by the
+read; caller-minted objects and reused evidence fail before target
+authentication. The delegate is evidence for that read occurrence only. It
+retains one raw selected closure plus an immutable identity-deduplicated list
+of every exact source-object/field/signature route on which that selection
+depends. Existing delegates are flattened when read or assigned, and those
+dependencies are validated iteratively, so repeated or alternating field
+routes cannot build recursive delegate chains. Every source object, schema,
+producer, epoch/root and selected-closure producer lifecycle remains an
+obligation; validation never rereads a field.
+
+The delegate is an ordinary saved value through assignment, capture, aggregate
+storage, callable parameter/return propagation and later same-session
+submissions. Its allocation is not a new language-level function identity:
+`eq?` compares the `LyraClosureIdentity` of the raw selected closure through a
+non-authorizing runtime helper. Repeated reads of an unchanged slot and a
+delegate/raw occurrence of the same selection therefore compare identical,
+while replacement changes new-read identity. Identity inspection returns no
+callable and grants no invocation authority.
+
+A generated write to an exact mutable callable field first checks the receiver,
+field, mutability, private access, schema and caller/root route, then
+authenticates the replacement under the actual generated caller (or its exact
+original nominal producer when that producer already owns the raw value) and
+stores the field's generated delegate. This authorizes only that writable field
+route, does not alter `sourceLocal` or general callable authentication, and
+retains the replacement producer lifecycle. Saved selections are never reread
+from the mutable slot at call time, so field replacement leaves earlier
+selections usable while a new read selects and authenticates the replacement.
+Call-time checks re-authenticate every route dependency and exact signature,
+then delegate narrowly to the selected callable. A successful delegated read
+or write never globally blesses the same raw imported closure: raw occurrences
+stay rejected before and after delegated use, in coexisting aggregate positions
+and across later submissions. Wrong/private/immutable/schema/root routes and
+retired source or replacement producers reject before execution. Only exact
+callable field routes carry delegation evidence; callable leaves selected
+through aggregate projections remain raw. Callable summaries preserve a direct
+retained-member read as an exact non-root declaration projection and defer its
+callable identity to canonical caller-time flow. Materialization may use an
+exact non-root object-reference intermediate only when the summary object
+resolver re-derives the selected field from the current certified object heap
+and schema; root or wildcard object routes, compatible signatures, and
+caller-supplied provenance never authorize recovery. Ordinary AOT artifacts emit no
+delegate classes and keep their exact class inventory. These generated/runtime
+members require runtime ABI 1.1: a 1.1 runtime remains compatible with 1.0
+artifacts, while a 1.0 runtime rejects 1.1 artifacts during metadata preflight.
+
 ### Functions and closures
 
 - Every function value is identity-bearing under `eq?`. Each dynamic lambda evaluation creates a distinct identity. A closure may be cached only when language evaluation creates that value once, such as one top-level initializer; the compiler never coalesces separately evaluated lambdas.

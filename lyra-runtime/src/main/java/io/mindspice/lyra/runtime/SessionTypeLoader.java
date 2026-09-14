@@ -23,7 +23,8 @@ final class SessionTypeLoader extends ClassLoader {
     static boolean isShared(String name) {
         String simple = name.substring(name.lastIndexOf('.') + 1);
         return simple.startsWith("$lyra$tuple$") || simple.startsWith("$lyra$fn$")
-                || simple.startsWith("$lyra$nominal$");
+                || simple.startsWith("$lyra$nominal$")
+                || simple.startsWith("$lyra$delegate$");
     }
 
     /** Stages definitions without changing the live domain before complete load validation. */
@@ -41,10 +42,14 @@ final class SessionTypeLoader extends ClassLoader {
                     throw new LyraLinkException("session structural type definition changed: " + binaryName);
                 }
             } else {
-                validateStructure(binaryName, definition);
                 staged.definitions.put(binaryName, definition.clone());
             }
         });
+        // Validate only after every new shared definition is staged so a
+        // delegate can authenticate its exact nominal field and interface
+        // regardless of class-map iteration order. The staged loader is not
+        // published if any definition fails.
+        staged.definitions.forEach(staged::validateStructure);
         return staged.definitions.isEmpty() ? this : staged;
     }
 
@@ -56,19 +61,23 @@ final class SessionTypeLoader extends ClassLoader {
         return null;
     }
 
-    private static void validateStructure(String name, byte[] bytes) {
+    private void validateStructure(String name, byte[] bytes) {
         try {
             var model = ClassFile.of().parse(bytes);
             String simple = name.substring(name.lastIndexOf('.') + 1);
             boolean function = simple.startsWith("$lyra$fn$");
             boolean nominal = simple.startsWith("$lyra$nominal$");
+            boolean delegate = simple.startsWith("$lyra$delegate$");
             int flags = function ? ClassFile.ACC_PUBLIC | ClassFile.ACC_INTERFACE | ClassFile.ACC_ABSTRACT
                     : ClassFile.ACC_PUBLIC | ClassFile.ACC_FINAL | ClassFile.ACC_SUPER;
             if (!model.thisClass().asSymbol().descriptorString().equals("L" + name.replace('.', '/') + ";")
-                    || model.flags().flagsMask() != flags || !model.interfaces().isEmpty()
+                    || model.flags().flagsMask() != flags
+                    || (!delegate && !model.interfaces().isEmpty())
                     || model.superclass().isEmpty()
                     || !model.superclass().orElseThrow().asInternalName().equals(nominal
-                    ? "io/mindspice/lyra/runtime/LyraNominalObject" : "java/lang/Object")
+                    ? "io/mindspice/lyra/runtime/LyraNominalObject"
+                    : delegate
+                    ? "io/mindspice/lyra/runtime/LyraNominalMemberDelegate" : "java/lang/Object")
                     || model.findAttribute(java.lang.classfile.Attributes.sourceFile())
                             .map(SourceFileAttribute::sourceFile).map(value -> value.stringValue())
                             .filter("$lyra$session-types"::equals).isEmpty()) {
@@ -80,6 +89,8 @@ final class SessionTypeLoader extends ClassLoader {
                         || model.methods().getFirst().flags().flagsMask() != (ClassFile.ACC_PUBLIC | ClassFile.ACC_ABSTRACT)) {
                     throw new LyraLinkException("invalid session function interface: " + name);
                 }
+            } else if (delegate) {
+                validateDelegate(name, simple, model);
             } else if (!nominal) {
                 int fields = model.fields().size();
                 StringBuilder constructor = new StringBuilder("(");
@@ -125,7 +136,8 @@ final class SessionTypeLoader extends ClassLoader {
             // descriptors before this staged loader owns the definition. The JVM
             // verifier performs that hierarchy-aware check when the staged class is
             // loaded; retain the eager standalone check for tuples and functions.
-            var verificationErrors = nominal ? java.util.List.<VerifyError>of()
+            // Delegates reference nominal representation types the same way.
+            var verificationErrors = nominal || delegate ? java.util.List.<VerifyError>of()
                     : ClassFile.of().verify(bytes);
             if (!verificationErrors.isEmpty()) {
                 throw new LyraLinkException("invalid session structural bytecode: " + name
@@ -136,6 +148,76 @@ final class SessionTypeLoader extends ClassLoader {
         } catch (RuntimeException failure) {
             throw new LyraLinkException("malformed session structural type: " + name,
                     java.util.List.of(), failure);
+        }
+    }
+
+    private void validateDelegate(String name, String simple, java.lang.classfile.ClassModel model) {
+        // $lyra$delegate$<nominal-hash>$<field-index> over the nominal's base package.
+        String prefix = "$lyra$delegate$";
+        int indexSeparator = simple.lastIndexOf('$');
+        if (indexSeparator <= prefix.length()) {
+            throw new LyraLinkException("invalid session nominal delegate name: " + name);
+        }
+        String nominalHash = simple.substring(prefix.length(), indexSeparator);
+        String fieldIndex = simple.substring(indexSeparator + 1);
+        if (nominalHash.length() != 64
+                || !nominalHash.chars().allMatch(value -> value >= '0' && value <= '9'
+                || value >= 'a' && value <= 'f')
+                || fieldIndex.isEmpty()
+                || !fieldIndex.chars().allMatch(Character::isDigit)) {
+            throw new LyraLinkException("invalid session nominal delegate identity: " + name);
+        }
+        String packageName = name.substring(0, name.lastIndexOf('.') + 1);
+        String nominalBinary = packageName + "$lyra$nominal$" + nominalHash;
+        if (model.interfaces().size() != 1
+                || !model.interfaces().getFirst().asInternalName().contains("/$lyra$fn$")
+                || !model.fields().isEmpty()
+                || model.methods().size() != 2) {
+            throw new LyraLinkException("invalid session nominal delegate shape: " + name);
+        }
+        String interfaceName = model.interfaces().getFirst().asInternalName().replace('/', '.');
+        if (!interfaceName.startsWith(packageName + "$lyra$fn$")) {
+            throw new LyraLinkException("session nominal delegate interface is outside its type domain: " + name);
+        }
+        byte[] interfaceBytes = definition(interfaceName);
+        byte[] nominalBytes = definition(nominalBinary);
+        if (interfaceBytes == null || nominalBytes == null) {
+            throw new LyraLinkException("session nominal delegate route types are absent: " + name);
+        }
+        var interfaceModel = ClassFile.of().parse(interfaceBytes);
+        var nominalModel = ClassFile.of().parse(nominalBytes);
+        var constructor = model.methods().stream()
+                .filter(method -> method.methodName().equalsString("<init>"))
+                .findFirst().orElse(null);
+        var invoke = model.methods().stream()
+                .filter(method -> method.methodName().equalsString("invoke"))
+                .findFirst().orElse(null);
+        var interfaceInvoke = interfaceModel.methods().stream()
+                .filter(method -> method.methodName().equalsString("invoke"))
+                .findFirst().orElse(null);
+        int parsedIndex;
+        try {
+            parsedIndex = Integer.parseInt(fieldIndex);
+        } catch (NumberFormatException failure) {
+            throw new LyraLinkException("invalid session nominal delegate field index: " + name,
+                    java.util.List.of(), failure);
+        }
+        if (!Integer.toString(parsedIndex).equals(fieldIndex)) {
+            throw new LyraLinkException("non-canonical session nominal delegate field index: " + name);
+        }
+        var nominalField = nominalModel.fields().stream()
+                .filter(field -> field.fieldName().equalsString("$lyra$field$" + parsedIndex))
+                .findFirst().orElse(null);
+        String interfaceDescriptor = "L" + model.interfaces().getFirst().asInternalName() + ";";
+        if (constructor == null || invoke == null || interfaceInvoke == null || nominalField == null
+                || constructor.flags().flagsMask() != 0
+                || invoke.flags().flagsMask() != ClassFile.ACC_PUBLIC
+                || !constructor.methodType().equalsString("(Ljava/lang/Object;)V")
+                || !invoke.methodType().equals(interfaceInvoke.methodType())
+                || interfaceInvoke.flags().flagsMask()
+                != (ClassFile.ACC_PUBLIC | ClassFile.ACC_ABSTRACT)
+                || !nominalField.fieldType().equalsString(interfaceDescriptor)) {
+            throw new LyraLinkException("invalid session nominal delegate members: " + name);
         }
     }
 

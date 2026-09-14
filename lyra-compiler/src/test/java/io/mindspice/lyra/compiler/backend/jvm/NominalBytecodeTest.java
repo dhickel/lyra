@@ -1226,6 +1226,54 @@ class NominalBytecodeTest {
         facadeType.getMethod("close").invoke(facade);
     }
 
+    /**
+     * Same-generation execution of every nilable member-read contract
+     * consumer (issue #8): explicit annotation, coalesce, predicate narrowing
+     * and value match must compile to bytecode and execute under current nil
+     * rules without reaching the IR boundary.
+     */
+    @Test void nilableMemberReadContractsCompileAndExecuteInOneGeneration() throws Throwable {
+        var artifact = compile("""
+                class Box { let @pub @nil n :I32 = #NIL }
+                class Full { let @pub @nil n :I32 = 5I32 }
+                class Plain { let @pub n :I32 = 4I32 }
+                let @pub annotated :Fn<;I32> = (=> || {
+                    let box :Box = :Box[]
+                    let v :@nil I32 = box:.n
+                    ((!= v #NIL) -> 1I32 : 0I32)
+                })
+                let @pub widened :Fn<;I32> = (=> || {
+                    let box :Plain = :Plain[]
+                    let v :@nil I32 = box:.n
+                    ((!= v #NIL) -> 1I32 : 0I32)
+                })
+                let @pub coalesced :Fn<;I32> = (=> || {
+                    let box :Box = :Box[]
+                    (box:.n : 7I32)
+                })
+                let @pub narrowed :Fn<;I32> = (=> || {
+                    let box :Full = :Full[]
+                    (box:.n narrowed -> narrowed : 0I32)
+                })
+                let @pub matchedNil :Fn<;I32> = (=> || {
+                    let box :Box = :Box[]
+                    (match box:.n #NIL -> 1I32 _ -> 0I32)
+                })
+                let @pub matchedValue :Fn<;I32> = (=> || {
+                    let box :Plain = :Plain[]
+                    (match box:.n 4I32 -> 1I32 _ -> 0I32)
+                })
+                """);
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            assertEquals(0, (int) module.export("annotated", "Fn<;I32>").methodHandle().invokeExact());
+            assertEquals(1, (int) module.export("widened", "Fn<;I32>").methodHandle().invokeExact());
+            assertEquals(7, (int) module.export("coalesced", "Fn<;I32>").methodHandle().invokeExact());
+            assertEquals(5, (int) module.export("narrowed", "Fn<;I32>").methodHandle().invokeExact());
+            assertEquals(1, (int) module.export("matchedNil", "Fn<;I32>").methodHandle().invokeExact());
+            assertEquals(1, (int) module.export("matchedValue", "Fn<;I32>").methodHandle().invokeExact());
+        }
+    }
+
     private static CompiledArtifact compile(String source) {
         return compile(CompileRequest.source("nominal-bytecode.lyra", source));
     }

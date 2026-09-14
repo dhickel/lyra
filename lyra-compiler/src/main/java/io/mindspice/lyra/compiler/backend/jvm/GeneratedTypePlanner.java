@@ -129,6 +129,7 @@ final class GeneratedTypePlanner {
                         IrCapture::id, value -> value));
 
         ArrayList<GeneratedClassPlan> classes = new ArrayList<>();
+        LinkedHashMap<String, NominalMemberDelegateLayout> delegateLayouts = new LinkedHashMap<>();
         for (var layout : nominalLayouts.values()) {
             var dependencies = new LinkedHashSet<GeneratedClassDependency>();
             for (var field : layout.fields()) addTypeDependencies(dependencies, field.member().type(),
@@ -136,6 +137,49 @@ final class GeneratedTypePlanner {
             classes.add(new GeneratedClassPlan(layout.binaryName(), GeneratedClassKind.NOMINAL_VALUE,
                     "nominal:" + layout.schema().type().canonicalSpelling(), Optional.empty(), true,
                     false, List.of(), List.of(), List.copyOf(dependencies), layout.members(), Optional.of(layout)));
+        }
+        // Occurrence-scoped callable member route delegates are session-only
+        // structural classes: ordinary AOT artifacts keep their exact class
+        // inventory, and attached roots already bridge through their shared
+        // root lifetime without per-read evidence.
+        if (emissionMode == EmissionMode.SESSION) {
+            for (var layout : nominalLayouts.values()) {
+                for (int index = 0; index < layout.fields().size(); index++) {
+                    var field = layout.fields().get(index);
+                    var base = field.member().type().withoutQualifiers();
+                    if (!(base instanceof FunctionType function)) continue;
+                    JvmSignaturePlan signature = mapper.mapSignature(
+                            function.signature(), JvmAbiBoundary.JAVA_VISIBLE);
+                    String interfaceName = typeNames.functionBinaryName(
+                            function.signature().canonicalSpelling());
+                    NominalMemberDelegateLayout delegate = new NominalMemberDelegateLayout(
+                            layout, index, interfaceName, signature);
+                    String delegateName = delegate.binaryName(typeNames);
+                    if (delegateLayouts.put(delegateName, delegate) != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate nominal member delegate: " + delegateName);
+                    }
+                    var dependencies = new LinkedHashSet<GeneratedClassDependency>();
+                    dependencies.add(new GeneratedClassDependency(interfaceName,
+                            GeneratedDependencyKind.NOMINAL_MEMBER_DELEGATE_INTERFACE, true,
+                            "nominal member delegate implements one function interface"));
+                    dependencies.add(new GeneratedClassDependency(layout.binaryName(),
+                            GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE, false,
+                            "nominal member delegate routes one nominal field"));
+                    var members = List.of(
+                            GeneratedMemberPlan.rawMethod(
+                                    GeneratedMemberKind.NOMINAL_MEMBER_DELEGATE_CONSTRUCTOR, "<init>",
+                                    "(Ljava/lang/Object;)V", false),
+                            GeneratedMemberPlan.method(
+                                    GeneratedMemberKind.NOMINAL_MEMBER_DELEGATE_INVOKE, "invoke",
+                                    signature, false, Optional.empty(), Optional.empty()));
+                    classes.add(new GeneratedClassPlan(delegateName,
+                            GeneratedClassKind.NOMINAL_MEMBER_DELEGATE,
+                            "nominal-member-delegate:" + layout.schema().type().canonicalSpelling()
+                                    + "#" + index, Optional.empty(), true, false,
+                            List.of(interfaceName), List.of(), List.copyOf(dependencies), members));
+                }
+            }
         }
         addTupleClasses(classes, inventory, mapper, names,
                 emissionMode != EmissionMode.NORMAL);
@@ -162,7 +206,8 @@ final class GeneratedTypePlanner {
         GeneratedTypePlan result = new GeneratedTypePlan(basePackage, typeNames, ordered,
                 names.tupleNames(), names.functionNames(), closureClasses, cellClasses,
                 moduleStates, moduleFacades, new ArrayList<>(exportPlans.values()),
-                ir.initializationOrder(), intrinsicFunctionClasses, ir.sessionExecution(), emissionMode, nominalLayouts);
+                ir.initializationOrder(), intrinsicFunctionClasses, ir.sessionExecution(),
+                emissionMode, nominalLayouts, delegateLayouts);
         // Descriptor/signature parity is a publication gate for the plan; no
         // later class-body phase may start from a partially audited shape.
         JvmAbiParity.require(ir, result);

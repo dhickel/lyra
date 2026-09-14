@@ -171,7 +171,8 @@ final class LyraOwnershipToken {
         return artifactKey instanceof LyraArtifactKey key ? key.rootLifetime() : null;
     }
 
-    private SessionStorageDomain.Linkage sessionLinkage() {
+    /** Package-private: nominal object anchors and route checks consult the linkage. */
+    SessionStorageDomain.Linkage sessionLinkage() {
         return artifactKey instanceof LyraArtifactKey key ? key.sessionLinkage() : null;
     }
 

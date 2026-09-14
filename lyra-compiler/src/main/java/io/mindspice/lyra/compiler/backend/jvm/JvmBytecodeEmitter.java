@@ -538,6 +538,7 @@ final class JvmBytecodeEmitter {
             return switch (classPlan.kind()) {
                 case CLOSURE -> CD_CLOSURE;
                 case NOMINAL_VALUE -> cd(RUNTIME + "LyraNominalObject");
+                case NOMINAL_MEMBER_DELEGATE -> cd(RUNTIME + "LyraNominalMemberDelegate");
                 default -> CD_OBJECT;
             };
         }
@@ -563,7 +564,8 @@ final class JvmBytecodeEmitter {
         private boolean sharedSessionType(GeneratedClassPlan classPlan) {
             boolean structural = classPlan.kind() == GeneratedClassKind.TUPLE_VALUE
                     || classPlan.kind() == GeneratedClassKind.FUNCTION_INTERFACE
-                    || classPlan.kind() == GeneratedClassKind.NOMINAL_VALUE;
+                    || classPlan.kind() == GeneratedClassKind.NOMINAL_VALUE
+                    || classPlan.kind() == GeneratedClassKind.NOMINAL_MEMBER_DELEGATE;
             return structural && (ir.rootModule().submissionResult().isPresent()
                     || plan.emissionMode() == EmissionMode.ATTACHABLE);
         }
@@ -659,6 +661,7 @@ final class JvmBytecodeEmitter {
             if (!owner.sharedSessionType(classPlan)) line(memberSpan());
             switch (classPlan.kind()) {
                 case NOMINAL_VALUE -> emitNominalMethod();
+                case NOMINAL_MEMBER_DELEGATE -> emitNominalMemberDelegateMethod();
                 case TUPLE_VALUE -> emitTupleMethod();
                 case CELL -> emitCellMethod();
                 case CLOSURE -> emitClosureMethod();
@@ -830,8 +833,9 @@ final class JvmBytecodeEmitter {
                     || member.kind() == GeneratedMemberKind.NOMINAL_PUBLIC_SET;
             boolean write = initialize || member.kind() == GeneratedMemberKind.NOMINAL_SET
                     || member.kind() == GeneratedMemberKind.NOMINAL_PUBLIC_SET;
+            boolean delegatedWrite = delegatedWrite(layout, field, publicAccess, initialize);
             int valueParameter = publicAccess ? 0 : 1;
-            if (write) {
+            if (write && !delegatedWrite) {
                 loadParameter(valueParameter);
                 authenticateNominalFieldValue(field.member().type(), !publicAccess);
                 storeParameter(valueParameter);
@@ -850,6 +854,10 @@ final class JvmBytecodeEmitter {
                                 : (write ? "checkGeneratedWrite" : "checkGeneratedRead"),
                         method(publicAccess ? "(I)V" : "(" + NominalClassLayout.AUTHORITY + "I)V"));
             }
+            if (write && delegatedWrite) {
+                emitDelegatedFieldWrite(layout, index, field, valueParameter);
+                return;
+            }
             aloadReceiver();
             if (write) {
                 loadParameter(valueParameter);
@@ -857,8 +865,173 @@ final class JvmBytecodeEmitter {
                 code.return_();
             } else {
                 code.getfield(cd(classPlan.binaryName()), field.storageName(), type(field.value().descriptor()));
-                authenticateNominalFieldValue(field.member().type(), !publicAccess);
-                returnPhysicalDescriptor(field.value().descriptor());
+                if (delegatedRead(layout, field, publicAccess)) {
+                    returnDelegatedFieldRead(layout, index, field);
+                } else {
+                    authenticateNominalFieldValue(field.member().type(), !publicAccess);
+                    returnPhysicalDescriptor(field.value().descriptor());
+                }
+            }
+        }
+
+        private boolean delegatedRead(NominalClassLayout layout, NominalClassLayout.Field field,
+                                      boolean publicAccess) {
+            return !publicAccess && member.kind() == GeneratedMemberKind.NOMINAL_GET
+                    && callableMemberHasDelegate(layout, field);
+        }
+
+        private boolean delegatedWrite(NominalClassLayout layout, NominalClassLayout.Field field,
+                                       boolean publicAccess, boolean initialize) {
+            return !publicAccess && !initialize
+                    && member.kind() == GeneratedMemberKind.NOMINAL_SET
+                    && callableMemberHasDelegate(layout, field);
+        }
+
+        private boolean callableMemberHasDelegate(
+                NominalClassLayout layout, NominalClassLayout.Field field) {
+            if (!(field.member().type().withoutQualifiers() instanceof FunctionType)) return false;
+            String delegateName = owner.mapper.names().nominalMemberDelegateBinaryName(
+                    layout.schema().type().canonicalSpelling(), field.index());
+            return owner.plan.nominalMemberDelegates().containsKey(delegateName);
+        }
+
+        /**
+         * Exact writable-field delegation for callable member replacement. The
+         * generated access check has already authenticated the receiver/field
+         * and mutability. The runtime then authenticates the replacement under
+         * the actual generated caller and the stored delegate retains both the
+         * selected producer lifecycle and the destination route.
+         */
+        private void emitDelegatedFieldWrite(
+                NominalClassLayout layout, int index, NominalClassLayout.Field field,
+                int valueParameter) {
+            String delegateName = owner.mapper.names().nominalMemberDelegateBinaryName(
+                    layout.schema().type().canonicalSpelling(), index);
+            var delegate = owner.plan.nominalMemberDelegates().get(delegateName);
+            if (delegate == null || delegate.fieldIndex() != index
+                    || !delegate.nominal().binaryName().equals(layout.binaryName())
+                    || !field.value().descriptor().equals("L"
+                    + delegate.functionInterface().replace('.', '/') + ";")) {
+                throw invalidPlan(memberSpan(),
+                        "nominal member delegate plan disagrees with its writable field route");
+            }
+            Label nil = null;
+            if (field.member().type().isNilable()) {
+                nil = code.newLabel();
+                loadParameter(valueParameter);
+                code.ifnull(nil);
+            }
+            aloadReceiver();
+            code.new_(cd(delegateName));
+            code.dup();
+            aloadReceiver();
+            loadParameter(0);
+            code.ldc(index);
+            loadParameter(valueParameter);
+            code.ldc(delegate.signature().canonicalLyraSignature());
+            code.invokevirtual(cd(RUNTIME + "LyraNominalObject"),
+                    "issueCallableMemberWriteRoute", method("("
+                            + NominalClassLayout.AUTHORITY
+                            + "ILjava/lang/Object;Ljava/lang/String;)Ljava/lang/Object;"));
+            code.invokespecial(cd(delegateName), "<init>", method("(Ljava/lang/Object;)V"));
+            code.checkcast(cd(delegate.functionInterface()));
+            code.putfield(cd(classPlan.binaryName()), field.storageName(),
+                    type(field.value().descriptor()));
+            code.return_();
+            if (nil != null) {
+                code.labelBinding(nil);
+                aloadReceiver();
+                loadParameter(valueParameter);
+                code.putfield(cd(classPlan.binaryName()), field.storageName(),
+                        type(field.value().descriptor()));
+                code.return_();
+            }
+        }
+
+        /**
+         * Occurrence-scoped route delegation for callable member reads.  The
+         * receiver/ownership/private checks already ran; a caller that needs
+         * neither artifact identity nor the source-local session bridge for
+         * this object receives a per-read delegate carrying the exact object,
+         * compiler-certified field index and selected value.  Same-artifact
+         * and same-session reads return the exact stored closure untouched.
+         */
+        private void returnDelegatedFieldRead(NominalClassLayout layout, int index,
+                                              NominalClassLayout.Field field) {
+            String delegateName = owner.mapper.names().nominalMemberDelegateBinaryName(
+                    layout.schema().type().canonicalSpelling(), index);
+            var delegate = owner.plan.nominalMemberDelegates().get(delegateName);
+            if (delegate == null || delegate.fieldIndex() != index
+                    || !delegate.nominal().binaryName().equals(layout.binaryName())
+                    || !field.value().descriptor().equals("L"
+                    + delegate.functionInterface().replace('.', '/') + ";")) {
+                throw invalidPlan(memberSpan(), "nominal member delegate plan disagrees with its field route");
+            }
+            int raw = allocateLocal(field.value());
+            storePhysical(field.value().physicalComponents().getFirst(), raw);
+            aloadReceiver();
+            loadParameter(0);
+            code.invokevirtual(cd(RUNTIME + "LyraNominalObject"), "generatedReadRequiresDelegation",
+                    method("(" + NominalClassLayout.AUTHORITY + ")Z"));
+            Label rawPath = code.newLabel();
+            Label done = code.newLabel();
+            code.ifeq(rawPath);
+            loadPhysical(field.value().physicalComponents().getFirst(), raw);
+            code.ifnull(rawPath);
+            code.new_(cd(delegateName));
+            code.dup();
+            aloadReceiver();
+            loadParameter(0);
+            code.ldc(index);
+            loadPhysical(field.value().physicalComponents().getFirst(), raw);
+            code.ldc(delegate.signature().canonicalLyraSignature());
+            code.invokevirtual(cd(RUNTIME + "LyraNominalObject"), "issueCallableMemberRoute",
+                    method("(" + NominalClassLayout.AUTHORITY
+                            + "ILjava/lang/Object;Ljava/lang/String;)Ljava/lang/Object;"));
+            code.invokespecial(cd(delegateName), "<init>", method("(Ljava/lang/Object;)V"));
+            // Retag the fresh delegate to its function interface before the
+            // join so no stack-map frame ever needs to resolve a generated
+            // class identity during emission or verification.
+            code.checkcast(cd(delegate.functionInterface()));
+            code.goto_(done);
+            code.labelBinding(rawPath);
+            loadPhysical(field.value().physicalComponents().getFirst(), raw);
+            authenticateNominalFieldValue(field.member().type(), true);
+            code.labelBinding(done);
+            returnPhysicalDescriptor(field.value().descriptor());
+        }
+
+        private void emitNominalMemberDelegateMethod() {
+            var delegate = owner.plan.nominalMemberDelegates().get(classPlan.binaryName());
+            if (delegate == null || !delegate.nominal().binaryName().equals(
+                    owner.mapper.names().nominalBinaryName(
+                            delegate.nominal().schema().type().canonicalSpelling()))) {
+                throw invalidPlan(memberSpan(), "nominal member delegate class has no exact route layout");
+            }
+            switch (member.kind()) {
+                case NOMINAL_MEMBER_DELEGATE_CONSTRUCTOR -> {
+                    aloadReceiver();
+                    loadParameter(0);
+                    code.invokespecial(cd(RUNTIME + "LyraNominalMemberDelegate"), "<init>",
+                            method("(Ljava/lang/Object;)V"));
+                    code.return_();
+                }
+                case NOMINAL_MEMBER_DELEGATE_INVOKE -> {
+                    aloadReceiver();
+                    code.invokevirtual(cd(classPlan.binaryName()), "checkRouteInvocation", method("()V"));
+                    aloadReceiver();
+                    code.invokevirtual(cd(classPlan.binaryName()), "target",
+                            method("()Ljava/lang/Object;"));
+                    code.checkcast(cd(delegate.functionInterface()));
+                    for (int parameter = 0; parameter < delegate.signature().parameters().size(); parameter++) {
+                        loadParameter(parameter);
+                    }
+                    code.invokeinterface(cd(delegate.functionInterface()), "invoke",
+                            method(delegate.signature().descriptor()));
+                    returnPhysicalDescriptor(delegate.signature().returnValue().descriptor());
+                }
+                default -> throw invalidPlan(memberSpan(),
+                        "unexpected nominal member delegate member: " + member.kind());
             }
         }
 
@@ -1200,32 +1373,36 @@ final class JvmBytecodeEmitter {
                 throw invalidPlan(memberSpan(), "function parameter has no reference representation");
             }
             String signature = function.signature().canonicalSpelling();
-            String functionName = owner.mapper.names().functionBinaryName(signature);
             if (logical.hasQualifier(io.mindspice.lyra.compiler.types.TypeQualifier.NIL)) {
                 loadParameter(index);
                 code.dup();
                 Label nil = code.newLabel();
                 Label authenticated = code.newLabel();
                 code.ifnull(nil);
+                // Authenticate a duplicate and keep the original occurrence in
+                // the parameter slot, so occurrence-scoped route evidence (a
+                // nominal member delegate) survives the callable boundary.
+                code.dup();
                 emitCurrentAuthority();
                 emitSignatureOverAuthority(signature);
                 code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT,
                         "requireAuthenticatedForGeneratedInvocation",
                         method("(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
                                 + RUNTIME + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
-                code.checkcast(cd(functionName));
+                code.pop();
                 code.goto_(authenticated);
                 code.labelBinding(nil);
                 code.labelBinding(authenticated);
             } else {
                 loadParameter(index);
+                code.dup();
                 emitCurrentAuthority();
                 emitSignatureOverAuthority(signature);
                 code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT,
                         "requireAuthenticatedForGeneratedInvocation",
                         method("(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
                                 + RUNTIME + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
-                code.checkcast(cd(functionName));
+                code.pop();
             }
             return true;
         }
@@ -2476,31 +2653,7 @@ final class JvmBytecodeEmitter {
             int argument = allocateLocal(external);
             loadParameter(0);
             if (export.isFunction()) {
-                // Authenticate the replacement while retaining a balanced
-                // stack for the nullable-function case.  The state receiver
-                // is reloaded only after authentication, so it cannot be
-                // mistaken for the candidate object.
-                Label acceptedNull = code.newLabel();
-                Label argumentReady = code.newLabel();
-                if (export.valueType().isNilable()) {
-                    code.dup();
-                    code.ifnull(acceptedNull);
-                }
-                loadPhysical(stateType, stateSlot);
-                code.invokevirtual(cd(stateName), "$lyra$closureAuthority",
-                        method("()L" + RUNTIME + "LyraClosureAuthority;"));
-                emitSignatureOverAuthority(export.functionSignature().orElseThrow().canonicalLyraSignature());
-                code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "requireAuthenticated", method(
-                        "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L" + RUNTIME
-                                + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
-                code.checkcast(cd(owner.plan.functionInterfaces().get(
-                        functionBase(declarations.get(export.declarationId()).contract().orElseThrow().valueType())
-                                .canonicalSpelling())));
-                code.goto_(argumentReady);
-                if (export.valueType().isNilable()) {
-                    code.labelBinding(acceptedNull);
-                }
-                code.labelBinding(argumentReady);
+                authenticateFacadeFunctionArgument(export);
             }
             storePhysical(external.physicalComponents().getFirst(), argument);
             loadPhysical(stateType, stateSlot);
@@ -2563,6 +2716,9 @@ final class JvmBytecodeEmitter {
                 code.dup();
                 code.ifnull(acceptedNull);
             }
+            // Authenticate a duplicate and pass the original occurrence on,
+            // so occurrence-scoped route evidence survives the Java facade.
+            code.dup();
             loadFacadeState();
             code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
                     "$lyra$closureAuthority",
@@ -2571,9 +2727,7 @@ final class JvmBytecodeEmitter {
             code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "requireAuthenticated", method(
                     "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
                             + RUNTIME + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
-            code.checkcast(cd(owner.plan.functionInterfaces().get(
-                    functionBase(declarations.get(export.declarationId()).contract()
-                            .orElseThrow().valueType()).canonicalSpelling())));
+            code.pop();
             code.goto_(argumentReady);
             if (export.valueType().isNilable()) {
                 code.labelBinding(acceptedNull);
@@ -2688,28 +2842,7 @@ final class JvmBytecodeEmitter {
             int argument = allocateLocal(external);
             loadParameter(0);
             if (export.isFunction()) {
-                Label acceptedNull = code.newLabel();
-                Label argumentReady = code.newLabel();
-                if (export.valueType().isNilable()) {
-                    code.dup();
-                    code.ifnull(acceptedNull);
-                }
-                loadFacadeState();
-                code.invokevirtual(cd(owner.plan.moduleStates().get(module.moduleId())),
-                        "$lyra$closureAuthority",
-                        method("()L" + RUNTIME + "LyraClosureAuthority;"));
-                emitSignatureOverAuthority(export.functionSignature().orElseThrow().canonicalLyraSignature());
-                code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "requireAuthenticated", method(
-                        "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L" + RUNTIME
-                                + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
-                code.checkcast(cd(owner.plan.functionInterfaces().get(functionBase(
-                        declarations.get(export.declarationId()).contract().orElseThrow().valueType())
-                        .canonicalSpelling())));
-                code.goto_(argumentReady);
-                if (export.valueType().isNilable()) {
-                    code.labelBinding(acceptedNull);
-                }
-                code.labelBinding(argumentReady);
+                authenticateFacadeFunctionArgument(export);
             }
             storePhysical(external.physicalComponents().getFirst(), argument);
             loadFacadeState();
@@ -5775,10 +5908,21 @@ final class JvmBytecodeEmitter {
             Label falseLabel = code.newLabel();
             Label end = code.newLabel();
             boolean equal = operator.operator() == TokenKind.IDENTITY_EQUAL;
+            boolean callableIdentity = operator.operands().getFirst().type()
+                    .withoutQualifiers() instanceof FunctionType;
+            // Callable wrappers carry route evidence, not a new language identity.
             for (int index = 1; index < values.size(); index++) {
-                loadLocal(values.get(index - 1)); loadLocal(values.get(index));
-                code.branch(equal ? java.lang.classfile.Opcode.IF_ACMPNE
-                        : java.lang.classfile.Opcode.IF_ACMPEQ, falseLabel);
+                loadLocal(values.get(index - 1));
+                loadLocal(values.get(index));
+                if (callableIdentity) {
+                    code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, "sameIdentity",
+                            method("(Ljava/lang/Object;Ljava/lang/Object;)Z"));
+                    code.branch(equal ? java.lang.classfile.Opcode.IFEQ
+                            : java.lang.classfile.Opcode.IFNE, falseLabel);
+                } else {
+                    code.branch(equal ? java.lang.classfile.Opcode.IF_ACMPNE
+                            : java.lang.classfile.Opcode.IF_ACMPEQ, falseLabel);
+                }
             }
             emitInt(1); code.goto_(end);
             code.labelBinding(falseLabel); emitInt(0); code.labelBinding(end);

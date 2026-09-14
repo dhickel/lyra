@@ -585,3 +585,25 @@
 
 - This is an immediate source-breaking contract. It takes **language contract version 2**, applied coherently to `LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION` and the compiler's `ModuleRevision.LANGUAGE_CONTRACT_VERSION`, so module/export identity, `LYRA-EXPORT-ID` derivation, embedded facade metadata publication and artifact revision all move together. `RuntimeAbi` stays `1.0` and the artifact schema version stays `1`/`2`: this change alters the accepted source language, not the generated-class/runtime member ABI. Artifacts published under language contract 1 are rejected by the runtime with the explicit `LYR-COMPAT` diagnostic `unsupported language contract version: 1`, which `ArtifactMetadataReader` now reports before any version-derived identity check; the frozen `legacy-artifact-v1-normal.json` fixtures are retained as incompatible-artifact evidence rather than migrated.
 - Active fixtures, generators, oracles, models, examples and coverage documents are migrated in the same completed tranche; saved fuzz replays keep their original bytes and gain migrated semantic twins so the original counterexamples stay exercised.
+
+## 2026-09-14 — Retained nominal member routes use opaque occurrence evidence (issue #7)
+
+### Source and review
+
+- **Source:** owner-accepted plan `20260914-005314-resolve-and-close-lyra-github-issues-6-13-in-dependency`, Tranche 3 issue #7, plus the incomplete implementation audit.
+- **Affected specifications:** `language-core.md`, `backend-runtime.md`, and `repl.md`.
+- **Review timing:** independent Tranche 3 validation and any future change to retained callable or nominal member transport.
+
+### Decision
+
+- A session-created nominal object anchors ownership to its exact standalone domain/epoch or explicit root lifetime without changing `Linkage.sourceLocal` or general callable authentication.
+- A callable member crossing an importing-generation boundary is represented by a generated occurrence delegate. Its constructor accepts only opaque, single-use evidence issued after an exact generated field boundary authenticates the object, schema field, producer, signature and selected value. The evidence normalizes to one raw selected closure plus a flat immutable identity-deduplicated list of source/index/signature dependencies; repeated or alternating routes extend and validate the list iteratively instead of nesting delegates. Saved evidence never rereads a mutable slot and never authorizes the same raw closure occurrence.
+- A generated mutable callable-field setter first checks the exact writable route, then authenticates a replacement under the actual generated caller (or the exact nominal producer already owning that raw value) and stores the field's generated delegate. The runtime rechecks every source object's OPEN producer, exact schema field/signature, caller domain/root, epoch/root activity and selected replacement lifecycle at authentication or direct-invocation boundaries. Private access remains an issuance-time lexical check. Aggregate projections do not acquire field-route evidence.
+- Route wrappers are occurrence-specific authority but not new Lyra function identities. Function `eq?` compares their raw selected `LyraClosureIdentity` through a boolean-only, non-authorizing runtime helper. Repeated reads of an unchanged slot and routed/raw occurrences of one selection compare identical; a replacement changes new-read identity while saved selections remain old.
+- Runtime ABI minor version 1.1 identifies the added generated/runtime delegate members. Runtime 1.1 accepts older 1.0 artifacts; runtime 1.0 must reject 1.1 artifacts at metadata preflight.
+
+### Justification and rejected alternatives
+
+- Opaque occurrence evidence makes the compiler-certified selection a real capability boundary; a public/protected `(source,target,index)` constructor was rejected because caller-minted objects could authorize an unrelated same-signature closure.
+- Session-wide or closure-identity authorization, heap scans, copied values, field rereads at invocation, source replay, schema-only evidence and a `sourceLocal` relaxation were rejected because they either launder authority or change saved-selection semantics.
+- Delegate classes remain session-only structural classes. Ordinary AOT class inventories contain no delegates, and no protocol-v2 or JavaFX boundary changes.

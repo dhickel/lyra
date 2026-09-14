@@ -430,6 +430,15 @@ final class JvmAbiParity {
                     GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE, false, plan.typeNames());
         }
 
+        for (var delegate : plan.nominalMemberDelegates().values()) {
+            Set<DependencyIdentity> dependencies = expectedFor(expected,
+                    delegate.binaryName(plan.typeNames()));
+            addExpectedDependency(dependencies, delegate.functionInterface(),
+                    GeneratedDependencyKind.NOMINAL_MEMBER_DELEGATE_INTERFACE, true);
+            addExpectedDependency(dependencies, delegate.nominal().binaryName(),
+                    GeneratedDependencyKind.NOMINAL_TYPE_LINKAGE, false);
+        }
+
         for (Map.Entry<String, TupleType> entry : tuples.entrySet()) {
             Set<DependencyIdentity> dependencies = expectedFor(expected,
                     plan.tupleClasses().get(entry.getKey()));

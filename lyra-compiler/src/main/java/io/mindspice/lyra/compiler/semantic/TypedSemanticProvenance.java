@@ -2180,6 +2180,9 @@ final class TypedSemanticProvenance {
             return Optional.empty();
         }
         LyraType base = receiver.withoutQualifiers();
+        if (member.isIdentifier() && base instanceof io.mindspice.lyra.compiler.types.NominalType nominalType) {
+            return nominalMemberContract(nominalType, member.name());
+        }
         if (member.isIdentifier() && member.name().equals("length")
                 && (base == PrimitiveType.STRING || base instanceof ArrayType)) {
             return Optional.of(PrimitiveType.I32);
@@ -2191,6 +2194,25 @@ final class TypedSemanticProvenance {
             }
         }
         return Optional.empty();
+    }
+
+    /**
+     * Independently derives a nominal member-read contract, including
+     * nilability, from the exact resolved schema member. This is the only
+     * sealing-side derivation path for nominal member reads: it never consults
+     * the published typed expression, so a forged or mismatched member link
+     * cannot supply its own contract.
+     */
+    private Optional<LyraType> nominalMemberContract(
+            io.mindspice.lyra.compiler.types.NominalType nominalType,
+            String memberName) {
+        return resolved.nominals().stream()
+                .filter(value -> value.schema().type().equals(nominalType))
+                .findFirst()
+                .flatMap(nominal -> nominal.schema().members().stream()
+                        .filter(value -> value.name().equals(memberName))
+                        .findFirst())
+                .map(io.mindspice.lyra.compiler.types.NominalSchema.Member::type);
     }
 
     private Optional<SyntaxNode.LetBinding> findSourceLet(SourceSpan nameSpan) {

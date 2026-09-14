@@ -104,16 +104,38 @@ session remain usable for later submissions. Attached application roots invoke
 their retained factories from later Lyra evaluations and from Java through the
 same authenticated capability, with root-lifetime ownership.
 
-Two open limitations are tracked, not hidden: observing a retained nominal whose
-member initializer is Unit-typed or imports the intrinsic module one generation
-after construction fails at runtime with `LYR-LINK`
-(`bugs/retained-nominal/unit-initializer-later-observation-linkage.md`, issue
-#7); annotated retained nilable-member reads and nil-contract-consuming forms
-over member reads are rejected at the IR boundary with `LYC-IR-003`
-(`bugs/retained-nominal/nilable-member-read-contract.md`, issue #8). For issue
-#8 the bare (unannotated) member read still works; issue #7 affects both bare and
-member-qualified reads of the affected members, which is why its observation cases
-pin a structured `LYR-LINK` failure.
+Nominal object ownership is anchored to the session identity at
+construction. A generated member read from any later active generation of
+the same session epoch (or the same explicit root lifetime) authenticates
+the exact object, schema, producer and compiler-certified field route; it
+does not widen the importing-graph `sourceLocal` classifier or the general
+same-session callable bridge. Callable-typed member reads that cross
+artifact boundaries without the source-local bridge return an
+occurrence-scoped route delegate accepting opaque single-use compiler-issued
+evidence that binds the exact object, schema field/signature and selected
+value. Caller-minted or reused evidence fails. Each delegate contains one raw
+selected closure and a flat immutable identity-deduplicated list of all exact
+source/index/signature dependencies. Read and write routing extends that list
+without nesting delegates, validates every dependency iteratively, and never
+rereads a field.
+
+The delegate remains an ordinary saved value through assignment, capture,
+aggregate storage, parameter/return propagation and later submissions, but is
+not a new logical closure identity: function `eq?` compares the selected raw
+`LyraClosureIdentity` through a non-authorizing helper. Repeated unchanged-slot
+reads and delegate/raw occurrences of one selection compare identical; a new
+selection after replacement does not. A generated mutable callable-field write
+authenticates its exact writable route and the replacement under the actual
+generated caller (or the exact nominal producer that already owns the raw
+value), then stores the field's delegate while retaining replacement-producer
+lifecycle. This changes neither `sourceLocal` nor general callable
+authentication. Saved selections remain old, new reads select replacements,
+and wrong/private/immutable/schema/root routes or retired source/replacement
+producers reject. Raw imported closures remain rejected before and after
+delegated use, including when they coexist with routed occurrences in
+aggregates. Only exact callable field routes carry delegation evidence;
+callable leaves selected through aggregate projections stay raw and subject
+to the ordinary boundaries.
 
 Snapshots expose immutable bounded type/member display data, never live object
 handles. Formatting invokes no constructors, methods, equality or user stringification.

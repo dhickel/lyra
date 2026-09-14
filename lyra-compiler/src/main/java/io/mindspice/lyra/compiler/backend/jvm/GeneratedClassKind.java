@@ -4,6 +4,7 @@ package io.mindspice.lyra.compiler.backend.jvm;
 enum GeneratedClassKind {
     TUPLE_VALUE(0),
     NOMINAL_VALUE(0),
+    NOMINAL_MEMBER_DELEGATE(0),
     FUNCTION_INTERFACE(1),
     CELL(2),
     CLOSURE(3),

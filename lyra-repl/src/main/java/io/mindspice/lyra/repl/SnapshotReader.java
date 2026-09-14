@@ -3,6 +3,7 @@ package io.mindspice.lyra.repl;
 import io.mindspice.lyra.runtime.ArrayType;
 import io.mindspice.lyra.runtime.FunctionType;
 import io.mindspice.lyra.runtime.LyraClosure;
+import io.mindspice.lyra.runtime.LyraClosureSupport;
 import io.mindspice.lyra.runtime.LyraLinkException;
 import io.mindspice.lyra.runtime.LyraNominalObject;
 import io.mindspice.lyra.runtime.LyraRuntime;
@@ -68,16 +69,20 @@ final class SnapshotReader {
                     "(" + range.start() + (range.inclusive() ? "..." : "..") + range.end() + ":" + range.step() + ")"));
         }
         if (base instanceof FunctionType function) {
-            if (!(value instanceof LyraClosure closure) || !generatedClasses.contains(value.getClass().getName())) {
+            if (value instanceof io.mindspice.lyra.runtime.LyraNominalMemberDelegate delegate) {
+                delegate.checkUsable(function.signature());
+            } else if (!(value instanceof LyraClosure closure) || !generatedClasses.contains(value.getClass().getName())) {
                 throw new LyraLinkException("result is not a generated Lyra closure");
+            } else {
+                closure.checkInvocation(function.signature());
             }
-            closure.checkInvocation(function.signature());
-            String previous = identities.get(value);
+            String previous = functionIdentity(value);
             if (previous != null) return leaf(type, new ValueSnapshot.Reference(previous));
             String identity = "fn" + (identities.size() + 1);
             identities.put(value, identity);
             return leaf(type, new ValueSnapshot.Function(identity));
         }
+
         if (base instanceof ArrayType || base instanceof NominalType) {
             String previous = identities.get(value);
             if (previous != null) return leaf(type, new ValueSnapshot.Reference(previous));
@@ -127,6 +132,26 @@ final class SnapshotReader {
         return new ValueSnapshot(type, new ValueSnapshot.Aggregate(kind, identity,
                 nominal == null ? Optional.empty() : Optional.of(nominal.type().id().name()),
                 elements, truncated), limits);
+    }
+
+    /**
+     * Delegates are fresh wrappers for each exact member occurrence, but
+     * snapshots describe the selected Lyra closure rather than wrapper
+     * allocation identity. Keep aggregate aliases stable without exposing
+     * the closure identity itself or widening runtime authority.
+     */
+    private String functionIdentity(Object value) {
+        String direct = identities.get(value);
+        if (direct != null) return direct;
+        for (var entry : identities.entrySet()) {
+            Object seen = entry.getKey();
+            if ((seen instanceof LyraClosure
+                    || seen instanceof io.mindspice.lyra.runtime.LyraNominalMemberDelegate)
+                    && LyraClosureSupport.sameIdentity(value, seen)) {
+                return entry.getValue();
+            }
+        }
+        return null;
     }
 
     private Object nominalField(Object object, NominalSchema schema, int index) {

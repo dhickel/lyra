@@ -29,6 +29,15 @@ public final class RuntimeFoundationTest {
     private static final String ZERO_HASH = "0000000000000000000000000000000000000000000000000000000000000000";
 
     @Test
+    void retainedNominalMemberDelegationRequiresRuntimeAbiOneOne() {
+        assertEquals(new RuntimeAbi(1, 1), RuntimeAbi.CURRENT);
+        assertTrue(RuntimeAbi.CURRENT.isCompatibleWith(new RuntimeAbi(1, 0)),
+                "the new runtime still loads older 1.0 artifacts");
+        assertFalse(new RuntimeAbi(1, 0).isCompatibleWith(RuntimeAbi.CURRENT),
+                "an older runtime must reject artifacts that can emit route delegates");
+    }
+
+    @Test
     void unitAndCanonicalTypesAreStable() throws Exception {
         assertSame(LyraUnit.INSTANCE, LyraUnit.INSTANCE);
         assertEquals(LyraUnit.INSTANCE, LyraUnit.INSTANCE);

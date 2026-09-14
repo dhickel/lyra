@@ -24,6 +24,7 @@ final class GeneratedTypePlan {
     private final String basePackage;
     private final JvmTypeNameTable typeNames;
     private final Map<String, NominalClassLayout> nominalLayouts;
+    private final Map<String, NominalMemberDelegateLayout> nominalMemberDelegates;
     private final List<GeneratedClassPlan> classes;
     private final Map<String, GeneratedClassPlan> classesByName;
     private final Map<String, String> tupleClasses;
@@ -99,7 +100,7 @@ final class GeneratedTypePlan {
         this(sessionExecution, EmissionMode.NORMAL, basePackage, typeNames, classes,
                 tupleClasses, functionInterfaces, closureClasses, cellClasses,
                 moduleStates, moduleFacades, exports, initializationOrder,
-                intrinsicFunctionClasses, Map.of());
+                intrinsicFunctionClasses, Map.of(), Map.of());
     }
 
     GeneratedTypePlan(String basePackage, JvmTypeNameTable typeNames, List<GeneratedClassPlan> classes,
@@ -112,7 +113,8 @@ final class GeneratedTypePlan {
             EmissionMode emissionMode) {
         this(sessionExecution, Objects.requireNonNull(emissionMode, "emissionMode"), basePackage,
                 typeNames, classes, tupleClasses, functionInterfaces, closureClasses, cellClasses,
-                moduleStates, moduleFacades, exports, initializationOrder, intrinsicFunctionClasses, Map.of());
+                moduleStates, moduleFacades, exports, initializationOrder, intrinsicFunctionClasses,
+                Map.of(), Map.of());
     }
 
     GeneratedTypePlan(String basePackage, JvmTypeNameTable typeNames, List<GeneratedClassPlan> classes,
@@ -122,10 +124,12 @@ final class GeneratedTypePlan {
             List<GeneratedExportPlan> exports, List<ModuleId> initializationOrder,
             Map<DeclarationId, String> intrinsicFunctionClasses,
             Optional<io.mindspice.lyra.compiler.ir.IrSessionExecution> sessionExecution,
-            EmissionMode emissionMode, Map<String, NominalClassLayout> nominalLayouts) {
+            EmissionMode emissionMode, Map<String, NominalClassLayout> nominalLayouts,
+            Map<String, NominalMemberDelegateLayout> nominalMemberDelegates) {
         this(sessionExecution, emissionMode, basePackage, typeNames, classes, tupleClasses,
                 functionInterfaces, closureClasses, cellClasses, moduleStates, moduleFacades,
-                exports, initializationOrder, intrinsicFunctionClasses, nominalLayouts);
+                exports, initializationOrder, intrinsicFunctionClasses, nominalLayouts,
+                nominalMemberDelegates);
     }
 
     private GeneratedTypePlan(
@@ -136,7 +140,8 @@ final class GeneratedTypePlan {
             Map<DeclarationId, String> cellClasses, Map<ModuleId, String> moduleStates,
             Map<ModuleId, String> moduleFacades, List<GeneratedExportPlan> exports,
             List<ModuleId> initializationOrder, Map<DeclarationId, String> intrinsicFunctionClasses,
-            Map<String, NominalClassLayout> nominalLayouts) {
+            Map<String, NominalClassLayout> nominalLayouts,
+            Map<String, NominalMemberDelegateLayout> nominalMemberDelegates) {
         this.sessionExecution = Objects.requireNonNull(sessionExecution, "sessionExecution");
         this.emissionMode = Objects.requireNonNull(emissionMode, "emissionMode");
         this.basePackage = Objects.requireNonNull(basePackage, "basePackage");
@@ -150,6 +155,16 @@ final class GeneratedTypePlan {
             layouts.put(canonical, layout);
         });
         this.nominalLayouts = Collections.unmodifiableMap(layouts);
+        var delegates = new TreeMap<String, NominalMemberDelegateLayout>();
+        Objects.requireNonNull(nominalMemberDelegates, "nominalMemberDelegates")
+                .forEach((binaryName, layout) -> {
+                    if (!binaryName.equals(layout.binaryName(typeNames))) {
+                        throw new IllegalArgumentException(
+                                "nominal member delegate has the wrong name index: " + binaryName);
+                    }
+                    delegates.put(binaryName, layout);
+                });
+        this.nominalMemberDelegates = Collections.unmodifiableMap(delegates);
         if (!this.basePackage.equals(typeNames.basePackage())) {
             throw new IllegalArgumentException("base package disagrees with type-name table");
         }
@@ -279,6 +294,11 @@ final class GeneratedTypePlan {
 
     public Map<String, NominalClassLayout> nominalLayouts() { return nominalLayouts; }
 
+    /** Session-only occurrence-scoped callable member route delegates by binary name. */
+    public Map<String, NominalMemberDelegateLayout> nominalMemberDelegates() {
+        return nominalMemberDelegates;
+    }
+
     public Map<String, String> functionInterfaces() {
         return functionInterfaces;
     }
@@ -338,6 +358,7 @@ final class GeneratedTypePlan {
                 && basePackage.equals(plan.basePackage)
                 && typeNames.equals(plan.typeNames)
                 && nominalLayouts.equals(plan.nominalLayouts)
+                && nominalMemberDelegates.equals(plan.nominalMemberDelegates)
                 && classes.equals(plan.classes)
                 && tupleClasses.equals(plan.tupleClasses)
                 && functionInterfaces.equals(plan.functionInterfaces)
@@ -356,12 +377,15 @@ final class GeneratedTypePlan {
     public int hashCode() {
         return Objects.hash(basePackage, typeNames, classes, tupleClasses, functionInterfaces,
                 closureClasses, cellClasses, intrinsicFunctionClasses, moduleStates,
-                moduleFacades, exports, javaNames, initializationOrder, emissionMode, nominalLayouts);
+                moduleFacades, exports, javaNames, initializationOrder, emissionMode, nominalLayouts,
+                nominalMemberDelegates);
     }
 
     public String canonicalSpelling() {
         return "package=" + basePackage
                 + (nominalLayouts.isEmpty() ? "" : "|nominalLayouts=" + nominalLayouts)
+                + (nominalMemberDelegates.isEmpty() ? ""
+                : "|nominalMemberDelegates=" + nominalMemberDelegates)
                 + "|tuples=" + tupleClasses
                 + "|functions=" + functionInterfaces
                 + "|classes=" + classNames()
@@ -384,9 +408,41 @@ final class GeneratedTypePlan {
     private void validateClassIndexes() {
         requireExactKindIndex(nominalLayouts.values().stream().map(NominalClassLayout::binaryName).toList(),
                 GeneratedClassKind.NOMINAL_VALUE, "nominalLayouts");
+        requireExactKindIndex(nominalMemberDelegates.keySet(),
+                GeneratedClassKind.NOMINAL_MEMBER_DELEGATE, "nominalMemberDelegates");
         for (var layout : nominalLayouts.values()) {
             if (!classesByName.get(layout.binaryName()).nominalLayout().equals(Optional.of(layout))) {
                 throw new IllegalArgumentException("nominal class and layout indexes disagree");
+            }
+        }
+        for (Map.Entry<String, NominalMemberDelegateLayout> entry : nominalMemberDelegates.entrySet()) {
+            NominalMemberDelegateLayout layout = entry.getValue();
+            GeneratedClassPlan delegate = indexedClass(entry.getKey(),
+                    GeneratedClassKind.NOMINAL_MEMBER_DELEGATE, "nominal member delegate class");
+            requireStableKey(delegate, "nominal-member-delegate:"
+                    + layout.nominal().schema().type().canonicalSpelling() + "#"
+                    + layout.fieldIndex(), "nominal member delegate index");
+            if (!delegate.interfaces().equals(List.of(layout.functionInterface()))) {
+                throw new IllegalArgumentException(
+                        "nominal member delegate interface differs from its exact field type: "
+                                + entry.getKey());
+            }
+            GeneratedMemberPlan constructor = delegate.members().stream()
+                    .filter(member -> member.kind() == GeneratedMemberKind.NOMINAL_MEMBER_DELEGATE_CONSTRUCTOR)
+                    .findFirst().orElseThrow();
+            String expectedConstructor = "(Ljava/lang/Object;)V";
+            if (!constructor.descriptor().equals(expectedConstructor)) {
+                throw new IllegalArgumentException(
+                        "nominal member delegate constructor differs from its route: " + entry.getKey());
+            }
+            GeneratedMemberPlan invoke = delegate.members().stream()
+                    .filter(member -> member.kind() == GeneratedMemberKind.NOMINAL_MEMBER_DELEGATE_INVOKE)
+                    .findFirst().orElseThrow();
+            if (invoke.signature().isEmpty()
+                    || !invoke.signature().orElseThrow().equals(layout.signature())) {
+                throw new IllegalArgumentException(
+                        "nominal member delegate invocation differs from its function contract: "
+                                + entry.getKey());
             }
         }
         requireExactKindIndex(tupleClasses.values(), GeneratedClassKind.TUPLE_VALUE, "tupleClasses");
@@ -575,6 +631,30 @@ final class GeneratedTypePlan {
                             + plan.binaryName());
                 }
             }
+            if (plan.kind() == GeneratedClassKind.NOMINAL_MEMBER_DELEGATE) {
+                GeneratedClassPlan functionInterface = classesByName.get(plan.interfaces().getFirst());
+                if (functionInterface == null
+                        || functionInterface.kind() != GeneratedClassKind.FUNCTION_INTERFACE) {
+                    throw new IllegalArgumentException(
+                            "nominal member delegate does not implement a planned function interface: "
+                                    + plan.binaryName());
+                }
+                GeneratedMemberPlan delegateInvoke = plan.members().stream()
+                        .filter(member -> member.kind() == GeneratedMemberKind.NOMINAL_MEMBER_DELEGATE_INVOKE)
+                        .findFirst().orElseThrow();
+                GeneratedMemberPlan interfaceInvoke = functionInterface.members().stream()
+                        .filter(member -> member.kind() == GeneratedMemberKind.FUNCTION_INVOKE)
+                        .findFirst().orElseThrow();
+                if (!delegateInvoke.descriptor().equals(interfaceInvoke.descriptor())
+                        || delegateInvoke.signature().isEmpty()
+                        || interfaceInvoke.signature().isEmpty()
+                        || !delegateInvoke.signature().orElseThrow()
+                        .equals(interfaceInvoke.signature().orElseThrow())) {
+                    throw new IllegalArgumentException(
+                            "nominal member delegate invocation does not match its function interface: "
+                                    + plan.binaryName());
+                }
+            }
             for (GeneratedMemberPlan member : plan.members()) {
                 java.util.regex.Matcher matcher = descriptorReference.matcher(member.descriptor());
                 while (matcher.find()) {
@@ -656,6 +736,9 @@ final class GeneratedTypePlan {
                     || target.kind() == GeneratedClassKind.FUNCTION_INTERFACE
                     || target.kind() == GeneratedClassKind.CELL;
             case CLOSURE_FUNCTION_INTERFACE -> target.kind() == GeneratedClassKind.FUNCTION_INTERFACE;
+            case NOMINAL_MEMBER_DELEGATE_INTERFACE ->
+                    target.kind() == GeneratedClassKind.FUNCTION_INTERFACE
+                            && source.kind() == GeneratedClassKind.NOMINAL_MEMBER_DELEGATE;
             case CLOSURE_MODULE_STATE -> target.kind() == GeneratedClassKind.MODULE_STATE;
             case CLOSURE_SHARED_CELL -> target.kind() == GeneratedClassKind.CELL;
             case MODULE_IMPORT_LINKAGE, MODULE_INITIALIZATION, FACADE_STATE ->
@@ -675,6 +758,8 @@ final class GeneratedTypePlan {
             case CLOSURE_FUNCTION_INTERFACE, CLOSURE_MODULE_STATE, CLOSURE_CAPTURE_TYPE,
                     CLOSURE_SHARED_CELL, RECURSIVE_FUNCTION_LINKAGE ->
                     source.kind() == GeneratedClassKind.CLOSURE;
+            case NOMINAL_MEMBER_DELEGATE_INTERFACE ->
+                    source.kind() == GeneratedClassKind.NOMINAL_MEMBER_DELEGATE;
             case MODULE_IMPORT_LINKAGE, MODULE_INITIALIZATION, MODULE_STATE_FIELD_TYPE ->
                     source.kind() == GeneratedClassKind.MODULE_STATE;
             case FACADE_STATE, FACADE_EXPORT_TYPE ->

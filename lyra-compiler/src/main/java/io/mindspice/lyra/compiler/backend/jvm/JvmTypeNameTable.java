@@ -85,6 +85,20 @@ final class JvmTypeNameTable {
         return basePackage + ".$lyra$nominal$" + canonicalType.substring(8, canonicalType.length() - 1);
     }
 
+    /**
+     * Occurrence-scoped callable member route delegate, keyed by the exact
+     * nominal declaration identity and declaration-order field index.  Only
+     * session artifacts emit these shared structural classes.
+     */
+    public String nominalMemberDelegateBinaryName(String nominalCanonicalType, int fieldIndex) {
+        if (fieldIndex < 0) {
+            throw new IllegalArgumentException("nominal member delegate field index must be non-negative");
+        }
+        String nominal = nominalBinaryName(nominalCanonicalType);
+        String hash = nominal.substring(nominal.lastIndexOf('.') + "$lyra$nominal$".length() + 1);
+        return basePackage + ".$lyra$delegate$" + hash + "$" + fieldIndex;
+    }
+
     public boolean hasTuple(String canonicalType) {
         return tupleNames.containsKey(Objects.requireNonNull(canonicalType, "canonicalType"));
     }

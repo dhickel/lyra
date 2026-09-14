@@ -815,8 +815,7 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
             }
         }
         if (formula instanceof ValueFormula.Declaration declaration
-                && (declaration.declarationRoute().isRoot()
-                    && formula.type().withoutQualifiers() instanceof FunctionType
+                && (formula.type().withoutQualifiers() instanceof FunctionType
                     || formula.type().withoutQualifiers() instanceof ArrayType
                     || formula.type().withoutQualifiers() instanceof TupleType)) {
             Optional<FormulaAlternatives> resolved = declarationResolver.apply(

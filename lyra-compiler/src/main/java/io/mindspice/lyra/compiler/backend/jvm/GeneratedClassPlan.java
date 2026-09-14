@@ -46,6 +46,7 @@ record GeneratedClassPlan(
         String requiredPrefix = switch (kind) {
             case TUPLE_VALUE -> "$lyra$tuple$";
             case NOMINAL_VALUE -> "$lyra$nominal$";
+            case NOMINAL_MEMBER_DELEGATE -> "$lyra$delegate$";
             case FUNCTION_INTERFACE -> "$lyra$fn$";
             case CELL -> "$lyra$cell$";
             case CLOSURE -> "$lyra$closure$";
@@ -130,7 +131,8 @@ record GeneratedClassPlan(
     /** Class-file access planned independently from member visibility. */
     public GeneratedMemberVisibility visibility() {
         return switch (kind) {
-            case NOMINAL_VALUE, TUPLE_VALUE, FUNCTION_INTERFACE, MODULE_FACADE ->
+            case NOMINAL_VALUE, NOMINAL_MEMBER_DELEGATE, TUPLE_VALUE,
+                    FUNCTION_INTERFACE, MODULE_FACADE ->
                     GeneratedMemberVisibility.PUBLIC;
             case CELL, CLOSURE, MODULE_STATE -> GeneratedMemberVisibility.PACKAGE;
         };
@@ -151,6 +153,35 @@ record GeneratedClassPlan(
             case NOMINAL_VALUE -> {
                 if (!interfaces.isEmpty() || !annotations.isEmpty()) {
                     throw new IllegalArgumentException("nominal class cannot have interfaces or annotations");
+                }
+            }
+            case NOMINAL_MEMBER_DELEGATE -> {
+                if (!annotations.isEmpty() || interfaces.size() != 1) {
+                    throw new IllegalArgumentException("nominal member delegate must implement exactly one function interface");
+                }
+                requireKinds(memberKinds, Set.of(
+                        GeneratedMemberKind.NOMINAL_MEMBER_DELEGATE_CONSTRUCTOR,
+                        GeneratedMemberKind.NOMINAL_MEMBER_DELEGATE_INVOKE), "nominal member delegate");
+                requireExactlyOne(members, GeneratedMemberKind.NOMINAL_MEMBER_DELEGATE_CONSTRUCTOR,
+                        "nominal member delegate constructor");
+                requireExactlyOne(members, GeneratedMemberKind.NOMINAL_MEMBER_DELEGATE_INVOKE,
+                        "nominal member delegate invocation");
+                GeneratedMemberPlan constructor = members.stream()
+                        .filter(value -> value.kind() == GeneratedMemberKind.NOMINAL_MEMBER_DELEGATE_CONSTRUCTOR)
+                        .findFirst().orElseThrow();
+                GeneratedMemberPlan invoke = members.stream()
+                        .filter(value -> value.kind() == GeneratedMemberKind.NOMINAL_MEMBER_DELEGATE_INVOKE)
+                        .findFirst().orElseThrow();
+                String simpleInterface = interfaces.getFirst()
+                        .substring(interfaces.getFirst().lastIndexOf('.') + 1);
+                if (!simpleInterface.startsWith("$lyra$fn$")
+                        || !constructor.name().equals("<init>")
+                        || !invoke.name().equals("invoke") || !invoke.isPublic()
+                        || constructor.visibility() != GeneratedMemberVisibility.PACKAGE
+                        || constructor.isStatic() || invoke.isStatic()
+                        || constructor.signature().isPresent()
+                        || invoke.signature().isEmpty()) {
+                    throw new IllegalArgumentException("invalid nominal member delegate generated class shape");
                 }
             }
             case TUPLE_VALUE -> {

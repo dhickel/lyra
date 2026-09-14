@@ -259,6 +259,7 @@ public final class CallableSummarySolver {
         boolean callerDependentTarget = call.kind() == CallableCallReference.Kind.CONSTRUCTION || !call.targetParameterIndexes().isEmpty()
                 || !call.targetCaptureIds().isEmpty()
                 || containsCallResult(call.target())
+                || containsCallerCallablePlaceholder(call.target())
                 || containsComputedDeclaration(
                 call.target(), computedCallableDeclarations)
                 || containsExternalDeclaration(
@@ -430,6 +431,7 @@ public final class CallableSummarySolver {
             Set<DeclarationId> externalCallableDeclarations) {
         return call.kind() == CallableCallReference.Kind.CONSTRUCTION || !call.targetParameterIndexes().isEmpty()
                 || !call.targetCaptureIds().isEmpty()
+                || containsCallerCallablePlaceholder(call.target())
                 || containsComputedDeclaration(
                 call.target(), computedCallableDeclarations)
                 || containsExternalDeclaration(
@@ -472,6 +474,14 @@ public final class CallableSummarySolver {
             if ((formula instanceof ValueFormula.Parameter
                     || formula instanceof ValueFormula.Capture)
                     && CallableSummarySet.containsCallableType(formula.type())) {
+                return true;
+            }
+            if (formula instanceof ValueFormula.Declaration declaration
+                    && !declaration.declarationRoute().isRoot()
+                    && formula.type().withoutQualifiers() instanceof FunctionType) {
+                // A callable selected from an external aggregate/nominal root
+                // has no static declaration-to-lambda edge. Preserve the exact
+                // projection for canonical caller-time object/route recovery.
                 return true;
             }
             if (formula instanceof ValueFormula.Lambda lambda

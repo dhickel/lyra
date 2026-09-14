@@ -52,6 +52,7 @@ final class LegacySchema1EncodingTest {
         String current = compileMetadataJson();
         assertTrue(current.startsWith("{\"schemaVersion\":1,\"languageContractVersion\":2,"),
                 current.substring(0, Math.min(80, current.length())));
+        assertTrue(current.contains("\"runtimeAbi\":{\"major\":1,\"minor\":1}"), current);
         String legacy = new String(getClass().getClassLoader().getResourceAsStream(
                 "legacy-artifact-v1-normal.json").readAllBytes(), StandardCharsets.UTF_8);
         assertNotEquals(legacy, current);

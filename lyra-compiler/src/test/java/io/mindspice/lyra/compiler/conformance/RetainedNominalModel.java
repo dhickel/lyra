@@ -20,7 +20,8 @@ import java.util.SplittableRandom;
  * (the number of completed mode rotations).  Ten profiles rotate, so every
  * valid campaign budget (which always runs at least ten retained cases per
  * seed) executes every profile, every operation name, and the four pinned
- * issue-#7 {@code LYR-LINK} observation shapes exactly once or more.</p>
+ * issue-#7 Unit/intrinsic observation shapes (exact Unit values and one
+ * actual namespace-member callable invocation) exactly once or more.</p>
  */
 final class RetainedNominalModel {
     private RetainedNominalModel() { }
@@ -38,6 +39,7 @@ final class RetainedNominalModel {
             "array", "tuple-callables", "index", "string-index", "length", "nilable-index",
             "declare-rebind", "block-shadow", "overwritten-rebind",
             "conditional", "unit-conditional", "coalesce", "match", "match-guard",
+            "nil-member-annotate", "nil-member-coalesce", "nil-member-narrow", "nil-member-match",
             "range", "construct", "construct-args",
             "alias-preserved", "shared-result", "fresh-result", "same-slot",
             "distinct-instances",
@@ -98,7 +100,8 @@ final class RetainedNominalModel {
             case "composites" -> List.of("array", "tuple-callables", "index", "string-index", "length",
                     "nilable-index");
             case "sequences" -> List.of("declare-rebind", "block-shadow", "overwritten-rebind");
-            case "alternatives" -> List.of("conditional", "unit-conditional", "coalesce", "match", "match-guard");
+            case "alternatives" -> List.of("conditional", "unit-conditional", "coalesce", "match", "match-guard",
+                    "nil-member-annotate", "nil-member-coalesce", "nil-member-narrow", "nil-member-match");
             case "ranges-construct" -> List.of("range", "conversion", "construct", "construct-args", "aggregate-call");
             case "fresh" -> List.of("alias-preserved", "shared-result", "fresh-result", "same-slot",
                     "distinct-instances");
@@ -283,6 +286,10 @@ final class RetainedNominalModel {
                     let @pub coalesced :I32 = (maybe : %dI32)
                     let @pub matched :I32 = (match %dI32 %dI32 -> %dI32 _ -> %dI32)
                     let @pub guarded :I32 = (match %dI32 %dI32 when #T -> %dI32 _ -> %dI32)
+                    let @pub present :@nil I32 = maybe
+                    let @pub absent :@nil I32 = #NIL
+                    let @pub narrowable :@nil I32 = maybe
+                    let @pub matchable :@nil I32 = #NIL
                 }
                 """.formatted(k0, k1, q, m0, m0, m1, m2, m0, m0, m1, m2);
         List<MemberExpectation> members = List.of(
@@ -290,14 +297,27 @@ final class RetainedNominalModel {
                 new MemberExpectation("Box", "unitCond", "Alternative", 2),
                 new MemberExpectation("Box", "coalesced", "Alternative", 1),
                 new MemberExpectation("Box", "matched", "Alternative", 2),
-                new MemberExpectation("Box", "guarded", "Alternative", 2));
+                new MemberExpectation("Box", "guarded", "Alternative", 2),
+                new MemberExpectation("Box", "present", "Reference", 0),
+                new MemberExpectation("Box", "absent", "Value", 0),
+                new MemberExpectation("Box", "narrowable", "Reference", 0),
+                new MemberExpectation("Box", "matchable", "Value", 0));
         int coalesced = nilable ? q : maybeValue;
+        int annotated = nilable ? 0 : 1;
+        int narrowed = nilable ? 0 : maybeValue;
         int sum = k0 + coalesced * 10 + m1 * 100 + m1 * 1000;
         List<Step> steps = List.of(
                 new Step("let box :Box = :Box[]", "declared", "", ""),
                 new Step("(+ box:.conditional (* box:.coalesced 10I32) (* box:.matched 100I32) (* box:.guarded 1000I32))",
                         "value", "I32", Integer.toString(sum)),
-                new Step("box:.unitCond", "declared", "", ""));
+                new Step("box:.unitCond", "declared", "", ""),
+                new Step("{ let v :@nil I32 = box:.present ((!= v #NIL) -> 1I32 : 0I32) }",
+                        "value", "I32", Integer.toString(annotated)),
+                new Step("(box:.absent : " + q + "I32)", "value", "I32", Integer.toString(q)),
+                new Step("(box:.narrowable narrowed -> narrowed : 0I32)",
+                        "value", "I32", Integer.toString(narrowed)),
+                new Step("(match box:.matchable #NIL -> 1I32 _ -> 0I32)",
+                        "value", "I32", "1"));
         return new Plan("alternatives", producer, members, steps, "", retainedOrdinal);
     }
 
@@ -376,15 +396,17 @@ final class RetainedNominalModel {
                 new MemberExpectation("LoopC", "looped", "Loop", 0),
                 new MemberExpectation("Intrinsic", "printed", "Call", 1),
                 new MemberExpectation("Intrinsic", "printer", "Reference", 0));
-        // Issue #7 pinned shapes: construction succeeds, observation fails with LYR-LINK.
+        // Issue #7 flipped inventory: construction executes each Unit initializer
+        // exactly once, and later observations read the exact Unit values; the
+        // namespace-member case actually invokes the retained callable.
         List<Step> steps = List.of(
                 new Step("let loopC :LoopC = :LoopC[] let intrinsic :Intrinsic = :Intrinsic[]",
                         "declared", "", "", List.of("construction-effects")),
-                new Step("loopC:.iterated", "failure", "", "LYR-LINK"),
-                new Step("loopC:.looped", "failure", "", "LYR-LINK"),
-                new Step("intrinsic:.printed", "failure", "", "LYR-LINK"),
-                new Step("intrinsic::printer[\"member\"]", "failure", "", "LYR-LINK"));
-        return new Plan("pinned-unit", producer, members, steps, "probe\n", retainedOrdinal);
+                new Step("loopC:.iterated", "value", "Unit", ""),
+                new Step("loopC:.looped", "value", "Unit", ""),
+                new Step("intrinsic:.printed", "value", "Unit", ""),
+                new Step("intrinsic::printer[\"member\"]", "value", "Unit", ""));
+        return new Plan("pinned-unit", producer, members, steps, "probe\nmember\n", retainedOrdinal);
     }
 
     private static Plan failures(SplittableRandom random, int retainedOrdinal) {

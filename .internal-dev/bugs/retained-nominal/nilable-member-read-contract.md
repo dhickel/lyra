@@ -38,8 +38,8 @@ Observed while fixing the retained nilable-element array-index crash (`.internal
 
 ## Status
 
-Open. Out of scope for the phase-4 campaign work that discovered it; not caused by the retained transfer algebra, which now transfers and certifies nilable member values correctly.
+Fixed by Tranche 3 issue-#8 work. `TypedSemanticProvenance.memberType` now derives nominal member-read contracts (including nilability) from the exact resolved schema member, and `IrValidator` accepts producer-generation nil provenance of retained member reads only through `SessionFlowCertificate.certifiesNil`. Same- and cross-generation annotated reads, coalescing, predicate narrowing and `#NIL` value match compile and execute; nilable receivers, mismatched annotations, forged member links and invented match narrowing remain structured failures, and no valid case reaches `LYC-IR-003`. Covered by `NilableMemberReadContractTest`, `NominalBytecodeTest.nilableMemberReadContractsCompileAndExecuteInOneGeneration`, `NominalSessionTest` cross-generation positives/negatives, and the retained fuzz model's `alternatives` profile nilable member-read operations.
 
 ## Next Action
 
-Derive the nilable member contract at the IR/flow boundary for member reads and document the annotated-read form in the language contract; add positive and negative coverage in the nominal semantic and session suites once the derivation exists.
+Archive this report under the workflow contract once the accompanying changelog and validation evidence are committed.

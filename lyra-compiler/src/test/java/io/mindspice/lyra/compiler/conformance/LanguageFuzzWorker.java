@@ -971,6 +971,7 @@ public final class LanguageFuzzWorker {
             case "Bool" -> Boolean.parseBoolean(expected);
             case "Char" -> expected.charAt(0);
             case "String" -> expected;
+            case "Unit" -> io.mindspice.lyra.runtime.LyraUnit.INSTANCE;
             default -> throw new IllegalArgumentException("Unsupported retained observation type: " + type);
         };
     }

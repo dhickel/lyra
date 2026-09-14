@@ -134,7 +134,7 @@ class FuzzInfrastructureTest {
             covered.addAll(RetainedNominalModel.opsAt(retainedOrdinal));
             if (profile.equals("pinned-unit")) {
                 assertTrue(RetainedNominalModel.opsAt(retainedOrdinal).containsAll(pinned),
-                        "The pinned issue-#7 LYR-LINK shapes must stay in the retained rotation");
+                        "The pinned issue-#7 Unit/intrinsic inventory shapes must stay in the retained rotation");
             }
             if (profile.equals("values")) {
                 assertTrue(RetainedNominalModel.opsAt(retainedOrdinal).containsAll(negatives),

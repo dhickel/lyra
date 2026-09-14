@@ -393,6 +393,22 @@ public final class IrValidator {
                     });
         }
 
+        /**
+         * Retained nil provenance is accepted only when the exact producer
+         * evidence (site, span and route) is carried by the compiler-issued
+         * session certificate.  A mismatched span for a current-graph site is
+         * never certified; only provenance whose site is absent from this
+         * graph can fall back to the certificate.
+         */
+        private boolean retainedNilSite(io.mindspice.lyra.compiler.semantic.flow.NilProvenance nil) {
+            if (flowSiteSpans.containsKey(nil.sourceSite())) {
+                return false;
+            }
+            return semantic.resolvedGraph().sessionFlowCertificate()
+                    .map(certificate -> certificate.certifiesNil(nil))
+                    .orElse(false);
+        }
+
         private void validateFlowSiteEvidence(IrFlowMetadata metadata) {
             for (var event : metadata.events()) {
                 if (event.siteId().isEmpty()) {
@@ -499,7 +515,8 @@ public final class IrValidator {
             }
             for (var nil : metadata.nilProvenance()) {
                 SourceSpan expected = flowSiteSpans.get(nil.sourceSite());
-                if (expected == null || !expected.equals(nil.sourceSpan())) {
+                if ((expected == null || !expected.equals(nil.sourceSpan()))
+                        && !retainedNilSite(nil)) {
                     add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK, nil.sourceSpan(),
                             "nil provenance does not retain its exact source site");
                 }

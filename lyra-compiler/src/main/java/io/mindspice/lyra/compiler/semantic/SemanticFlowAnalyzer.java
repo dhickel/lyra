@@ -3018,7 +3018,7 @@ public final class SemanticFlowAnalyzer {
                             if (selected.isEmpty()
                                     || !selected.rootType().withoutQualifiers().equals(
                                     formula.type().withoutQualifiers())
-                                    || callable && !hasCanonicalCallableValue(selected)) {
+                                    || callable && !hasRecoverableCallableValue(selected)) {
                                 return Optional.empty();
                             }
                         } catch (IllegalArgumentException incompatibleRoute) {
@@ -3040,7 +3040,7 @@ public final class SemanticFlowAnalyzer {
                             if (selected.isEmpty()
                                     || !selected.rootType().withoutQualifiers().equals(
                                     formula.type().withoutQualifiers())
-                                    || callable && !hasCanonicalCallableValue(selected)) {
+                                    || callable && !hasRecoverableCallableValue(selected)) {
                                 return Optional.empty();
                             }
                         } catch (IllegalArgumentException incompatibleRoute) {
@@ -3086,7 +3086,7 @@ public final class SemanticFlowAnalyzer {
                     if (selected.isEmpty()
                             || !selected.rootType().withoutQualifiers().equals(
                             formula.type().withoutQualifiers())
-                            || callable && !hasCanonicalCallableValue(selected)) {
+                            || callable && !hasRecoverableCallableValue(selected)) {
                         return Optional.empty();
                     }
                 } catch (IllegalArgumentException incompatibleRoute) {
@@ -3096,7 +3096,7 @@ public final class SemanticFlowAnalyzer {
                 return Optional.of(resolved);
             }
 
-            private boolean hasCanonicalCallableValue(
+            private boolean hasRecoverableCallableValue(
                     FormulaAlternatives alternatives) {
                 return !alternatives.isEmpty()
                         && alternatives.formulas().stream().allMatch(formula -> {
@@ -3108,6 +3108,14 @@ public final class SemanticFlowAnalyzer {
                                         declaration.declarationId()).isPresent()
                                         || summaries.intrinsicDeclarations().containsKey(
                                         declaration.declarationId());
+                            }
+                            if (formula instanceof ValueFormula.ObjectReference object) {
+                                // The summary object resolver will re-read this
+                                // exact compiler-certified object route from the
+                                // current flow heap before admitting a callable.
+                                return object.resultRoute().isRoot()
+                                        && !object.sourceRoute().isRoot()
+                                        && object.sourceRoute().isExact();
                             }
                             return formula instanceof ValueFormula.Scalar scalar
                                     && scalar.isNil();

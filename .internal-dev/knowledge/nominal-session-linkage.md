@@ -10,6 +10,9 @@ session generations.
 - `.internal-dev/specifications/repl.md`
 - `.internal-dev/specifications/backend-runtime.md`
 - `lyra-compiler/src/main/java/io/mindspice/lyra/compiler/api/SessionFlowCertificate.java`
+- `lyra-compiler/src/main/java/io/mindspice/lyra/compiler/semantic/SemanticFlowAnalyzer.java`
+- `lyra-compiler/src/main/java/io/mindspice/lyra/compiler/semantic/flow/CallableSummarySet.java`
+- `lyra-compiler/src/main/java/io/mindspice/lyra/compiler/semantic/flow/CallableSummarySolver.java`
 - `lyra-runtime/src/main/java/io/mindspice/lyra/runtime/SessionStorageDomain.java`
 - `lyra-runtime/src/main/java/io/mindspice/lyra/runtime/SessionTypeLoader.java`
 - `lyra-repl/src/test/java/io/mindspice/lyra/repl/NominalSessionTest.java`
@@ -32,7 +35,11 @@ session generations.
   before their staged loader owns the class. Validate the generic inventory eagerly
   and rely on JVM definition verification when the staged class is actually loaded.
 - Snapshot inspection uses generated public field accessors only. It never calls
-  source methods or `toString`, and it omits private class members.
+  source methods or `toString`, and it omits private class members. Occurrence-
+  scoped callable delegates are fresh wrappers, so snapshot alias/reference
+  tracking must compare their selected raw closure identity rather than wrapper
+  identity; this remains non-authorizing because route checks still happen before
+  each function snapshot.
 
 ## Retained certificate transfer
 
@@ -111,30 +118,70 @@ session generations.
   at the IR boundary unless that boundary also uses the consumer's source-derived
   route proof (`LYC-IR-003`, foreign lambda creation site).
 - Cross-generation initializer coverage needs an observation after construction.
-  The four namespace/Unit inventory cases with a producer `std->io` import construct
-  successfully in generation 2 but fail observation in generation 3 with `LYR-LINK`
-  (unrelated nominal artifact/session), independent of the transfer algebra.
-- Retained nilable member values transfer and certify correctly, but a read of a
-  nilable nominal member that must consume a nilable contract (an explicit
-  `:@nil` annotation, coalesce, narrowing-predicate or match form over
-  `box:.member`) is rejected at the IR boundary with the structured `LYC-IR-003`
-  because the member-read path has no independently derived nilable contract.
-  The bare (unannotated) read path works for the nilable case and is covered by the retained nilable-element index
-  tests. The fix is contract derivation at the IR/flow boundary for member
-  reads, not a relaxation of the retained transfer algebra (issue #8).
+  The four namespace/Unit inventory cases with a producer `std->io` import
+  construct successfully in generation 2 but failed observation in generation 3
+  with `LYR-LINK` (unrelated nominal artifact/session), independent of the
+  transfer algebra. The fix (issue #7) anchors each session-constructed nominal
+  object to its exact session/root identity at construction and wraps
+  callable-typed member reads in occurrence-scoped route delegates; the four
+  cases now observe exact Unit values and actually invoke the namespace-member
+  callable with exactly-once construction effects.
+- Retained nilable member values already transferred and certified correctly;
+  issue #8 was the independently derived read contract. Typed semantic sealing
+  and IR validation now re-derive the exact schema member type (including
+  `@nil`), while producer nil provenance is admitted only through the exact
+  session certificate. Annotation, coalesce, predicate narrowing and match
+  therefore work without relaxing the retained transfer algebra.
 - Do not fix that by widening `SessionStorageDomain.Linkage.sourceLocal` to count
   real source modules while ignoring the intrinsic module: the intended posture is
   that an importing graph is not eligible for the session-authentication bridge, and
   `SessionClosureAuthorityTest` pins it ("imported graph authority is not certified").
   A generated nominal instance is owned by its creating submission's authority, so
-  the correct fix anchors that ownership to the session root (or adds an authority
-  path independent of the importing-graph rule) instead of relaxing the classifier.
+  the fix anchors that ownership to the session root/epoch identity instead of
+  relaxing the classifier. `sourceLocal` remains untouched; once a session contains
+  an importing generation, every later generation's artifact records the intrinsic
+  module and the general cross-generation callable bridge stays closed for all of
+  them - only nominal-object reads (anchor) and field-route delegates cross that
+  boundary.
 - A nominal-only same-workspace predicate is insufficient: it admits the object and
   fixes Unit-valued member reads, but a callable member then correctly fails the
-  separate closure-authentication boundary. A complete solution needs route-scoped
-  delegation for a callable reached through an authenticated nominal field, or a
-  session-root construction authority that owns installed field values, while the
-  same imported closure presented directly must remain rejected.
+  separate closure-authentication boundary. The complete fix carries route-scoped
+  delegation for a callable reached through an authenticated nominal field: a
+  generated per-member delegate class (shared structural kind `$lyra$delegate$`,
+  session-only) implements the exact function interface and accepts only an
+  opaque single-use route issued by the generated field-read boundary. The
+  route binds the source object, exact schema field index/signature and selected
+  value; caller-minted objects and reused route evidence fail. `LyraClosureSupport`
+  re-authenticates the exact object for the invoking caller, the active epoch/root,
+  OPEN producer, schema field and signature before returning the selected target;
+  the same imported closure presented directly remains rejected. The delegate
+  is occurrence-scoped authority, not a new closure identity: `eq?` compares
+  the selected raw `LyraClosureIdentity`, so repeated reads and a delegate/raw
+  occurrence of one selection compare identical while a saved delegate keeps
+  its old selection after field replacement. Callable leaves inside aggregate
+  members stay raw.
+- A delegated callable written back through callable nominal fields must never
+  be stored as a recursively nested delegate chain. Normalize every selected
+  delegate to one raw `LyraClosure` plus a flat immutable identity-deduplicated
+  list of exact source-object/field-index/signature dependencies. Validate the
+  list iteratively at claim, snapshot, authentication and direct invocation;
+  each dependency rechecks its own producer/session-root/epoch obligations and
+  no check rereads mutable storage. Alternating routes must retain both objects'
+  dependencies even when repeated same-route assignments deduplicate.
+- Generated callable field writes need an authority boundary distinct from a
+  normal raw callable store. After exact receiver/private/mutable/schema checks,
+  authenticate a replacement under the actual generated caller; an existing raw
+  value owned by the nominal producer remains admissible only through that exact
+  writable field route. Store the field's generated delegate so later reads can
+  carry the route without changing `sourceLocal` or general callable
+  authentication. The raw replacement producer lifecycle remains independently
+  mandatory, saved old selections remain old, and new reads select the stored
+  replacement.
+- Function identity inspection must not authenticate or expose a callable.
+  `LyraClosureSupport.sameIdentity` returns only a boolean over raw closure
+  identities (unwrapping a flat delegate without route/lifecycle checks); all
+  invocation and storage boundaries still perform complete route and producer
+  authentication.
 - Tuple-nested array writes rooted at constructor `self` are aggregate mutations,
   not rebinding of the immutable `self` declaration. Resolver, type checker,
   topology validation and IR validation must classify that root consistently.
@@ -295,6 +342,33 @@ session generations.
   provenance. Do not weaken initialization validation to turn it into a positive;
   a successful runtime contract would need a separately authorized capability
   path across compiler and runtime production code.
+- Function parameter authentication must preserve the authenticated occurrence,
+  not replace it: generated closure parameters and Java facade callable
+  arguments previously stored the authentication helper's returned raw closure
+  into the slot, which silently stripped a route delegate's evidence when the
+  value flowed through a callable boundary. Emit the same single
+  `requireAuthenticated...` call over a duplicate and keep the original value
+  in the slot; a foreign SAM still fails before the store, raw closures are
+  identical either way, and delegates survive parameter/return propagation.
+- A retained nominal root used inside a new lambda is an external declaration,
+  not a lexical capture placeholder. A direct callable member read therefore
+  appears in the summary as a `ValueFormula.Declaration` with an exact non-root
+  nominal-member source route. The solver must classify that projected callable
+  declaration as caller-resolved and defer it; treating only root declarations,
+  parameters and captures as caller-dependent produces `MISSING_CALLABLE_FACT`.
+  At invocation, `CallableSummarySet` resolves the canonical root declaration
+  and may carry an exact non-root `ObjectReference` only long enough for
+  `SummaryObjectResolver` to re-read the exact slot from the current certified
+  heap/schema. Never turn that intermediate into shape/signature authority,
+  scan for a compatible lambda, or accept a root/wildcard object route. This
+  repairs direct invocation and return without changing `sourceLocal` or
+  globally blessing the selected raw closure; see
+  `bugs/retained-nominal/lambda-invoked-retained-member-callable-summary.md`.
+- Occurrence-scoped delegates and `sourceLocal` classify independently.
+  `SessionStorageDomain.Linkage` counts the intrinsic module in every session
+  artifact's module graph once a retained importing producer exists, so every
+  later generation is deliberately non-source-local; the delegate path is the
+  only callable route across that boundary.
 - The resolver can only run the frozen-graph sweep before topology validation
   if graph publication supports deferring that one validator; otherwise the
   topology invariant fires before the structured resolver diagnostic can be

@@ -81,7 +81,8 @@ record GeneratedMemberPlan(
         }
         if (kind == GeneratedMemberKind.FUNCTION_INVOKE
                 || kind == GeneratedMemberKind.FUNCTION_INVOCATION
-                || kind == GeneratedMemberKind.CLOSURE_INVOKE) {
+                || kind == GeneratedMemberKind.CLOSURE_INVOKE
+                || kind == GeneratedMemberKind.NOMINAL_MEMBER_DELEGATE_INVOKE) {
             if (signature.isEmpty()) {
                 throw new IllegalArgumentException(kind + " needs a Lyra signature plan");
             }
@@ -226,7 +227,9 @@ record GeneratedMemberPlan(
         return switch (kind) {
             case NOMINAL_CONSTRUCTOR, NOMINAL_INITIALIZE, NOMINAL_INITIALIZATION_GET,
                     NOMINAL_GET, NOMINAL_SET, NOMINAL_PUBLIC_GET, NOMINAL_PUBLIC_SET,
-                    NOMINAL_STRUCTURAL_EQUAL -> GeneratedMemberVisibility.PUBLIC;
+                    NOMINAL_STRUCTURAL_EQUAL, NOMINAL_MEMBER_DELEGATE_INVOKE ->
+                    GeneratedMemberVisibility.PUBLIC;
+            case NOMINAL_MEMBER_DELEGATE_CONSTRUCTOR -> GeneratedMemberVisibility.PACKAGE;
             case FUNCTION_INVOKE, CLOSURE_INVOKE, FUNCTION_INVOCATION,
                     VALUE_GETTER, FUNCTION_VALUE_GETTER, SETTER, FACTORY,
                     FACTORY_WITH_OPTIONS, METADATA, CLOSE, TUPLE_CONSTRUCTOR,
@@ -331,7 +334,8 @@ record GeneratedMemberPlan(
     private static boolean isConstructorKind(GeneratedMemberKind kind) {
         return switch (kind) {
             case NOMINAL_CONSTRUCTOR, TUPLE_CONSTRUCTOR, CLOSURE_CONSTRUCTOR, CELL_CONSTRUCTOR,
-                    STATE_CONSTRUCTOR, FACADE_CONSTRUCTOR -> true;
+                    STATE_CONSTRUCTOR, FACADE_CONSTRUCTOR,
+                    NOMINAL_MEMBER_DELEGATE_CONSTRUCTOR -> true;
             default -> false;
         };
     }
