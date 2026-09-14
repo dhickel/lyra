@@ -1,4 +1,4 @@
 // match	value	I32	5	unselected match result does not execute
 let zero :I32 = 0
 let bad :Fn<;I32> = (=> | | (% 1 zero))
-let @pub run :Fn<;I32> = (=> | | (match 2 ?? 2 -> 5 ?? _ -> (bad)))
+let @pub run :Fn<;I32> = (=> | | (match 2 2 -> 5 _ -> (bad)))

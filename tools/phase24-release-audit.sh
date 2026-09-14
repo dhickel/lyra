@@ -799,6 +799,10 @@ expected = {
     "Domain11AggregateOwnershipTest", "Domain11ContextualTypingTest",
     "Domain11FlowStateTest", "Domain11InitializationFlowTest", "Domain11SemanticTest",
     "Domain11SealingTest", "TypedIrTest", "ClassFileApiSpikeTest",
+    # Language-contract v2 corpus, coverage guard, and independent replay/oracle evidence.
+    "LanguageCoverageTest", "LanguageConformanceTest", "LanguageAbiTest",
+    "LanguageNumericTest", "LanguageIndexTest", "LanguageBuiltinTest",
+    "MatchFuzzRegressionTest", "PrimitiveTypeInitializationTest",
     "GeneratedTypePlannerTest", "JvmAbiMapperTest", "Phase15SmokeTest",
     "Phase16SmokeTest", "Phase17SmokeTest", "Phase18SmokeTest", "Phase18ArtifactTest",
     "Phase19PublicApiTest", "Phase20IoTest", "Phase22ConformanceTest",

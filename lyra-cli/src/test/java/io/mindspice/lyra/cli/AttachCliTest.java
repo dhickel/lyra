@@ -88,7 +88,7 @@ class AttachCliTest {
         try (RemoteServer server = server(adapter, owner)) {
             Invocation result = invokeWhilePumping(server, owner,
                     new String[] {"attach", server.endpoint().address().toString()},
-                    "source\n:bindings\n:reset\n:history\n:quit\n");
+                    "source\n\\bindings\n\\reset\n\\history\n\\quit\n");
             assertEquals(0, result.status(), result.stderr());
             assertTrue(result.stdout().contains("answer :I32 @mut"), result.stdout());
             assertFalse(result.stdout().contains("remote stdout"), result.stdout());
@@ -107,7 +107,7 @@ class AttachCliTest {
         try (RemoteServer server = server(adapter, owner)) {
             Invocation result = invokeWhilePumping(server, owner,
                     new String[] {"attach", server.endpoint().address().toString()},
-                    ":type let @pub notExecuted :I32 = 1\n:reload missing\n:quit\n");
+                    "\\type let @pub notExecuted :I32 = 1\n\\reload missing\n\\quit\n");
             assertEquals(2, result.status());
             assertTrue(result.stderr().contains("LYR-REPL-TYPE-UNSUPPORTED"), result.stderr());
             assertTrue(result.stderr().contains("status=UNAVAILABLE"), result.stderr());
@@ -124,10 +124,10 @@ class AttachCliTest {
         try (RemoteServer server = server(adapter, owner)) {
             Invocation result = invokeWhilePumping(server, owner,
                     new String[] {"attach", server.endpoint().address().toString()},
-                    ":reload\n:quit\n");
+                    "\\reload\n\\quit\n");
             assertEquals(2, result.status());
             assertTrue(result.stderr().contains("LYR-REPL-USAGE"), result.stderr());
-            assertTrue(result.stderr().contains(":reload expects 1 argument"), result.stderr());
+            assertTrue(result.stderr().contains("\\reload expects 1 argument"), result.stderr());
             assertEquals(0, adapter.evaluations.get());
         }
     }
@@ -143,7 +143,7 @@ class AttachCliTest {
         try (RemoteServer server = server(adapter, owner)) {
             Invocation result = invokeWhilePumping(server, owner,
                     new String[] {"attach", server.endpoint().address().toString()},
-                    ":load \"" + serverFile + "\"\n:bindings\n:quit\n");
+                    "\\load \"" + serverFile + "\"\n\\bindings\n\\quit\n");
             assertEquals(0, result.status(), result.stderr());
             assertEquals(1, adapter.loadedPaths.size(), adapter.loadedPaths.toString());
             assertEquals(serverFile.toString(), adapter.loadedPaths.getFirst());

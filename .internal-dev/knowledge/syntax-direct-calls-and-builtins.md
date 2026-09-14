@@ -10,10 +10,23 @@ Do not equate :: syntax with user-defined ordinary functions only.
 - .internal-dev/specifications/backend-runtime.md, intrinsic std->io module.
 
 ## Key Takeaways
-The grammar recognizes :: followed by an identifier and bracket arguments without deciding whether the target is user-defined or built-in. A proposed compiler-recognized match form must preserve selective evaluation, but that implementation requirement does not prohibit the proposed ::match[...] spelling. The earlier recommendation to avoid :: solely because match is not an ordinary eager function was unjustified.
+`::` is reserved for direct calls of resolved source function or method names in the
+local or imported space. Compiler-recognized built-ins are not callable values and
+never take `::`: `match`, `cond`, `iter` and `while` use their bare bracket spelling
+(`match[...]`, `iter[...]`, `while[...]`), and the operators, primitive/`String`
+conversions and `Array`/`Tuple` literal forms already use bare bracket application.
+The `::match[...]`, `::iter[...]` and `::while[...]` spellings, including qualified
+(`ns->::match[...]`) and receiver (`x::match[...]`) readings, are rejected with the
+structured obsolete-special-form diagnostic (`LYC-PARSE-012`).
+`cond` is a reserved parenthesized-only special form; `cond[...]` is invalid.
 
 ## Project Relevance
-When discussing new forms, distinguish surface notation from evaluation semantics. The user subsequently authorized implementation of both match spellings; the accepted contract is now recorded in language-core.md and decisions.md. Implementation and validation status must be checked separately.
+Surface notation tracks semantics: a built-in that is not an ordinary eager callable
+must not look like one. Do not infer invocation authority from a matching name,
+spelling or descriptor. Language contract version 2 settled this; see
+language-core.md, grammar_spec.md and the last decisions.md entry. Note the earlier
+recorded recommendation that `::match[...]` was acceptable is superseded: it was
+reversed by the owner interview recorded in the issues-#6-#13 plan.
 
 ## Direct :: calls vs callable-value calls
 
@@ -37,4 +50,6 @@ per call). emitCallableCall already computes targetDeclaration() but only uses i
 intrinsics. See bugs/callable-call-per-call-authentication-overhead.
 
 ## Open Questions
-Advanced binding, destructuring, and type-pattern designs remain deferred. The initial value/conditional match syntax and semantics were settled by the user; see specifications/language-core.md.
+Advanced binding, destructuring, and type-pattern designs remain deferred. Value
+`match` and `cond` syntax and semantics are settled by the current language
+contract; see specifications/language-core.md.

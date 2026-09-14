@@ -2,7 +2,13 @@ package io.mindspice.lyra.runtime;
 
 /** Stable contract constants shared by the runtime and generated artifacts. */
 public final class LyraRuntimeConstants {
-    public static final int LANGUAGE_CONTRACT_VERSION = 1;
+    /**
+     * Source-language contract version.  Version 2 introduced marker-free match arms,
+     * the parenthesized {@code cond} form, bare bracket spellings for compiler-recognized
+     * built-ins, adjacent bare negative numeric literals, and explicit {@code :Type[...]}
+     * nominal construction.
+     */
+    public static final int LANGUAGE_CONTRACT_VERSION = 2;
     public static final int LANGUAGE_VERSION = LANGUAGE_CONTRACT_VERSION;
     public static final RuntimeAbi RUNTIME_ABI = RuntimeAbi.CURRENT;
     public static final int RUNTIME_ABI_MAJOR = RuntimeAbi.CURRENT_MAJOR;

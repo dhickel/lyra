@@ -528,24 +528,18 @@ public final class SelfAliasProvenance {
                 restore(joined);
                 return valueProvenance.join(fallbackProvenance);
             }
+            if (expression instanceof SyntaxNode.Cond cond) {
+                return walkArms(cond.arms());
+            }
+            if (expression instanceof SyntaxNode.ExplicitConstruction construction) {
+                for (SyntaxNode.Expression argument : construction.arguments().expressions()) {
+                    walkExpression(argument);
+                }
+                return ValueProvenance.EMPTY;
+            }
             if (expression instanceof SyntaxNode.Match match) {
-                match.subject().ifPresent(this::walkExpression);
-                Map<DeclarationId, ValueProvenance> continuation = snapshot();
-                ValueProvenance result = ValueProvenance.EMPTY;
-                List<Map<DeclarationId, ValueProvenance>> armStates = new ArrayList<>();
-                for (SyntaxNode.MatchArm arm : match.arms()) {
-                    restore(continuation);
-                    arm.pattern().ifPresent(this::walkExpression);
-                    arm.guard().ifPresent(this::walkExpression);
-                    result = result.join(walkExpression(arm.result()));
-                    armStates.add(snapshot());
-                }
-                Map<DeclarationId, ValueProvenance> joined = new LinkedHashMap<>();
-                for (Map<DeclarationId, ValueProvenance> armState : armStates) {
-                    join(joined, armState);
-                }
-                restore(joined);
-                return result;
+                walkExpression(match.subject());
+                return walkArms(match.arms());
             }
             if (expression instanceof SyntaxNode.ArrayLiteral array) {
                 ValueProvenance result = ValueProvenance.EMPTY;
@@ -912,6 +906,26 @@ public final class SelfAliasProvenance {
             if (changedLambdaSpanThisPass == null) {
                 changedLambdaSpanThisPass = span;
             }
+        }
+
+        /** Walks ordered match/cond arms with per-arm state restoration. */
+        private ValueProvenance walkArms(List<SyntaxNode.MatchArm> arms) {
+            Map<DeclarationId, ValueProvenance> continuation = snapshot();
+            ValueProvenance result = ValueProvenance.EMPTY;
+            List<Map<DeclarationId, ValueProvenance>> armStates = new ArrayList<>();
+            for (SyntaxNode.MatchArm arm : arms) {
+                restore(continuation);
+                arm.pattern().ifPresent(this::walkExpression);
+                arm.guard().ifPresent(this::walkExpression);
+                result = result.join(walkExpression(arm.result()));
+                armStates.add(snapshot());
+            }
+            Map<DeclarationId, ValueProvenance> joined = new LinkedHashMap<>();
+            for (Map<DeclarationId, ValueProvenance> armState : armStates) {
+                join(joined, armState);
+            }
+            restore(joined);
+            return result;
         }
 
         /** Monotone weak update: a declaration retains every reachable value. */

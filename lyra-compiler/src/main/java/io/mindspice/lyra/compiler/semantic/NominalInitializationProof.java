@@ -228,7 +228,7 @@ public final class NominalInitializationProof implements ImmutablePhaseArtifact 
                     }
                     return Value.NONE;
                 }
-                case MATCH -> {
+                case MATCH, COND -> {
                     var match = expression.match().orElseThrow();
                     match.subjectChild().ifPresent(index -> evaluate(children.get(index), state));
                     List<State> completed = new ArrayList<>();

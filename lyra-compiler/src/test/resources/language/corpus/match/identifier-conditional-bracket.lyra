@@ -1,4 +1,4 @@
-// match	value	I32	49	identifier conditional predicates can select lazy bracket match results
+// match	value	I32	49	identifier conditional predicates can select lazy cond results
 let choose :Fn<Bool,I32;I32> = (=> |enabled divisor|
-  (enabled -> ::match[_ ?? #T -> 42 ?? _ -> (% 1 divisor)] : 7))
+  (enabled -> (cond #T -> 42 _ -> (% 1 divisor)) : 7))
 let @pub run :Fn<;I32> = (=> || (+ (choose #T 0) (choose #F 0)))

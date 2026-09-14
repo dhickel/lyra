@@ -296,6 +296,24 @@ public final class TypedIrTest {
                         IrEvaluationOrder.EdgeKind.MATCH_RESULT,
                         IrEvaluationOrder.EdgeKind.MATCH_RESULT),
                 order.edges().stream().map(IrEvaluationOrder.Edge::kind).toList());
+
+        TypedIr condIr = phase(TypedIrBuilder.lower(typed(
+                "let value = (cond #F -> 10 #T -> 20 _ -> 30)")));
+        IrNode.Match cond = IrTraversal.preOrder(condIr.rootModule().body()).stream()
+                .filter(IrNode.Match.class::isInstance).map(IrNode.Match.class::cast)
+                .findFirst().orElseThrow();
+        assertEquals(IrNode.MatchMode.CONDITIONAL, cond.mode());
+        assertTrue(cond.subject().isEmpty());
+        IrEvaluationOrder condOrder = condIr.evaluationOrders().stream()
+                .filter(value -> value.kind() == IrEvaluationOrder.Kind.MATCH)
+                .findFirst().orElseThrow();
+        assertEquals(List.of(
+                        IrEvaluationOrder.EdgeKind.MATCH_PATTERN,
+                        IrEvaluationOrder.EdgeKind.MATCH_RESULT,
+                        IrEvaluationOrder.EdgeKind.MATCH_PATTERN,
+                        IrEvaluationOrder.EdgeKind.MATCH_RESULT,
+                        IrEvaluationOrder.EdgeKind.MATCH_RESULT),
+                condOrder.edges().stream().map(IrEvaluationOrder.Edge::kind).toList());
     }
 
     @Test

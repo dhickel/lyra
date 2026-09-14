@@ -60,11 +60,11 @@ java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar compile ROOT --repl --format
 
 ## REPL status
 
-The plain/JLine consoles, non-executing `:type`, credential-free loopback protocol v2, persistent imported modules, explicit `:reload`, actual application attachment, and deterministic debug-capable packaging are implemented and tested end to end.
+The plain/JLine consoles, non-executing `\type`, credential-free loopback protocol v2, persistent imported modules, explicit `\reload`, actual application attachment, and deterministic debug-capable packaging are implemented and tested end to end.
 
 Sessions retain exact typed scalar, aggregate and compiler-certified callable storage across submissions. For example, three inputs `let @mut count :I32 = 1`, `count := 2`, and `count` return `I32` value `2` without rerunning earlier source. Arrays and tuples containing scalars or further data aggregates persist through exact typed storage and shared structural JVM classes; rebinding selects a new value without changing earlier aliases, and completed data mutations survive a later failure or cancellation without publishing failed declarations.
 
-Imported modules initialize exactly once per pinned source revision, execute real `std->io` through the session, and stay live across later submissions, diamonds, aliases and re-exports. Explicit `:reload MODULE` rebuilds only the REPL-owned reachable closure from fresh source and publishes new defaults atomically, while old captured values, selective imports and compiled references keep their original producers. Local startup is an empty scratch workspace: `repl [DIR]` and `--source-root` configure module discovery only and never run `main`.
+Imported modules initialize exactly once per pinned source revision, execute real `std->io` through the session, and stay live across later submissions, diamonds, aliases and re-exports. Explicit `\reload MODULE` rebuilds only the REPL-owned reachable closure from fresh source and publishes new defaults atomically, while old captured values, selective imports and compiled references keep their original producers. Local startup is an empty scratch workspace: `repl [DIR]` and `--source-root` configure module discovery only and never run `main`.
 
 `run ROOT --repl` and explicit `-Dlyra.repl.enabled=true` attach a genuinely running REPL-capable application over an unauthenticated loopback-only listener (ephemeral port by default). Public `@mut` root exports are live bindings, owner-thread safe points service at most one request, cancellation targets only its evaluation, and root-held values/type domains survive reset, disconnect and service reopening until root close. Debug-capable classes/thin/bundled artifacts embed original sources, the canonical resolution topology and reproducible options, and exclude CLI/JLine/tests and credential material.
 
@@ -72,9 +72,9 @@ This is a trusted development interface, not a sandbox: any process able to reac
 
 ## Scope
 
-The implementation preserves strict source order, typed primitive JVM descriptors, deterministic metadata/debug maps, source-mapped failures, owner-thread lifecycle checks, live trusted-Java array escape behavior, and the pinned `std->io` intrinsic. Value matching and conditional chains use `(match subject ?? pattern -> result ... ?? _ -> fallback)` or `::match[subject ...]`; use `_` as the subject for truth-tested condition arms. Traditional arms may include `when` guards. Both modes require a final wildcard, evaluate lazily in source order, and introduce no pattern bindings. `match` and `when` are reserved words.
+The implementation preserves strict source order, typed primitive JVM descriptors, deterministic metadata/debug maps, source-mapped failures, owner-thread lifecycle checks, live trusted-Java array escape behavior, and the pinned `std->io` intrinsic. Value matching uses `(match subject pattern -> result ... _ -> fallback)` or `match[subject pattern -> result ... _ -> fallback]`; lazy truth-tested chains use `(cond condition -> result ... _ -> fallback)`. Match arms may include `when` guards. Both forms require a final wildcard, evaluate lazily in source order, and introduce no pattern bindings. `match`, `cond`, and `when` are reserved words.
 
-User classes/member types, destructuring/type patterns, loops/ranges, generics/macros, dynamic values, bitwise operators, Lyra-to-Java/engine interop, sandboxing, automatic local-root initialization, REPL authentication/hostile-client hardening, serialized IR, additional backends, and optimization levels remain explicitly deferred.
+Destructuring/type patterns, generics/macros, dynamic values, bitwise operators, Lyra-to-Java/engine interop, sandboxing, automatic local-root initialization, REPL authentication/hostile-client hardening, serialized IR, additional backends, and optimization levels remain explicitly deferred.
 
 ## Validation
 

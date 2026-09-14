@@ -29,6 +29,7 @@ public final class Lexer {
             Map.entry("import", TokenKind.IMPORT),
             Map.entry("as", TokenKind.AS),
             Map.entry("match", TokenKind.MATCH),
+            Map.entry("cond", TokenKind.COND),
             Map.entry("iter", TokenKind.ITER),
             Map.entry("while", TokenKind.WHILE),
             Map.entry("struct", TokenKind.STRUCT),
@@ -808,7 +809,10 @@ public final class Lexer {
                     value));
             pendingTrivia.clear();
             previousKind = kind;
-            previousMinusWasUnary = false;
+            // A bracket begins the operand of the unary operator that immediately
+            // preceded it, so keep signed-minimum magnitude permission through
+            // "-[". Every other emitted token consumes or cancels that permission.
+            previousMinusWasUnary = previousMinusWasUnary && kind == TokenKind.LEFT_BRACKET;
         }
 
         private Diagnostic numericOutOfRange(int start, int end, NumericSuffix suffix) {

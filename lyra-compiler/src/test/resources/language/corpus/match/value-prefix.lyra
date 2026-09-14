@@ -4,6 +4,6 @@ let subject :Fn<;I32> = (=> | | { reads := (++ reads) 2 })
 let pattern :Fn<;I32> = (=> | | { reads := (+ reads 10) 2 })
 let guard :Fn<;Bool> = (=> | | { reads := (+ reads 100) #T })
 let @pub run :Fn<;I32> = (=> | | {
-    let chosen :I32 = (match (subject) ?? (+ 1 1) -> 3 ?? (pattern) when (guard) -> 9 ?? _ -> 0)
+    let chosen :I32 = (match (subject) (+ 1 1) -> 3 (pattern) when (guard) -> 9 _ -> 0)
     (+ chosen reads)
 })

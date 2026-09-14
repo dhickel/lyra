@@ -15,18 +15,18 @@ final class ConsoleCommandParser {
         int end = 0;
         while (end < input.length() && !Character.isWhitespace(input.charAt(end))) end++;
         String name = input.substring(0, end);
-        if (!name.startsWith(":")) {
-            throw new ParseFailure("a console command must start with ':'");
+        if (!name.startsWith("\\")) {
+            throw new ParseFailure("a console command must start with '\\'");
         }
         ConsoleCommand.Kind kind = switch (name) {
-            case ":help" -> ConsoleCommand.Kind.HELP;
-            case ":bindings" -> ConsoleCommand.Kind.BINDINGS;
-            case ":type" -> ConsoleCommand.Kind.TYPE;
-            case ":load" -> ConsoleCommand.Kind.LOAD;
-            case ":reload" -> ConsoleCommand.Kind.RELOAD;
-            case ":reset" -> ConsoleCommand.Kind.RESET;
-            case ":history" -> ConsoleCommand.Kind.HISTORY;
-            case ":quit" -> ConsoleCommand.Kind.QUIT;
+            case "\\help" -> ConsoleCommand.Kind.HELP;
+            case "\\bindings" -> ConsoleCommand.Kind.BINDINGS;
+            case "\\type" -> ConsoleCommand.Kind.TYPE;
+            case "\\load" -> ConsoleCommand.Kind.LOAD;
+            case "\\reload" -> ConsoleCommand.Kind.RELOAD;
+            case "\\reset" -> ConsoleCommand.Kind.RESET;
+            case "\\history" -> ConsoleCommand.Kind.HISTORY;
+            case "\\quit" -> ConsoleCommand.Kind.QUIT;
             default -> throw new ParseFailure("unknown command: " + name);
         };
         String remainder = input.substring(end).stripLeading();

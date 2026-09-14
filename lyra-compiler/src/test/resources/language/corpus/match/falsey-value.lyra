@@ -1,3 +1,3 @@
 // match	value	I32	7	value match compares falsey zero as a value rather than a condition
 let value :I32 = 0
-let @pub run :Fn<;I32> = (=> | | (match value ?? 0 -> 7 ?? _ -> 11))
+let @pub run :Fn<;I32> = (=> | | (match value 0 -> 7 _ -> 11))

@@ -1,9 +1,9 @@
-// match	value	I32	37	conditional match bracket spelling treats nil as false
+// match	value	I32	37	cond treats nil as false
 let @mut probes :I32 = 0
 let @nil maybe :I32 = #NIL
 let conditionOne :Fn<;@nil I32> = (=> | | { probes := (+ probes 10) maybe })
 let conditionTwo :Fn<;Bool> = (=> | | { probes := (+ probes 20) #T })
 let @pub run :Fn<;I32> = (=> | | {
-    let chosen :I32 = ::match[_ ?? (conditionOne) -> 4 ?? (conditionTwo) -> 7 ?? _ -> 9]
+    let chosen :I32 = (cond (conditionOne) -> 4 (conditionTwo) -> 7 _ -> 9)
     (+ chosen probes)
 })

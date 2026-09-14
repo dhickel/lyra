@@ -63,16 +63,16 @@ public final class Phase23StructuralBytecodeTest {
                         "let @pub branch :Fn<I32;I32> = (=> |value| ((<= value 0) -> 1 : 2))"),
                 new Fixture("valueMatch", "Fn<I32;I32>", "(I)I", Set.of(Opcode.LOOKUPSWITCH, Opcode.IRETURN),
                         "let @pub valueMatch :Fn<I32;I32> = (=> |value| { let selected :I32 = "
-                                + "(match value ?? 1 -> 11 ?? 2 -> 22 ?? _ -> 33) selected })"),
+                                + "(match value 1 -> 11 2 -> 22 _ -> 33) selected })"),
                 new Fixture("conditionalMatch", "Fn<I32;I32>", "(I)I", Set.of(Opcode.IRETURN),
                         "let @pub conditionalMatch :Fn<I32;I32> = (=> |value| "
-                                + "::match[_ ?? (< value 0) -> 1 ?? value -> 2 ?? _ -> 3])"),
+                                + "(cond (< value 0) -> 1 value -> 2 _ -> 3))"),
                 new Fixture("guardedMatch", "Fn<I32,I32;I32>", "(II)I", Set.of(Opcode.IRETURN),
                         "let @pub guardedMatch :Fn<I32,I32;I32> = (=> |value pattern| "
-                                + "(match value ?? pattern when (> value 0) -> 1 ?? _ -> 2))"),
+                                + "(match value pattern when (> value 0) -> 1 _ -> 2))"),
                 new Fixture("unsignedMatch", "Fn<U32;I32>", "(I)I", Set.of(Opcode.IRETURN),
                         "let @pub unsignedMatch :Fn<U32;I32> = (=> |value| "
-                                + "(match value ?? 4294967295I64 -> 1 ?? _ -> 2))"),
+                                + "(match value 4294967295I64 -> 1 _ -> 2))"),
                 new Fixture("arrayAt", "Fn<Array<I32>,I32;I32>", "([II)I", Set.of(Opcode.IALOAD, Opcode.IRETURN),
                         "let @pub arrayAt :Fn<Array<I32>,I32;I32> = (=> |values index| values[index])"),
                 new Fixture("stringLength", "Fn<String;I32>", "(Ljava/lang/String;)I", Set.of(Opcode.INVOKEVIRTUAL, Opcode.IRETURN),
@@ -179,10 +179,10 @@ public final class Phase23StructuralBytecodeTest {
         String source = """
                 let @pub choose :Fn<I32;I32> = (=> |value| {
                   let selected :I32 = (match value
-                    ?? 1 -> 11
-                    ?? 2 -> 22
-                    ?? 3 -> 33
-                    ?? _ -> 44)
+                    1 -> 11
+                    2 -> 22
+                    3 -> 33
+                    _ -> 44)
                   selected })
                 """;
         CompiledArtifact artifact = compile(source);
@@ -220,9 +220,9 @@ public final class Phase23StructuralBytecodeTest {
         CompiledArtifact artifact = compile("""
                 let @pub choose :Fn<U8;I32> = (=> |value| {
                   let selected :I32 = (match value
-                    ?? 0U8 -> 10
-                    ?? 255U8 -> 20
-                    ?? _ -> 30)
+                    0U8 -> 10
+                    255U8 -> 20
+                    _ -> 30)
                   selected })
                 """);
         MethodModel invoke = soleClosure(artifact).methods().stream()
@@ -246,7 +246,7 @@ public final class Phase23StructuralBytecodeTest {
     public void matchResultsPreserveDirectSelfTailLowering() throws Throwable {
         CompiledArtifact artifact = compile(
                 "let @pub countdown :Fn<I32;I32> = (=> |n| "
-                        + "(match n ?? 0 -> 7 ?? _ -> ::countdown[(- n 1)]))");
+                        + "(match n 0 -> 7 _ -> ::countdown[(- n 1)]))");
         ClassModel closure = soleClosure(artifact);
         MethodModel invoke = closure.methods().stream()
                 .filter(method -> method.methodName().stringValue().equals("invoke"))

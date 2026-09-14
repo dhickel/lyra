@@ -1117,14 +1117,13 @@ public final class SemanticResolver {
                 collectExpression(coalesce.value(), scope, work, Optional.empty());
                 collectExpression(coalesce.fallback(), scope, work, Optional.empty());
             } else if (expression instanceof SyntaxNode.Match match) {
-                match.subject().ifPresent(value ->
-                        collectExpression(value, scope, work, Optional.empty()));
-                for (SyntaxNode.MatchArm arm : match.arms()) {
-                    arm.pattern().ifPresent(value ->
-                            collectExpression(value, scope, work, Optional.empty()));
-                    arm.guard().ifPresent(value ->
-                            collectExpression(value, scope, work, Optional.empty()));
-                    collectExpression(arm.result(), scope, work, Optional.empty());
+                collectExpression(match.subject(), scope, work, Optional.empty());
+                collectMatchArms(match.arms(), scope, work);
+            } else if (expression instanceof SyntaxNode.Cond cond) {
+                collectMatchArms(cond.arms(), scope, work);
+            } else if (expression instanceof SyntaxNode.ExplicitConstruction construction) {
+                for (SyntaxNode.Expression argument : construction.arguments().expressions()) {
+                    collectExpression(argument, scope, work, Optional.empty());
                 }
             } else if (expression instanceof SyntaxNode.PrefixAssignment assignment) {
                 collectExpression(assignment.target(), scope, work, Optional.empty());
@@ -2175,64 +2174,44 @@ public final class SemanticResolver {
             }
             if (expression instanceof SyntaxNode.Match match) {
                 addLink(new SyntaxLink(match.span(), SyntaxLinkKind.MATCH));
-                if (match.subject().isPresent()) {
-                    resolveExpression(match.subject().orElseThrow(), scope, work, lambda,
+                resolveExpression(match.subject(), scope, work, lambda,
+                        currentDeclaration, Optional.empty());
+                return resolveArms(match.arms(), contextualExpected, scope, work, lambda,
+                        currentDeclaration);
+            }
+            if (expression instanceof SyntaxNode.Cond cond) {
+                addLink(new SyntaxLink(cond.span(), SyntaxLinkKind.COND));
+                return resolveArms(cond.arms(), contextualExpected, scope, work, lambda,
+                        currentDeclaration);
+            }
+            if (expression instanceof SyntaxNode.ExplicitConstruction construction) {
+                Use target;
+                if (construction.namespacePath().isPresent()) {
+                    target = resolveNamespaceAccess(
+                            construction.namespacePath().orElseThrow(),
+                            SyntaxNode.MemberName.identifier(
+                                    construction.typeName().name(), construction.typeName().span()),
+                            construction.span(),
+                            AccessKind.NAMESPACE_VALUE,
+                            ReferenceKind.NAMESPACE_MEMBER,
+                            scope, work, lambda);
+                } else {
+                    target = resolveExpression(construction.typeName(), scope, work, lambda,
                             currentDeclaration, Optional.empty());
                 }
-                BindingFlowState continuation = ownershipProjectionState;
-                boolean continuationAuthority = ownershipProjectionAuthoritative;
-                List<Use> resultUses = new ArrayList<>();
-                List<BindingFlowState> resultStates = new ArrayList<>();
-                List<Boolean> resultAuthorities = new ArrayList<>();
-                Optional<LyraSignature> resultExpected = contextualExpected
-                        .flatMap(this::expectedLambdaSignature);
-                for (SyntaxNode.MatchArm arm : match.arms()) {
-                    ownershipProjectionState = continuation;
-                    ownershipProjectionAuthoritative = continuationAuthority;
-                    if (arm.pattern().isPresent()) {
-                        resolveExpression(arm.pattern().orElseThrow(), scope, work, lambda,
-                                currentDeclaration, Optional.empty());
-                    }
-                    BindingFlowState testedState = ownershipProjectionState;
-                    boolean testedAuthority = ownershipProjectionAuthoritative;
-                    if (arm.guard().isPresent()) {
-                        resolveExpression(arm.guard().orElseThrow(), scope, work, lambda,
-                                currentDeclaration, Optional.empty());
-                        BindingFlowState guardedState = ownershipProjectionState;
-                        boolean guardedAuthority = ownershipProjectionAuthoritative;
-                        continuation = arm.wildcard()
-                                ? guardedState : testedState.join(guardedState);
-                        continuationAuthority = arm.wildcard()
-                                ? guardedAuthority : testedAuthority && guardedAuthority;
-                    } else {
-                        continuation = testedState;
-                        continuationAuthority = testedAuthority;
-                    }
-                    rememberExpected(arm.result(), contextualExpected);
-                    Use resultUse = resolveExpression(arm.result(), scope, work, lambda,
-                            currentDeclaration, resultExpected);
-                    resultUses.add(resultUse);
-                    resultStates.add(ownershipProjectionState);
-                    resultAuthorities.add(ownershipProjectionAuthoritative);
+                if (failed()) {
+                    return Use.empty();
                 }
-                BindingFlowState joined = resultStates.getFirst();
-                boolean authoritative = resultAuthorities.getFirst();
-                for (int index = 1; index < resultStates.size(); index++) {
-                    joined = joined.join(resultStates.get(index));
-                    authoritative &= resultAuthorities.get(index);
+                Optional<ResolvedNominal> constructor = constructorTarget(target);
+                if (constructor.isEmpty()) {
+                    fail(CompilerDiagnosticCodes.RESOLVE_UNRESOLVED_NAME,
+                            construction.typeName().span(),
+                            "explicit ':' construction requires a declared nominal type name");
+                    return Use.empty();
                 }
-                ownershipProjectionState = joined;
-                ownershipProjectionAuthoritative = authoritative;
-                if (contextualExpected.isPresent()) {
-                    return Use.mergedValue(contextualExpected.orElseThrow(), resultUses);
-                }
-                Optional<LyraType> common = resultUses.stream()
-                        .map(use -> use.type).flatMap(Optional::stream).findFirst();
-                if (common.isPresent() && resultUses.stream().allMatch(use ->
-                        use.type.isPresent() && use.type.orElseThrow().equals(common.orElseThrow()))) {
-                    return Use.mergedValue(common.orElseThrow(), resultUses);
-                }
-                return Use.merged(Optional.empty(), resultUses);
+                return resolveConstruction(constructor.orElseThrow(),
+                        construction.arguments().expressions(), construction.span(),
+                        scope, work, lambda, currentDeclaration);
             }
             if (expression instanceof SyntaxNode.Coalesce coalesce) {
                 addLink(new SyntaxLink(coalesce.span(), SyntaxLinkKind.EXPRESSION));
@@ -2393,8 +2372,10 @@ public final class SemanticResolver {
                         access.receiver(), scope, work, lambda, currentDeclaration, Optional.empty());
                 Optional<ResolvedNominal> constructor = constructorTarget(receiver);
                 if (constructor.isPresent()) {
-                    return resolveConstruction(constructor.orElseThrow(), List.of(access.index()), access.span(),
-                            scope, work, lambda, currentDeclaration);
+                    fail(CompilerDiagnosticCodes.RESOLVE_OBSOLETE_CONSTRUCTION, access.span(),
+                            "nominal construction requires the explicit ':' prefix, as in"
+                                    + " :Type[arguments] or :module->Type[arguments]");
+                    return Use.empty();
                 }
                 resolveExpression(access.index(), scope, work, lambda, currentDeclaration, Optional.empty());
                 addLink(new SyntaxLink(access.span(), SyntaxLinkKind.ACCESS));
@@ -2404,8 +2385,10 @@ public final class SemanticResolver {
                 Use target = resolveExpression(application.target(), scope, work, lambda, currentDeclaration, Optional.empty());
                 Optional<ResolvedNominal> constructor = constructorTarget(target);
                 if (constructor.isPresent()) {
-                    return resolveConstruction(constructor.orElseThrow(), application.arguments().expressions(),
-                            application.span(), scope, work, lambda, currentDeclaration);
+                    fail(CompilerDiagnosticCodes.RESOLVE_OBSOLETE_CONSTRUCTION, application.span(),
+                            "nominal construction requires the explicit ':' prefix, as in"
+                                    + " :Type[arguments] or :module->Type[arguments]");
+                    return Use.empty();
                 }
                 if (!failed()) {
                     fail(CompilerDiagnosticCodes.RESOLVE_INVALID_SIGNATURE, application.arguments().span(),
@@ -2495,6 +2478,82 @@ public final class SemanticResolver {
                 return Use.value(target);
             }
             throw new IllegalStateException("unrecognized expression node: " + expression.getClass());
+        }
+
+        /** Resolves ordered match/cond arm patterns, guards and results. */
+        private Use resolveArms(
+                List<SyntaxNode.MatchArm> arms,
+                Optional<LyraType> contextualExpected,
+                ScopeDraft scope,
+                ModuleWork work,
+                Optional<LambdaId> lambda,
+                Optional<DeclarationId> currentDeclaration) {
+            BindingFlowState continuation = ownershipProjectionState;
+            boolean continuationAuthority = ownershipProjectionAuthoritative;
+            List<Use> resultUses = new ArrayList<>();
+            List<BindingFlowState> resultStates = new ArrayList<>();
+            List<Boolean> resultAuthorities = new ArrayList<>();
+            Optional<LyraSignature> resultExpected = contextualExpected
+                    .flatMap(this::expectedLambdaSignature);
+            for (SyntaxNode.MatchArm arm : arms) {
+                ownershipProjectionState = continuation;
+                ownershipProjectionAuthoritative = continuationAuthority;
+                if (arm.pattern().isPresent()) {
+                    resolveExpression(arm.pattern().orElseThrow(), scope, work, lambda,
+                            currentDeclaration, Optional.empty());
+                }
+                BindingFlowState testedState = ownershipProjectionState;
+                boolean testedAuthority = ownershipProjectionAuthoritative;
+                if (arm.guard().isPresent()) {
+                    resolveExpression(arm.guard().orElseThrow(), scope, work, lambda,
+                            currentDeclaration, Optional.empty());
+                    BindingFlowState guardedState = ownershipProjectionState;
+                    boolean guardedAuthority = ownershipProjectionAuthoritative;
+                    continuation = arm.wildcard()
+                            ? guardedState : testedState.join(guardedState);
+                    continuationAuthority = arm.wildcard()
+                            ? guardedAuthority : testedAuthority && guardedAuthority;
+                } else {
+                    continuation = testedState;
+                    continuationAuthority = testedAuthority;
+                }
+                rememberExpected(arm.result(), contextualExpected);
+                Use resultUse = resolveExpression(arm.result(), scope, work, lambda,
+                        currentDeclaration, resultExpected);
+                resultUses.add(resultUse);
+                resultStates.add(ownershipProjectionState);
+                resultAuthorities.add(ownershipProjectionAuthoritative);
+            }
+            BindingFlowState joined = resultStates.getFirst();
+            boolean authoritative = resultAuthorities.getFirst();
+            for (int index = 1; index < resultStates.size(); index++) {
+                joined = joined.join(resultStates.get(index));
+                authoritative &= resultAuthorities.get(index);
+            }
+            ownershipProjectionState = joined;
+            ownershipProjectionAuthoritative = authoritative;
+            if (contextualExpected.isPresent()) {
+                return Use.mergedValue(contextualExpected.orElseThrow(), resultUses);
+            }
+            Optional<LyraType> common = resultUses.stream()
+                    .map(use -> use.type).flatMap(Optional::stream).findFirst();
+            if (common.isPresent() && resultUses.stream().allMatch(use ->
+                    use.type.isPresent() && use.type.orElseThrow().equals(common.orElseThrow()))) {
+                return Use.mergedValue(common.orElseThrow(), resultUses);
+            }
+            return Use.merged(Optional.empty(), resultUses);
+        }
+
+        /** Collects declarations introduced inside match/cond arm syntax. */
+        private void collectMatchArms(
+                List<SyntaxNode.MatchArm> arms, ScopeDraft scope, ModuleWork work) {
+            for (SyntaxNode.MatchArm arm : arms) {
+                arm.pattern().ifPresent(value ->
+                        collectExpression(value, scope, work, Optional.empty()));
+                arm.guard().ifPresent(value ->
+                        collectExpression(value, scope, work, Optional.empty()));
+                collectExpression(arm.result(), scope, work, Optional.empty());
+            }
         }
 
         private Use resolveLoop(SyntaxNode.Expression expression, CallbackLoop loop,

@@ -244,7 +244,7 @@ public final class CallableSummaryTest {
                         + "let applyEither :Fn<Bool,Fn<I32;I32>,Fn<I32;I32>,I32;I32> = "
                         + "(=> |flag :Bool left :Fn<I32;I32> right :Fn<I32;I32> value :I32| { "
                         + "let @mut selected :Fn<I32;I32> = left "
-                        + "let ignored = (flag -> (selected := left) : (selected := right)) "
+                        + "let ignored = (cond flag -> (selected := left) _ -> (selected := right)) "
                         + "(selected value) })");
         CallableSummarySet summaries = summaries(graph);
         CallableSummary applyEither = summaryFor(graph, summaries, "applyEither");

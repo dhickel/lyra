@@ -1,0 +1,4 @@
+// match	value	I32	11	a comma separates '::'-headed sibling arms in a bracket match
+let direct :Fn<;I32> = (=> | | 11)
+let fallback :Fn<;I32> = (=> | | 22)
+let @pub run :Fn<;I32> = (=> | | match[11, ::direct[] -> 11 0 -> 9, ::fallback[] -> 22 _ -> 33])

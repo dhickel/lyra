@@ -404,7 +404,7 @@ public final class CallableSummaryCompiler {
                         expression.children().stream()
                                 .map(child -> collectCallableIdentity(child, active))
                                 .toList()).requiringCanonicalValue();
-                case MATCH -> combineCallableIdentities(
+                case MATCH, COND -> combineCallableIdentities(
                         expression.match().orElseThrow().arms().stream()
                                 .map(arm -> collectCallableIdentity(
                                         expression.children().get(arm.resultChild()), active))
@@ -648,7 +648,7 @@ public final class CallableSummaryCompiler {
                 case BLOCK -> block(expression, state);
                 case CONDITIONAL -> conditional(expression, state);
                 case COALESCE -> coalesce(expression, state);
-                case MATCH -> match(expression, state);
+                case MATCH, COND -> match(expression, state);
                 case ITER, WHILE -> loop(expression, state);
                 case LAMBDA -> lambdaValue(expression, state);
                 case CALLABLE_CALL -> callableCall(expression, state);

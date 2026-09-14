@@ -1,0 +1,4 @@
+let @pub run :Fn<U8,U8;U8> = (=> |a b| (match a ((< a b) -> a : b) -> { let @nil maybe :U8 = ((=> :U8 |value :U8| value) (match a ((< a b) -> a : b) -> a _ -> a)) (maybe : ((< a b) -> { let @nil maybe :U8 = b (maybe : a) } : ((< a b) -> b : b))) } _ -> ((=> :U8 |value :U8| value) { let @nil maybe :U8 = { let temporary :U8 = b temporary } (maybe : (match a ((< a b) -> a : b) -> b _ -> b)) })))
+/* Equivalent operator spelling, optional commas, and nested /* trivia */. */
+let @pub alternate :Fn<U8,U8;U8> = (=> |a b| match[a ((< a b) -> a : b) -> { let @nil maybe :U8 = ((=> :U8 |value :U8| value) match[a ((< a b) -> a : b) -> a _ -> a]) (maybe : ((< a b) -> { let @nil maybe :U8 = b (maybe : a) } : ((< a b) -> b : b))) } _ -> ((=> :U8 |value :U8| value) { let @nil maybe :U8 = { let temporary :U8 = b temporary } (maybe : match[a ((< a b) -> a : b) -> b _ -> b]) })])
+let @pub convert :Fn<U8;U32> = (=> |value| U32[value])

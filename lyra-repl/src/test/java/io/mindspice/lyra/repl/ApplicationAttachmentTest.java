@@ -328,7 +328,7 @@ class ApplicationAttachmentTest {
                             RootBox = (=> |value :I32| { self:.value := value })
                         }
                         let @pub makeBox :Fn<I32;RootBox> =
-                            (=> |value| RootBox[value])
+                            (=> |value| :RootBox[value])
                         """).profile(CompileProfile.ATTACHABLE).build()));
         var loaded = LyraRuntime.load(compiled.artifact());
         var root = loaded.instantiate();
@@ -374,7 +374,7 @@ class ApplicationAttachmentTest {
                     """);
             DispatchedEvaluation construction = attachment.submitDispatch(
                     "attached-retained-construction.lyra",
-                    "let stagedBox :WaitBox = WaitBox[42]");
+                    "let stagedBox :WaitBox = :WaitBox[42]");
             AtomicReference<Throwable> controlFailure = new AtomicReference<>();
             Thread control = new Thread(() -> {
                 try {
@@ -406,7 +406,7 @@ class ApplicationAttachmentTest {
 
             // The same retained producer and session remain usable. The input
             // gate now returns EOF, allowing one real retained construction.
-            success(attachment, "let stagedBox :WaitBox = WaitBox[7]");
+            success(attachment, "let stagedBox :WaitBox = :WaitBox[7]");
             assertEquals(7, attachment.registration().requireBinding("selected")
                     .invocation().invoke(0));
             retained = attachment.registration().requireBinding("selected")

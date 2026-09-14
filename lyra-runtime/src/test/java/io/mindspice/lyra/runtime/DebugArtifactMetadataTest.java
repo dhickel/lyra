@@ -28,8 +28,17 @@ final class DebugArtifactMetadataTest {
     }
 
     @Test
-    void legacySchema1NormalMetadataReadsWithoutAnyDebugContext() {
-        ArtifactMetadata metadata = readResource("legacy/artifact-v1-normal.json");
+    void legacySchema1NormalMetadataIsRejectedAsAnIncompatibleLanguageContract() {
+        byte[] legacy = readResourceBytes("legacy/artifact-v1-normal.json");
+        LyraCompatibilityException failure = assertThrows(LyraCompatibilityException.class,
+                () -> ArtifactMetadataReader.read(legacy));
+        assertTrue(failure.getMessage().contains("unsupported language contract version: 1"),
+                "unexpected compatibility diagnostic: " + failure.getMessage());
+    }
+
+    @Test
+    void currentSchema1NormalMetadataReadsWithoutAnyDebugContext() {
+        ArtifactMetadata metadata = ordinaryMetadata();
         assertFalse(metadata.replCapable());
         assertEquals(Optional.empty(), metadata.replCapability());
         assertEquals(ArtifactProfile.NORMAL, metadata.executionProfile());
@@ -169,16 +178,40 @@ final class DebugArtifactMetadataTest {
                 ordinary.dependencyRequirements(), ordinary.attachmentContext(),
                 ordinary.imports(), ordinary.reproducibleOptions(), true);
         assertFalse(ordinaryRevision.equals(debugRevision));
-        // The legacy fixture revision must remain reproducible with the
-        // capability input absent.
-        ArtifactMetadata legacy = readResource("legacy/artifact-v1-normal.json");
-        assertEquals(legacy.artifactRevision(), ArtifactRevision.compute(
-                legacy.compilerBuild(), legacy.modules(), legacy.javaNameMap(),
-                legacy.profile(), legacy.packagingMode(), legacy.previewRequired(),
-                legacy.javaPackage(), legacy.sources(), legacy.runtimeRequirement(),
-                legacy.executionProfile(), legacy.hookRequirements(),
-                legacy.dependencyRequirements(), legacy.attachmentContext(),
-                legacy.imports(), legacy.reproducibleOptions(), false));
+        // A capability-free artifact's published revision must remain
+        // reproducible with the capability input absent.
+        ArtifactMetadata capabilityFree = ordinaryMetadata();
+        assertEquals(capabilityFree.artifactRevision(), ArtifactRevision.compute(
+                capabilityFree.compilerBuild(), capabilityFree.modules(), capabilityFree.javaNameMap(),
+                capabilityFree.profile(), capabilityFree.packagingMode(), capabilityFree.previewRequired(),
+                capabilityFree.javaPackage(), capabilityFree.sources(), capabilityFree.runtimeRequirement(),
+                capabilityFree.executionProfile(), capabilityFree.hookRequirements(),
+                capabilityFree.dependencyRequirements(), capabilityFree.attachmentContext(),
+                capabilityFree.imports(), capabilityFree.reproducibleOptions(), false));
+    }
+
+    private static ArtifactMetadata ordinaryMetadata() {
+        ModuleMetadata module = new ModuleMetadata(ModuleId.path("root.lyra"),
+                ModuleRevision.of(SHA), "root.lyra");
+        List<SourceMetadata> sources = List.of(new SourceMetadata(SourceId.path("root.lyra"),
+                "root.lyra", SHA, Optional.of("META-INF/lyra/sources/root.lyra")));
+        ArtifactRevision revision = ArtifactRevision.compute(
+                "lyra-phase18", List.of(module), Map.of(), RuntimeProfile.CURRENT,
+                PackagingMode.CLASSES, false, "lyra.generated", sources,
+                Optional.empty(), ArtifactProfile.NORMAL, List.of(), List.of(),
+                Optional.empty(), List.of(), Map.of(), false);
+        return ArtifactMetadata.builder()
+                .compilerVersion("1.0-SNAPSHOT").compilerBuild("lyra-phase18")
+                .runtimeAbi(RuntimeAbi.CURRENT).profile(RuntimeProfile.CURRENT)
+                .previewRequired(false).artifactId("ordinary-test")
+                .artifactRevision(revision)
+                .rootModuleId(ModuleId.path("root.lyra"))
+                .rootModuleRevision(ModuleRevision.of(SHA))
+                .modules(List.of(module))
+                .sources(sources)
+                .debugMapHash(SHA)
+                .packagingMode(PackagingMode.CLASSES)
+                .build();
     }
 
     private static ArtifactMetadata debugMetadata(ArtifactProfile executionProfile,
@@ -234,6 +267,15 @@ final class DebugArtifactMetadataTest {
                 new ArtifactDependency(LyraRuntimeConstants.RUNTIME_GROUP_ID,
                         LyraRuntimeConstants.RUNTIME_ARTIFACT_ID,
                         LyraRuntimeConstants.RUNTIME_VERSION, executionProfile));
+    }
+
+    private static byte[] readResourceBytes(String name) {
+        try (var input = DebugArtifactMetadataTest.class.getClassLoader()
+                .getResourceAsStream(name)) {
+            return input.readAllBytes();
+        } catch (java.io.IOException failure) {
+            throw new AssertionError(failure);
+        }
     }
 
     private static ArtifactMetadata readResource(String name) {

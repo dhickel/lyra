@@ -14,9 +14,9 @@ Define Lyra's source syntax, static semantics, evaluation behavior, modules, and
 
 ### Current scope
 
-The current language includes static typing with local inference; immutable-by-default lexical bindings; `@pub`, `@mut`, and `@nil`; first-class typed lambdas; primitives, arrays, tuples, strings, and characters; blocks, conditionals, value and conditional matching, operators, assignment, modules, imports, exports, and the `->`, `:.`, and `::` accessors.
+The current language includes static typing with local inference; immutable-by-default lexical bindings; `@pub`, `@mut`, and `@nil`; first-class typed lambdas; primitives, arrays, tuples, strings, and characters; blocks, conditionals, value matching, the dedicated `cond` conditional, operators, assignment, modules, imports, exports, and the `->`, `:.`, and `::` accessors. Nominal construction uses the explicit `:Type[...]`/`:module->Type[...]` spelling.
 
-Structs and classes are an accepted extension with implementation in progress, specified below. Their presence in this intended contract is not evidence of executable support. The existing range, `iter`, and `while` sections also belong to the current language scope.
+Structs and classes are implemented current-scope nominal types as specified below. The existing range, `iter`, and `while` sections also belong to the current language scope.
 
 Outside current scope are variants, destructuring and type patterns, inheritance, interfaces, user generics, macros/quoting, catchable exceptions, omitted/default arguments, dynamic typing, and bitwise operators. See `deferred-features.md`.
 
@@ -24,9 +24,9 @@ Outside current scope are variants, destructuring and type patterns, inheritance
 
 - Identifiers are case-sensitive ASCII names matching `[A-Za-z_][A-Za-z0-9_]*`.
 - Punctuation is never part of an identifier.
-- `iter`, `while`, `match`, `when`, `struct` and `class` are reserved keywords. `_` remains an ordinary identifier except in the explicit match wildcard positions below; it is not a value or an `Any` type in those positions.
-- Whitespace separates tokens and is otherwise insignificant except for type annotations.
-- Commas are optional separators only inside delimited parameter, argument, type-argument, tuple, and array lists. They are not globally ignored.
+- `iter`, `while`, `match`, `cond`, `when`, `struct` and `class` are reserved keywords. `_` remains an ordinary identifier except in the explicit match/cond wildcard positions below; it is not a value or an `Any` type in those positions.
+- Whitespace separates tokens and is otherwise insignificant except for type annotations, explicit constructions, and bare negative literals.
+- Commas are optional separators only inside delimited parameter, argument, type-argument, tuple, and array lists, and as the narrow sibling-`::` separator described under calls and accessors. They are not globally ignored.
 - `//` begins a line comment.
 - `/* ... */` is a nestable block comment.
 
@@ -39,7 +39,8 @@ A named type annotation must use `name :Type`: whitespace is required before `:`
 - Unit: `()`. Bare `Array[]` and `Tuple[]` are equivalent Unit spellings, not empty collection values.
 - String: immutable double-quoted UTF-16 content with standard escaped control characters and Unicode escapes.
 - Character: single-quoted escaped UTF-16 code unit of primitive type `Char`.
-- Numeric literals support decimal integers `[0-9]+` and decimal floats with a decimal point and optional `e`/`E` exponent. A leading sign is an operator, not part of the literal. Uppercase suffixes such as `42I32`, `42U16`, and `1.0F32` force a primitive type.
+- Numeric literals support decimal integers `[0-9]+` and decimal floats with a decimal point and optional `e`/`E` exponent. Uppercase suffixes such as `42I32`, `42U16`, and `1.0F32` force a primitive type.
+- A `-` written immediately adjacent to a numeric literal in an expression position is a bare negative numeric literal: `-1`, `-128I8`, `-1.5F32`, `-0.0`, `-1.0e3`. The literal magnitude itself is always nonnegative and the leading minus normalizes to the existing unary-minus operation, so signed minima, suffixes, exponent variants (which, as for positive literals, require a decimal point), exactness, contextual typing, range checks, underflow/nonfinite checks and unsigned rejection behave exactly as for the equivalent `-[1]` form. `-` separated from the number by whitespace, a comment or a newline is the operator and still requires its bracket argument form; `(- 1)`, `-[1]` and every other unary form remain valid. A literal that already carries a sign (`--1`) is never a bare negative literal.
 - String/character escapes are `\\`, `\"`, `\'`, `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, and exactly four-hex-digit `\uXXXX`. A `Char` literal must decode to exactly one UTF-16 code unit; unpaired surrogate code units are representable.
 
 ### Type regime
@@ -173,8 +174,8 @@ class Counter {
     let @pub current :Fn<;I32> = (=> || self:.value)
 }
 
-let position :Vec2 = Vec2[10.0 20.0]
-let counter :Counter = Counter[0]
+let position :Vec2 = :Vec2[10.0 20.0]
+let counter :Counter = :Counter[0]
 counter::increment[]
 let saved :Fn<;Unit> = counter:.increment
 ```
@@ -203,13 +204,22 @@ Declarations and identity:
 
 Construction and initialization:
 
-- `Type[arguments]` constructs a new instance. Arguments are exact positional
-  arguments, evaluated once left-to-right before instance initialization.
-  A qualified constructor uses existing namespace value access, e.g.
-  `model->:.Counter[0]`; a qualified type annotation uses `:model->Counter`.
-  Syntax alone does not distinguish a unary constructor application from indexing,
-  or determine whether a type name/alias exists. Invalid value-index arity and
-  unknown named types are resolution errors, not capitalization-based parse errors.
+- Nominal construction is explicit: `:Type[arguments]` or
+  `:module->Type[arguments]`. The leading `:` marks type access and must be
+  immediately adjacent to the type name, so construction is never confused with
+  value indexing and capitalization never decides between them. Arguments are
+  exact positional arguments, evaluated once left-to-right before instance
+  initialization. A qualified type annotation remains `:model->Counter`.
+- Primitive and `String` conversions and the `Array`/`Tuple` literal forms are
+  not nominal constructions and keep their unprefixed spelling, including
+  `Array<T>[]`, `Tuple<T>[...]`, bare `Array[]`/`Tuple[]` Unit spellings, and
+  `I32[value]`.
+- The obsolete unprefixed construction `Type[arguments]` and the obsolete
+  qualified namespace-value form `model->:.Counter[0]` are rejected with a stable
+  source-mapped migration diagnostic when the bracket target resolves to a
+  declared nominal type. Ordinary value indexing, including indexing a value whose
+  identifier begins with an uppercase letter, remains valid, and unknown or
+  arity-invalid constructions remain resolution errors.
 - A struct's uninitialized fields are constructor parameters in declaration order.
   Fields with initializers initialize themselves and are not optional arguments.
 - A class may contain one `Name = (=> |typed parameters| body)` constructor, using
@@ -343,7 +353,7 @@ Calls have exact positional arity. There is no partial application, automatic cu
 ### Calls and accessors
 
 - `(callee arg1 arg2)` calls a callable value.
-- `::callee[arg1 arg2]` promotes a local/name as a direct call target.
+- `::callee[arg1 arg2]` promotes a local or imported name as a direct call target.
 - `receiver::method[arg1 arg2]` directly calls a method with an implicit receiver.
 - `receiver:.field` reads a value/field.
 - `receiver:.method` obtains a receiver-bound callable value and may be assigned or invoked as `(receiver:.method args)`.
@@ -351,11 +361,22 @@ Calls have exact positional arity. There is no partial application, automatic cu
 - `->` qualifies modules/namespaces; a qualified access ends with `::` for direct call or `:.` for value access.
 - Static/member legality follows static type information. These distinctions must survive parsing and semantic analysis.
 
+`::` is reserved for direct calls of resolved source function or method names in
+the local or imported space. Compiler-recognized built-ins are not callable
+values and never use `::`: the operators, the primitive/`String` conversions, the
+`Array`/`Tuple` literal forms and the reserved `match`, `cond`, `iter` and
+`while` forms use their bare spelling in the bracket application form, for
+example `+[a b]`, `I32[value]`, `Array<I32>[1 2]`, `match[...]`, `iter[...]`.
+The obsolete `::match[...]`, `::iter[...]` and `::while[...]` spellings, including
+a qualified `namespace->::match[...]` or a receiver `value::match[...]` reading,
+are rejected with a structured source-mapped diagnostic. Every parenthesized
+special form `(match ...)`, `(cond ...)`, `(iter ...)` and `(while ...)` remains
+valid.
+
 Because whitespace does not terminate an expression and `::name[...]` is also a
 postfix receiver call, a following sibling expression that begins with ordinary
-`::` would otherwise attach to the preceding expression. A comma is therefore
-required between adjacent direct-call expressions in comma-capable argument or
-operand lists:
+`::` would otherwise attach to the preceding expression. A comma may therefore
+separate such siblings in the comma-capable argument and operand lists:
 
 ```lyra
 (+ ::left[], ::right[])
@@ -363,10 +384,29 @@ operand lists:
 ```
 
 Without the comma, `::right[]` is parsed as a receiver call on the value returned
-by `::left[]`, leaving `+` with one operand. This rule does not make commas
-generally mandatory. When the surrounding construct has no comma separator, use
-a declaration or block boundary. Parentheses are callable application, not
-expression grouping, so `(::left[])` is not a grouping workaround.
+by `::left[]`, leaving `+` with one operand. The same narrow exception applies to
+sibling forms of a module or block sequence and to marker-free match/cond arms,
+where an optional comma is accepted only when the following sibling begins with
+`::`:
+
+```lyra
+{ ::left[], ::right[] }
+(match value
+  ::predicate[] -> first
+  _ -> fallback)
+```
+
+A comma anywhere else in a module, block or arm sequence is invalid, and leading,
+repeated or trailing commas remain invalid. This rule does not make commas
+generally mandatory between ordinary forms and does not add statement
+punctuation.
+
+A parenthesized direct call `(::callee[args])` preserves the direct call itself
+rather than applying its result, so a direct call may appear where an
+argument or operand is expected. Parentheses are still callable application, not
+general expression grouping: `(::callee[args] extra)` remains an ordinary
+callable call whose target is the direct call, and no other parenthesized
+grouping is introduced.
 
 The current built-in value members are tuple numeric fields plus the read-only `:.length` member on strings and arrays. Additional member-bearing types and their accessible members require a later user-type or interop specification; this section fixes the accessor syntax and value-versus-call distinction.
 
@@ -414,45 +454,82 @@ It accepts only `@nil T`, returns the original non-nil `T` even when otherwise f
 
 ### Match expressions
 
-Match is a compiler-recognized expression with equivalent parenthesized and direct-bracket spellings:
+Match is a compiler-recognized expression with equivalent parenthesized and
+direct-bracket spellings and always has a real subject:
 
 ```lyra
 (match value
-  ?? 10 -> "ten"
-  ?? _ when (> value 20) -> "greater than twenty"
-  ?? _ -> "other")
+  10 -> "ten"
+  _ when (> value 20) -> "greater than twenty"
+  _ -> "other")
 
-::match[value
-  ?? 10 -> "ten"
-  ?? _ when (> value 20) -> "greater than twenty"
-  ?? _ -> "other"
+match[value
+  10 -> "ten"
+  _ when (> value 20) -> "greater than twenty"
+  _ -> "other"
 ]
 ```
 
-Traditional value matching evaluates the subject exactly once. Each arm begins with `??`, followed by a value expression or the exact wildcard `_`, an optional `when` guard expression, `->`, and a result expression. Value patterns use the same compatible static typing and value equality as `==`, including lossless numeric widening and structural aggregate equality. Patterns may be arbitrary expressions, not just literals; they introduce no names or destructuring. A `#NIL` pattern is checked under the subject's nilable contract. Match does not itself narrow a nilable subject.
+Value matching evaluates the subject exactly once. Each arm is a value
+expression or the exact wildcard `_`, an optional `when` guard expression,
+`->`, and a result expression. Arms carry no marker: an arm begins directly
+with its pattern. Value patterns use the same compatible static typing and value
+equality as `==`, including lossless numeric widening and structural aggregate
+equality. Patterns may be arbitrary expressions, not just literals; they
+introduce no names or destructuring. A `#NIL` pattern is checked under the
+subject's nilable contract. Match does not itself narrow a nilable subject.
 
-Arms are attempted in source order. Only reached pattern expressions are evaluated. A guard is evaluated only after its pattern matches; a wildcard always passes the pattern test. Guards use ordinary Lyra truthiness. The first arm whose pattern matches and whose guard (if present) is truthy selects its result; no later patterns, guards, or results execute. Pattern equality is performed separately for each arm, so no all-pattern common numeric type or eager pattern computation is implied.
+Arms are attempted in source order. Only reached pattern expressions are
+evaluated. A guard is evaluated only after its pattern matches; a wildcard always
+passes the pattern test. Guards use ordinary Lyra truthiness. The first arm whose
+pattern matches and whose guard (if present) is truthy selects its result; no
+later patterns, guards, or results execute. Pattern equality is performed
+separately for each arm, so no all-pattern common numeric type or eager pattern
+computation is implied.
 
-The exact wildcard subject selects conditional mode:
+Every match requires a final unguarded `_ -> fallback` arm, even when preceding
+arms appear exhaustive. A fallback-only match is legal and still evaluates its
+subject. No arm may follow an unguarded wildcard. Arms are whitespace-separated;
+an optional comma is accepted only before an arm that begins with `::`, as
+described under calls and accessors. Bare fallback expressions and
+comma-separated ordinary arms are not accepted. Results must unify under the same
+contextual typing, nilability, and permitted lossless numeric widening rules as
+full conditionals. Match always has the resulting value type; there is no
+implicit Unit result for an unmatched input. Blocks can supply multi-form
+results, and Unit-valued branches are supported.
+
+The former conditional use of a wildcard subject is removed. `(match _ ...)` and
+its bracket equivalent are rejected with a structured source-mapped diagnostic;
+the dedicated `cond` form replaces them. There are no match-specific binding,
+type-test, destructuring, or automatic narrowing forms. `_` is syntax, not a
+dynamically typed value.
+
+### Conditional expressions
+
+`cond` is a reserved, compiler-recognized, lazy expression with a parenthesized
+spelling only. It has no subject:
 
 ```lyra
-(match _
-  ?? isAdmin -> "full access"
-  ?? isOwner -> "owner access"
-  ?? _ -> "no access")
-
-::match[_
-  ?? (< value 0) -> "negative"
-  ?? (== value 0) -> "zero"
-  ?? _ -> "positive"
-]
+(cond
+  (< value 0) -> 0
+  (> value 128) -> 128
+  _ -> -1)
 ```
 
-Conditional mode has no evaluated subject. Each non-wildcard arm contains one condition expression, tested using ordinary truthiness. Conditions are evaluated once each, in source order, until one is truthy. `when` is invalid in this mode. The wildcard arm is unconditional.
+Each non-wildcard arm contains one condition expression, tested with ordinary
+Lyra truthiness. Conditions are evaluated once each, in source order, until one
+is truthy. Only the selected result evaluates. `when` guards are invalid in
+`cond`, and the final arm must be the unconditional `_ -> fallback`, which may be
+the only arm; a fallback-only `cond` evaluates only its fallback. No arm may
+follow the fallback. Arms are whitespace-separated with the same narrow
+sibling-`::` comma exception as match arms. `cond[...]` is not a valid spelling.
 
-Both modes require a final unguarded `?? _ -> fallback` arm, even when preceding arms appear exhaustive. A fallback-only match is legal; traditional mode still evaluates its subject. No arms may follow an unguarded wildcard. Bare fallback expressions and comma-separated arms are not accepted. Results must unify under the same contextual typing, nilability, and permitted lossless numeric widening rules as full conditionals. Match always has the resulting value type; there is no implicit Unit result for an unmatched input. Blocks can supply multi-form results, and Unit-valued branches are supported.
-
-There are no match-specific binding, type-test, destructuring, or automatic narrowing forms. `_` is syntax, not a dynamically typed value. `match` is not a first-class callable; `::match[...]` is a special-form spelling and preserves lazy arm evaluation rather than ordinary eager argument evaluation.
+`cond` preserves the result-unification, contextual typing, nilability,
+lossless numeric widening, laziness, flow, provenance, effect-order,
+source-mapping and tail-position behavior that conditional matching previously
+provided. The source form is recorded distinctly from `match` in descriptors,
+the syntax tree, typed metadata and diagnostics; execution reuses the ordinary
+lazy arm lowering.
 
 ### Operators
 
@@ -524,16 +601,18 @@ one element. Completion must not attempt an overflowing terminal increment.
 Negative steps use existing unary expressions, such as `(- 1)` or `-[1]`.
 
 `iter` is a reserved built-in, like `match`, not a shadowable binding or a bare
-first-class function value. Its callback is an ordinary function value.
-`::iter[...]` starts a new expression rather than attaching as a receiver method
-to the preceding expression, regardless of whitespace or newlines.
-`iter` takes a range and a Unit-returning callback, and returns Unit:
+first-class function value. Its callback is an ordinary function value. `iter`
+takes a range and a Unit-returning callback, and returns Unit. The bare bracket
+spelling and the parenthesized spelling are equivalent:
 
 ```lyra
-::iter[(0..100:1) |x| ::consume[x]]
-::iter[(0..100:1) || ::tick[]]
+iter[(0..100:1) |x| ::consume[x]]
+iter[(0..100:1) || ::tick[]]
 (iter (0..100:1) |x| (consume x))
 ```
+
+The obsolete `::iter[...]` spelling, including a qualified or receiver reading, is
+rejected with a structured source-mapped diagnostic.
 
 The callback contract is either `Fn<T;Unit>` for the exact range element type or
 `Fn<;Unit>`. Compact and full lambdas and existing function values are accepted.
@@ -553,13 +632,16 @@ Generated traversal backedges honor existing application/session safe points.
 
 ```lyra
 let @mut count :I32 = 0
-::while[
+while[
   || (< count 10)
   || { count := (+ count 1) }
 ]
 
 (while || (< count 20) || { count := (+ count 1) })
 ```
+
+The obsolete `::while[...]` spelling, including a qualified or receiver reading,
+is rejected with a structured source-mapped diagnostic.
 
 Its exact arguments are a predicate `Fn<;Bool>` and an action `Fn<;Unit>`.
 It returns `Unit`. Compact/full lambdas and stored or computed function values
@@ -581,8 +663,9 @@ Loop backedges honor existing application/session safe points and execution must
 use constant JVM stack for repetition. An enclosing block still returns its final
 expression. Callback completion does not mean break or return from an enclosing
 function. No `return`, `break`, `continue`, or separate `do while` form is added.
-`::while[...]` has the same fresh-expression boundary as `::iter[...]`; `while`
-cannot be shadowed, referenced as a bare value or used as a qualified member.
+`while` cannot be shadowed, referenced as a bare value or used as a qualified
+member; the reserved `while` keyword begins its own bracket or parenthesized
+form.
 
 Implementation status: both callback loops have contextual type checking,
 repeated-effect certification, explicit typed IR and direct JVM execution.
@@ -649,18 +732,36 @@ Durable rationale and alternatives are recorded in `decisions.md`.
 
 ## Validation
 
-A conforming implementation must add assertion-grade tests for at least:
+A conforming implementation must add assertion-grade tests for at least the
+following twelve areas.  Each bullet is one area of the maintained
+conformance-coverage inventory (`tools/phase24-conformance-coverage.tsv`,
+`P24-COV-LANG-001`..`012`), so the inventory stays one-to-one with this list.
 
 - accepted/rejected lexical spelling, comments, commas, and mandatory type spacing;
-- every literal and exact numeric boundary;
+- every literal and exact numeric boundary, including adjacent bare negative
+  literals with signed minima, suffixes, exponent variants, signed zero and
+  contextual typing, and the rejection of trivia-separated signs, a malformed
+  `-`, `--1` and invalid suffixes;
 - modifier legality and mutation authorization;
 - same-scope replacement, closure capture, recursion, and eager cycles;
-- complete lambda typing, exact arity, both call forms, and accessor distinctions;
+- complete lambda typing, exact arity, both call forms, accessor distinctions,
+  bare bracket spellings for compiler-recognized built-ins, the rejection of the
+  obsolete `::match`/`::iter`/`::while` accessor spellings in every position, the
+  preserved parenthesized direct call, and the narrow sibling-`::` comma boundary
+  in argument, operand, block, module and arm sequences (with leading, doubled,
+  trailing and misplaced commas rejected);
 - left-to-right side effects and every short-circuit path;
-- truthiness, predicate binding, then-only Unit, and nil-only coalescing;
-- both match spellings/modes, expression patterns and guards, subject-once and lazy arm order, fallback requirements, branch typing, nil/equality boundaries, reserved keywords, and malformed arms;
+- truthiness, predicate binding, then-only Unit, nil-only coalescing, value match
+  in both spellings with marker-free arms, subject-once and lazy arm order,
+  fallback requirements, branch typing, nil/equality boundaries, reserved
+  keywords, malformed arms, and the dedicated `cond` form with its condition
+  order, truthiness, laziness, mandatory fallback, rejected `when` and rejection
+  of every obsolete conditional-match spelling;
 - operator arity, checked/trapping arithmetic, equality, and identity;
-- array/tuple construction, access, mutation, aliases, equality, length, and bounds failures;
+- array/tuple construction, access, mutation, aliases, equality, length, bounds
+  failures, explicit `:Type`/`:module->Type` nominal construction, preserved
+  unprefixed conversions and aggregate literals, uppercase value indexing, and
+  rejection of the obsolete unprefixed and qualified constructions;
 - explicit primitive/Unit string conversion and UTF-16 string length;
 - module imports, aliases, re-exports, visibility, and cycles;
 - structured compile diagnostics and invocation-aborting runtime failures.
@@ -671,4 +772,4 @@ The maintained language conformance corpus, numeric/ABI matrices and bounded see
 
 ## Open Questions
 
-No unresolved current-scope language decision blocks this specification. `backend-runtime.md` owns module resolution, JVM execution, standalone artifacts, Java consumption, lifecycle, artifact metadata, and source maps. Lyra-to-Java interop, engine integration, Vulkan affinity, user-declared types, and other deferred capabilities require later dedicated specifications before entering this contract.
+No unresolved current-scope language decision blocks this specification. `backend-runtime.md` owns module resolution, JVM execution, standalone artifacts, Java consumption, lifecycle, artifact metadata, and source maps. Broader Lyra-to-Java interop, engine integration, Vulkan affinity, and other deferred capabilities require later dedicated specifications before entering this contract.

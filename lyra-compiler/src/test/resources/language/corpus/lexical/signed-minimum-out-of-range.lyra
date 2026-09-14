@@ -1,0 +1,2 @@
+// lexical	reject	-	LYC-LEX-011	a signed minimum magnitude below the target width is out of range
+let value :I8 = -129I8

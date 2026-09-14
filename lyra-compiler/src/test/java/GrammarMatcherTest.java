@@ -383,7 +383,10 @@ public final class GrammarMatcherTest {
         expectFailure("let x = (match 1 1 -> 2, _ -> 3)", CompilerDiagnosticCodes.PARSE_INVALID_COMMA);
         expectFailure("let x = (cond #T -> 1, _ -> 0)", CompilerDiagnosticCodes.PARSE_INVALID_COMMA);
         expectFailure("let x = cond[#T -> 1 _ -> 0]", CompilerDiagnosticCodes.PARSE_INVALID_FORM);
-        success("let x = -1 let y = -128I8 let z = -0.0 let e = -1e3");
+        success("let x = -1 let y = -128I8 let z = -0.0 let e = -1.0e3 "
+                + "let b = -[9223372036854775808I64]");
+        expectFailure("let x = - 1", CompilerDiagnosticCodes.PARSE_INVALID_FORM);
+        expectFailure("let x = -/* trivia */1", CompilerDiagnosticCodes.PARSE_INVALID_FORM);
         expectFailure("let x = --1", CompilerDiagnosticCodes.PARSE_INVALID_FORM);
         expectFailure("let x = (not 1 2)", CompilerDiagnosticCodes.PARSE_INVALID_OPERATOR_ARITY);
         expectFailure("let x = (+ 1)", CompilerDiagnosticCodes.PARSE_INVALID_OPERATOR_ARITY);

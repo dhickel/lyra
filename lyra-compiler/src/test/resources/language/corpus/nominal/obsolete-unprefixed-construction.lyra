@@ -1,0 +1,5 @@
+// nominal	reject	-	LYC-RESOLVE-027	unprefixed nominal construction requires the explicit ':' prefix
+struct Box {
+    let value :I32
+}
+let @pub run :Fn<;I32> = (=> | | { let box :Box = Box[7] box:.value })

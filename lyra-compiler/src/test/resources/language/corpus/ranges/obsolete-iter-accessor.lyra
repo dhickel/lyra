@@ -1,0 +1,2 @@
+// ranges	reject	-	LYC-PARSE-012	'::': compiler-recognized built-ins use their bare bracket spelling
+let @pub run :Fn<;Unit> = (=> | | ::iter[(0..3:1) || ()])

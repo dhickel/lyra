@@ -44,8 +44,8 @@ final class JLineConsole implements PlainConsole.SourceReader {
     static final String PROMPT = "lyra> ";
     static final String CONTINUATION_PROMPT = "...> ";
     private static final List<String> COMMANDS = List.of(
-            ":help", ":bindings", ":type", ":load", ":reload", ":reset",
-            ":history", ":quit");
+            "\\help", "\\bindings", "\\type", "\\load", "\\reload", "\\reset",
+            "\\history", "\\quit");
     private static final List<String> TYPE_NAMES = List.of(
             "I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64",
             "F32", "F64", "Bool", "Char", "String", "Unit", "Array", "Tuple", "Fn");
@@ -290,7 +290,7 @@ final class JLineConsole implements PlainConsole.SourceReader {
         }
     }
 
-    /** {@code :load} or {@code :reload} argument position; nothing else precedes it. */
+    /** {@code \\load} or {@code \\reload} argument position; nothing else precedes it. */
     private static boolean isFileTargetPosition(String line, int start) {
         int previous = start - 1;
         while (previous >= 0 && Character.isWhitespace(line.charAt(previous))) {
@@ -301,7 +301,7 @@ final class JLineConsole implements PlainConsole.SourceReader {
             commandEnd--;
         }
         String command = line.substring(commandEnd + 1, previous + 1);
-        return (command.equals(":load") || command.equals(":reload"))
+        return (command.equals("\\load") || command.equals("\\reload"))
                 && line.substring(0, commandEnd + 1).isBlank();
     }
 
@@ -314,7 +314,7 @@ final class JLineConsole implements PlainConsole.SourceReader {
         while (commandEnd >= 0 && !Character.isWhitespace(line.charAt(commandEnd))) {
             commandEnd--;
         }
-        return line.substring(commandEnd + 1, previous + 1).equals(":reload");
+        return line.substring(commandEnd + 1, previous + 1).equals("\\reload");
     }
 
     /** {@code name:.member} position: the word follows a member-access dot. */
@@ -336,13 +336,11 @@ final class JLineConsole implements PlainConsole.SourceReader {
     }
 
     private static boolean isCommandLine(String source) {
-        String line = source.stripLeading();
-        return line.startsWith(":") && !line.startsWith("::");
+        return source.stripLeading().startsWith("\\");
     }
 
     private static boolean isCommandPosition(String line, int start, int cursor) {
-        if (start >= cursor || line.charAt(start) != ':'
-                || (start + 1 < line.length() && line.charAt(start + 1) == ':')) {
+        if (start >= cursor || line.charAt(start) != '\\') {
             return false;
         }
         String prefix = line.substring(0, start);
@@ -377,14 +375,14 @@ final class JLineConsole implements PlainConsole.SourceReader {
         while (start > 0 && isIdentifierPart(line.charAt(start - 1))) {
             start--;
         }
-        if (start > 0 && line.charAt(start - 1) == ':'
+        if (start > 0 && line.charAt(start - 1) == '\\'
                 && line.substring(0, start - 1).isBlank()) {
             start--;
         }
         return start;
     }
 
-    /** Returns the first :load/:reload argument offset while editing that sole argument. */
+    /** Returns the first \\load/\\reload argument offset while editing that sole argument. */
     private static int commandArgumentStart(String line, int cursor) {
         int begin = 0;
         while (begin < cursor && Character.isWhitespace(line.charAt(begin))) {
@@ -395,7 +393,7 @@ final class JLineConsole implements PlainConsole.SourceReader {
             commandEnd++;
         }
         String command = line.substring(begin, commandEnd);
-        if (!command.equals(":load") && !command.equals(":reload")) {
+        if (!command.equals("\\load") && !command.equals("\\reload")) {
             return -1;
         }
         int argument = commandEnd;
@@ -544,8 +542,8 @@ final class JLineConsole implements PlainConsole.SourceReader {
             return null;
         }
         if (!submitted.equals(submittedSource)) {
-            // No HISTORY_FILE is ever configured. :reset clears the navigation
-            // view too; :load contributes source, not its command/path spelling.
+            // No HISTORY_FILE is ever configured. \\reset clears the navigation
+            // view too; \\load contributes source, not its command/path spelling.
             history.purge();
             for (String source : submittedSource) {
                 history.add(source.endsWith("\n") ? source.substring(0, source.length() - 1) : source);
@@ -561,7 +559,7 @@ final class JLineConsole implements PlainConsole.SourceReader {
                 // the reader while others do not. Normalize that transport
                 // framing before adding the single source-unit terminator;
                 // PlainConsole removes this terminator for commands, so a
-                // :type payload cannot acquire an editor newline.
+                // \\type payload cannot acquire an editor newline.
                 source = stripLineEnding(source);
                 return source + "\n";
             } catch (UserInterruptException interrupted) {

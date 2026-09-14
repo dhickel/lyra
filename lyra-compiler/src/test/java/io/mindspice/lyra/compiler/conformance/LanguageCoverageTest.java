@@ -39,36 +39,70 @@ class LanguageCoverageTest {
         assertEquals(all, negative, "Add malformed-arity fixtures for every new operator");
         Set<String> features = corpus.stream().map(LanguageCorpus.Case::feature).collect(Collectors.toSet());
         assertEquals(Set.of("primitives", "truthiness", "operators", "operator-arity", "evaluation", "bindings", "functions",
-                "nilability", "conditionals", "aggregates", "strings", "lexical", "conversions", "modules", "excluded", "runtime", "match", "ranges"), features);
+                "nilability", "conditionals", "aggregates", "strings", "lexical", "conversions", "modules", "excluded", "runtime", "match", "ranges", "nominal"), features);
         assertTrue(LanguageFuzzWorker.MODES.contains("match"), "Match scenarios must remain in the bounded fuzz campaign");
         var matches = corpus.stream().filter(test -> test.feature().equals("match")).toList();
         assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value") && test.source().contains("(match ")),
                 "Add a value-form match fixture");
-        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value") && test.source().contains("::match[")),
-                "Add a bracket-form match fixture");
-        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value") && test.source().contains("(match _")),
-                "Add a prefix conditional match fixture");
-        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value") && test.source().contains("::match[_")),
-                "Add a bracket conditional match fixture");
-        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value") && test.source().contains("?? _ when")),
+        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value") && test.source().contains("match[")),
+                "Add a bare bracket-form match fixture");
+        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value") && test.source().contains("(cond ")),
+                "Add a parenthesized cond fixture");
+        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value") && test.source().contains("_ when")),
                 "Add a legal guarded wildcard followed by an unguarded fallback");
         assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value")
                         && test.source().contains("(secondPattern)")),
                 "Add a reached computed pattern after a false guard");
         assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value")
-                        && (test.source().contains("-> (match") || test.source().contains("-> ::match"))),
-                "Add a nested match fixture");
+                        && (test.source().contains("-> (match") || test.source().contains("-> (cond"))),
+                "Add a nested match/cond fixture");
+        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value")
+                        && test.source().contains(", ::")),
+                "Add a sibling-:: comma arm fixture");
+        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value") && test.source().contains("_ ->")),
+                "Add a mandatory final wildcard fixture");
         assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("reject") && test.source().contains("when")),
                 "Add malformed guard coverage");
-        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("reject") && test.source().contains("match ??")),
+        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("reject") && test.source().contains("??")),
+                "Add obsolete and malformed marker coverage");
+        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("reject")
+                        && test.source().contains("(match ->")),
                 "Add a missing-subject fragment");
-        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("reject") && test.source().contains("?? ->")),
-                "Add a missing-pattern fragment");
-        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("reject") && test.source().contains("-> ??")),
+        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("reject")
+                        && test.source().contains("1 -> _ ->")),
                 "Add a missing-result fragment");
         assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("throws")),
                 "Add a source-mapped match runtime-failure fixture");
-        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value") && test.source().contains("?? _ ->")),
-                "Add a mandatory final wildcard fixture");
+        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("reject")
+                        && test.source().contains("::match[")),
+                "Add an obsolete '::match[' rejection fixture");
+        assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("reject")
+                        && test.source().contains("(match _")),
+                "Add an obsolete conditional-subject rejection fixture");
+        var nominal = corpus.stream().filter(test -> test.feature().equals("nominal")).toList();
+        assertTrue(nominal.stream().anyMatch(test -> test.outcome().equals("value")
+                        && test.source().contains(":Box[")),
+                "Add an explicit construction fixture");
+        assertTrue(nominal.stream().anyMatch(test -> test.outcome().equals("value")
+                        && test.source().contains("Values[")),
+                "Add an uppercase value-indexing fixture");
+        assertTrue(nominal.stream().anyMatch(test -> test.outcome().equals("reject")
+                        && test.expected().equals("LYC-RESOLVE-027")),
+                "Add an obsolete unprefixed-construction rejection fixture");
+        var operators = corpus.stream().filter(test -> test.feature().equals("operators")).toList();
+        assertTrue(operators.stream().anyMatch(test -> test.outcome().equals("value")
+                        && test.source().contains("-1)")),
+                "Add an adjacent bare negative literal fixture");
+        var lexical = corpus.stream().filter(test -> test.feature().equals("lexical")).toList();
+        assertTrue(lexical.stream().anyMatch(test -> test.outcome().equals("reject")
+                        && test.source().contains("-129I8")),
+                "Add a signed-minimum magnitude rejection fixture");
+        var operatorArity = corpus.stream().filter(test -> test.feature().equals("operator-arity")).toList();
+        assertTrue(operatorArity.stream().anyMatch(test -> test.outcome().equals("reject")
+                        && test.source().contains("- 1)")),
+                "Add a trivia-separated minus rejection fixture");
+        assertTrue(operatorArity.stream().anyMatch(test -> test.outcome().equals("reject")
+                        && test.source().contains("--1")),
+                "Add a doubled-minus rejection fixture");
     }
 }

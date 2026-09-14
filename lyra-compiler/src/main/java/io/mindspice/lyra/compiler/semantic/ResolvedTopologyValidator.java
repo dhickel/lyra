@@ -988,11 +988,17 @@ final class ResolvedTopologyValidator {
             return;
         }
         if (expression instanceof SyntaxNode.Match match) {
-            match.subject().ifPresent(value -> collectMutationSites(value, moduleId, destination));
-            for (SyntaxNode.MatchArm arm : match.arms()) {
-                arm.pattern().ifPresent(value -> collectMutationSites(value, moduleId, destination));
-                arm.guard().ifPresent(value -> collectMutationSites(value, moduleId, destination));
-                collectMutationSites(arm.result(), moduleId, destination);
+            collectMutationSites(match.subject(), moduleId, destination);
+            collectArmMutationSites(match.arms(), moduleId, destination);
+            return;
+        }
+        if (expression instanceof SyntaxNode.Cond cond) {
+            collectArmMutationSites(cond.arms(), moduleId, destination);
+            return;
+        }
+        if (expression instanceof SyntaxNode.ExplicitConstruction construction) {
+            for (SyntaxNode.Expression argument : construction.arguments().expressions()) {
+                collectMutationSites(argument, moduleId, destination);
             }
             return;
         }
@@ -1082,6 +1088,16 @@ final class ResolvedTopologyValidator {
             throw invalid("unrecognized source expression in mutation topology");
         }
     }
+        static void collectArmMutationSites(
+                List<SyntaxNode.MatchArm> arms,
+                ModuleId moduleId,
+                List<SourceMutationSite> destination) {
+            for (SyntaxNode.MatchArm arm : arms) {
+                arm.pattern().ifPresent(value -> collectMutationSites(value, moduleId, destination));
+                arm.guard().ifPresent(value -> collectMutationSites(value, moduleId, destination));
+                collectMutationSites(arm.result(), moduleId, destination);
+            }
+        }
 
     private static SourceMutationSite mutationSite(
             ModuleId moduleId,

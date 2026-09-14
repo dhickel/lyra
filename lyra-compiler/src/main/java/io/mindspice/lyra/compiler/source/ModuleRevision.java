@@ -11,7 +11,8 @@ import java.util.Objects;
 
 /** Deterministic revision helpers for one source module. */
 public final class ModuleRevision {
-    public static final int LANGUAGE_CONTRACT_VERSION = 1;
+    /** Kept in lock step with {@code LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION}. */
+    public static final int LANGUAGE_CONTRACT_VERSION = 2;
     public static final String DOMAIN_TAG = "LYRA-MODULE-REVISION";
 
     private ModuleRevision() {

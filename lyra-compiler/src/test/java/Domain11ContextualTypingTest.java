@@ -73,12 +73,14 @@ public final class Domain11ContextualTypingTest {
     public void conditionalArrayTupleAndEqualityPeersFoldHomogeneously() {
         TypedSemanticGraph typed = success(
                 "let conditional = (#T -> Tuple[#NIL 1] : Tuple[2 3]) "
+                        + "let condValue = (cond #T -> Tuple[#NIL 1] _ -> Tuple[2 3]) "
                         + "let arrays = Array[Array[#NIL] Array[1]] "
                         + "let equality = (== Array[Tuple[#NIL 1]] Array[Tuple[2 3]])");
 
-        assertEquals(
-                TupleType.of(List.of(PrimitiveType.I64.nilable(), PrimitiveType.I64)),
-                contract(typed, "conditional").valueType());
+        LyraType expectedConditional = TupleType.of(
+                List.of(PrimitiveType.I64.nilable(), PrimitiveType.I64));
+        assertEquals(expectedConditional, contract(typed, "conditional").valueType());
+        assertEquals(expectedConditional, contract(typed, "condValue").valueType());
         assertEquals(
                 ArrayType.of(ArrayType.of(PrimitiveType.I32.nilable())),
                 contract(typed, "arrays").valueType());
@@ -122,6 +124,7 @@ public final class Domain11ContextualTypingTest {
         assertFailure("let bad = Array[Array[#NIL]]", "#NIL");
         assertFailure("let bad = Tuple[#NIL 1]", "#NIL");
         assertFailure("let bad = (#T -> #NIL : #NIL)", "#NIL");
+        assertFailure("let bad = (cond #T -> #NIL _ -> #NIL)", "#NIL");
         assertFailure("let bad = (#NIL : 1)", "#NIL");
         assertFailure("let bad = (#T -> #NIL)", "#NIL");
         assertFailure("let bad = (== #NIL #NIL)", "==");
@@ -150,6 +153,22 @@ public final class Domain11ContextualTypingTest {
                 "let inner = (#T -> #NIL : 1) let copy = inner");
         assertEquals(PrimitiveType.I64.nilable(), contract(inferred, "inner").valueType());
         assertEquals(PrimitiveType.I64.nilable(), contract(inferred, "copy").valueType());
+    }
+
+    @Test
+    public void condSuppliesStructuralAndCallbackContexts() {
+        TypedSemanticGraph typed = success(
+                "let nested = Array[(cond #T -> Tuple[#NIL 1] _ -> Tuple[2 3])] "
+                        + "let peerNested = Array[(cond #T -> #NIL _ -> #NIL) 1] "
+                        + "iter[(0..1:1) (cond #T -> |value| {} _ -> |value| {})]");
+        assertEquals(
+                ArrayType.of(TupleType.of(List.of(
+                        PrimitiveType.I64.nilable(), PrimitiveType.I64))),
+                contract(typed, "nested").valueType());
+        assertEquals(ArrayType.of(PrimitiveType.I32.nilable()),
+                contract(typed, "peerNested").valueType());
+        assertTrue(typed.expressions().stream()
+                .anyMatch(expression -> expression.kind() == TypedExpressionKind.ITER));
     }
 
     @Test

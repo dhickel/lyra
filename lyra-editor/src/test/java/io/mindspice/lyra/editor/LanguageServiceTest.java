@@ -59,7 +59,7 @@ class LanguageServiceTest {
         assertTrue(result.styles().stream().anyMatch(style -> style.css().equals("syntax-keyword") && style.start() == 0));
     }
     @Test void matchAndWhenUseKeywordHighlighting() {
-        String source = "let value = (match 1 ?? 1 when #T -> 2 ?? _ -> 3)";
+        String source = "let value = (match 1 1 when #T -> 2 _ -> 3)";
         var result = analyze(source, Map.of());
         assertTrue(result.valid(), result.diagnostics().toString());
         for (String keyword : List.of("match", "when")) {

@@ -1,2 +1,2 @@
 // match	reject	-	LYC-PARSE-003	match has no arms after its final wildcard
-let @pub run :Fn<;I32> = (=> | | (match 1 ?? _ -> 0 ?? 1 -> 2))
+let @pub run :Fn<;I32> = (=> | | (match 1 _ -> 0 1 -> 2))

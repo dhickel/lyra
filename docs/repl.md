@@ -21,12 +21,12 @@ java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar repl [DIR] [--source-root DI
 ```
 
 - Startup is an **empty scratch workspace**. `DIR` and repeatable `--source-root DIR` configure module search directories only; nothing is initialized and `main` is never invoked.
-- User modules enter scope only through explicit `import` headers in a submission or explicit `:load`.
-- The only commands are `:help`, `:bindings`, `:type`, `:load`, `:reload MODULE`, `:reset`, `:history`, `:quit`. Commands use a single leading colon; `::function[args]` is evaluated as ordinary Lyra source.
-- `:type` analyzes supplied source against the committed context **without executing, pinning, or publishing** anything.
-- `:load FILE` reads a local UTF-8 file once, maps diagnostics to that file, and submits its contents. `:reload MODULE` accepts a committed namespace alias or logical module ID and rebuilds only the REPL-owned reachable dependency closure; `:reload` without a target is a usage error.
+- User modules enter scope only through explicit `import` headers in a submission or explicit `\load`.
+- The only commands are `\help`, `\bindings`, `\type`, `\load`, `\reload MODULE`, `\reset`, `\history`, `\quit`. Commands use a single leading backslash at a source-unit boundary; `::function[args]` is evaluated as ordinary Lyra source.
+- `\type SOURCE` analyzes supplied source against the committed context **without executing, pinning, or publishing** anything.
+- `\load FILE` reads a local UTF-8 file once, maps diagnostics to that file, and submits its contents. `\reload MODULE` accepts a committed namespace alias or logical module ID and rebuilds only the REPL-owned reachable dependency closure; `\reload` without a target is a usage error.
 - Interactive TTY mode adds multiline completeness, bracketed-paste atomicity, indentation, highlighting, delimiter matching, Emacs/vi keymaps, history search, resize handling, and cleanup. `--plain` is the undecorated fallback.
-- History is in memory by default; `--history PATH` enables a bounded source-only history file. Program input (`std->io` `readLine`) never enters source history.
+- History is in memory by default; `--history PATH` enables a bounded source-only history file. A successful `\load` records exact loaded source only when the adapter returns it, never the command/path; attached protocol-v2 loads intentionally return no source text. Successful reset clears source history, while failed/busy reset preserves it. Program input (`std->io` `readLine`) never enters source history.
 - Semantic completion reads committed binding/type/member metadata only; file and module completion is bounded read-only lookup of the execution host's filesystem and never compiles, initializes, or pins candidates.
 
 ## Modules, imports, pinned reuse and reload
@@ -42,8 +42,8 @@ counter->::next[]          // initialized module state is reused
 
 - Each successfully initialized module instance is pinned to its exact source revision and reused across later submissions and transitive imports. Later imports of the same revision never reread the backing file or rerun an initializer.
 - Repeated identical imports are idempotent; conflicts, duplicate identities, missing modules, ambiguity and eager cycles are ordinary diagnostics.
-- Editing or deleting a backing file never replaces an existing pin. Use `:reload` to move forward.
-- `:reload MODULE` resolves the target's **fresh** source, reconstructs its REPL-owned dependency closure using the new import topology (stopping at borrowed application-owned dependencies), reports scheduled/attempted/completed initializers distinctly, and publishes affected defaults atomically only on success.
+- Editing or deleting a backing file never replaces an existing pin. Use `\reload` to move forward.
+- `\reload MODULE` resolves the target's **fresh** source, reconstructs its REPL-owned dependency closure using the new import topology (stopping at borrowed application-owned dependencies), reports scheduled/attempted/completed initializers distinctly, and publishes affected defaults atomically only on success.
 - Old captured values, selective imports, compiled lexical references and existing dependency edges keep their original producers. Unaffected defaults are unchanged. There is no watcher, automatic reload, state migration, or old-reference retargeting.
 - `std->io` is an intrinsic module (`import std->io`) and executes through the session's real I/O environment.
 
@@ -89,7 +89,7 @@ The wire protocol is version 2: length-prefixed UTF-8 JSON, explicit operation s
 - Version 1 peers receive an explicit unsupported-version/upgrade diagnostic. There is no legacy authenticated mode, no token adapters, and no silent downgrade.
 - Disconnect requests cancellation, preserves committed state, and reconnects to retained terminal results without source resubmission.
 - Duplicate request identities are recognized without reexecution; a changed payload under a reused identity is rejected.
-- Program stdin/stdout/stderr stay on the execution host; they are never forwarded into wire payloads. `:load`/`:reload`/completion on an attached console read the **application's** filesystem, never the client's.
+- Program stdin/stdout/stderr stay on the execution host; they are never forwarded into wire payloads. `\load`/`\reload`/completion on an attached console read the **application's** filesystem, never the client's.
 
 ## Debug artifacts
 

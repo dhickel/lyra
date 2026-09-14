@@ -64,6 +64,18 @@ public final class CompilerDiagnosticCodes {
             DiagnosticCode.of(Phase.PARSE, 9);
     public static final DiagnosticCode PARSE_INVALID_TYPE_FORM =
             DiagnosticCode.of(Phase.PARSE, 10);
+    /** Obsolete '??' arm markers. */
+    public static final DiagnosticCode PARSE_OBSOLETE_ARM_MARKER =
+            DiagnosticCode.of(Phase.PARSE, 11);
+    /** Obsolete '::match[...]', '::iter[...]' and '::while[...]' spellings. */
+    public static final DiagnosticCode PARSE_OBSOLETE_DIRECT_SPECIAL_FORM =
+            DiagnosticCode.of(Phase.PARSE, 12);
+    /** Obsolete conditional '(match _ ...)' special case. */
+    public static final DiagnosticCode PARSE_OBSOLETE_CONDITIONAL_MATCH =
+            DiagnosticCode.of(Phase.PARSE, 13);
+    /** Misuse of the explicit ':Type[...]' construction marker. */
+    public static final DiagnosticCode PARSE_INVALID_CONSTRUCTION =
+            DiagnosticCode.of(Phase.PARSE, 14);
 
     public static final DiagnosticCode MODULE_INVALID_CONFIGURATION =
             DiagnosticCode.of(Phase.MODULE, 1);
@@ -125,9 +137,16 @@ public final class CompilerDiagnosticCodes {
             DiagnosticCode.of(Phase.RESOLVE, 24);
     public static final DiagnosticCode RESOLVE_IMPORT_HEADER =
             DiagnosticCode.of(Phase.RESOLVE, 25);
-    /** Temporary fail-closed boundary while nominal semantic/IR support is being implemented. */
+    /**
+     * Retired nominal implementation boundary, retained only so the public
+     * diagnostic-code inventory does not reuse or renumber LYC-RESOLVE-026.
+     */
+    @Deprecated(forRemoval = false)
     public static final DiagnosticCode RESOLVE_NOMINAL_NOT_IMPLEMENTED =
             DiagnosticCode.of(Phase.RESOLVE, 26);
+    /** Obsolete unprefixed nominal construction 'Type[...]' or 'module->:.Type[...]'. */
+    public static final DiagnosticCode RESOLVE_OBSOLETE_CONSTRUCTION =
+            DiagnosticCode.of(Phase.RESOLVE, 27);
 
     public static final DiagnosticCode TYPE_MISMATCH =
             DiagnosticCode.of(Phase.TYPE, 1);
@@ -250,6 +269,10 @@ public final class CompilerDiagnosticCodes {
             PARSE_INVALID_ACCESSOR,
             PARSE_IMPORT_HEADER,
             PARSE_INVALID_TYPE_FORM,
+            PARSE_OBSOLETE_ARM_MARKER,
+            PARSE_OBSOLETE_DIRECT_SPECIAL_FORM,
+            PARSE_OBSOLETE_CONDITIONAL_MATCH,
+            PARSE_INVALID_CONSTRUCTION,
             MODULE_INVALID_CONFIGURATION,
             MODULE_INVALID_IMPORT_PATH,
             MODULE_DUPLICATE_IDENTITY,
@@ -280,6 +303,7 @@ public final class CompilerDiagnosticCodes {
             RESOLVE_FUNCTION_LINKAGE,
             RESOLVE_IMPORT_HEADER,
             RESOLVE_NOMINAL_NOT_IMPLEMENTED,
+            RESOLVE_OBSOLETE_CONSTRUCTION,
             TYPE_MISMATCH,
             TYPE_UNRESOLVED_LINK,
             TYPE_UNTYPED_EXPRESSION,

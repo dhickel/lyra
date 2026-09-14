@@ -1,0 +1,5 @@
+// nominal	value	Bool	true	primitive conversions and Array/Tuple literals keep their unprefixed spelling
+let text :String = String[42]
+let values :Array<I32> = Array<I32>[1 2]
+let pair :Tuple<I32,String> = Tuple<I32,String>[3 "x"]
+let @pub run :Fn<;Bool> = (=> | | (and (== text:.length 2) (and (== values:.length 2) (== pair:.0 3))))

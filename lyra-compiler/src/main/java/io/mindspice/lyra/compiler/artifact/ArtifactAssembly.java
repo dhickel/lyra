@@ -542,8 +542,16 @@ public final class ArtifactAssembly implements ArtifactSource {
             String binaryName, byte[] bytes, String metadataJson) {
         Objects.requireNonNull(bytes, "bytes");
         Objects.requireNonNull(metadataJson, "metadataJson");
-        String schemaOnePrefix = "{\"schemaVersion\":1,\"languageContractVersion\":1,\"compilerVersion\":";
-        String schemaTwoPrefix = "{\"schemaVersion\":2,\"languageContractVersion\":1,\"compilerVersion\":";
+        String schemaOnePrefix = "{\"schemaVersion\":"
+                + io.mindspice.lyra.runtime.ArtifactMetadata.SCHEMA_VERSION
+                + ",\"languageContractVersion\":"
+                + io.mindspice.lyra.runtime.LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION
+                + ",\"compilerVersion\":";
+        String schemaTwoPrefix = "{\"schemaVersion\":"
+                + io.mindspice.lyra.runtime.ArtifactMetadata.NOMINAL_SCHEMA_VERSION
+                + ",\"languageContractVersion\":"
+                + io.mindspice.lyra.runtime.LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION
+                + ",\"compilerVersion\":";
         String provisionalPrefix;
         if (metadataJson.startsWith(schemaOnePrefix)) provisionalPrefix = schemaOnePrefix;
         else if (metadataJson.startsWith(schemaTwoPrefix)) provisionalPrefix = schemaTwoPrefix;

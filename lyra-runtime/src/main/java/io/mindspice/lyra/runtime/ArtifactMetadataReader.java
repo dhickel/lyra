@@ -69,6 +69,7 @@ public final class ArtifactMetadataReader {
         }
         try {
             validateObjectKeys(object, FIELD_ORDER, REQUIRED_FIELDS, "artifact metadata");
+            requireSupportedVersions(object);
             ArtifactMetadata metadata = decodeMetadata(object);
             validateCompatibility(metadata, runningProfile, runningAbi);
             return metadata;
@@ -512,6 +513,29 @@ public final class ArtifactMetadataReader {
                 LyraRuntimeConstants.JAVA_CLASS_FILE_TARGET, previewSupported, minimumAbi);
         return new RuntimeRequirement(string(object, "groupId"), string(object, "artifactId"),
                 string(object, "version"), profile, bool(object, "previewRequired"), minimumAbi);
+    }
+
+    /**
+     * Rejects an unsupported artifact schema, language contract, or debug-map
+     * version with the explicit compatibility diagnostic before any
+     * version-derived identity is decoded.  Encoding checks that depend on the
+     * running language contract would otherwise report a confusing
+     * identity-consistency failure for a stale artifact.
+     */
+    private static void requireSupportedVersions(Map<String, Object> object) {
+        int schemaVersion = integer(object, "schemaVersion");
+        if (schemaVersion != LyraRuntimeConstants.ARTIFACT_SCHEMA_VERSION
+                && schemaVersion != ArtifactMetadata.NOMINAL_SCHEMA_VERSION) {
+            throw compatibility("unsupported artifact schema version: " + schemaVersion, null);
+        }
+        int languageVersion = integer(object, "languageContractVersion");
+        if (languageVersion != LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION) {
+            throw compatibility("unsupported language contract version: " + languageVersion, null);
+        }
+        int debugMapVersion = integer(object, "debugMapVersion");
+        if (debugMapVersion != LyraRuntimeConstants.DEBUG_MAP_SCHEMA_VERSION) {
+            throw compatibility("unsupported debug-map schema version: " + debugMapVersion, null);
+        }
     }
 
     private static void validateCompatibility(ArtifactMetadata metadata,

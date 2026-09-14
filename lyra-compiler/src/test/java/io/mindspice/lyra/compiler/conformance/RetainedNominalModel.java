@@ -149,7 +149,7 @@ final class RetainedNominalModel {
 
     private static String holders() {
         return "class Holder { let @pub value :Tuple<Inner> = ::makeTuple[] }\n"
-                + "let @pub makeTuple :Fn<;Tuple<Inner>> = (=> || Tuple[Inner[]])\n";
+                + "let @pub makeTuple :Fn<;Tuple<Inner>> = (=> || Tuple[:Inner[]])\n";
     }
 
     private static Plan values(SplittableRandom random, int retainedOrdinal) {
@@ -173,7 +173,7 @@ final class RetainedNominalModel {
                 new MemberExpectation("Box", "converted", "Apply", 1));
         int sum = literal + constants.baseline() + literal + (o0 + o1) + converted;
         List<Step> steps = List.of(
-                new Step("let box :Box = Box[]", "declared", "", ""),
+                new Step("let box :Box = :Box[]", "declared", "", ""),
                 new Step("(+ box:.literal box:.reference box:.member box:.op box:.converted)",
                         "value", "I32", Integer.toString(sum)));
         return new Plan("values", producer, members, steps, "", retainedOrdinal);
@@ -197,7 +197,7 @@ final class RetainedNominalModel {
                 new MemberExpectation("Box", "made", "Call", 0));
         int sum = (direct + 1) + 0 + lambda * 10 + constants.makeA() * 100;
         List<Step> steps = List.of(
-                new Step("let box :Box = Box[]", "declared", "", ""),
+                new Step("let box :Box = :Box[]", "declared", "", ""),
                 new Step("(+ box:.direct box:.callable (* box::lambda[] 10I32) (* box:.made[0I32] 100I32))",
                         "value", "I32", Integer.toString(sum)));
         return new Plan("calls", producer, members, steps, "", retainedOrdinal);
@@ -229,7 +229,7 @@ final class RetainedNominalModel {
                 new MemberExpectation("Box", "nilIndex", "Project", 1));
         int sum = a1 + x1 + 3 + t0 * 10 + t1 * 100 + n0 * 1000;
         List<Step> steps = List.of(
-                new Step("let box :Box = Box[]", "declared", "", ""),
+                new Step("let box :Box = :Box[]", "declared", "", ""),
                 new Step("(+ box:.array[1I32] box:.index box:.sized (* box:.tuple:.0 10I32) (* (box:.tuple:.1) 100I32) (* ((!= box:.nilIndex #NIL) -> " + n0 + "I32 : 0I32) 1000I32))",
                         "value", "I32", Integer.toString(sum)),
                 new Step("((== box:.char 'b') -> 1I32 : 0I32)", "value", "I32", "1"));
@@ -254,7 +254,7 @@ final class RetainedNominalModel {
                 new MemberExpectation("Box", "overwritten", "Sequence", 4));
         int sum = d1 + s1 * 10 + o2 * 100;
         List<Step> steps = List.of(
-                new Step("let box :Box = Box[]", "declared", "", ""),
+                new Step("let box :Box = :Box[]", "declared", "", ""),
                 new Step("(+ box:.declare (* box:.shadow 10I32) (* box:.overwritten 100I32))",
                         "value", "I32", Integer.toString(sum)));
         return new Plan("sequences", producer, members, steps, "", retainedOrdinal);
@@ -281,8 +281,8 @@ final class RetainedNominalModel {
                     let @pub conditional :I32 = (#T -> %dI32 : %dI32)
                     let @pub unitCond :Unit = (#T -> ())
                     let @pub coalesced :I32 = (maybe : %dI32)
-                    let @pub matched :I32 = (match %dI32 ?? %dI32 -> %dI32 ?? _ -> %dI32)
-                    let @pub guarded :I32 = (match %dI32 ?? %dI32 when #T -> %dI32 ?? _ -> %dI32)
+                    let @pub matched :I32 = (match %dI32 %dI32 -> %dI32 _ -> %dI32)
+                    let @pub guarded :I32 = (match %dI32 %dI32 when #T -> %dI32 _ -> %dI32)
                 }
                 """.formatted(k0, k1, q, m0, m0, m1, m2, m0, m0, m1, m2);
         List<MemberExpectation> members = List.of(
@@ -294,7 +294,7 @@ final class RetainedNominalModel {
         int coalesced = nilable ? q : maybeValue;
         int sum = k0 + coalesced * 10 + m1 * 100 + m1 * 1000;
         List<Step> steps = List.of(
-                new Step("let box :Box = Box[]", "declared", "", ""),
+                new Step("let box :Box = :Box[]", "declared", "", ""),
                 new Step("(+ box:.conditional (* box:.coalesced 10I32) (* box:.matched 100I32) (* box:.guarded 1000I32))",
                         "value", "I32", Integer.toString(sum)),
                 new Step("box:.unitCond", "declared", "", ""));
@@ -310,8 +310,8 @@ final class RetainedNominalModel {
                 class Box {
                     let @pub range :Range<I32> = (%dI32..%dI32:1I32)
                     let @pub converted :I32 = I32[%dI16]
-                    let @pub nested :Inner = Inner[]
-                    let @pub paired :Pair = Pair[%dI32]
+                    let @pub nested :Inner = :Inner[]
+                    let @pub paired :Pair = :Pair[%dI32]
                     let @pub made :Array<I32> = ::make[]
                 }
                 """.formatted(r0, r1, converted, pair);
@@ -324,7 +324,7 @@ final class RetainedNominalModel {
         int sum = converted + constants.inner() * 10 + pair * 100 + constants.makeA() * 1000;
         String rangeLiteral = "(" + r0 + "I32.." + r1 + "I32:1I32)";
         List<Step> steps = List.of(
-                new Step("let box :Box = Box[]", "declared", "", ""),
+                new Step("let box :Box = :Box[]", "declared", "", ""),
                 new Step("(+ box:.converted (* box:.nested:.value 10I32) (* box:.paired:.left 100I32) (* box:.made[0I32] 1000I32))",
                         "value", "I32", Integer.toString(sum)),
                 new Step("((== box:.range " + rangeLiteral + ") -> 1I32 : 0I32)", "value", "I32", "1"));
@@ -346,7 +346,7 @@ final class RetainedNominalModel {
                 new MemberExpectation("Box", "alias", "Reference", 0),
                 new MemberExpectation("Fresh", "values", "Composite", 2));
         List<Step> steps = List.of(
-                new Step("let box :Box = Box[] let second :Box = Box[] let first :Fresh = Fresh[] let another :Fresh = Fresh[]",
+                new Step("let box :Box = :Box[] let second :Box = :Box[] let first :Fresh = :Fresh[] let another :Fresh = :Fresh[]",
                         "declared", "", ""),
                 new Step("""
                         (+ ((eq? box:.alias box:.values) -> 1I32 : 0I32)
@@ -363,8 +363,8 @@ final class RetainedNominalModel {
     private static Plan pinnedUnit(SplittableRandom random, int retainedOrdinal) {
         String producer = "import std->io\n" + """
                 class LoopC {
-                    let @pub iterated :Unit = ::iter[(0I32..2I32:1I32) || ()]
-                    let @pub looped :Unit = ::while[|| #F || ()]
+                    let @pub iterated :Unit = iter[(0I32..2I32:1I32) || ()]
+                    let @pub looped :Unit = while[|| #F || ()]
                 }
                 class Intrinsic {
                     let @pub printed :Unit = io->::println["probe"]
@@ -378,7 +378,7 @@ final class RetainedNominalModel {
                 new MemberExpectation("Intrinsic", "printer", "Reference", 0));
         // Issue #7 pinned shapes: construction succeeds, observation fails with LYR-LINK.
         List<Step> steps = List.of(
-                new Step("let loopC :LoopC = LoopC[] let intrinsic :Intrinsic = Intrinsic[]",
+                new Step("let loopC :LoopC = :LoopC[] let intrinsic :Intrinsic = :Intrinsic[]",
                         "declared", "", "", List.of("construction-effects")),
                 new Step("loopC:.iterated", "failure", "", "LYR-LINK"),
                 new Step("loopC:.looped", "failure", "", "LYR-LINK"),
@@ -399,9 +399,9 @@ final class RetainedNominalModel {
                 new MemberExpectation("Failure", "touched", "Sequence", 2),
                 new MemberExpectation("Failure", "fail", "Apply", 2));
         List<Step> steps = List.of(
-                new Step("let staged :Failure = Failure[]", "failure", "", "LYR-ARITH"),
+                new Step("let staged :Failure = :Failure[]", "failure", "", "LYR-ARITH"),
                 new Step("effects", "value", "I32", "1"),
-                new Step("divisor := 1 let staged :Failure = Failure[]",
+                new Step("divisor := 1 let staged :Failure = :Failure[]",
                         "declared", "", "", List.of("recovery")),
                 new Step("(+ staged:.touched (* effects 10I32) staged:.fail)", "value", "I32", "22"));
         return new Plan("failures", producer, members, steps, "", retainedOrdinal);
@@ -413,7 +413,7 @@ final class RetainedNominalModel {
         int shadowValue = bound(random, 1, 10);
         String producer = preamble(random, constants) + """
                 class Counter { let @pub @mut read :Fn<;I32> = (=> || 1I32) }
-                let @mut holder :Counter = Counter[]
+                let @mut holder :Counter = :Counter[]
                 let saved :Fn<;I32> = holder:.read
                 class SlotBox {
                     let @pub current :I32 = holder::read[]
@@ -428,11 +428,11 @@ final class RetainedNominalModel {
                 new MemberExpectation("Shadow", "value", "Call", 0));
         List<Step> steps = List.of(
                 new Step("holder:.read := (=> || " + replacement + "I32)", "declared", "", ""),
-                new Step("let slotBox :SlotBox = SlotBox[]", "declared", "", ""),
+                new Step("let slotBox :SlotBox = :SlotBox[]", "declared", "", ""),
                 new Step("(+ (* slotBox:.current 10I32) slotBox:.original)", "value", "I32",
                         Integer.toString(replacement * 10 + 1)),
                 new Step("let source :Fn<;I32> = (=> || " + shadowValue + "I32)", "declared", "", ""),
-                new Step("let shadow :Shadow = Shadow[]", "declared", "", ""),
+                new Step("let shadow :Shadow = :Shadow[]", "declared", "", ""),
                 new Step("shadow:.value", "value", "I32", Integer.toString(sourceValue)));
         return new Plan("slots", producer, members, steps, "", retainedOrdinal);
     }

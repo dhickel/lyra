@@ -274,9 +274,22 @@ public final class LexerTest {
                         NumericSuffix.F32, NumericSuffix.F64)),
                 "all uppercase primitive suffixes are recognized");
         success("127I8 255U8 18446744073709551615U64");
-        success("-128I8");
+        for (String minimum : List.of(
+                "-128I8", "-32768I16", "-2147483648I32", "-9223372036854775808I64")) {
+            success(minimum);
+        }
+        success("let a = -128I8 let b = -32768I16 let c = -2147483648I32 "
+                + "let d = -9223372036854775808I64");
+        success("(- 128I8)");
+        success("-[32768I16]");
+        success("- [2147483648I32]");
+        success("-1U8 -255U8");
         success("3.4028235e38F32 1.7976931348623157e308F64");
         expectFailure("128I8", CompilerDiagnosticCodes.LEX_NUMERIC_OUT_OF_RANGE);
+        expectFailure("32768I16", CompilerDiagnosticCodes.LEX_NUMERIC_OUT_OF_RANGE);
+        expectFailure("2147483648I32", CompilerDiagnosticCodes.LEX_NUMERIC_OUT_OF_RANGE);
+        expectFailure("9223372036854775808I64", CompilerDiagnosticCodes.LEX_NUMERIC_OUT_OF_RANGE);
+        expectFailure("-[129I8]", CompilerDiagnosticCodes.LEX_NUMERIC_OUT_OF_RANGE);
         expectFailure("256U8", CompilerDiagnosticCodes.LEX_NUMERIC_OUT_OF_RANGE);
         expectFailure("18446744073709551616", CompilerDiagnosticCodes.LEX_NUMERIC_OUT_OF_RANGE);
         expectFailure("3.5e38F32", CompilerDiagnosticCodes.LEX_NUMERIC_OUT_OF_RANGE);

@@ -54,6 +54,8 @@ public interface SyntaxVisitor<R> {
     R visitBlock(SyntaxNode.Block node);
     R visitConditional(SyntaxNode.Conditional node);
     R visitMatch(SyntaxNode.Match node);
+    R visitCond(SyntaxNode.Cond node);
+    R visitExplicitConstruction(SyntaxNode.ExplicitConstruction node);
     R visitCoalesce(SyntaxNode.Coalesce node);
     R visitPrefixAssignment(SyntaxNode.PrefixAssignment node);
     R visitLambda(SyntaxNode.Lambda node);

@@ -23,7 +23,7 @@ class ExecutedSnapshotTest {
             var aggregate = assertInstanceOf(ValueSnapshot.Aggregate.class, value(session, "ranges").data());
             assertEquals("(0..3:1)", scalar(aggregate.elements().getFirst()));
             assertEquals("3", scalar(value(session,
-                    "let @mut n :I32 = 0 ::iter[ranges[0] || { n := (++ n) }] n")));
+                    "let @mut n :I32 = 0 iter[ranges[0] || { n := (++ n) }] n")));
         }
     }
 

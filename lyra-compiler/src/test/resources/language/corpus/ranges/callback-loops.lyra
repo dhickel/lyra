@@ -1,7 +1,7 @@
 // ranges	value	I32	12	reserved iter and while execute callbacks with shared cells
 let @pub run :Fn<;I32> = (=> || {
   let @mut n :I32 = 0
-  ::iter[(0..10:1) || { n := (+ n 1) }]
-  ::while[|| (< n 12) || { n := (+ n 1) }]
+  iter[(0..10:1) || { n := (+ n 1) }]
+  while[|| (< n 12) || { n := (+ n 1) }]
   n
 })

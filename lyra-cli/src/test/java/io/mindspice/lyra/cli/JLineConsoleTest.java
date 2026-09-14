@@ -65,20 +65,20 @@ final class JLineConsoleTest {
     @Test
     void enterContinuesUsingAuthoritativeCommentsDelimitersAndIndentation() throws Exception {
         try (Fixture fixture = new Fixture("let @pub value :I32 = (/* outer /* inner */\n"
-                + "still */ + 1\n2)\n:quit\n", "emacs")) {
+                + "still */ + 1\n2)\n\\quit\n", "emacs")) {
             String source = fixture.rich.readSource(List.of());
             assertEquals("let @pub value :I32 = (/* outer /* inner */\n"
                     + "  still */ + 1\n  2)\n", source);
             assertEquals(0, fixture.runSource(source));
             assertTrue(fixture.screen().contains(JLineConsole.CONTINUATION_PROMPT));
-            assertEquals(":quit\n", fixture.rich.readSource(List.of(source)));
+            assertEquals("\\quit\n", fixture.rich.readSource(List.of(source)));
         }
     }
 
     @Test
     void bracketedPasteIsOneSourceUnitAndRequiresExplicitEnter() throws Exception {
         String pasted = "let @pub first :I32 = 1\nlet @pub second :I32 = 2\n";
-        try (Fixture fixture = new Fixture("\033[200~" + pasted + "\033[201~\n:bindings\n:history\n:quit\n", "emacs")) {
+        try (Fixture fixture = new Fixture("\033[200~" + pasted + "\033[201~\n\\bindings\n\\history\n\\quit\n", "emacs")) {
             assertEquals(0, fixture.run());
             String output = fixture.output.toString(StandardCharsets.UTF_8);
             assertTrue(output.contains("first :I32\nsecond :I32\n"), output);
@@ -97,7 +97,7 @@ final class JLineConsoleTest {
 
     @Test
     void pasteCannotExecuteEmbeddedCommandsAndPreservesQuotesAndEscapes() throws Exception {
-        try (Fixture fixture = new Fixture("\033[200~(\n:help\n)\033[201~\n:quit\n", "emacs")) {
+        try (Fixture fixture = new Fixture("\033[200~(\n\\help\n)\033[201~\n\\quit\n", "emacs")) {
             assertEquals(0, fixture.run());
             assertFalse(fixture.output.toString(StandardCharsets.UTF_8).contains(PlainConsole.HELP_TEXT));
             assertTrue(fixture.error.toString(StandardCharsets.UTF_8).contains("LYC-"));
@@ -111,9 +111,9 @@ final class JLineConsoleTest {
     @Test
     void malformedDelimitersAndLiteralNewlinesSubmitRatherThanSwallowLaterCommands() throws Exception {
         for (String source : List.of("{]", "\"unfinished", "'unfinished", "\"trailing\\")) {
-            try (Fixture fixture = new Fixture(source + "\n:quit\n", "emacs")) {
+            try (Fixture fixture = new Fixture(source + "\n\\quit\n", "emacs")) {
                 assertEquals(source + "\n", fixture.rich.readSource(List.of()));
-                assertEquals(":quit\n", fixture.rich.readSource(List.of()));
+                assertEquals("\\quit\n", fixture.rich.readSource(List.of()));
             }
         }
     }
@@ -125,7 +125,7 @@ final class JLineConsoleTest {
         }
         try (Fixture vi = new Fixture("abc\0330xA!\n", "vi")) {
             assertEquals("bc!\n", vi.rich.readSource(List.of()));
-            assertEquals(":quit\n", vi.rich.readSource(List.of()));
+            assertEquals("\\quit\n", vi.rich.readSource(List.of()));
         }
         try (Fixture fixture = new Fixture("(1  )\n", "emacs")) {
             assertEquals("(1  )\n", fixture.rich.readSource(List.of()));
@@ -153,8 +153,8 @@ final class JLineConsoleTest {
 
     @Test
     void completionIsLimitedToCommandsAndTypeNames() throws Exception {
-        try (Fixture fixture = new Fixture(":hel\t\n", "emacs")) {
-            assertEquals(":help \n", fixture.rich.readSource(List.of()));
+        try (Fixture fixture = new Fixture("\\hel\t\n", "emacs")) {
+            assertEquals("\\help \n", fixture.rich.readSource(List.of()));
         }
         try (Fixture fixture = new Fixture("let value :I3\t\n", "emacs")) {
             assertEquals("let value :I32 \n", fixture.rich.readSource(List.of()));
@@ -167,10 +167,10 @@ final class JLineConsoleTest {
     @Test
     void historyNavigationAndSearchOnlyRecallSubmittedSource() throws Exception {
         List<String> history = List.of("let alpha :I32 = 1\n", "let beta :I32 = 2\n");
-        try (Fixture fixture = new Fixture("\033[A\n\022alpha\n:quit\n", "emacs")) {
+        try (Fixture fixture = new Fixture("\033[A\n\022alpha\n\\quit\n", "emacs")) {
             assertEquals("let beta :I32 = 2\n", fixture.rich.readSource(history), fixture::screen);
             assertEquals("let alpha :I32 = 1\n", fixture.rich.readSource(history));
-            assertEquals(":quit\n", fixture.rich.readSource(history));
+            assertEquals("\\quit\n", fixture.rich.readSource(history));
         }
         try (Fixture fixture = new Fixture("!!\n", "emacs")) {
             assertEquals("!!\n", fixture.rich.readSource(history));
@@ -184,19 +184,19 @@ final class JLineConsoleTest {
     void historyExcludesCommandsAbandonedInputAndClearsOnResetWithoutDiskWrites() throws Exception {
         Path source = temp.resolve("a source.lyra");
         Files.writeString(source, "let @pub loaded :I32 = 5\n");
-        String input = "credential-must-not-be-stored\007:help\n:type 99\n:reload\n"
-                + ":load \"" + source + "\"\n:history\n:reset\n:history\n\033[A\n:quit\n";
+        String input = "credential-must-not-be-stored\007\\help\n\\type 99\n\\reload\n"
+                + "\\load \"" + source + "\"\n\\history\n\\reset\n\\history\n\033[A\n\\quit\n";
         try (Fixture fixture = new Fixture(input, "emacs")) {
             assertEquals(2, fixture.run());
             String output = fixture.output.toString(StandardCharsets.UTF_8);
             assertTrue(output.endsWith("1: let @pub loaded :I32 = 5\n"), output);
             assertFalse(output.contains("credential-must-not-be-stored"));
-            assertFalse(output.contains(":load \""));
+            assertFalse(output.contains("\\load \""));
             assertTrue(output.contains("I64"), output);
             String error = fixture.error.toString(StandardCharsets.UTF_8);
             assertFalse(error.contains("LYR-REPL-TYPE-UNSUPPORTED"), error);
             assertTrue(error.contains("LYR-REPL-USAGE"), error);
-            assertTrue(error.contains(":reload expects 1 argument"), error);
+            assertTrue(error.contains("\\reload expects 1 argument"), error);
             assertFalse(error.contains("LYC-"), error);
         }
         try (var files = Files.list(temp)) {
@@ -210,7 +210,7 @@ final class JLineConsoleTest {
         String property = "org.jline.reader.history-file";
         String previous = System.getProperty(property);
         System.setProperty(property, history.toString());
-        try (Fixture fixture = new Fixture("let x :I32 = 1\n:quit\n", "emacs")) {
+        try (Fixture fixture = new Fixture("let x :I32 = 1\n\\quit\n", "emacs")) {
             assertEquals(0, fixture.run());
             assertFalse(Files.exists(history));
         } finally {
@@ -266,7 +266,7 @@ final class JLineConsoleTest {
                 assertTrue(fixture.error.toString(StandardCharsets.UTF_8).contains("LYR-REPL-EOF"));
             }
         }
-        try (Fixture fixture = new Fixture("(discard\007let @pub kept :I32 = 1\n:bindings\n:quit\n", "emacs")) {
+        try (Fixture fixture = new Fixture("(discard\007let @pub kept :I32 = 1\n\\bindings\n\\quit\n", "emacs")) {
             assertEquals(0, fixture.run());
             assertEquals("kept :I32\n", fixture.output.toString(StandardCharsets.UTF_8));
         }
@@ -277,7 +277,7 @@ final class JLineConsoleTest {
 
     @Test
     void resizeRedrawRestoresAttributesHandlersAndPasteModeOnEveryRead() throws Exception {
-        try (Fixture fixture = new Fixture("let @pub longName :I32 = 1\n:quit\n", "emacs")) {
+        try (Fixture fixture = new Fixture("let @pub longName :I32 = 1\n\\quit\n", "emacs")) {
             AtomicInteger signals = new AtomicInteger();
             Terminal.SignalHandler prior = signal -> signals.incrementAndGet();
             fixture.terminal.handle(Terminal.Signal.WINCH, prior);
@@ -302,7 +302,7 @@ final class JLineConsoleTest {
         try (Fixture fixture = new Fixture("", "emacs")) {
             LineReader reader = LineReaderBuilder.builder().terminal(fixture.terminal).build();
             LyraHighlighter highlighter = new LyraHighlighter();
-            String source = "(let x :String = \"😀)\" match when /* ] /* } */ ) */)";
+            String source = "(let x :String = \"😀)\" (match 1I32 1I32 when #T -> 2I32 _ -> 3I32) /* ] /* } */ ) */)";
             reader.getBuffer().write(source);
             var highlighted = highlighter.highlight(reader, source);
             assertEquals(source, highlighted.toString());
@@ -342,7 +342,7 @@ final class JLineConsoleTest {
         Files.writeString(newFile, "let @pub inside :I32 = 7\n");
         RecordingConsole target = new RecordingConsole(
                 List.of(newFile.getParent()));
-        String input = ":load newm\t\n:reload newm\t\n:history\n:quit\n";
+        String input = "\\load newm\t\n\\reload newm\t\n\\history\n\\quit\n";
         try (Fixture fixture = new Fixture(input, "emacs")) {
             fixture.rich.completeWith(target);
             assertEquals(0, fixture.run(target), fixture.error.toString(StandardCharsets.UTF_8));
@@ -354,15 +354,15 @@ final class JLineConsoleTest {
             assertEquals(List.of("newmod"), target.reloadTargets);
             String output = fixture.output.toString(StandardCharsets.UTF_8);
             assertTrue(output.contains("1: let @pub inside :I32 = 7"), output);
-            assertFalse(output.contains(":load"), output);
-            assertFalse(output.contains(":reload"), output);
+            assertFalse(output.contains("\\load"), output);
+            assertFalse(output.contains("\\reload"), output);
         }
     }
 
     @Test
     void nestedModuleCompletionReplacesTheWholeLogicalTarget() throws Exception {
         RecordingConsole target = new RecordingConsole(List.of());
-        try (Fixture fixture = new Fixture(":reload game->ma\t\n:quit\n", "emacs")) {
+        try (Fixture fixture = new Fixture("\\reload game->ma\t\n\\quit\n", "emacs")) {
             fixture.rich.completeWith(target);
             assertEquals(0, fixture.run(target), fixture.error.toString(StandardCharsets.UTF_8));
             assertEquals(List.of("game->ma"), target.modulePrefixes);
@@ -373,7 +373,7 @@ final class JLineConsoleTest {
     @Test
     void typeCommandPassesVerbatimSourceWithoutEditorLineFraming() throws Exception {
         RecordingConsole target = new RecordingConsole(List.of());
-        try (Fixture fixture = new Fixture(":type   1  +  2  \n:quit\n", "emacs")) {
+        try (Fixture fixture = new Fixture("\\type   1  +  2  \n\\quit\n", "emacs")) {
             assertEquals(0, fixture.run(target), fixture.error.toString(StandardCharsets.UTF_8));
             assertEquals(List.of("1  +  2  "), target.typeQueries);
         }
@@ -385,7 +385,7 @@ final class JLineConsoleTest {
         String input = "let @pub text :String = \"hi\"\n"
                 + "tex\t\n"
                 + "text:.le\t\n"
-                + ":quit\n";
+                + "\\quit\n";
         try (Fixture fixture = new Fixture(input, "emacs")) {
             fixture.rich.completeWith(target);
             assertEquals(0, fixture.run(target), fixture.error.toString(StandardCharsets.UTF_8));
@@ -422,11 +422,11 @@ final class JLineConsoleTest {
                 + "import std->io io->::println[\"rich-output 😀\"]\n"
                 + "import std->io io->::readLine[]\n"
                 + "import errors errors->::late[]\n"
-                + ":reload counter\n"
+                + "\\reload counter\n"
                 + "counter->:.visible\n"
                 + "(oldBump)\n"
                 + "counter->::bump[]\n"
-                + ":quit\n";
+                + "\\quit\n";
         ByteArrayOutputStream hostOutput = new ByteArrayOutputStream();
         RuntimeIoEnvironment environment = new RuntimeIoEnvironment(
                 new ByteArrayInputStream("program 😀\n".getBytes(StandardCharsets.UTF_8)),
@@ -463,7 +463,7 @@ final class JLineConsoleTest {
 
     @Test
     void completionNeverBreaksEditingWhenTheTargetIsUnavailable() throws Exception {
-        try (Fixture fixture = new Fixture(":load any\t\n:quit\n", "emacs")) {
+        try (Fixture fixture = new Fixture("\\load any\t\n\\quit\n", "emacs")) {
             // No session wired: completion stays static and harmless.
             assertEquals(2, fixture.run());
             assertTrue(fixture.error.toString(StandardCharsets.UTF_8)
@@ -634,7 +634,7 @@ final class JLineConsoleTest {
         }
 
         private Fixture(String input, String keymap, boolean quit) throws IOException {
-            this.input = new ScriptedInput(input + (quit ? ":quit\n" : ""));
+            this.input = new ScriptedInput(input + (quit ? "\\quit\n" : ""));
             terminal = new DumbTerminal("lyra-test", "xterm", this.input, display, StandardCharsets.UTF_8);
             terminal.setSize(new Size(80, 24));
             Attributes attributes = terminal.getAttributes();
@@ -663,7 +663,7 @@ final class JLineConsoleTest {
         }
 
         private int runSource(String source) {
-            var sources = new ArrayList<>(List.of(source, ":quit"));
+            var sources = new ArrayList<>(List.of(source, "\\quit"));
             LyraSession session = LyraSession.open();
             try {
                 return new PlainConsole(session, InputStream.nullInputStream(), output, error)

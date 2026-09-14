@@ -1,0 +1,2 @@
+// operators	value	I32	-1	adjacent bare negative literal
+let @pub run :Fn<;I32> = (=> | | -1)

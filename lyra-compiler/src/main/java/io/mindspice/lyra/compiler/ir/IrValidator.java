@@ -618,7 +618,7 @@ public final class IrValidator {
                     case SHORT_CIRCUIT -> IrEvaluationOrder.Kind.SHORT_CIRCUIT;
                     case CONDITIONAL -> IrEvaluationOrder.Kind.BRANCH;
                     case COALESCE -> IrEvaluationOrder.Kind.COALESCE;
-                    case MATCH -> IrEvaluationOrder.Kind.MATCH;
+                    case MATCH, COND -> IrEvaluationOrder.Kind.MATCH;
                     case NOMINAL_DECLARATION -> IrEvaluationOrder.Kind.INSTANCE_INITIALIZATION;
                     default -> IrEvaluationOrder.Kind.STRICT;
                 };

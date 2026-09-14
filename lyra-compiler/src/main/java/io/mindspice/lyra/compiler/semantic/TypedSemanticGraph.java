@@ -465,7 +465,9 @@ public final class TypedSemanticGraph implements ImmutablePhaseArtifact, TypedSe
                 != expression.nominalInitialization().isPresent()) {
             throw new IllegalArgumentException("nominal initialization proof is missing or foreign");
         }
-        if ((expression.kind() == TypedExpressionKind.MATCH) != expression.match().isPresent()) {
+        if ((expression.kind() == TypedExpressionKind.MATCH
+                || expression.kind() == TypedExpressionKind.COND)
+                != expression.match().isPresent()) {
             throw new IllegalArgumentException("typed match metadata is missing or foreign");
         }
         for (CaptureId capture : expression.captureIds()) {
@@ -513,10 +515,14 @@ public final class TypedSemanticGraph implements ImmutablePhaseArtifact, TypedSe
                     throw new IllegalArgumentException("typed coalesce has an invalid child count");
                 }
             }
-            case MATCH -> {
+            case MATCH, COND -> {
                 TypedMatch match = expression.match().orElseThrow();
                 if (match.childCount() != expression.children().size()) {
                     throw new IllegalArgumentException("typed match child roles are incomplete");
+                }
+                if ((expression.kind() == TypedExpressionKind.COND)
+                        != (match.mode() == TypedMatch.MatchMode.CONDITIONAL)) {
+                    throw new IllegalArgumentException("typed lazy-arm metadata mode does not match its source form");
                 }
                 if (match.subjectChild().isPresent()) {
                     TypedExpression subject = expression.children().get(match.subjectChild().getAsInt());

@@ -12,6 +12,7 @@ public enum TypedExpressionKind {
     CONDITIONAL,
     COALESCE,
     MATCH,
+    COND,
     RANGE,
     ITER,
     WHILE,

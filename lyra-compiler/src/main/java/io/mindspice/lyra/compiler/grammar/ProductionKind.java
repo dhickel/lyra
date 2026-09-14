@@ -30,6 +30,10 @@ public enum ProductionKind {
     COALESCE,
     MATCH,
     MATCH_ARM,
+    COND,
+    CONSTRUCTION,
+    CALLBACK_LOOP_BRACKET,
+    PARENTHESIZED_DIRECT_CALL,
     RANGE,
 
     IDENTIFIER,
@@ -75,6 +79,7 @@ public enum ProductionKind {
     ARRAY_LITERAL,
     TUPLE_LITERAL,
     TYPE_CONVERSION,
+    NEGATIVE_LITERAL,
 
     MEMBER_NAME,
     MODIFIER,

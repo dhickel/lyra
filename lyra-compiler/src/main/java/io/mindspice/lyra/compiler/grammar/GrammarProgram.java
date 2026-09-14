@@ -171,8 +171,9 @@ public record GrammarProgram(
 
     private static void validateDelimitedMetadataShape(GrammarDescriptor descriptor) {
         boolean requiresDelimiters = switch (descriptor.kind()) {
-            case NOMINAL_DECLARATION, LAMBDA, CALLABLE_CALL, CONDITIONAL, COALESCE, MATCH, RANGE, PREFIX_ASSIGNMENT,
-                    OPERATOR_S_EXPRESSION, ARRAY_LITERAL, TUPLE_LITERAL, UNIT_LITERAL -> true;
+            case NOMINAL_DECLARATION, LAMBDA, CALLABLE_CALL, CONDITIONAL, COALESCE, MATCH, COND, CONSTRUCTION,
+                    RANGE, PREFIX_ASSIGNMENT, OPERATOR_S_EXPRESSION, ARRAY_LITERAL, TUPLE_LITERAL,
+                    UNIT_LITERAL, CALLBACK_LOOP_BRACKET, PARENTHESIZED_DIRECT_CALL -> true;
             default -> false;
         };
         if (!requiresDelimiters) {
@@ -181,7 +182,8 @@ public record GrammarProgram(
         int opening = descriptor.metadata().openingTokenIndex();
         int closing = descriptor.metadata().closingTokenIndex();
         boolean prefixMayPrecedeOpening = switch (descriptor.kind()) {
-            case NOMINAL_DECLARATION, ARRAY_LITERAL, TUPLE_LITERAL, UNIT_LITERAL, MATCH -> true;
+            case NOMINAL_DECLARATION, ARRAY_LITERAL, TUPLE_LITERAL, UNIT_LITERAL, MATCH, CONSTRUCTION,
+                    CALLBACK_LOOP_BRACKET -> true;
             default -> false;
         };
         if (opening < descriptor.startTokenIndex()
@@ -251,7 +253,11 @@ public record GrammarProgram(
             case CONDITIONAL -> TokenKind.ARROW;
             case COALESCE, TYPE_ANNOTATION, RETURN_ANNOTATION -> TokenKind.COLON;
             case MATCH -> TokenKind.MATCH;
-            case MATCH_ARM -> TokenKind.DOUBLE_QUESTION;
+            case COND -> TokenKind.COND;
+            case NEGATIVE_LITERAL -> TokenKind.MINUS;
+            case CALLBACK_LOOP_BRACKET -> source.tokens().get(descriptor.startTokenIndex()).kind();
+            case CONSTRUCTION -> TokenKind.COLON;
+            case MATCH_ARM -> TokenKind.ARROW;
             case RANGE -> source.tokens().get(descriptor.children().getFirst().endTokenIndex()).kind()
                     == TokenKind.RANGE_INCLUSIVE ? TokenKind.RANGE_INCLUSIVE : TokenKind.RANGE_EXCLUSIVE;
             case LAMBDA -> TokenKind.LAMBDA_ARROW;
@@ -288,9 +294,10 @@ public record GrammarProgram(
             case REASSIGNMENT, COALESCE, RANGE -> descriptor.children().getFirst().endTokenIndex();
             case CONSTRUCTOR_DECLARATION -> descriptor.children().getFirst().endTokenIndex();
             case CONDITIONAL -> conditionalArrowIndex(descriptor);
-            case MATCH -> descriptor.startTokenIndex() == descriptor.metadata().openingTokenIndex()
-                    ? descriptor.metadata().openingTokenIndex() + 1 : descriptor.startTokenIndex() + 1;
-            case MATCH_ARM -> descriptor.startTokenIndex();
+            case MATCH -> keywordIndex(descriptor, source, TokenKind.MATCH);
+            case COND -> keywordIndex(descriptor, source, TokenKind.COND);
+            case CONSTRUCTION, NEGATIVE_LITERAL, CALLBACK_LOOP_BRACKET -> descriptor.startTokenIndex();
+            case MATCH_ARM -> descriptor.children().getLast().startTokenIndex() - 1;
             case DIRECT_CALL, MEMBER_ACCESS -> directAccessorIndex(descriptor);
             case NAMESPACE_DIRECT_CALL, NAMESPACE_MEMBER_ACCESS ->
                     namespaceAccessorIndex(descriptor, source);
@@ -334,10 +341,11 @@ public record GrammarProgram(
         }
         boolean allowsDelimiters = switch (descriptor.kind()) {
             case NOMINAL_DECLARATION -> true;
-            case LAMBDA, CALLABLE_CALL, CONDITIONAL, COALESCE, MATCH, RANGE, PREFIX_ASSIGNMENT,
-                    OPERATOR_S_EXPRESSION, ARRAY_LITERAL, TUPLE_LITERAL, UNIT_LITERAL,
-                    BLOCK, PARAMETER_LIST, ARGUMENT_LIST, IMPORT_SELECTION,
-                    TYPE_ARGUMENT_LIST, REASSIGNMENT -> true;
+            case LAMBDA, CALLABLE_CALL, CONDITIONAL, COALESCE, MATCH, COND, CONSTRUCTION, RANGE,
+                    PREFIX_ASSIGNMENT, OPERATOR_S_EXPRESSION, ARRAY_LITERAL, TUPLE_LITERAL,
+                    UNIT_LITERAL, BLOCK, PARAMETER_LIST, ARGUMENT_LIST, IMPORT_SELECTION,
+                    TYPE_ARGUMENT_LIST, REASSIGNMENT, CALLBACK_LOOP_BRACKET,
+                    PARENTHESIZED_DIRECT_CALL -> true;
             default -> false;
         };
         if (!allowsDelimiters && opening >= 0) {
@@ -346,7 +354,7 @@ public record GrammarProgram(
 
         boolean commaMetadataAllowed = switch (descriptor.kind()) {
             case PARAMETER_LIST, ARGUMENT_LIST, TYPE_ARGUMENT_LIST,
-                    OPERATOR_OPERANDS, CALL_CONTENT, CALLABLE_CALL -> true;
+                    OPERATOR_OPERANDS, CALL_CONTENT, CALLABLE_CALL, MATCH, COND -> true;
             default -> false;
         };
         if (!commaMetadataAllowed && !descriptor.metadata().commaTokenIndices().isEmpty()) {
@@ -372,6 +380,7 @@ public record GrammarProgram(
             case NAMED_TYPE, IMPORT_PATH, NAMESPACE_PATH -> separatingArrowIndices(descriptor);
             case IMPORT_DECLARATION -> importSelectionArrowIndices(descriptor);
             case MATCH_ARM -> List.of(descriptor.children().getLast().startTokenIndex() - 1);
+            case CONSTRUCTION -> List.of();
             case NAMESPACE_DIRECT_CALL, NAMESPACE_MEMBER_ACCESS ->
                     namespaceAccessorIndex(descriptor, source) == descriptor.children().getFirst().endTokenIndex()
                             ? List.of() : List.of(descriptor.children().getFirst().endTokenIndex());
@@ -387,7 +396,7 @@ public record GrammarProgram(
 
         if (switch (descriptor.kind()) {
             case PARAMETER_LIST, ARGUMENT_LIST, TYPE_ARGUMENT_LIST,
-                    OPERATOR_OPERANDS, CALL_CONTENT -> true;
+                    OPERATOR_OPERANDS, CALL_CONTENT, MATCH, COND -> true;
             default -> false;
         } && !descriptor.metadata().commaTokenIndices().equals(
                 childTokenIndices(descriptor, ProductionKind.COMMA))) {
@@ -455,6 +464,42 @@ public record GrammarProgram(
                 requireToken(source.tokens().get(end.endTokenIndex()), TokenKind.COLON, descriptor.kind());
             }
             case MATCH -> validateMatchShape(descriptor, source);
+            case NEGATIVE_LITERAL -> {
+                requireChildCount(descriptor, 1);
+                GrammarDescriptor magnitude = descriptor.children().getFirst();
+                if (magnitude.kind() != ProductionKind.LITERAL
+                        || magnitude.startTokenIndex() != descriptor.startTokenIndex() + 1
+                        || magnitude.endTokenIndex() != descriptor.endTokenIndex()
+                        || source.tokens().get(magnitude.startTokenIndex()).hasLeadingTrivia()) {
+                    throw new IllegalArgumentException(
+                            "a bare negative literal must be an adjacent literal magnitude");
+                }
+            }
+            case COND -> validateCondShape(descriptor, source);
+            case CALLBACK_LOOP_BRACKET -> {
+                requireChildCount(descriptor, 1);
+                GrammarDescriptor arguments = descriptor.children().getFirst();
+                TokenKind head = source.tokens().get(descriptor.startTokenIndex()).kind();
+                if (head != TokenKind.ITER && head != TokenKind.WHILE
+                        || arguments.kind() != ProductionKind.ARGUMENT_LIST
+                        || arguments.startTokenIndex() != descriptor.metadata().openingTokenIndex()
+                        || arguments.endTokenIndex() != descriptor.endTokenIndex()) {
+                    throw new IllegalArgumentException(
+                            "a bare callback loop must be a reserved keyword and its bracket argument list");
+                }
+            }
+            case PARENTHESIZED_DIRECT_CALL -> {
+                requireChildCount(descriptor, 1);
+                GrammarDescriptor inner = descriptor.children().getFirst();
+                if (inner.kind() != ProductionKind.DIRECT_CALL
+                        || inner.startTokenIndex() != descriptor.metadata().openingTokenIndex() + 1
+                        || inner.endTokenIndex() != descriptor.metadata().closingTokenIndex()
+                        || inner.children().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "parenthesized direct call must preserve one unqualified direct call");
+                }
+            }
+            case CONSTRUCTION -> validateConstructionShape(descriptor, source);
             case MATCH_ARM -> validateMatchArmShape(descriptor, source);
             case DIRECT_CALL -> validateDirectCallShape(descriptor);
             case MEMBER_ACCESS -> validateMemberAccessShape(descriptor);
@@ -638,86 +683,178 @@ public record GrammarProgram(
         }
     }
 
+    /** Locates the reserved keyword token that precedes a special form's delimiters. */
+    private static int keywordIndex(
+            GrammarDescriptor descriptor, LexedSource source, TokenKind keyword) {
+        int limit = Math.min(
+                descriptor.metadata().openingTokenIndex() + 1,
+                descriptor.endTokenIndex() - 1);
+        for (int index = descriptor.startTokenIndex(); index <= limit; index++) {
+            if (source.tokens().get(index).kind() == keyword) {
+                return index;
+            }
+        }
+        throw new IllegalArgumentException(
+                descriptor.kind() + " does not contain its reserved keyword token");
+    }
+
+    /** True when this arm is the unconditional wildcard fallback. */
+    private static boolean matchArmIsUnguardedWildcard(
+            GrammarDescriptor arm, LexedSource source) {
+        if (arm.kind() != ProductionKind.MATCH_ARM || arm.children().isEmpty()) {
+            return false;
+        }
+        boolean wildcard = arm.children().getFirst().startTokenIndex() != arm.startTokenIndex();
+        if (!wildcard) {
+            return false;
+        }
+        return source.tokens().get(arm.startTokenIndex() + 1).kind() == TokenKind.ARROW;
+    }
+
     private static void validateMatchShape(
             GrammarDescriptor descriptor, LexedSource source) {
         int opening = descriptor.metadata().openingTokenIndex();
         int closing = descriptor.metadata().closingTokenIndex();
-        boolean direct = descriptor.startTokenIndex() != opening;
+        int start = descriptor.startTokenIndex();
+        boolean bracketed = source.tokens().get(opening).kind() == TokenKind.LEFT_BRACKET;
+        int keyword = keywordIndex(descriptor, source, TokenKind.MATCH);
+        boolean parenthesized = !bracketed && start == opening;
+        boolean accessor = bracketed && source.tokens().get(start).kind() == TokenKind.DOUBLE_COLON;
+        boolean bare = bracketed && source.tokens().get(start).kind() == TokenKind.MATCH;
+        int expectedKeyword = parenthesized ? opening + 1 : accessor ? start + 1 : start;
         if (closing != descriptor.endTokenIndex() - 1
-                || direct && (descriptor.startTokenIndex() + 2 != opening
-                || source.tokens().get(descriptor.startTokenIndex()).kind() != TokenKind.DOUBLE_COLON)
-                || !direct && descriptor.startTokenIndex() != opening) {
+                || (!parenthesized && !accessor && !bare)
+                || keyword != expectedKeyword) {
             throw new IllegalArgumentException("match has inconsistent surface delimiters");
         }
-        int contentStart = direct ? opening + 1 : opening + 2;
         List<GrammarDescriptor> children = descriptor.children();
         if (children.isEmpty()) {
-            throw new IllegalArgumentException("match must contain a fallback arm");
+            throw new IllegalArgumentException("match must contain a subject and a fallback arm");
         }
-        int armStart;
-        boolean conditional = children.getFirst().kind() == ProductionKind.MATCH_ARM;
-        if (conditional) {
-            Token wildcard = source.tokens().get(contentStart);
-            if (wildcard.kind() != TokenKind.IDENTIFIER || !wildcard.lexeme().equals("_")) {
-                throw new IllegalArgumentException("conditional match must use the exact '_' subject");
-            }
-            armStart = contentStart + 1;
-        } else {
-            GrammarDescriptor subject = children.getFirst();
-            if (subject.startTokenIndex() != contentStart
-                    || subject.kind() == ProductionKind.MATCH_ARM) {
-                throw new IllegalArgumentException("traditional match has an invalid subject");
-            }
-            armStart = subject.endTokenIndex();
+        GrammarDescriptor subject = children.getFirst();
+        if (subject.kind() == ProductionKind.MATCH_ARM
+                || subject.kind() == ProductionKind.COMMA
+                || subject.startTokenIndex() != (bracketed ? opening + 1 : keyword + 1)) {
+            throw new IllegalArgumentException("match requires a value subject");
         }
-        List<GrammarDescriptor> arms = children.stream()
-                .filter(child -> child.kind() == ProductionKind.MATCH_ARM).toList();
-        int expectedArmCount = conditional ? children.size() : children.size() - 1;
-        if (arms.size() != expectedArmCount || arms.isEmpty()) {
-            throw new IllegalArgumentException("match children must end in ordered match arms");
+        validateArmSequence(children, 1, subject.endTokenIndex(), closing, source, "match");
+    }
+
+    private static void validateCondShape(
+            GrammarDescriptor descriptor, LexedSource source) {
+        int opening = descriptor.metadata().openingTokenIndex();
+        int closing = descriptor.metadata().closingTokenIndex();
+        int start = descriptor.startTokenIndex();
+        int keyword = keywordIndex(descriptor, source, TokenKind.COND);
+        if (closing != descriptor.endTokenIndex() - 1
+                || start != opening
+                || source.tokens().get(opening).kind() != TokenKind.LEFT_PAREN
+                || keyword != opening + 1
+                || descriptor.children().isEmpty()) {
+            throw new IllegalArgumentException("cond has inconsistent surface delimiters");
         }
-        for (int index = 0; index < arms.size(); index++) {
-            GrammarDescriptor arm = arms.get(index);
-            if (arm.startTokenIndex() != armStart) {
-                throw new IllegalArgumentException("match arms are not contiguous with their subject/results");
+        validateArmSequence(descriptor.children(), 0, keyword + 1, closing, source, "cond");
+    }
+
+    /** Validates a marker-free arm sequence with its optional sibling-:: commas. */
+    private static void validateArmSequence(
+            List<GrammarDescriptor> children,
+            int firstChildIndex,
+            int expectedStart,
+            int closing,
+            LexedSource source,
+            String form) {
+        int cursor = expectedStart;
+        int armCount = 0;
+        boolean fallbackSeen = false;
+        for (int index = firstChildIndex; index < children.size(); index++) {
+            GrammarDescriptor child = children.get(index);
+            if (child.kind() == ProductionKind.COMMA) {
+                if (fallbackSeen
+                        || child.startTokenIndex() != cursor
+                        || index + 1 >= children.size()
+                        || children.get(index + 1).kind() != ProductionKind.MATCH_ARM) {
+                    throw new IllegalArgumentException(
+                            form + " comma child is not between arms");
+                }
+                cursor = child.endTokenIndex();
+                continue;
             }
-            int afterSeparator = arm.startTokenIndex() + 1;
-            boolean wildcard = arm.children().getFirst().startTokenIndex() != afterSeparator;
-            boolean guarded = wildcard
-                    ? source.tokens().get(arm.startTokenIndex() + 2).kind() == TokenKind.WHEN
-                    : source.tokens().get(arm.children().getFirst().endTokenIndex()).kind() == TokenKind.WHEN;
-            if (conditional && guarded) {
-                throw new IllegalArgumentException("conditional match arm cannot have a guard");
+            if (child.kind() != ProductionKind.MATCH_ARM) {
+                throw new IllegalArgumentException(
+                        form + " children must be ordered match arms");
             }
-            if (wildcard && !guarded && index != arms.size() - 1) {
-                throw new IllegalArgumentException("unconditional wildcard must be the final match arm");
+            if (fallbackSeen) {
+                throw new IllegalArgumentException(
+                        form + " cannot continue after an unconditional wildcard fallback");
             }
-            if (index == arms.size() - 1 && (!wildcard || guarded)) {
-                throw new IllegalArgumentException("match must end in an unguarded wildcard fallback");
+            if (child.startTokenIndex() != cursor) {
+                throw new IllegalArgumentException(
+                        form + " arms are not contiguous with their subject/results");
             }
-            armStart = arm.endTokenIndex();
+            fallbackSeen = matchArmIsUnguardedWildcard(child, source);
+            cursor = child.endTokenIndex();
+            armCount++;
         }
-        if (armStart != closing) {
-            throw new IllegalArgumentException("match arms must end at the closing delimiter");
+        if (armCount == 0 || !fallbackSeen) {
+            throw new IllegalArgumentException(
+                    form + " must end in an unguarded wildcard fallback");
+        }
+        if (cursor != closing) {
+            throw new IllegalArgumentException(
+                    form + " arms must end at the closing delimiter");
+        }
+    }
+
+    private static void validateConstructionShape(
+            GrammarDescriptor descriptor, LexedSource source) {
+        int colon = descriptor.startTokenIndex();
+        requireToken(source.tokens().get(colon), TokenKind.COLON, descriptor.kind());
+        int childCount = descriptor.children().size();
+        if (childCount != 2 && childCount != 3) {
+            throw new IllegalArgumentException(
+                    "construction must contain a type target and its argument list");
+        }
+        GrammarDescriptor typeName = descriptor.children().get(childCount - 2);
+        GrammarDescriptor arguments = descriptor.children().get(childCount - 1);
+        if (typeName.kind() != ProductionKind.IDENTIFIER
+                || source.tokens().get(typeName.startTokenIndex()).kind() != TokenKind.IDENTIFIER
+                || arguments.kind() != ProductionKind.ARGUMENT_LIST
+                || arguments.startTokenIndex() != descriptor.metadata().openingTokenIndex()
+                || arguments.endTokenIndex() != descriptor.endTokenIndex()
+                || source.tokens().get(typeName.startTokenIndex()).hasLeadingTrivia()) {
+            throw new IllegalArgumentException(
+                    "construction must name a nominal type immediately after ':'");
+        }
+        if (childCount == 3) {
+            GrammarDescriptor path = descriptor.children().getFirst();
+            if (path.kind() != ProductionKind.NAMESPACE_PATH
+                    || path.startTokenIndex() != colon + 1
+                    || path.endTokenIndex() + 1 != typeName.startTokenIndex()) {
+                throw new IllegalArgumentException(
+                        "qualified construction must name its namespace path before the type");
+            }
+        } else if (typeName.startTokenIndex() != colon + 1) {
+            throw new IllegalArgumentException(
+                    "unqualified construction target must immediately follow ':'");
         }
     }
 
     private static void validateMatchArmShape(
             GrammarDescriptor descriptor, LexedSource source) {
-        if (source.tokens().get(descriptor.startTokenIndex()).kind() != TokenKind.DOUBLE_QUESTION
-                || descriptor.children().isEmpty()
+        if (descriptor.children().isEmpty()
                 || descriptor.children().getLast().endTokenIndex() != descriptor.endTokenIndex()) {
-            throw new IllegalArgumentException("match arm has an invalid separator/result layout");
+            throw new IllegalArgumentException("match arm has an invalid result layout");
         }
-        int afterSeparator = descriptor.startTokenIndex() + 1;
-        boolean wildcard = descriptor.children().getFirst().startTokenIndex() != afterSeparator;
+        boolean wildcard = descriptor.children().getFirst().startTokenIndex()
+                != descriptor.startTokenIndex();
         int guardOrArrow;
         if (wildcard) {
-            guardOrArrow = afterSeparator + 1;
+            guardOrArrow = descriptor.startTokenIndex() + 1;
         } else {
             GrammarDescriptor pattern = descriptor.children().getFirst();
-            if (pattern.startTokenIndex() != afterSeparator) {
-                throw new IllegalArgumentException("match pattern does not follow its separator");
+            if (pattern.startTokenIndex() != descriptor.startTokenIndex()) {
+                throw new IllegalArgumentException("match pattern does not start its arm");
             }
             guardOrArrow = pattern.endTokenIndex();
         }
@@ -1055,13 +1192,32 @@ public record GrammarProgram(
                 requireToken(source.tokens().get(opening), TokenKind.LEFT_PAREN, descriptor.kind());
                 requireToken(source.tokens().get(closing), TokenKind.RIGHT_PAREN, descriptor.kind());
             }
+            case CALLBACK_LOOP_BRACKET -> {
+                requireToken(source.tokens().get(opening), TokenKind.LEFT_BRACKET, descriptor.kind());
+                requireToken(source.tokens().get(closing), TokenKind.RIGHT_BRACKET, descriptor.kind());
+            }
+            case PARENTHESIZED_DIRECT_CALL -> {
+                requireToken(source.tokens().get(opening), TokenKind.LEFT_PAREN, descriptor.kind());
+                requireToken(source.tokens().get(closing), TokenKind.RIGHT_PAREN, descriptor.kind());
+            }
             case MATCH -> {
-                boolean direct = descriptor.startTokenIndex()
-                        != descriptor.metadata().openingTokenIndex();
-                requireToken(source.tokens().get(descriptor.metadata().openingTokenIndex()),
-                        direct ? TokenKind.LEFT_BRACKET : TokenKind.LEFT_PAREN, descriptor.kind());
+                int matchOpening = descriptor.metadata().openingTokenIndex();
+                boolean matchBracketed = source.tokens().get(matchOpening).kind()
+                        == TokenKind.LEFT_BRACKET;
+                requireToken(source.tokens().get(matchOpening),
+                        matchBracketed ? TokenKind.LEFT_BRACKET : TokenKind.LEFT_PAREN,
+                        descriptor.kind());
                 requireToken(source.tokens().get(descriptor.metadata().closingTokenIndex()),
-                        direct ? TokenKind.RIGHT_BRACKET : TokenKind.RIGHT_PAREN, descriptor.kind());
+                        matchBracketed ? TokenKind.RIGHT_BRACKET : TokenKind.RIGHT_PAREN,
+                        descriptor.kind());
+            }
+            case COND -> {
+                requireToken(source.tokens().get(opening), TokenKind.LEFT_PAREN, descriptor.kind());
+                requireToken(source.tokens().get(closing), TokenKind.RIGHT_PAREN, descriptor.kind());
+            }
+            case CONSTRUCTION -> {
+                requireToken(source.tokens().get(opening), TokenKind.LEFT_BRACKET, descriptor.kind());
+                requireToken(source.tokens().get(closing), TokenKind.RIGHT_BRACKET, descriptor.kind());
             }
             case ARRAY_LITERAL, TUPLE_LITERAL, ARGUMENT_LIST -> {
                 requireToken(source.tokens().get(opening), TokenKind.LEFT_BRACKET, descriptor.kind());

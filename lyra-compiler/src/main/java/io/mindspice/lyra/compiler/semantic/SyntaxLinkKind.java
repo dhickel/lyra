@@ -15,6 +15,7 @@ public enum SyntaxLinkKind {
     BLOCK,
     CONDITIONAL,
     MATCH,
+    COND,
     ACCESS,
     CALL,
     LITERAL,

@@ -58,14 +58,14 @@ The standard commands are available:
 
 | Command | Behavior |
 | --- | --- |
-| `:help` | Show the command list |
-| `:bindings` | Inspect committed names and types |
-| `:type SOURCE` | Check a type without execution or publication |
-| `:load FILE` | Read and submit one file; quoted paths with spaces work |
-| `:reload MODULE` | Explicitly reload a REPL-owned module or namespace alias |
-| `:reset` | Reset the session workspace |
-| `:history` | Show the in-memory input history |
-| `:quit` | Stop the editor-owned process or detach from an external application |
+| `\help` | Show the command list |
+| `\bindings` | Inspect committed names and types |
+| `\type SOURCE` | Check a type without execution or publication |
+| `\load FILE` | Ask the execution host to read and submit one file; quoted paths with spaces work. Protocol v2 does not return the loaded source to the editor, so the command/path is not added to source history |
+| `\reload MODULE` | Explicitly reload a REPL-owned module or namespace alias |
+| `\reset` | Reset the session workspace and clear editor source history after success |
+| `\history` | Show the in-memory input history |
+| `\quit` | Stop the editor-owned process or detach from an external application |
 
 Function syntax such as `::greet["Lyra"]` is evaluated as Lyra source. **Interrupt** cooperatively cancels the current evaluation. **Stop** terminates an editor-owned process, including a blocked program, while keeping editor buffers. A separate stdin field and Send/EOF controls serve `std->io` program input. Output is drained continuously with bounded pending/display buffers. The child JVM currently has a 768 MiB maximum heap; compiler/session limits also apply. See [REPL contracts and limits](repl.md).
 

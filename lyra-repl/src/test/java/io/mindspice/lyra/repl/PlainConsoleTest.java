@@ -48,7 +48,7 @@ final class PlainConsoleTest {
     @Test
     void commandsArePlainAndBindingsAndHistoryAreMetadataOnly() {
         Invocation invocation = run("let @pub answer :I32 = 1\n"
-                + ":bindings\n:history\n:quit\n");
+                + "\\bindings\n\\history\n\\quit\n");
 
         assertEquals(0, invocation.status());
         assertTrue(invocation.output().contains("answer :I32"));
@@ -62,10 +62,10 @@ final class PlainConsoleTest {
     void persistentAggregatesAndTypeQueriesUseTheRealSessionWithoutExecutingQueries() {
         Invocation invocation = run("let @mut values :Array<Tuple<I32,String>> = Array<Tuple<I32,String>>[Tuple[1 \"a\"]]\n"
                 + "let alias = values\n"
-                + ":type { values[0] := Tuple[9 \"not executed\"] values[0]:.0 }\n"
+                + "\\type { values[0] := Tuple[9 \"not executed\"] values[0]:.0 }\n"
                 + "alias[0]:.0\n"
                 + "values[0] := Tuple[42 \"changed\"]\n"
-                + "alias[0]:.0\n:quit\n");
+                + "alias[0]:.0\n\\quit\n");
         assertEquals(0, invocation.status(), invocation.error());
         assertEquals("", invocation.error());
         assertTrue(invocation.output().contains("I32 1\n"), invocation.output());
@@ -78,7 +78,7 @@ final class PlainConsoleTest {
         Invocation invocation = run("let private :I32 = 1 "
                 + "let @pub visible :I32 = 2\n"
                 + "let @pub rejected :I32 = \"wrong\"\n"
-                + ":bindings\n:quit\n");
+                + "\\bindings\n\\quit\n");
 
         assertEquals(1, invocation.status());
         assertTrue(invocation.output().contains("visible :I32"));
@@ -89,7 +89,7 @@ final class PlainConsoleTest {
     @Test
     void unqualifiedDirectCallsAreSourceNotConsoleCommands() {
         Invocation invocation = run("let add :Fn<I32,I32;I32> = (=> |left right| (+ left right))\n"
-                + "::add[2 3]\n:quit\n");
+                + "::add[2 3]\n\\quit\n");
 
         assertEquals(0, invocation.status(), invocation.error());
         assertTrue(invocation.output().contains("I32 5\n"), invocation.output());
@@ -97,11 +97,11 @@ final class PlainConsoleTest {
     }
 
     @Test
-    void colonCommandsAreRecognizedOnlyAtTopLevel() {
+    void sourceAndBackslashCommandsAreRecognizedOnlyAtTopLevel() {
         Invocation invocation = run("(\n"
-                + ":help\n"
+                + "\\help\n"
                 + ")\n"
-                + ":quit\n");
+                + "\\quit\n");
 
         assertEquals(1, invocation.status());
         assertTrue(invocation.error().contains("LYC-"), invocation.error());
@@ -109,10 +109,21 @@ final class PlainConsoleTest {
     }
 
     @Test
+    void colonLeadingNominalSourceExecutesWhileBackslashRemainsACommand() {
+        Invocation invocation = run("struct Point { let value :I32 }\n"
+                + "let @pub point :Point = :Point[23]\n"
+                + "\\bindings\n\\quit\n");
+
+        assertEquals(0, invocation.status(), invocation.error());
+        assertTrue(invocation.output().contains("point :Nominal<"), invocation.output());
+        assertFalse(invocation.output().contains(PlainConsole.HELP_TEXT), invocation.output());
+    }
+
+    @Test
     void mismatchedDelimitersAreSubmittedAndDoNotStopLaterInput() {
         Invocation invocation = run(")\n"
                 + "let @pub recovered :I32 = 4\n"
-                + ":bindings\n:quit\n");
+                + "\\bindings\n\\quit\n");
 
         assertEquals(1, invocation.status());
         assertTrue(invocation.error().contains("LYC-"), invocation.error());
@@ -121,7 +132,7 @@ final class PlainConsoleTest {
 
     @Test
     void malformedCommandsRecoverAndPlainOutputHasNoDecoration() {
-        Invocation invocation = run(":not-a-command\n:help\n:quit\n");
+        Invocation invocation = run("\\not-a-command\n\\help\n\\quit\n");
 
         assertEquals(2, invocation.status());
         assertTrue(invocation.error().contains("LYR-REPL-USAGE"));
@@ -132,23 +143,23 @@ final class PlainConsoleTest {
 
     @Test
     void typeDoesNotExecuteOrRecordAndReloadWithoutTargetIsAUsageError() {
-        Invocation invocation = run(":type 42\n"
-                + ":type let @pub answer :I32 = 1\n"
-                + ":bindings\n:reload\n:history\n:quit\n");
+        Invocation invocation = run("\\type 42\n"
+                + "\\type let @pub answer :I32 = 1\n"
+                + "\\bindings\n\\reload\n\\history\n\\quit\n");
 
         assertEquals(2, invocation.status());
         assertTrue(invocation.output().contains("I64"), invocation.output());
         assertTrue(invocation.output().contains("Unit"), invocation.output());
         assertTrue(invocation.error().contains("LYR-REPL-USAGE"), invocation.error());
-        assertTrue(invocation.error().contains(":reload expects 1 argument"), invocation.error());
+        assertTrue(invocation.error().contains("\\reload expects 1 argument"), invocation.error());
         assertFalse(invocation.output().contains("answer"));
         assertFalse(invocation.output().contains("let @pub answer"));
     }
 
     @Test
     void reloadTargetRoutesToTheSessionAndReportsItsTerminalOutcome() {
-        Invocation invocation = run(":reload missing\n"
-                + ":bindings\n:quit\n");
+        Invocation invocation = run("\\reload missing\n"
+                + "\\bindings\n\\quit\n");
 
         assertEquals(1, invocation.status(), invocation.error());
         assertTrue(invocation.error().contains("LYC-"), invocation.error());
@@ -207,7 +218,7 @@ final class PlainConsoleTest {
         Invocation invocation = run("let @pub answer :I32 = (/* outer /* nested */ still */\n"
                 + "+ 1\n"
                 + "   2)\n"
-                + ":bindings\n:quit\n");
+                + "\\bindings\n\\quit\n");
 
         assertEquals(0, invocation.status(), invocation.error());
         assertTrue(invocation.output().contains("answer :I32"));
@@ -218,7 +229,7 @@ final class PlainConsoleTest {
     void recoverableEvaluationFailuresDoNotStopTheLoop() {
         Invocation invocation = run("let @pub bad :I32 =\n"
                 + "let @pub good :I32 = 4\n"
-                + ":bindings\n:quit\n");
+                + "\\bindings\n\\quit\n");
 
         assertEquals(1, invocation.status());
         assertTrue(invocation.error().contains("LYC-"));
@@ -227,7 +238,7 @@ final class PlainConsoleTest {
 
     @Test
     void malformedCommandsAndIncompleteEofHaveDistinctStatuses() {
-        Invocation malformed = run(":load \"unterminated\n:quit\n");
+        Invocation malformed = run("\\load \"unterminated\n\\quit\n");
         assertEquals(2, malformed.status());
         assertTrue(malformed.error().contains("LYR-REPL-USAGE"));
 
@@ -246,8 +257,8 @@ final class PlainConsoleTest {
         Path source = temp.resolve("source with spaces.lyra");
         Files.writeString(source, "/* café */ let @pub loaded :I32 = 3\n", StandardCharsets.UTF_8);
 
-        Invocation invocation = run(":load \"" + source + "\"\n"
-                + ":bindings\n:reset\n:history\n:quit\n");
+        Invocation invocation = run("\\load \"" + source + "\"\n"
+                + "\\bindings\n\\reset\n\\history\n\\quit\n");
 
         assertEquals(0, invocation.status(), invocation.error());
         assertTrue(invocation.output().contains("loaded :I32"));
@@ -262,17 +273,17 @@ final class PlainConsoleTest {
     void loadFollowsSymlinksButRejectsDirectoriesAndMalformedUtf8() throws IOException {
         Path invalid = temp.resolve("invalid.lyra");
         Files.write(invalid, new byte[] {'l', (byte) 0xC3});
-        Invocation malformed = run(":load \"" + invalid + "\"\n:quit\n");
+        Invocation malformed = run("\\load \"" + invalid + "\"\n\\quit\n");
         assertEquals(2, malformed.status());
         assertTrue(malformed.error().contains("LYR-REPL-INFRA"), malformed.error());
         assertTrue(malformed.error().contains("not valid UTF-8"), malformed.error());
 
-        Invocation directory = run(":load \"" + temp + "\"\n:quit\n");
+        Invocation directory = run("\\load \"" + temp + "\"\n\\quit\n");
         assertEquals(2, directory.status());
         assertTrue(directory.error().contains("LYR-REPL-INFRA"), directory.error());
         assertTrue(directory.error().contains("not a regular file"), directory.error());
 
-        Invocation missing = run(":load \"" + temp.resolve("absent.lyra") + "\"\n:quit\n");
+        Invocation missing = run("\\load \"" + temp.resolve("absent.lyra") + "\"\n\\quit\n");
         assertEquals(2, missing.status());
         assertTrue(missing.error().contains("cannot read load file"), missing.error());
 
@@ -289,8 +300,8 @@ final class PlainConsoleTest {
         }
         assumeTrue(symlinksSupported, "symbolic links are unavailable");
 
-        Invocation symlink = run(":load \"" + link + "\"\n"
-                + ":bindings\n:quit\n");
+        Invocation symlink = run("\\load \"" + link + "\"\n"
+                + "\\bindings\n\\quit\n");
         assertEquals(0, symlink.status(), symlink.error());
         assertTrue(symlink.output().contains("linked :I32"), symlink.output());
     }
@@ -301,7 +312,7 @@ final class PlainConsoleTest {
         String program = "программа 😀\n";
         String next = "let next :String = \"次\"\n";
         ByteArrayInputStream input = new ByteArrayInputStream(
-                (first + program + next + ":history\n:quit\n")
+                (first + program + next + "\\history\n\\quit\n")
                         .getBytes(StandardCharsets.UTF_8));
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         ByteArrayOutputStream error = new ByteArrayOutputStream();
@@ -376,7 +387,7 @@ final class PlainConsoleTest {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         bytes.write("let source :I32 = 1\nlet privateInput :I32 = 7".getBytes(StandardCharsets.UTF_8));
         bytes.write(0xC3);
-        bytes.write("\nlet next :I32 = 2\n:quit\n".getBytes(StandardCharsets.UTF_8));
+        bytes.write("\nlet next :I32 = 2\n\\quit\n".getBytes(StandardCharsets.UTF_8));
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         ByteArrayOutputStream error = new ByteArrayOutputStream();
         var environment = new RuntimeIoEnvironment(new ByteArrayInputStream(bytes.toByteArray()),
@@ -438,16 +449,16 @@ final class PlainConsoleTest {
         String multiLineSource = "let @pub multi :I32 = (/* outer /* inner */\n"
                 + "still */ + 1\n2)\n";
         Invocation first = runWithHistory(historyFile,
-                "let @pub remembered :I32 = 1\n" + multiLineSource + ":quit\n");
+                "let @pub remembered :I32 = 1\n" + multiLineSource + "\\quit\n");
         assertEquals(0, first.status(), first.error());
         assertTrue(Files.isRegularFile(historyFile));
         String stored = Files.readString(historyFile);
         assertTrue(stored.contains("let @pub remembered :I32 = 1"));
-        assertFalse(stored.contains(":quit"));
+        assertFalse(stored.contains("\\quit"));
         assertTrue(stored.contains("\\n"));
 
         Invocation second = runWithHistory(historyFile,
-                ":bindings\n:history\n:quit\n");
+                "\\bindings\n\\history\n\\quit\n");
         assertEquals(0, second.status(), second.error());
         assertFalse(second.output().contains("\nremembered :I32\n"), second.output());
         assertFalse(second.output().contains("\nmulti :I32\n"), second.output());
@@ -472,7 +483,7 @@ final class PlainConsoleTest {
             posix = false;
         }
         Invocation result = runWithHistory(permissive,
-                ":history\n:quit\n");
+                "\\history\n\\quit\n");
         assertEquals(0, result.status(), result.error());
         assertTrue(result.output().contains("let @pub remembered :I32 = 1"), result.output());
 
@@ -490,7 +501,7 @@ final class PlainConsoleTest {
 
     @Test
     void callerOwnedStreamsRemainOpen() {
-        TrackingInput input = new TrackingInput(":quit\n");
+        TrackingInput input = new TrackingInput("\\quit\n");
         TrackingOutput output = new TrackingOutput();
         TrackingOutput error = new TrackingOutput();
         LyraSession session = LyraSession.open();
@@ -569,9 +580,9 @@ final class PlainConsoleTest {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         ByteArrayOutputStream error = new ByteArrayOutputStream();
         int status = new PlainConsole(target, new ByteArrayInputStream(
-                (":load \"path with spaces.lyra\"\n"
-                        + ":reload game->module\n"
-                        + ":history\n:quit\n").getBytes(StandardCharsets.UTF_8)),
+                ("\\load \"path with spaces.lyra\"\n"
+                        + "\\reload game->module\n"
+                        + "\\history\n\\quit\n").getBytes(StandardCharsets.UTF_8)),
                 output, error).run();
 
         assertEquals(0, status, error.toString(StandardCharsets.UTF_8));
@@ -581,15 +592,15 @@ final class PlainConsoleTest {
                 "console commands must never submit ordinary evaluations");
         String history = output.toString(StandardCharsets.UTF_8);
         assertTrue(history.contains("let @pub loaded :I32 = 5"), history);
-        assertFalse(history.contains(":load"), history);
-        assertFalse(history.contains(":reload"), history);
+        assertFalse(history.contains("\\load"), history);
+        assertFalse(history.contains("\\reload"), history);
         assertEquals("", error.toString(StandardCharsets.UTF_8));
     }
 
     @Test
     void largeDynamicResultsTruncateExplicitlyInTheBoundedDisplay() {
         String big = "x".repeat(40_000);
-        Invocation invocation = run("let @pub big :String = \"" + big + "\" big\n:quit\n");
+        Invocation invocation = run("let @pub big :String = \"" + big + "\" big\n\\quit\n");
 
         assertEquals(0, invocation.status(), invocation.error());
         assertTrue(invocation.output().contains("<truncated:"), invocation.output());
@@ -601,8 +612,8 @@ final class PlainConsoleTest {
     @Test
     void declarationSubmissionShowsNoResultAliasesAndFinalValuesUseCanonicalTypes() {
         Invocation invocation = run("let @pub answer :I32 = (+ 40 2)\n"
-                + ":bindings\n"
-                + "answer\n:quit\n");
+                + "\\bindings\n"
+                + "answer\n\\quit\n");
 
         assertEquals(0, invocation.status(), invocation.error());
         assertTrue(invocation.output().contains("answer :I32\n"), invocation.output());

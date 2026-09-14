@@ -1,0 +1,2 @@
+// operators	value	I32	-2147483648	adjacent bare negative literal reaches the signed minimum
+let @pub run :Fn<;I32> = (=> | | -2147483648)

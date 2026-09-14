@@ -56,20 +56,21 @@ final class RetainedNominalFlowCertificateTest {
                 new Probe("namespace direct call", "Unit", "io->::println[\"\"]", TypedExpressionKind.NAMESPACE_DIRECT_CALL, true, ""),
                 new Probe("array", "Array<I32>", "Array<I32>[1I32]", TypedExpressionKind.ARRAY_LITERAL, true, ""),
                 new Probe("tuple", "Tuple<I32>", "Tuple[1I32]", TypedExpressionKind.TUPLE_LITERAL, true, ""),
-                new Probe("construction", "Nested", "Nested[]", TypedExpressionKind.CONSTRUCTION, true, ""),
+                new Probe("construction", "Nested", ":Nested[]", TypedExpressionKind.CONSTRUCTION, true, ""),
                 new Probe("operator", "I32", "(+ 1I32 2I32)", TypedExpressionKind.OPERATOR, true, ""),
                 new Probe("short circuit", "Bool", "(and #T #F)", TypedExpressionKind.SHORT_CIRCUIT, true, ""),
                 new Probe("block/declaration/rebinding", "I32", "{ let @mut local :I32 = 1I32 local := 2I32 local }", TypedExpressionKind.BLOCK, true, ""),
                 new Probe("conditional", "I32", "(maybe -> 1I32 : 2I32)", TypedExpressionKind.CONDITIONAL, true, ""),
                 new Probe("coalesce", "I32", "(maybe : 1I32)", TypedExpressionKind.COALESCE, true, ""),
-                new Probe("match", "I32", "(match 1I32 ?? 1I32 -> 1I32 ?? _ -> 2I32)", TypedExpressionKind.MATCH, true, ""),
+                new Probe("match", "I32", "(match 1I32 1I32 -> 1I32 _ -> 2I32)", TypedExpressionKind.MATCH, true, ""),
+                new Probe("cond", "I32", "(cond maybe -> 1I32 _ -> 2I32)", TypedExpressionKind.COND, true, ""),
                 new Probe("array index", "I32", "Array<I32>[1I32][0I32]", TypedExpressionKind.INDEX_ACCESS, true, ""),
                 new Probe("string index", "Char", "\"x\"[0I32]", TypedExpressionKind.INDEX_ACCESS, true, ""),
                 new Probe("conversion", "I32", "I32[1I16]", TypedExpressionKind.CONVERSION, true, ""),
                 new Probe("predicate narrowing", "I32", "(maybe narrowed -> narrowed : 0I32)", TypedExpressionKind.CONDITIONAL, true, ""),
                 new Probe("range", "Range<I32>", "(0I32..2I32:1I32)", TypedExpressionKind.RANGE, true, ""),
-                new Probe("iter", "Unit", "::iter[(0I32..2I32:1I32) || ()]", TypedExpressionKind.ITER, true, ""),
-                new Probe("while", "Unit", "::while[|| #F || ()]", TypedExpressionKind.WHILE, true, ""),
+                new Probe("iter", "Unit", "iter[(0I32..2I32:1I32) || ()]", TypedExpressionKind.ITER, true, ""),
+                new Probe("while", "Unit", "while[|| #F || ()]", TypedExpressionKind.WHILE, true, ""),
                 new Probe("nominal declaration", "Unit", "struct Invalid { let value :I32 }", TypedExpressionKind.NOMINAL_DECLARATION, false, "LYC-PARSE-001"),
                 new Probe("top-level declaration", "I32", "let local :I32 = 1I32", TypedExpressionKind.DECLARATION, false, "LYC-PARSE-001"),
                 new Probe("top-level rebinding", "I32", "local := 1I32", TypedExpressionKind.REBINDING, false, "LYC-PARSE-003"));
@@ -91,7 +92,7 @@ final class RetainedNominalFlowCertificateTest {
                     assertTrue(kinds.contains(TypedExpressionKind.REBINDING));
                 }
                 compile("inventory-consumer-" + probe.name() + ".lyra",
-                        "let value :C = C[]", success.stagedSnapshot());
+                        "let value :C = :C[]", success.stagedSnapshot());
             } else {
                 SessionCompileResult.Failure failure = assertInstanceOf(SessionCompileResult.Failure.class, result);
                 assertEquals(probe.code(), failure.diagnostics().getFirst().code().value(), probe.name());
@@ -107,7 +108,8 @@ final class RetainedNominalFlowCertificateTest {
                     let conditional :I32 = (#T -> 1I32 : 2I32)
                     let unitConditional :Unit = (#T -> ())
                     let coalesced :I32 = (maybe : 3I32)
-                    let matched :I32 = (match 1I32 ?? 1I32 -> 4I32 ?? _ -> 5I32)
+                    let matched :I32 = (match 1I32 1I32 -> 4I32 _ -> 5I32)
+                    let conditioned :I32 = (cond #F -> 6I32 _ -> 7I32)
                 }
                 """, SessionSnapshot.empty());
         SessionFlowCertificate.RetainedNominal choices = nominal(certificate(producer), "Choices");
@@ -119,6 +121,8 @@ final class RetainedNominalFlowCertificateTest {
                 transfer(choices, "coalesced"));
         var matched = assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Alternative.class,
                 transfer(choices, "matched"));
+        var conditioned = assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Alternative.class,
+                transfer(choices, "conditioned"));
 
         assertEquals(SessionFlowCertificate.RetainedInitializerTransfer.AlternativeKind.CONDITIONAL, conditional.kind());
         assertEquals(1, conditional.prefix().size());
@@ -136,6 +140,11 @@ final class RetainedNominalFlowCertificateTest {
         assertEquals(1, matched.branches().getFirst().selectors().size());
         assertTrue(matched.branches().getFirst().result().isPresent());
         assertTrue(matched.branches().get(1).selectors().isEmpty());
+        assertEquals(SessionFlowCertificate.RetainedInitializerTransfer.AlternativeKind.MATCH,
+                conditioned.kind());
+        assertTrue(conditioned.prefix().isEmpty());
+        assertEquals(1, conditioned.branches().getFirst().selectors().size());
+        assertTrue(conditioned.branches().getLast().wildcard());
     }
 
     @Test
@@ -146,18 +155,20 @@ final class RetainedNominalFlowCertificateTest {
                 let conditionalEffect :Fn<;I32> = (=> || { io->::println["conditional"] 0I32 })
                 let coalesceEffect :Fn<;I32> = (=> || { io->::println["coalesce"] 0I32 })
                 let matchEffect :Fn<;I32> = (=> || { io->::println["match"] 0I32 })
+                let condEffect :Fn<;I32> = (=> || { io->::println["cond"] 0I32 })
                 class Choices {
                     let conditional :I32 = (#T -> 1I32 : (conditionalEffect))
                     let coalesced :I32 = (maybe : (coalesceEffect))
-                    let matched :I32 = (match 1I32 ?? 1I32 -> 1I32 ?? _ -> (matchEffect))
+                    let matched :I32 = (match 1I32 1I32 -> 1I32 _ -> (matchEffect))
+                    let conditioned :I32 = (cond #T -> 1I32 _ -> (condEffect))
                 }
                 """;
         SessionCompileResult.Success producer = compile("alternative-effects-producer.lyra", definitions,
                 SessionSnapshot.empty());
         SessionCompileResult.Success retained = compile("alternative-effects-consumer.lyra",
-                "let choices :Choices = Choices[]", producer.stagedSnapshot());
+                "let choices :Choices = :Choices[]", producer.stagedSnapshot());
         SessionCompileResult.Success ordinary = compile("alternative-effects-ordinary.lyra",
-                definitions + "\nlet choices :Choices = Choices[]", SessionSnapshot.empty());
+                definitions + "\nlet choices :Choices = :Choices[]", SessionSnapshot.empty());
         assertFalse(retained.typedGraph().semanticFlowFacts().eagerEffectFacts().isEmpty());
         assertEquals(ordinary.typedGraph().semanticFlowFacts().eagerEffectFacts().size(),
                 retained.typedGraph().semanticFlowFacts().eagerEffectFacts().size());
@@ -169,6 +180,7 @@ final class RetainedNominalFlowCertificateTest {
                 let selected :Fn<;I32> = (=> || 3I32)
                 class Routes {
                     let call :I32 = (selected)
+                    let chosen :Fn<;I32> = (cond #T -> selected _ -> (=> || 4I32))
                     let array :Array<Fn<;I32>> = Array<Fn<;I32>>[(=> || 5I32)]
                     let tuple :Tuple<Fn<;I32>,Fn<;I32>> = Tuple[(=> || 6I32) (=> || 7I32)]
                 }
@@ -176,6 +188,11 @@ final class RetainedNominalFlowCertificateTest {
         SessionFlowCertificate.RetainedNominal routes = nominal(certificate(producer), "Routes");
         assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.CallableCall.class,
                 transfer(routes, "call"));
+        var chosen = assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Alternative.class,
+                transfer(routes, "chosen"));
+        assertEquals(SessionFlowCertificate.RetainedInitializerTransfer.AlternativeKind.MATCH,
+                chosen.kind());
+        assertTrue(chosen.branches().stream().allMatch(branch -> branch.result().isPresent()));
         var array = assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
                 transfer(routes, "array"));
         var tuple = assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
@@ -191,7 +208,7 @@ final class RetainedNominalFlowCertificateTest {
     void retainedConstructionCertificationRejectsUnderivableRoutes() {
         var producer = compile("object-route-producer.lyra", """
                 class Nested { let @pub value :I32 = 7I32 }
-                let make :Fn<;Tuple<Nested>> = (=> || Tuple[Nested[]])
+                let make :Fn<;Tuple<Nested>> = (=> || Tuple[:Nested[]])
                 class Holder { let @pub value :Tuple<Nested> = ::make[] }
                 """, SessionSnapshot.empty());
         var certificate = certificate(producer);
@@ -210,7 +227,7 @@ final class RetainedNominalFlowCertificateTest {
         assertFalse(certificate.certifiesObject(root.prefixedBy(ProjectionPath.tupleMember(99))));
         assertFalse(certificate.certifiesObject(root.prefixedBy(ProjectionPath.arrayElement(0))));
         assertFalse(certificate.certifiesObject(root.prefixedBy(ProjectionPath.unknownArrayElement())));
-        compile("object-route-consumer.lyra", "let holder :Holder = Holder[]", producer.stagedSnapshot());
+        compile("object-route-consumer.lyra", "let holder :Holder = :Holder[]", producer.stagedSnapshot());
     }
 
     @Test
@@ -237,7 +254,7 @@ final class RetainedNominalFlowCertificateTest {
                 SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
                 sequence.steps().getLast()).allocation().orElseThrow();
         SessionCompileResult.Success consumer = compile("discarded-allocation-consumer.lyra",
-                "let box :Box = Box[]", producer.stagedSnapshot());
+                "let box :Box = :Box[]", producer.stagedSnapshot());
         TypedExpression construction = consumer.typedGraph().expressions().stream()
                 .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
                 .findFirst().orElseThrow();
@@ -283,7 +300,7 @@ final class RetainedNominalFlowCertificateTest {
                 SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
                 selected.initializer()).allocation().orElseThrow();
         SessionCompileResult.Success consumer = compile("shadowed-allocation-consumer.lyra",
-                "let box :Box = Box[]", producer.stagedSnapshot());
+                "let box :Box = :Box[]", producer.stagedSnapshot());
         TypedExpression construction = consumer.typedGraph().expressions().stream()
                 .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
                 .findFirst().orElseThrow();
@@ -334,7 +351,7 @@ final class RetainedNominalFlowCertificateTest {
                 converted.operands().getLast());
 
         SessionCompileResult.Success consumer = compile("rebind-tuple-consumer.lyra",
-                "let holder :Holder = Holder[]", producer.stagedSnapshot());
+                "let holder :Holder = :Holder[]", producer.stagedSnapshot());
         TypedExpression construction = consumer.typedGraph().expressions().stream()
                 .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
                 .findFirst().orElseThrow();
@@ -380,7 +397,7 @@ final class RetainedNominalFlowCertificateTest {
                 assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Rebind.class,
                         sequence.steps().get(2)).value()).allocation().orElseThrow();
         SessionCompileResult.Success consumer = compile("overwritten-rebind-consumer.lyra",
-                "let box :Box = Box[]", producer.stagedSnapshot());
+                "let box :Box = :Box[]", producer.stagedSnapshot());
         TypedExpression construction = consumer.typedGraph().expressions().stream()
                 .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
                 .findFirst().orElseThrow();
@@ -430,7 +447,7 @@ final class RetainedNominalFlowCertificateTest {
                 assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Rebind.class,
                         returnedSequence.steps().get(1)).value()).allocation().orElseThrow();
         SessionCompileResult.Success returnedConsumer = compile("returned-rebind-consumer.lyra",
-                "let box :Box = Box[]", returned.stagedSnapshot());
+                "let box :Box = :Box[]", returned.stagedSnapshot());
         TypedExpression returnedConstruction = returnedConsumer.typedGraph().expressions().stream()
                 .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
                 .findFirst().orElseThrow();
@@ -465,7 +482,7 @@ final class RetainedNominalFlowCertificateTest {
                 SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
                 writtenRebind.value()).allocation().orElseThrow();
         SessionCompileResult.Success fieldConsumer = compile("field-write-rebind-consumer.lyra",
-                "let box :Box = Box[]", fieldWrite.stagedSnapshot());
+                "let box :Box = :Box[]", fieldWrite.stagedSnapshot());
         TypedExpression fieldConstruction = fieldConsumer.typedGraph().expressions().stream()
                 .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
                 .findFirst().orElseThrow();
@@ -488,13 +505,13 @@ final class RetainedNominalFlowCertificateTest {
         // must not mint a certified derived object identity.
         SessionCompileResult.Success ignored = compile("ignored-object-argument-producer.lyra", """
                 class Inner { let @pub value :I32 = 5 }
-                let pick :Fn<Inner;Inner> = (=> |ignored| Inner[])
+                let pick :Fn<Inner;Inner> = (=> |ignored| :Inner[])
                 class Box {
-                    let @pub nested :Inner = ::pick[Inner[]]
+                    let @pub nested :Inner = ::pick[:Inner[]]
                 }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success ignoredConsumer = compile("ignored-object-argument-consumer.lyra",
-                "let box :Box = Box[]", ignored.stagedSnapshot());
+                "let box :Box = :Box[]", ignored.stagedSnapshot());
         assertFalse(derivedArgumentObjectCertified(ignored, ignoredConsumer, "nested"),
                 "an object argument the summary ignores must not certify");
 
@@ -503,11 +520,11 @@ final class RetainedNominalFlowCertificateTest {
                 class Inner { let @pub value :I32 = 5 }
                 let keep :Fn<Inner;Inner> = (=> |kept| kept)
                 class Box {
-                    let @pub nested :Inner = ::keep[Inner[]]
+                    let @pub nested :Inner = ::keep[:Inner[]]
                 }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success returnedConsumer = compile("returned-object-argument-consumer.lyra",
-                "let box :Box = Box[]", returned.stagedSnapshot());
+                "let box :Box = :Box[]", returned.stagedSnapshot());
         assertTrue(derivedArgumentObjectCertified(returned, returnedConsumer, "nested"),
                 "an object argument the summary returns must certify");
 
@@ -516,11 +533,11 @@ final class RetainedNominalFlowCertificateTest {
                 let @mut @nil sink :Inner = #NIL
                 let store :Fn<Inner;Unit> = (=> |kept| { sink := kept })
                 class Box {
-                    let @pub nested :Inner = { ::store[Inner[]] Inner[] }
+                    let @pub nested :Inner = { ::store[:Inner[]] :Inner[] }
                 }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success writtenConsumer = compile("written-object-argument-consumer.lyra",
-                "let box :Box = Box[]", written.stagedSnapshot());
+                "let box :Box = :Box[]", written.stagedSnapshot());
         assertTrue(derivedArgumentObjectCertified(written, writtenConsumer, "nested"),
                 "an object argument the summary writes must certify");
     }
@@ -578,7 +595,7 @@ final class RetainedNominalFlowCertificateTest {
                 SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
                 call.arguments().get(1)).allocation().orElseThrow();
         SessionCompileResult.Success consumer = compile("call-result-allocation-consumer.lyra",
-                "let box :Box = Box[]", producer.stagedSnapshot());
+                "let box :Box = :Box[]", producer.stagedSnapshot());
         TypedExpression construction = consumer.typedGraph().expressions().stream()
                 .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
                 .findFirst().orElseThrow();
@@ -603,7 +620,7 @@ final class RetainedNominalFlowCertificateTest {
                 }
                 class Outer {
                     let @pub box :Box =
-                        Box[Array<I32>[1] Array<I32>[2]]
+                        :Box[Array<I32>[1] Array<I32>[2]]
                 }
                 """, SessionSnapshot.empty());
         var construction = assertInstanceOf(
@@ -617,7 +634,7 @@ final class RetainedNominalFlowCertificateTest {
                 construction.arguments().get(1)).allocation().orElseThrow();
         SessionCompileResult.Success consumer = compile(
                 "constructor-argument-allocation-consumer.lyra",
-                "let outer :Outer = Outer[]", producer.stagedSnapshot());
+                "let outer :Outer = :Outer[]", producer.stagedSnapshot());
         TypedExpression outerConstruction = consumer.typedGraph().expressions().stream()
                 .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
                 .findFirst().orElseThrow();
@@ -652,7 +669,7 @@ final class RetainedNominalFlowCertificateTest {
                 alternative.branches().get(1).result().orElseThrow().transfer())
                 .allocation().orElseThrow();
         SessionCompileResult.Success consumer = compile("unselected-allocation-consumer.lyra",
-                "let box :Box = Box[]", producer.stagedSnapshot());
+                "let box :Box = :Box[]", producer.stagedSnapshot());
         TypedExpression construction = consumer.typedGraph().expressions().stream()
                 .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
                 .findFirst().orElseThrow();
@@ -718,7 +735,7 @@ final class RetainedNominalFlowCertificateTest {
                 }
                 """, SessionSnapshot.empty());
         compile("callable-route-consumer.lyra", """
-                let holder :Holder = Holder[]
+                let holder :Holder = :Holder[]
                 let projected :Fn<;I32> = holder:.value:.0
                 let wrapped :Tuple<I32,Tuple<Fn<;I32>>> = Tuple[1I32 Tuple[projected]]
                 """, producer.stagedSnapshot());
@@ -756,7 +773,7 @@ final class RetainedNominalFlowCertificateTest {
                 class Pair { let @pub values :Tuple<Array<I32>,Array<I32>> = ::makePair[] }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success consumer = compile("nested-allocator-consumer.lyra",
-                "let pair :Pair = Pair[]", producer.stagedSnapshot());
+                "let pair :Pair = :Pair[]", producer.stagedSnapshot());
         var pair = certificate(consumer).boundaryState().objects().values().stream()
                 .filter(object -> object.schema().type().id().name().equals("Pair"))
                 .findFirst().orElseThrow();
@@ -778,10 +795,10 @@ final class RetainedNominalFlowCertificateTest {
                 class Shared { let @pub values :Array<I32> = ::sharedValue[] }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success consumer = compile("fresh-consumer.lyra", """
-                let first :Fresh = Fresh[]
-                let second :Fresh = Fresh[]
-                let sharedFirst :Shared = Shared[]
-                let sharedSecond :Shared = Shared[]
+                let first :Fresh = :Fresh[]
+                let second :Fresh = :Fresh[]
+                let sharedFirst :Shared = :Shared[]
+                let sharedSecond :Shared = :Shared[]
                 """, producer.stagedSnapshot());
         SessionFlowCertificate certificate = certificate(consumer);
 
@@ -811,15 +828,15 @@ final class RetainedNominalFlowCertificateTest {
         SessionCompileResult.Success producer = compile("nested-fresh-producer.lyra", """
                 class Inner { let @pub values :Array<I32> = Array<I32>[1I32] }
                 class Outer {
-                    let @pub left :Inner = Inner[]
-                    let @pub right :Inner = Inner[]
+                    let @pub left :Inner = :Inner[]
+                    let @pub right :Inner = :Inner[]
                 }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success second = compile(
-                "nested-fresh-second.lyra", "let first :Outer = Outer[]", producer.stagedSnapshot());
+                "nested-fresh-second.lyra", "let first :Outer = :Outer[]", producer.stagedSnapshot());
         Set<Object> secondArrays = allArrayIdentities(certificate(second));
         SessionCompileResult.Success third = compile(
-                "nested-fresh-third.lyra", "let second :Outer = Outer[]", second.stagedSnapshot());
+                "nested-fresh-third.lyra", "let second :Outer = :Outer[]", second.stagedSnapshot());
         Set<Object> thirdArrays = allArrayIdentities(certificate(third));
         assertTrue(thirdArrays.size() > secondArrays.size(),
                 "another generation must derive new construction-scoped arrays");
@@ -841,11 +858,11 @@ final class RetainedNominalFlowCertificateTest {
                 class Inner { let value :I32 = 1I32 }
                 class Box {
                     let values :Array<I32> = Tuple[Array<I32>[1I32]]:.0
-                    let nested :Inner = Tuple[Inner[]]:.0
+                    let nested :Inner = Tuple[:Inner[]]:.0
                 }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success consumer = compile(
-                "projected-consumer.lyra", "let box :Box = Box[]", producer.stagedSnapshot());
+                "projected-consumer.lyra", "let box :Box = :Box[]", producer.stagedSnapshot());
         var box = certificate(consumer).boundaryState().objects().entrySet().stream()
                 .filter(entry -> entry.getValue().schema().type().id().name().equals("Box"))
                 .findFirst().orElseThrow().getValue();
@@ -861,7 +878,7 @@ final class RetainedNominalFlowCertificateTest {
                 class Left { let values :Array<I32> = Array<I32>[1I32] }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success consumer = compile("exact-target-consumer.lyra",
-                "let leftValue :Left = Left[]", producer.stagedSnapshot());
+                "let leftValue :Left = :Left[]", producer.stagedSnapshot());
         TypedExpression left = consumer.typedGraph().expressions().stream()
                 .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
                 .findFirst().orElseThrow();
@@ -892,7 +909,7 @@ final class RetainedNominalFlowCertificateTest {
                     let parameterValue :Array<I32> = ::parameter[]
                     let capturedValue :Array<I32> = ::captured[]
                 }
-                let outer :Outer = Outer[]
+                let outer :Outer = :Outer[]
                 """, producer.stagedSnapshot());
         var outer = certificate(consumer).boundaryState().objects().values().stream()
                 .filter(object -> object.schema().type().id().name().equals("Outer"))
@@ -906,7 +923,7 @@ final class RetainedNominalFlowCertificateTest {
     void capturedCurrentWrapperCarriesContextToRetainedObjectFactory() {
         SessionCompileResult.Success producer = compile("wrapper-object-producer.lyra", """
                 class Inner { let value :I32 = 1I32 }
-                let make :Fn<;Inner> = (=> || Inner[])
+                let make :Fn<;Inner> = (=> || :Inner[])
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success consumer = compile("wrapper-object-consumer.lyra", """
                 let capture :Fn<Fn<;Inner>;Fn<;Inner>> =
@@ -938,7 +955,7 @@ final class RetainedNominalFlowCertificateTest {
         compile("nested-callable-proof-2.lyra", """
                 let wrapper :Fn<;Fn<;I32>> = (=> || ::make[])
                 class Box { let read :Fn<;I32> = ::wrapper[] }
-                let box :Box = Box[]
+                let box :Box = :Box[]
                 """, producer.stagedSnapshot());
     }
 
@@ -988,7 +1005,7 @@ final class RetainedNominalFlowCertificateTest {
                 """, SessionSnapshot.empty());
 
         SessionCompileResult.Success consumer = compile(
-                "effect-consumer.lyra", "let box :Box = Box[]", producer.stagedSnapshot());
+                "effect-consumer.lyra", "let box :Box = :Box[]", producer.stagedSnapshot());
 
         var effects = consumer.typedGraph().semanticFlowFacts().eagerEffectFacts();
         assertEquals(1, effects.size());
@@ -1014,7 +1031,7 @@ final class RetainedNominalFlowCertificateTest {
                         Tuple[Array<I32>[1 2] 3]
                     Box = (=> || {
                         self:.nested:.0[1] := ::record[9]
-                        self:.built := Inner[]
+                        self:.built := :Inner[]
                     })
                 }
                 """, SessionSnapshot.empty());
@@ -1022,7 +1039,7 @@ final class RetainedNominalFlowCertificateTest {
         assertTrue(box.constructorLambda().isPresent());
 
         SessionCompileResult.Success consumer = compile("constructor-summary-consumer.lyra",
-                "let box :Box = Box[]", producer.stagedSnapshot());
+                "let box :Box = :Box[]", producer.stagedSnapshot());
         TypedExpression boxConstruction = consumer.typedGraph().expressions().stream()
                 .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
                 .findFirst().orElseThrow();
@@ -1163,9 +1180,9 @@ final class RetainedNominalFlowCertificateTest {
                 .canonicalSpelling();
         List<Optional<SessionFlowCertificate.RetainedInitializerTransfer>> expected =
                 certificate(first).retainedNominals().get(canonical).memberInitializers();
-        SessionCompileResult.Success second = compile("second.lyra", "let value :Defaults = Defaults[]",
+        SessionCompileResult.Success second = compile("second.lyra", "let value :Defaults = :Defaults[]",
                 first.stagedSnapshot());
-        SessionCompileResult.Success third = compile("third.lyra", "let value :Defaults = Defaults[]",
+        SessionCompileResult.Success third = compile("third.lyra", "let value :Defaults = :Defaults[]",
                 second.stagedSnapshot());
 
         assertEquals(expected, certificate(third).retainedNominals().get(canonical)
@@ -1258,8 +1275,8 @@ final class RetainedNominalFlowCertificateTest {
                 class Inner { let value :I32 = 1I32 }
                 class Holder {
                     let value :I32 = 1I32
-                    let nested :Inner = Inner[]
-                    let looped :Unit = ::while[|| #F || ()]
+                    let nested :Inner = :Inner[]
+                    let looped :Unit = while[|| #F || ()]
                 }
                 """, SessionSnapshot.empty());
         SessionFlowCertificate.RetainedNominal holder = nominal(certificate(compiled), "Holder");
@@ -1363,10 +1380,10 @@ final class RetainedNominalFlowCertificateTest {
     void derivedAllocationCertificationRejectsAnotherConsumerContext() {
         SessionCompileResult.Success producer = compile(
                 "derived-proof-producer.lyra",
-                "class Inner { let value :I32 = 1I32 } class Box { let values :Array<I32> = Array<I32>[1I32] let inner :Inner = Inner[] }",
+                "class Inner { let value :I32 = 1I32 } class Box { let values :Array<I32> = Array<I32>[1I32] let inner :Inner = :Inner[] }",
                 SessionSnapshot.empty());
         SessionCompileResult.Success consumer = compile(
-                "derived-proof-consumer.lyra", "let box :Box = Box[]", producer.stagedSnapshot());
+                "derived-proof-consumer.lyra", "let box :Box = :Box[]", producer.stagedSnapshot());
         TypedExpression construction = consumer.typedGraph().expressions().stream()
                 .filter(expression -> expression.kind() == TypedExpressionKind.CONSTRUCTION)
                 .findFirst().orElseThrow();
@@ -1405,7 +1422,7 @@ final class RetainedNominalFlowCertificateTest {
     void certifiedProofPredicatesRejectForgedWitnessesAndUseSites() {
         SessionCompileResult.Success producer = compile("holder.lyra", """
                 class Holder { let @pub values :Array<I32> = Array<I32>[1 2] }
-                let @mut holder :Holder = Holder[]
+                let @mut holder :Holder = :Holder[]
                 """, SessionSnapshot.empty());
         SessionFlowCertificate certificate = certificate(producer);
         List<ValueAlternative> values = new ArrayList<>();
@@ -1489,7 +1506,7 @@ final class RetainedNominalFlowCertificateTest {
         assertTrue(SessionFlowCertificate.retainedInitializerDiagnostic(
                 producer.typedGraph()).isEmpty());
         SessionCompileResult.Success consumer = compile("supported-guard-2.lyra",
-                "let guard :Guard = Guard[]", producer.stagedSnapshot());
+                "let guard :Guard = :Guard[]", producer.stagedSnapshot());
         assertInstanceOf(SessionCompileResult.Success.class, consumer);
     }
 
@@ -1532,7 +1549,7 @@ final class RetainedNominalFlowCertificateTest {
         assertEquals(PrimitiveType.I32, oneElement.operands().getFirst().type());
 
         SessionCompileResult.Success consumer = compile("nilable-index-consumer.lyra",
-                "let value :C = C[]", producer.stagedSnapshot());
+                "let value :C = :C[]", producer.stagedSnapshot());
         ValueAlternative field = certificate(consumer).boundaryState().objects().values().stream()
                 .filter(object -> object.schema().type().id().name().equals("C"))
                 .flatMap(object -> object.fields().values().stream())
@@ -1555,7 +1572,7 @@ final class RetainedNominalFlowCertificateTest {
                 class C { let @pub all :Array<@nil I32> = Array<@nil I32>[#NIL 1I32] }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success consumer = compile("nilable-composite-consumer.lyra",
-                "let value :C = C[]", producer.stagedSnapshot());
+                "let value :C = :C[]", producer.stagedSnapshot());
         ValueAlternative field = certificate(consumer).boundaryState().objects().values().stream()
                 .filter(object -> object.schema().type().id().name().equals("C"))
                 .flatMap(object -> object.fields().values().stream())

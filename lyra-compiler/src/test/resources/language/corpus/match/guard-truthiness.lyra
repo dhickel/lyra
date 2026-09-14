@@ -3,6 +3,6 @@ let @mut probes :I32 = 0
 let firstGuard :Fn<;I32> = (=> | | 0)
 let secondPattern :Fn<;I32> = (=> | | { probes := (+ probes 10) 1 })
 let @pub run :Fn<;I32> = (=> | | {
-    let selected :I32 = (match 1 ?? 1 when (firstGuard) -> 3 ?? (secondPattern) -> 7 ?? _ -> 9)
+    let selected :I32 = (match 1 1 when (firstGuard) -> 3 (secondPattern) -> 7 _ -> 9)
     (+ selected probes)
 })

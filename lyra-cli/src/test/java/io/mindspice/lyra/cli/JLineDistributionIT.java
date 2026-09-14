@@ -40,6 +40,28 @@ final class JLineDistributionIT {
     }
 
     @Test
+    void packagedJarConsoleRecognizesTheCurrentBackslashCommands() throws Exception {
+        // The packaged distribution runs the real relocated console classes.
+        // When the jar is stale relative to a console/command change, this
+        // probe fails with the actual REPL output instead of leaving a PTY
+        // child alive that never sees a recognized \quit.
+        Process process = new ProcessBuilder(JLinePtyTest.javaCommand(),
+                "-jar", cliJar().toString(), "repl").start();
+        try {
+            process.getOutputStream().write("\\help\n\\quit\n".getBytes(StandardCharsets.UTF_8));
+            process.getOutputStream().close();
+            assertTrue(process.waitFor(15, TimeUnit.SECONDS), "stale or hung distribution REPL");
+            assertEquals(0, process.exitValue());
+            assertEquals(io.mindspice.lyra.repl.PlainConsole.HELP_TEXT,
+                    new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+            assertEquals("", new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8));
+        } finally {
+            process.descendants().forEach(ProcessHandle::destroyForcibly);
+            process.destroyForcibly();
+        }
+    }
+
+    @Test
     void relocatedSymlinkedScriptFindsJarAndPreservesPathsAndOptions() throws Exception {
         assumeTrue(System.getProperty("os.name").equals("Linux"));
         Path distribution = temp.resolve("distribution with spaces");
@@ -80,6 +102,7 @@ final class JLineDistributionIT {
             assertEquals(expected, process.exitValue(), Files.readString(log));
             assertEquals("", Files.readString(log));
         } finally {
+            process.descendants().forEach(ProcessHandle::destroyForcibly);
             process.destroyForcibly();
         }
     }

@@ -46,15 +46,15 @@ class CrossSurfacePlainConsoleTest {
             + CrossSurfaceCorpus.PROGRAM_INPUT
             + "import errors\n"
             + "errors->::late[]\n"
-            + ":bindings\n"
-            + ":type { probe := 99 probe }\n"
+            + "\\bindings\n"
+            + "\\type { probe := 99 probe }\n"
             + "probe\n"
-            + ":history\n"
-            + ":reload counter\n"
+            + "\\history\n"
+            + "\\reload counter\n"
             + "counter->:.visible\n"
             + "(readOld)\n"
             + "counter->::bump[]\n"
-            + ":quit\n";
+            + "\\quit\n";
 
     @Test
     void consoleCorpusKeepsOneInputOwnerAndExactSourceHistory() {
@@ -93,10 +93,10 @@ class CrossSurfacePlainConsoleTest {
         // The delayed imported failure renders with its division diagnostic.
         assertTrue(err.contains("LYR-ARITH"), err);
         assertTrue(err.contains("division by zero"), err);
-        // :bindings shows committed metadata; :type analyzes without running.
+        // \\bindings shows committed metadata; \\type analyzes without running.
         assertTrue(out.contains("reader :Fn<;I32>"), out);
         assertTrue(out.contains("I32\n"), out);
-        // :type did not execute the staged mutation: probe keeps its value.
+        // \\type did not execute the staged mutation: probe keeps its value.
         assertTrue(out.contains("I32\nI32 1\n"), out);
         // Source history contains only submitted source, never program input.
         assertTrue(out.contains("1: import counter\n"), out);
@@ -116,7 +116,7 @@ class CrossSurfacePlainConsoleTest {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         ByteArrayOutputStream error = new ByteArrayOutputStream();
         RuntimeIoEnvironment environment = new RuntimeIoEnvironment(
-                new ByteArrayInputStream(("import counter\ncounter->::bump[]\n:history\n:quit\n")
+                new ByteArrayInputStream(("import counter\ncounter->::bump[]\n\\history\n\\quit\n")
                         .getBytes(StandardCharsets.UTF_8)),
                 output, error, StandardCharsets.UTF_8);
         var session = LyraSession.open(
@@ -134,13 +134,13 @@ class CrossSurfacePlainConsoleTest {
         String file = readFile(historyFile);
         assertTrue(file.contains("import counter\\n"), file);
         assertTrue(file.contains("counter->::bump[]\\n"), file);
-        assertFalse(file.contains(":history"), file);
-        assertFalse(file.contains(":quit"), file);
+        assertFalse(file.contains("\\history"), file);
+        assertFalse(file.contains("\\quit"), file);
 
         ByteArrayOutputStream rereadOutput = new ByteArrayOutputStream();
         ByteArrayOutputStream rereadError = new ByteArrayOutputStream();
         RuntimeIoEnvironment rereadEnvironment = new RuntimeIoEnvironment(
-                new ByteArrayInputStream(":history\n:quit\n".getBytes(StandardCharsets.UTF_8)),
+                new ByteArrayInputStream("\\history\n\\quit\n".getBytes(StandardCharsets.UTF_8)),
                 rereadOutput, rereadError, StandardCharsets.UTF_8);
         var rereadSession = LyraSession.open(
                 CrossSurfaceCorpus.options(sources).ioEnvironment(rereadEnvironment).build());

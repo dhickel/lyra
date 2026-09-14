@@ -75,7 +75,7 @@ final class Phase21CliTest {
         assertEquals("", empty.stderr());
 
         Invocation implicitPlain = invoke(new String[] {"repl"},
-                new ByteArrayInputStream(":quit\n".getBytes(StandardCharsets.UTF_8)),
+                new ByteArrayInputStream("\\quit\n".getBytes(StandardCharsets.UTF_8)),
                 new ByteArrayOutputStream(), new ByteArrayOutputStream());
         assertEquals(0, implicitPlain.status());
         assertEquals("", implicitPlain.stdout());
@@ -88,7 +88,7 @@ final class Phase21CliTest {
             throw new AssertionError(failure);
         }
         Invocation configured = invoke(new String[] {"repl", sourceRoot.toString(), "--plain"},
-                new ByteArrayInputStream(":quit\n".getBytes(StandardCharsets.UTF_8)),
+                new ByteArrayInputStream("\\quit\n".getBytes(StandardCharsets.UTF_8)),
                 new ByteArrayOutputStream(), new ByteArrayOutputStream());
         assertEquals(0, configured.status());
         assertEquals("", configured.stdout());
@@ -117,7 +117,7 @@ final class Phase21CliTest {
                         "--source-root", secondRoot.toString(), "--plain"},
                 new ByteArrayInputStream(
                         ("let @pub answer :I32 = (+ 40 2)\n"
-                                + ":bindings\n:quit\n").getBytes(StandardCharsets.UTF_8)),
+                                + "\\bindings\n\\quit\n").getBytes(StandardCharsets.UTF_8)),
                 new ByteArrayOutputStream(), new ByteArrayOutputStream());
         assertEquals(0, result.status(), result.stderr());
         assertTrue(result.stdout().contains("answer :I32\n"), result.stdout());
@@ -137,7 +137,7 @@ final class Phase21CliTest {
     void replKeymapsAreValidatedAndInjectedStreamsAlwaysStayPlain() {
         for (String keymap : List.of("emacs", "vi")) {
             Invocation result = invoke(new String[] {"repl", "--keymap", keymap},
-                    new ByteArrayInputStream(":help\n:quit\n".getBytes(StandardCharsets.UTF_8)),
+                    new ByteArrayInputStream("\\help\n\\quit\n".getBytes(StandardCharsets.UTF_8)),
                     new ByteArrayOutputStream(), new ByteArrayOutputStream());
             assertEquals(0, result.status());
             assertEquals(io.mindspice.lyra.repl.PlainConsole.HELP_TEXT, result.stdout());
@@ -156,7 +156,7 @@ final class Phase21CliTest {
 
     @Test
     void replUsesInjectedStreamsWithoutClosingCallerResources() throws IOException {
-        TrackingInput input = new TrackingInput(":quit\n");
+        TrackingInput input = new TrackingInput("\\quit\n");
         TrackingOutput output = new TrackingOutput();
         TrackingOutput error = new TrackingOutput();
 

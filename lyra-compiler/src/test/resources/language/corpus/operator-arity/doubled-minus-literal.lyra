@@ -1,0 +1,2 @@
+// operator-arity	reject	-	LYC-PARSE-003	'--' is the decrement operator, never a negative literal
+let @pub run :Fn<;I32> = (=> | | --1)

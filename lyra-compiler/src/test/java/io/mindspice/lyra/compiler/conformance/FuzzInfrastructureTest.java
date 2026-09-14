@@ -67,7 +67,7 @@ class FuzzInfrastructureTest {
             assertTrue(loaded.get("moduleName.0").startsWith("group->"));
             covered.add(loaded.get("moduleName.0").contains("->nested->") ? "deep" : "shallow");
             covered.add(source.contains("->:.value") ? "terminal-arrow" : "terminal-adjacent");
-            covered.add(source.contains("::match[") ? "bracket" : "prefix");
+            covered.add(source.contains("match[") ? "bracket" : "prefix");
             LanguageFuzzWorker.run(loaded);
         }
         assertEquals(java.util.Set.of("deep", "shallow", "terminal-arrow", "terminal-adjacent", "bracket", "prefix"),
@@ -205,19 +205,19 @@ class FuzzInfrastructureTest {
         var a = new TypedProgramGenerator.Expr(TypedProgramGenerator.Shape.A, "", null, null);
         var b = new TypedProgramGenerator.Expr(TypedProgramGenerator.Shape.B, "", null, null);
         var match = new TypedProgramGenerator.Expr(TypedProgramGenerator.Shape.MATCH, "", a, b);
-        assertEquals("(match a ?? ((< a b) -> a : b) -> a ?? _ -> b)",
+        assertEquals("(match a ((< a b) -> a : b) -> a _ -> b)",
                 match.source(NumericModel.I32, false));
-        assertEquals("::match[a ?? ((< a b) -> a : b) -> a ?? _ -> b]",
+        assertEquals("match[a ((< a b) -> a : b) -> a _ -> b]",
                 match.source(NumericModel.I32, true));
 
         var nested = new TypedProgramGenerator.Expr(TypedProgramGenerator.Shape.MATCH, "", match, match);
-        assertEquals("(match a ?? ((< a b) -> a : b) -> "
-                + "(match a ?? ((< a b) -> a : b) -> a ?? _ -> b) ?? _ -> "
-                + "(match a ?? ((< a b) -> a : b) -> a ?? _ -> b))",
+        assertEquals("(match a ((< a b) -> a : b) -> "
+                + "(match a ((< a b) -> a : b) -> a _ -> b) _ -> "
+                + "(match a ((< a b) -> a : b) -> a _ -> b))",
                 nested.source(NumericModel.I32, false));
-        assertEquals("::match[a ?? ((< a b) -> a : b) -> "
-                + "::match[a ?? ((< a b) -> a : b) -> a ?? _ -> b] ?? _ -> "
-                + "::match[a ?? ((< a b) -> a : b) -> a ?? _ -> b]]",
+        assertEquals("match[a ((< a b) -> a : b) -> "
+                + "match[a ((< a b) -> a : b) -> a _ -> b] _ -> "
+                + "match[a ((< a b) -> a : b) -> a _ -> b]]",
                 nested.source(NumericModel.I32, true));
 
         for (NumericModel type : NumericModel.values()) {
@@ -229,9 +229,9 @@ class FuzzInfrastructureTest {
             assertEquals(one, nested.evaluate(type, one, two), type.toString());
             assertTrue(TypedProgramGenerator.program(nested, type).contains("Fn<" + type + "," + type + ";" + type + ">"));
             String generated = LanguageFuzzWorker.numeric(new SplittableRandom(1000 + type.ordinal()), type).get("source");
-            assertTrue(generated.contains("(match a ?? ((< a b) -> a : b) ->"),
+            assertTrue(generated.contains("(match a ((< a b) -> a : b) ->"),
                     "Prefix numeric match missing for " + type);
-            assertTrue(generated.contains("::match[a ?? ((< a b) -> a : b) ->"),
+            assertTrue(generated.contains("match[a ((< a b) -> a : b) ->"),
                     "Bracket numeric match missing for " + type);
         }
         assertThrows(IllegalArgumentException.class,
@@ -261,7 +261,7 @@ class FuzzInfrastructureTest {
         var trap = new TypedProgramGenerator.Expr(TypedProgramGenerator.Shape.BINARY, "%", a, b);
         var conditional = new TypedProgramGenerator.Expr(TypedProgramGenerator.Shape.CONDITIONAL, "", match, trap);
         assertEquals("{ let less :Bool = (< a b) (less -> "
-                        + "::match[a ?? ((< a b) -> a : b) -> a ?? _ -> b] : %[a, b]) }",
+                        + "match[a ((< a b) -> a : b) -> a _ -> b] : %[a, b]) }",
                 conditional.source(NumericModel.I32, true));
         assertEquals(-1, conditional.evaluate(NumericModel.I32, -1, 0));
         assertEquals(1, conditional.evaluate(NumericModel.I32, 3, 2));
@@ -290,10 +290,10 @@ class FuzzInfrastructureTest {
         for (int index = 0; index < comparisons.length; index++) {
             var program = new TypedProgramGenerator.MatchProgram(false, 0, 0, 0, 0, index);
             String source = program.source();
-            String arm = comparisons[index][0] + " ?? " + comparisons[index][1]
-                    + " -> 0 ?? _ -> 1000000";
+            String arm = comparisons[index][0] + " " + comparisons[index][1]
+                    + " -> 0 _ -> 1000000";
             assertTrue(source.contains("(match " + arm + ")"), "Missing prefix probe " + index);
-            assertTrue(source.contains("::match[" + arm + "]"), "Missing bracket probe " + index);
+            assertTrue(source.contains("match[" + arm + "]"), "Missing bracket probe " + index);
             var expected = program.evaluate(1, 1);
             assertNull(expected.failure());
             try (var fixture = new LanguageTestSupport.Fixture(LanguageTestSupport.compile(source))) {
@@ -308,11 +308,10 @@ class FuzzInfrastructureTest {
     @Test void matchProgramSpellingsAndLazyEffectModelHaveKnownBoundaries() {
         var conditional = new TypedProgramGenerator.MatchProgram(true, 99, 1, 2, -2);
         String conditionalSource = conditional.source();
-        assertTrue(conditionalSource.contains("(match _ ?? (conditionOne) -> (+ a 2) "
-                + "?? (conditionTwo) -> (- b 2) ?? _ -> (% 1 b))"));
-        assertTrue(conditionalSource.contains("::match[_ ?? (conditionOne) -> (+ a 2) "
-                + "?? (conditionTwo) -> (- b 2) ?? _ -> (% 1 b)]"));
-        assertFalse(conditionalSource.contains("::match[(conditionOne)"));
+        assertTrue(conditionalSource.contains("(cond (conditionOne) -> (+ a 2) "
+                + "(conditionTwo) -> (- b 2) _ -> (% 1 b))"));
+        assertFalse(conditionalSource.contains("cond[(conditionOne)"));
+        assertFalse(conditionalSource.contains("match_"));
         assertEquals(new TypedProgramGenerator.MatchEvaluation(13, null), conditional.evaluate(1, 7));
         assertEquals(new TypedProgramGenerator.MatchEvaluation(30, null), conditional.evaluate(0, 2));
         assertEquals(new TypedProgramGenerator.MatchEvaluation(null, "LYR-ARITH"), conditional.evaluate(0, 0));
@@ -321,10 +320,10 @@ class FuzzInfrastructureTest {
 
         var traditional = new TypedProgramGenerator.MatchProgram(false, 1, 3, 2, 4);
         String traditionalSource = traditional.source();
-        assertTrue(traditionalSource.contains("(match (subject) ?? (patternOne) when (guard) -> (+ a 2) "
-                + "?? (patternTwo) -> (+ b 4) ?? _ -> (% 1 b))"));
-        assertTrue(traditionalSource.contains("::match[(subject) ?? (patternOne) when (guard) -> (+ a 2) "
-                + "?? (patternTwo) -> (+ b 4) ?? _ -> (% 1 b)]"));
+        assertTrue(traditionalSource.contains("(match (subject) (patternOne) when (guard) -> (+ a 2) "
+                + "(patternTwo) -> (+ b 4) _ -> (% 1 b))"));
+        assertTrue(traditionalSource.contains("match[(subject) (patternOne) when (guard) -> (+ a 2) "
+                + "(patternTwo) -> (+ b 4) _ -> (% 1 b)]"));
         assertTrue(traditionalSource.contains("let subject :Fn<;I32>"));
         assertFalse(traditionalSource.contains("@nil subject"));
         assertEquals(new TypedProgramGenerator.MatchEvaluation(37, null), traditional.evaluate(5, 2));

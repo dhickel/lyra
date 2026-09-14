@@ -1,2 +1,2 @@
 // excluded	reject	-	LYC-PARSE-003	match type/destructuring patterns remain excluded
-let @pub run :Fn<;I32> = (=> | | (match Array[1 2] ?? Array<I32> -> 1 ?? _ -> 0))
+let @pub run :Fn<;I32> = (=> | | (match Array[1 2] Array<I32> -> 1 _ -> 0))

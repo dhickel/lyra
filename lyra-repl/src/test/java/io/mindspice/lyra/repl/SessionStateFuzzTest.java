@@ -118,7 +118,7 @@ public class SessionStateFuzzTest {
                     case 12 -> {
                         // Retained construction: a fresh generation observes an exact new instance value.
                         int value = delta;
-                        success(session, "let @mut box" + boxes.size() + " :SessionBox = SessionBox[" + value + "]");
+                        success(session, "let @mut box" + boxes.size() + " :SessionBox = :SessionBox[" + value + "]");
                         boxes.add(value); replacedReads.add(-1);
                         int last = boxes.size() - 1;
                         if (boxes.size() > 1) {
@@ -157,7 +157,7 @@ public class SessionStateFuzzTest {
                         // Ordered constructor/default effects and a callable-bearing composite.
                         nominalEffects += 11;
                         success(session, "let ordered" + orderedCounter
-                                + " :SessionOrdered = SessionOrdered[" + delta + "]");
+                                + " :SessionOrdered = :SessionOrdered[" + delta + "]");
                         assertEquals(Integer.toString(nominalEffects), scalar(session, "constructorEffects"));
                         int last = boxes.size() - 1;
                         int readValue = replacedReads.get(last) >= 0 ? replacedReads.get(last) : boxes.get(last);
@@ -174,7 +174,7 @@ public class SessionStateFuzzTest {
                         var before = session.workspaceState();
                         assertInstanceOf(EvaluationResult.RuntimeFailure.class,
                                 submit(session, "let stagedFail" + freshCounter
-                                        + " :SessionFragile = SessionFragile[]"));
+                                        + " :SessionFragile = :SessionFragile[]"));
                         assertEquals(before, session.workspaceState());
                         assertFalse(session.workspaceState().bindings().containsKey("stagedFail" + freshCounter));
                         assertEquals(Integer.toString(nominalEffects), scalar(session, "constructorEffects"));
@@ -184,7 +184,7 @@ public class SessionStateFuzzTest {
                         success(session, "divisor := 1");
                         nominalEffects += 1;
                         success(session, "let stagedRecover" + freshCounter
-                                + " :SessionFragile = SessionFragile[]");
+                                + " :SessionFragile = :SessionFragile[]");
                         assertEquals("1", scalar(session,
                                 "(+ stagedRecover" + freshCounter + ":.touched stagedRecover"
                                         + freshCounter + ":.broken)"));
@@ -192,8 +192,8 @@ public class SessionStateFuzzTest {
                     }
                     case 19 -> {
                         // Shared versus fresh identities across retained constructions.
-                        success(session, "let freshA" + freshCounter + " :SessionFresh = SessionFresh[]"
-                                + " let freshB" + freshCounter + " :SessionFresh = SessionFresh[]");
+                        success(session, "let freshA" + freshCounter + " :SessionFresh = :SessionFresh[]"
+                                + " let freshB" + freshCounter + " :SessionFresh = :SessionFresh[]");
                         assertEquals("false", scalar(session, "(eq? freshA" + freshCounter
                                 + " freshB" + freshCounter + ")"));
                         assertEquals("true", scalar(session, "(eq? freshA" + freshCounter

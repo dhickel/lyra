@@ -1,0 +1,4 @@
+let @pub run :Fn<U64,U64;U64> = (=> |a b| (match a ((< a b) -> a : b) -> ((=> :U64 |value :U64| value) (match a ((< a b) -> a : b) -> b _ -> b)) _ -> (% (^ a a) { let temporary :U64 = a temporary })))
+/* Equivalent operator spelling, optional commas, and nested /* trivia */. */
+let @pub alternate :Fn<U64,U64;U64> = (=> |a b| match[a ((< a b) -> a : b) -> ((=> :U64 |value :U64| value) match[a ((< a b) -> a : b) -> b _ -> b]) _ -> %[^[a, a], { let temporary :U64 = a temporary }]])
+let @pub convert :Fn<U64;I32> = (=> |value| I32[value])

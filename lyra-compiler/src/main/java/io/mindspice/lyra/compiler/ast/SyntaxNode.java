@@ -64,6 +64,8 @@ public sealed interface SyntaxNode
                     Conditional,
                     Coalesce,
                     Match,
+                    Cond,
+                    ExplicitConstruction,
                     Range,
                     PrefixAssignment,
                     Lambda,
@@ -104,11 +106,6 @@ public sealed interface SyntaxNode
         PARENTHESIZED,
         ARRAY,
         TUPLE
-    }
-
-    enum MatchMode {
-        TRADITIONAL,
-        CONDITIONAL
     }
 
     record Modifier(ModifierKind kind, String spelling, SourceSpan span) implements SyntaxNode {
@@ -757,7 +754,6 @@ public sealed interface SyntaxNode
             Optional<Expression> pattern,
             Optional<Expression> guard,
             Expression result,
-            SourceSpan separatorSpan,
             Optional<SourceSpan> wildcardSpan,
             Optional<SourceSpan> whenSpan,
             SourceSpan arrowSpan,
@@ -766,7 +762,6 @@ public sealed interface SyntaxNode
             Objects.requireNonNull(pattern, "pattern");
             Objects.requireNonNull(guard, "guard");
             Objects.requireNonNull(result, "result");
-            requireSpan(separatorSpan, "separatorSpan");
             Objects.requireNonNull(wildcardSpan, "wildcardSpan");
             Objects.requireNonNull(whenSpan, "whenSpan");
             requireSpan(arrowSpan, "arrowSpan");
@@ -790,8 +785,7 @@ public sealed interface SyntaxNode
     }
 
     record Match(
-            MatchMode mode,
-            Optional<Expression> subject,
+            Expression subject,
             List<MatchArm> arms,
             SourceSpan matchKeywordSpan,
             Optional<SourceSpan> directAccessorSpan,
@@ -799,7 +793,6 @@ public sealed interface SyntaxNode
             SourceSpan closingDelimiterSpan,
             SourceSpan span) implements Expression {
         public Match {
-            Objects.requireNonNull(mode, "mode");
             Objects.requireNonNull(subject, "subject");
             arms = copy(arms, "arms");
             requireSpan(matchKeywordSpan, "matchKeywordSpan");
@@ -807,17 +800,11 @@ public sealed interface SyntaxNode
             requireSpan(openingDelimiterSpan, "openingDelimiterSpan");
             requireSpan(closingDelimiterSpan, "closingDelimiterSpan");
             requireSpan(span);
-            if ((mode == MatchMode.TRADITIONAL) != subject.isPresent()) {
-                throw new IllegalArgumentException("traditional match alone has a value subject");
-            }
             if (arms.isEmpty()) {
                 throw new IllegalArgumentException("match requires a fallback arm");
             }
             for (int index = 0; index < arms.size(); index++) {
                 MatchArm arm = arms.get(index);
-                if (mode == MatchMode.CONDITIONAL && arm.guard().isPresent()) {
-                    throw new IllegalArgumentException("conditional match arms cannot have guards");
-                }
                 if (arm.wildcard() && arm.guard().isEmpty() && index != arms.size() - 1) {
                     throw new IllegalArgumentException("unconditional wildcard must be the final match arm");
                 }
@@ -831,6 +818,73 @@ public sealed interface SyntaxNode
         @Override
         public <R> R accept(SyntaxVisitor<R> visitor) {
             return Objects.requireNonNull(visitor, "visitor").visitMatch(this);
+        }
+    }
+
+    /**
+     * Subjectless conditional expression. {@code cond} is a dedicated source
+     * form; its arms are ordered truthiness tests with a mandatory final
+     * unconditional wildcard fallback and no {@code when} guards.
+     */
+    record Cond(
+            List<MatchArm> arms,
+            SourceSpan condKeywordSpan,
+            SourceSpan openingDelimiterSpan,
+            SourceSpan closingDelimiterSpan,
+            SourceSpan span) implements Expression {
+        public Cond {
+            arms = copy(arms, "arms");
+            requireSpan(condKeywordSpan, "condKeywordSpan");
+            requireSpan(openingDelimiterSpan, "openingDelimiterSpan");
+            requireSpan(closingDelimiterSpan, "closingDelimiterSpan");
+            requireSpan(span);
+            if (arms.isEmpty()) {
+                throw new IllegalArgumentException("cond requires a fallback arm");
+            }
+            for (int index = 0; index < arms.size(); index++) {
+                MatchArm arm = arms.get(index);
+                if (arm.guard().isPresent()) {
+                    throw new IllegalArgumentException("cond arms cannot have guards");
+                }
+                if (arm.wildcard() && index != arms.size() - 1) {
+                    throw new IllegalArgumentException("unconditional wildcard must be the final cond arm");
+                }
+            }
+            if (!arms.getLast().wildcard()) {
+                throw new IllegalArgumentException("cond requires a final unconditional wildcard fallback");
+            }
+        }
+
+        @Override
+        public <R> R accept(SyntaxVisitor<R> visitor) {
+            return Objects.requireNonNull(visitor, "visitor").visitCond(this);
+        }
+    }
+
+    /**
+     * Explicit nominal construction {@code :Type[arguments]} or
+     * {@code :module->Type[arguments]}.
+     */
+    record ExplicitConstruction(
+            Optional<NamespacePath> namespacePath,
+            Identifier typeName,
+            ArgumentList arguments,
+            SourceSpan colonSpan,
+            SourceSpan span) implements Expression {
+        public ExplicitConstruction {
+            Objects.requireNonNull(namespacePath, "namespacePath");
+            Objects.requireNonNull(typeName, "typeName");
+            Objects.requireNonNull(arguments, "arguments");
+            requireSpan(colonSpan, "colonSpan");
+            requireSpan(span);
+            if (!typeName.span().sourceId().equals(colonSpan.sourceId())) {
+                throw new IllegalArgumentException("construction target belongs to a different source");
+            }
+        }
+
+        @Override
+        public <R> R accept(SyntaxVisitor<R> visitor) {
+            return Objects.requireNonNull(visitor, "visitor").visitExplicitConstruction(this);
         }
     }
 

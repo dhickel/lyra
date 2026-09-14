@@ -1,3 +1,3 @@
 // match	value	I32	9	value match uses structural equality for tuple patterns
 let subject :Tuple<I32,String> = Tuple[1 "x"]
-let @pub run :Fn<;I32> = (=> | | (match subject ?? Tuple<I32,String>[1 "x"] -> 9 ?? _ -> 0))
+let @pub run :Fn<;I32> = (=> | | (match subject Tuple<I32,String>[1 "x"] -> 9 _ -> 0))

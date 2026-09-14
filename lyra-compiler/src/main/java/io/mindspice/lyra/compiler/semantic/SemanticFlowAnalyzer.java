@@ -1140,7 +1140,7 @@ public final class SemanticFlowAnalyzer {
                     case BLOCK -> block(expression, frame, state);
                     case CONDITIONAL -> conditional(expression, frame, state);
                     case COALESCE -> coalesce(expression, frame, state);
-                    case MATCH -> match(expression, frame, state);
+                    case MATCH, COND -> match(expression, frame, state);
                     case ITER, WHILE -> loop(expression, frame, state);
                     case LAMBDA -> lambdaExpression(expression, frame, state);
                     case CALLABLE_CALL -> callableCall(expression, frame, state);

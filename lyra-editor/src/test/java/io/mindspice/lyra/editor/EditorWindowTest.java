@@ -28,6 +28,8 @@ class EditorWindowTest {
         Path file = root.resolve("main.lyra");
         Files.writeString(file, "// A small interactive program\nlet answer :Fn<;I32> = (=> || 41)\n"
                 + "let @pub main :Fn<Array<String>;I32> = (=> |args| { ::answer[] })\n");
+        Files.writeString(root.resolve("loaded-ui-history-source.lyra"),
+                "let loadedUiHistory :I32 = 7I32\n");
         WorkspaceSettings.open(root).withEntry(new WorkspaceSettings.RunTarget(file, "main", "Array<String>[]")).save();
         Stage stage = fx(Stage::new);
         EditorWindow window = fx(() -> { var value = new EditorWindow(stage); stage.show(); value.openWorkspace(root); return value; });
@@ -55,6 +57,40 @@ class EditorWindowTest {
             });
             await(() -> fxUnchecked(() -> ((TextArea) stage.getScene().lookup("#repl-output")).getText().split("⇒ 42", -1).length >= 3));
             fx(() -> {
+                TextArea input = (TextArea) stage.getScene().lookup("#repl-input");
+                input.setText("let uiHistoryMarker = 1");
+                ((Button) stage.getScene().lookup("#evaluate-repl")).fire();
+                return null;
+            });
+            await(() -> fxUnchecked(() -> ((Label) stage.getScene().lookup("#status-label"))
+                    .getText().equals("Ready · REPL revision Evaluate")));
+            fx(() -> {
+                TextArea input = (TextArea) stage.getScene().lookup("#repl-input");
+                input.setText("\\load loaded-ui-history-source.lyra");
+                ((Button) stage.getScene().lookup("#evaluate-repl")).fire();
+                return null;
+            });
+            await(() -> fxUnchecked(() -> ((Label) stage.getScene().lookup("#status-label"))
+                    .getText().equals("Ready · REPL revision Load file")));
+            fx(() -> {
+                TextArea input = (TextArea) stage.getScene().lookup("#repl-input");
+                input.clear(); input.positionCaret(0);
+                input.fireEvent(new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED, "", "",
+                        javafx.scene.input.KeyCode.UP, false, false, false, false));
+                assertEquals("let uiHistoryMarker = 1", input.getText(),
+                        "a remote load command/path must not replace source history");
+                input.setText("\\reset");
+                ((Button) stage.getScene().lookup("#evaluate-repl")).fire();
+                return null;
+            });
+            await(() -> fxUnchecked(() -> ((Label) stage.getScene().lookup("#status-label"))
+                    .getText().equals("Ready · REPL revision Reset")));
+            fx(() -> {
+                TextArea input = (TextArea) stage.getScene().lookup("#repl-input");
+                input.clear(); input.positionCaret(0);
+                input.fireEvent(new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED, "", "",
+                        javafx.scene.input.KeyCode.UP, false, false, false, false));
+                assertEquals("", input.getText(), "successful reset must clear source history");
                 var image = stage.getScene().snapshot(null);
                 var png = new BufferedImage((int) image.getWidth(), (int) image.getHeight(), BufferedImage.TYPE_INT_ARGB);
                 for (int y = 0; y < png.getHeight(); y++) for (int x = 0; x < png.getWidth(); x++) png.setRGB(x, y, image.getPixelReader().getArgb(x, y));

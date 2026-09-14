@@ -1,0 +1,2 @@
+// operators	value	String	-0.0	adjacent bare negative literal preserves negative zero
+let @pub run :Fn<;String> = (=> | | String[-0.0F64])

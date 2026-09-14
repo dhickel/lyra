@@ -5,6 +5,6 @@ let first :Fn<;I32> = (=> | | { probes := (+ probes 10) 4 })
 let second :Fn<;I32> = (=> | | { probes := (+ probes 20) 5 })
 let guard :Fn<;Bool> = (=> | | { probes := (+ probes 100) #T })
 let @pub run :Fn<;I32> = (=> | | {
-    let chosen :I32 = ::match[(subject) ?? (first) -> 1 ?? (second) when (guard) -> 7 ?? _ -> 99]
+    let chosen :I32 = match[(subject) (first) -> 1 (second) when (guard) -> 7 _ -> 99]
     (+ chosen probes)
 })

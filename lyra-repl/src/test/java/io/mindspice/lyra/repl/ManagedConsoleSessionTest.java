@@ -190,7 +190,7 @@ class ManagedConsoleSessionTest {
             assertEquals("PUBLIC", visible.visibility());
             assertFalse(visible.mutable());
 
-            // :type analyzes against committed context without executing or
+            // \\type analyzes against committed context without executing or
             // publishing anything.
             ConsoleSession.Query typed = console.query(ConsoleSession.QueryRequest.type(
                     EvaluationSource.of("console:type", "visible")));
@@ -356,8 +356,8 @@ String bigText = "x".repeat(20 * 1024);
                 + "import std->io io->::readLine[]\n"
                 + "hello-program\n"
                 + "count\n"
-                + ":history\n"
-                + ":quit\n";
+                + "\\history\n"
+                + "\\quit\n";
         ByteArrayInputStream input = new ByteArrayInputStream(
                 script.getBytes(StandardCharsets.UTF_8));
         ByteArrayOutputStream output = new ByteArrayOutputStream();

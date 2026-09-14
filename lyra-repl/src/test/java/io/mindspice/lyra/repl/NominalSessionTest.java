@@ -25,7 +25,7 @@ class NominalSessionTest {
             success(session.submit(EvaluationSource.of(
                     "type-1.lyra", "struct Point { let value :I32 }")));
             success(session.submit(EvaluationSource.of(
-                    "type-2.lyra", "let point :Point = Point[23]")));
+                    "type-2.lyra", "let point :Point = :Point[23]")));
             EvaluationResult.Success result = success(
                     session.submit(EvaluationSource.of("type-3.lyra", "point:.value")));
             assertEquals("23", assertInstanceOf(ValueSnapshot.Scalar.class,
@@ -44,7 +44,7 @@ class NominalSessionTest {
                     }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "factory-2.lyra", "let fresh :Counter = Counter[41]")));
+                    "factory-2.lyra", "let fresh :Counter = :Counter[41]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
                     "factory-3.lyra", "fresh::read[]")));
             assertEquals("41", assertInstanceOf(ValueSnapshot.Scalar.class,
@@ -68,14 +68,14 @@ class NominalSessionTest {
                 new Probe("direct call", "I32", "::inc[1I32]", "box:.value", "I32", "1"),
                 new Probe("array", "Array<I32>", "Array<I32>[1I32]", "box:.value[0I32]", "I32", "1"),
                 new Probe("tuple", "Tuple<I32>", "Tuple[1I32]", "box:.value:.0", "I32", "1"),
-                new Probe("construction", "Nested", "Nested[]", "box:.value:.value", "I32", "1"),
+                new Probe("construction", "Nested", ":Nested[]", "box:.value:.value", "I32", "1"),
                 new Probe("operator", "I32", "(+ 1I32 2I32)", "box:.value", "I32", "3"),
                 new Probe("short circuit", "Bool", "(and #T #F)", "box:.value", "Bool", "false"),
                 new Probe("block/declaration/rebinding", "I32",
                         "{ let @mut local :I32 = 1I32 local := 2I32 local }", "box:.value", "I32", "2"),
                 new Probe("conditional", "I32", "(maybe -> 1I32 : 2I32)", "box:.value", "I32", "2"),
                 new Probe("coalesce", "I32", "(maybe : 1I32)", "box:.value", "I32", "1"),
-                new Probe("match", "I32", "(match 1I32 ?? 1I32 -> 1I32 ?? _ -> 2I32)",
+                new Probe("match", "I32", "(match 1I32 1I32 -> 1I32 _ -> 2I32)",
                         "box:.value", "I32", "1"),
                 new Probe("array index", "I32", "Array<I32>[1I32][0I32]", "box:.value", "I32", "1"),
                 new Probe("string index", "Char", "\"x\"[0I32]", "box:.value", "Char", "x"),
@@ -105,7 +105,7 @@ class NominalSessionTest {
                         }
                         """.formatted(probe.type(), probe.initializer()))));
                 success(session.submit(EvaluationSource.of(
-                        "inventory-construction.lyra", "let box :C = C[]")));
+                        "inventory-construction.lyra", "let box :C = :C[]")));
                 EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
                         "inventory-observation.lyra", probe.expression())));
                 assertEquals(probe.expectedType(), result.value().orElseThrow().canonicalType());
@@ -133,9 +133,9 @@ class NominalSessionTest {
                         "box::value[\"member\"]", ""),
                 new Probe("namespace direct call", "Unit", "io->::println[\"\"]",
                         "box:.value", "\n"),
-                new Probe("iter", "Unit", "::iter[(0I32..2I32:1I32) || ()]",
+                new Probe("iter", "Unit", "iter[(0I32..2I32:1I32) || ()]",
                         "box:.value", ""),
-                new Probe("while", "Unit", "::while[|| #F || ()]",
+                new Probe("while", "Unit", "while[|| #F || ()]",
                         "box:.value", ""));
         return probes.stream().map(probe -> DynamicTest.dynamicTest(probe.name(), () -> {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -148,7 +148,7 @@ class NominalSessionTest {
                         """.formatted(probe.type(), probe.initializer()))));
                 assertEquals("", output.toString(StandardCharsets.UTF_8));
                 success(session.submit(EvaluationSource.of(
-                        "unit-inventory-construction.lyra", "let box :C = C[]")));
+                        "unit-inventory-construction.lyra", "let box :C = :C[]")));
                 assertEquals(probe.constructionOutput(), output.toString(StandardCharsets.UTF_8));
                 EvaluationResult observation = session.submit(EvaluationSource.of(
                         "unit-inventory-observation.lyra", probe.expression()));
@@ -167,7 +167,7 @@ class NominalSessionTest {
             success(session.submit(EvaluationSource.of("mixed-tuple-producer.lyra", """
                     class C { let @pub x :Tuple<I32,Fn<;I32>> = Tuple[1 (=> || 2)] }
                     """)));
-            success(session.submit(EvaluationSource.of("mixed-tuple-construction.lyra", "let box :C = C[]")));
+            success(session.submit(EvaluationSource.of("mixed-tuple-construction.lyra", "let box :C = :C[]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
                     "mixed-tuple-observation.lyra", """
                     let observed :Tuple<I32,I32> = Tuple[box:.x:.0 (box:.x:.1)]
@@ -200,7 +200,7 @@ class NominalSessionTest {
                     }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "nilable-index-construction.lyra", "let box :C = C[]")));
+                    "nilable-index-construction.lyra", "let box :C = :C[]")));
             EvaluationResult.Success picked = success(session.submit(EvaluationSource.of(
                     "nilable-index-picked.lyra", "box:.picked")));
             assertEquals("1", assertInstanceOf(ValueSnapshot.Scalar.class,
@@ -230,10 +230,10 @@ class NominalSessionTest {
                         let @pub tuple :Tuple<I32,I32> = Tuple[1I32, ::inc[2I32]]
                         let @pub branch :I32 = (#T -> ::inc[3I32] : 0I32)
                         let @pub block :I32 = { let @mut local :I32 = 1I32 local := ::inc[local] local }
-                        let @pub nested :Inner = Inner[]
+                        let @pub nested :Inner = :Inner[]
                     }
                     """)));
-            success(session.submit(EvaluationSource.of("algebra-2.lyra", "let value :Defaults = Defaults[]")));
+            success(session.submit(EvaluationSource.of("algebra-2.lyra", "let value :Defaults = :Defaults[]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of("algebra-3.lyra", """
                     (+ (* value:.op 1000000I32) (* value:.converted 100000I32)
                        (* value:.index 10000I32) (* value:.tuple:.1 1000I32)
@@ -261,13 +261,13 @@ class NominalSessionTest {
                             selected := Array<I32>[8I32]
                             selected
                         }
-                        let @pub nested :Inner = Inner[Array<I32>[9I32]]
+                        let @pub nested :Inner = :Inner[Array<I32>[9I32]]
                         let @pub choice :Bool = (or candidate #F)
-                        let @pub looped :Unit = ::while[|| #F || ()]
+                        let @pub looped :Unit = while[|| #F || ()]
                     }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "typed-children-2.lyra", "let value :TypedDefaults = TypedDefaults[]")));
+                    "typed-children-2.lyra", "let value :TypedDefaults = :TypedDefaults[]")));
             assertScalar("7", success(session.submit(EvaluationSource.of(
                     "typed-children-3.lyra", "value::callable[]"))));
             assertScalar("8", success(session.submit(EvaluationSource.of(
@@ -290,7 +290,7 @@ class NominalSessionTest {
                     class CounterFactory { let @pub read :Fn<;I32> = ::make[] }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "local-cell-2.lyra", "let value :CounterFactory = CounterFactory[]")));
+                    "local-cell-2.lyra", "let value :CounterFactory = :CounterFactory[]")));
             assertScalar("12", success(session.submit(EvaluationSource.of(
                     "local-cell-3.lyra", "value::read[]"))));
         }
@@ -307,8 +307,8 @@ class NominalSessionTest {
                     class Counter { let @pub operations :Tuple<Fn<;I32>,Fn<;Unit>> = ::make[] }
                     """)));
             success(session.submit(EvaluationSource.of("two-cells-2.lyra", """
-                    let first :Counter = Counter[]
-                    let second :Counter = Counter[]
+                    let first :Counter = :Counter[]
+                    let second :Counter = :Counter[]
                     """)));
             success(session.submit(EvaluationSource.of(
                     "two-cells-3.lyra", "(first:.operations:.1)")));
@@ -327,12 +327,12 @@ class NominalSessionTest {
                     class Choice {
                         let @pub narrowed :I32 = (maybe present -> present : 0I32)
                         let @pub matched :I32 = (match 0I32
-                            ?? { selected := Array<I32>[9I32] 1I32 } -> 0I32
-                            ?? _ -> selected[0I32])
+                            { selected := Array<I32>[9I32] 1I32 } -> 0I32
+                            _ -> selected[0I32])
                     }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "alternative-scope-2.lyra", "let value :Choice = Choice[]")));
+                    "alternative-scope-2.lyra", "let value :Choice = :Choice[]")));
             assertScalar("4", success(session.submit(EvaluationSource.of(
                     "alternative-scope-3.lyra", "value:.narrowed"))));
             assertScalar("9", success(session.submit(EvaluationSource.of(
@@ -347,7 +347,7 @@ class NominalSessionTest {
                     let apply :Fn<Fn<;I32>;I32> = (=> |callable| (callable))
                     class Box { let @pub value :I32 = ::apply[(=> || 31I32)] }
                     """)));
-            success(session.submit(EvaluationSource.of("nested-lambda-2.lyra", "let box :Box = Box[]")));
+            success(session.submit(EvaluationSource.of("nested-lambda-2.lyra", "let box :Box = :Box[]")));
             assertScalar("31", success(session.submit(EvaluationSource.of(
                     "nested-lambda-3.lyra", "box:.value"))));
         }
@@ -360,7 +360,7 @@ class NominalSessionTest {
                     let selected :Fn<;I32> = (=> || 32I32)
                     class Box { let @pub value :I32 = (selected) }
                     """)));
-            success(session.submit(EvaluationSource.of("callable-value-2.lyra", "let box :Box = Box[]")));
+            success(session.submit(EvaluationSource.of("callable-value-2.lyra", "let box :Box = :Box[]")));
             assertScalar("32", success(session.submit(EvaluationSource.of(
                     "callable-value-3.lyra", "box:.value"))));
         }
@@ -375,7 +375,7 @@ class NominalSessionTest {
                     """)));
             success(session.submit(EvaluationSource.of("shadow-2.lyra",
                     "let source :Fn<;I32> = (=> || 99I32)")));
-            success(session.submit(EvaluationSource.of("shadow-3.lyra", "let box :Box = Box[]")));
+            success(session.submit(EvaluationSource.of("shadow-3.lyra", "let box :Box = :Box[]")));
             assertScalar("41", success(session.submit(EvaluationSource.of(
                     "shadow-4.lyra", "box:.value"))));
         }
@@ -386,7 +386,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("slot-1.lyra", """
                     class Counter { let @pub @mut read :Fn<;I32> = (=> || 1I32) }
-                    let @mut counter :Counter = Counter[]
+                    let @mut counter :Counter = :Counter[]
                     let saved :Fn<;I32> = counter:.read
                     class Box {
                         let @pub current :I32 = counter::read[]
@@ -395,7 +395,7 @@ class NominalSessionTest {
                     """)));
             success(session.submit(EvaluationSource.of("slot-2.lyra",
                     "counter:.read := (=> || 7I32)")));
-            success(session.submit(EvaluationSource.of("slot-3.lyra", "let box :Box = Box[]")));
+            success(session.submit(EvaluationSource.of("slot-3.lyra", "let box :Box = :Box[]")));
             assertScalar("71", success(session.submit(EvaluationSource.of(
                     "slot-4.lyra", "(+ (* box:.current 10I32) box:.original)"))));
         }
@@ -410,7 +410,7 @@ class NominalSessionTest {
                         let @pub tuple :Tuple<Fn<;I32>,Fn<;I32>> = Tuple[(=> || 6I32) (=> || 7I32)]
                     }
                     """)));
-            success(session.submit(EvaluationSource.of("callable-routes-2.lyra", "let routes :Routes = Routes[]")));
+            success(session.submit(EvaluationSource.of("callable-routes-2.lyra", "let routes :Routes = :Routes[]")));
             assertScalar("18", success(session.submit(EvaluationSource.of(
                     "callable-routes-3.lyra", "(+ (+ (routes:.array[0I32]) (routes:.tuple:.0)) (routes:.tuple:.1))"))));
         }
@@ -427,19 +427,19 @@ class NominalSessionTest {
                 class Choices {
                     let @pub conditional :I32 = (#T -> 7I32 : { writes := 99I32 0I32 })
                     let @pub coalesced :I32 = (maybe : { writes := 99I32 0I32 })
-                    let @pub matched :I32 = (match 1I32 ?? 1I32 -> 7I32 ?? _ -> { writes := 99I32 0I32 })
+                    let @pub matched :I32 = (match 1I32 1I32 -> 7I32 _ -> { writes := 99I32 0I32 })
                 }
                 """;
         try (LyraSession retained = LyraSession.open(options); LyraSession ordinary = LyraSession.open(options)) {
             success(retained.submit(EvaluationSource.of("lazy-retained-1.lyra", definitions)));
             assertScalar("777", success(retained.submit(EvaluationSource.of("lazy-retained-2.lyra", """
-                    let choices :Choices = Choices[]
+                    let choices :Choices = :Choices[]
                     (+ (* (+ (* choices:.conditional 10I32) choices:.coalesced) 10I32) choices:.matched)
                     """))));
             assertScalar("0", success(retained.submit(EvaluationSource.of("lazy-retained-3.lyra", "writes"))));
 
             assertScalar("777", success(ordinary.submit(EvaluationSource.of("lazy-ordinary.lyra", definitions + """
-                    let choices :Choices = Choices[]
+                    let choices :Choices = :Choices[]
                     (+ (* (+ (* choices:.conditional 10I32) choices:.coalesced) 10I32) choices:.matched)
                     """))));
             assertScalar("0", success(ordinary.submit(EvaluationSource.of("lazy-ordinary-writes.lyra", "writes"))));
@@ -454,7 +454,7 @@ class NominalSessionTest {
                     class Bag { let @pub values :Array<I32> = Array<I32>[1 2] }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "aggregate-factory-2.lyra", "let bag :Bag = Bag[]")));
+                    "aggregate-factory-2.lyra", "let bag :Bag = :Bag[]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
                     "aggregate-factory-3.lyra", "bag:.values[1]")));
             assertEquals("2", assertInstanceOf(ValueSnapshot.Scalar.class,
@@ -469,7 +469,7 @@ class NominalSessionTest {
                     class Bag { let @pub values :Tuple<Array<I32>,I32> = Tuple[Array<I32>[3 4] 5] }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "nested-aggregate-factory-2.lyra", "let bag :Bag = Bag[]")));
+                    "nested-aggregate-factory-2.lyra", "let bag :Bag = :Bag[]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
                     "nested-aggregate-factory-3.lyra", "bag:.values:.0[1]")));
             assertEquals("4", assertInstanceOf(ValueSnapshot.Scalar.class,
@@ -487,7 +487,7 @@ class NominalSessionTest {
                     }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "aggregate-alias-factory-2.lyra", "let bag :Bag = Bag[]")));
+                    "aggregate-alias-factory-2.lyra", "let bag :Bag = :Bag[]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
                     "aggregate-alias-factory-3.lyra", "bag:.alias[1]")));
             assertEquals("9", assertInstanceOf(ValueSnapshot.Scalar.class,
@@ -503,7 +503,7 @@ class NominalSessionTest {
                     class Bag { let @pub values :Array<I32> = ::make[] }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "aggregate-call-factory-2.lyra", "let bag :Bag = Bag[]")));
+                    "aggregate-call-factory-2.lyra", "let bag :Bag = :Bag[]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
                     "aggregate-call-factory-3.lyra", "bag:.values[1]")));
             assertEquals("11", assertInstanceOf(ValueSnapshot.Scalar.class,
@@ -519,7 +519,7 @@ class NominalSessionTest {
                     class Box { let @pub read :Fn<;I32> = ::make[] }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "callable-call-factory-2.lyra", "let box :Box = Box[]")));
+                    "callable-call-factory-2.lyra", "let box :Box = :Box[]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
                     "callable-call-factory-3.lyra", "box::read[]")));
             assertEquals("14", assertInstanceOf(ValueSnapshot.Scalar.class,
@@ -532,11 +532,11 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("nested-construction-1.lyra", """
                     class Inner { let @pub value :I32 = 7 }
-                    let make :Fn<;Inner> = (=> || Inner[])
+                    let make :Fn<;Inner> = (=> || :Inner[])
                     class Outer { let @pub inner :Inner = ::make[] }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "nested-construction-2.lyra", "let outer :Outer = Outer[]")));
+                    "nested-construction-2.lyra", "let outer :Outer = :Outer[]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
                     "nested-construction-3.lyra", "outer:.inner:.value")));
             assertEquals("7", assertInstanceOf(ValueSnapshot.Scalar.class,
@@ -555,7 +555,7 @@ class NominalSessionTest {
                     class Printer { let @pub print :Fn<String;Unit> = io->:.println }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "intrinsic-member-2.lyra", "let printer :Printer = Printer[]")));
+                    "intrinsic-member-2.lyra", "let printer :Printer = :Printer[]")));
             assertEquals("", output.toString(StandardCharsets.UTF_8));
         }
     }
@@ -574,7 +574,7 @@ class NominalSessionTest {
                     class Printer { let @pub printed :Unit = io->::println["retained"] }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "intrinsic-default-2.lyra", "let printer :Printer = Printer[]")));
+                    "intrinsic-default-2.lyra", "let printer :Printer = :Printer[]")));
             assertEquals("retained\n", output.toString(StandardCharsets.UTF_8));
         }
     }
@@ -585,7 +585,7 @@ class NominalSessionTest {
             success(session.submit(EvaluationSource.of(
                     "nil-default-1.lyra", "class Maybe { let @pub @nil value :I32 = #NIL }")));
             success(session.submit(EvaluationSource.of(
-                    "nil-default-2.lyra", "let maybe :Maybe = Maybe[]")));
+                    "nil-default-2.lyra", "let maybe :Maybe = :Maybe[]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
                     "nil-default-3.lyra", "maybe:.value")));
             assertInstanceOf(ValueSnapshot.Nil.class,
@@ -603,7 +603,7 @@ class NominalSessionTest {
             EvaluationResult.CompilationFailure failure = assertInstanceOf(
                     EvaluationResult.CompilationFailure.class,
                     session.submit(EvaluationSource.of("foreign-default-2.lyra", """
-                            let @mut bag :Bag = Bag[]
+                            let @mut bag :Bag = :Bag[]
                             bag:.values[0] := 3
                             """)));
 
@@ -622,7 +622,7 @@ class NominalSessionTest {
                     }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "constructor-aggregate-2.lyra", "let bag :Bag = Bag[Array<I32>[6 7]]")));
+                    "constructor-aggregate-2.lyra", "let bag :Bag = :Bag[Array<I32>[6 7]]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
                     "constructor-aggregate-3.lyra", "bag:.values[1]")));
             assertEquals("7", assertInstanceOf(ValueSnapshot.Scalar.class,
@@ -638,7 +638,7 @@ class NominalSessionTest {
                     class Box { Box = (=> || { selected := (=> || 12) }) }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "constructor-effect-2.lyra", "let box :Box = Box[]")));
+                    "constructor-effect-2.lyra", "let box :Box = :Box[]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
                     "constructor-effect-3.lyra", "::selected[]")));
             assertEquals("12", assertInstanceOf(ValueSnapshot.Scalar.class,
@@ -663,12 +663,12 @@ class NominalSessionTest {
                             self:.captured := (=> || value)
                             self:.returned := ::make[value]
                             self:.nested:.0[1] := ::record[9]
-                            self:.built := Inner[]
+                            self:.built := :Inner[]
                         })
                     }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "constructor-compositions-2.lyra", "let box :Box = Box[41]")));
+                    "constructor-compositions-2.lyra", "let box :Box = :Box[41]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
                     "constructor-compositions-3.lyra", """
                     let observed :Tuple<I32,I32,I32,I32,I32> =
@@ -694,21 +694,21 @@ class NominalSessionTest {
                     }
                     class Leaf {
                         let @pub deep :Deep
-                        Leaf = (=> |value :I32| { self:.deep := Deep[value] })
+                        Leaf = (=> |value :I32| { self:.deep := :Deep[value] })
                     }
                     class Middle {
                         let @pub leaf :Leaf
-                        Middle = (=> |value :I32| { self:.leaf := Leaf[value] })
+                        Middle = (=> |value :I32| { self:.leaf := :Leaf[value] })
                     }
                     class Outer {
                         let @pub middle :Middle
-                        Outer = (=> || { self:.middle := Middle[7] })
+                        Outer = (=> || { self:.middle := :Middle[7] })
                     }
-                    let producerOuter :Outer = Outer[]
+                    let producerOuter :Outer = :Outer[]
                     """)));
             success(session.submit(EvaluationSource.of(
                     "nested-constructor-contexts-2.lyra",
-                    "let retainedOuter :Outer = Outer[]")));
+                    "let retainedOuter :Outer = :Outer[]")));
             EvaluationResult.Success observed = success(session.submit(EvaluationSource.of(
                     "nested-constructor-contexts-3.lyra", """
                     let result :Tuple<I32,I32> =
@@ -746,8 +746,8 @@ class NominalSessionTest {
                     }
                     """)));
             success(session.submit(EvaluationSource.of("constructor-order-2.lyra", """
-                    let ordered :Ordered = Ordered[::mark[1], ::mark[2]]
-                    let sequence :Sequence = Sequence[::mark[6]]
+                    let ordered :Ordered = :Ordered[(::mark[1]) (::mark[2])]
+                    let sequence :Sequence = :Sequence[::mark[6]]
                     """)));
             assertScalar("1234567", success(session.submit(EvaluationSource.of(
                     "constructor-order-3.lyra", "order"))));
@@ -771,17 +771,17 @@ class NominalSessionTest {
                             defaultEffects
                         }
                     }
-                    let sameSubmission :Once = Once[]
+                    let sameSubmission :Once = :Once[]
                     """)));
             assertScalar("13", success(session.submit(EvaluationSource.of(
                     "constructor-once-2.lyra", """
-                    let first :Once = Once[]
-                    let second :Once = Once[]
+                    let first :Once = :Once[]
+                    let second :Once = :Once[]
                     (+ (* rootEffects 10) defaultEffects)
                     """))));
             assertScalar("14", success(session.submit(EvaluationSource.of(
                     "constructor-once-3.lyra", """
-                    let third :Once = Once[]
+                    let third :Once = :Once[]
                     (+ (* rootEffects 10) defaultEffects)
                     """))));
         }
@@ -831,7 +831,7 @@ class NominalSessionTest {
                     EvaluationResult.RuntimeFailure.class,
                     session.submit(EvaluationSource.of("constructor-argument-failure.lyra", """
                             let stagedArgument :ArgumentFailure =
-                                ArgumentFailure[::touch[4] (% 1 divisor)]
+                                :ArgumentFailure[::touch[4] (% 1 divisor)]
                             """)));
             assertEquals("LYR-ARITH", argumentFailure.code());
             assertTrue(argumentFailure.frames().stream().anyMatch(frame ->
@@ -847,7 +847,7 @@ class NominalSessionTest {
             EvaluationResult.RuntimeFailure defaultFailure = assertInstanceOf(
                     EvaluationResult.RuntimeFailure.class,
                     session.submit(EvaluationSource.of("constructor-default-failure.lyra",
-                            "let stagedDefault :DefaultFailure = DefaultFailure[]")));
+                            "let stagedDefault :DefaultFailure = :DefaultFailure[]")));
             assertEquals("LYR-ARITH", defaultFailure.code());
             assertProducerFrame(defaultFailure, producerSource,
                     "(% 8 divisor)", 13, 28);
@@ -860,7 +860,7 @@ class NominalSessionTest {
             EvaluationResult.RuntimeFailure constructorFailure = assertInstanceOf(
                     EvaluationResult.RuntimeFailure.class,
                     session.submit(EvaluationSource.of("constructor-body-failure.lyra",
-                            "let stagedConstructor :ConstructorFailure = ConstructorFailure[]")));
+                            "let stagedConstructor :ConstructorFailure = :ConstructorFailure[]")));
             assertEquals("LYR-ARITH", constructorFailure.code());
             assertProducerFrame(constructorFailure, producerSource,
                     "(% 9 divisor)", 19, 28);
@@ -872,9 +872,9 @@ class NominalSessionTest {
 
             success(session.submit(EvaluationSource.of("constructor-recovery.lyra", """
                     divisor := 1
-                    let stagedArgument :ArgumentFailure = ArgumentFailure[5 6]
-                    let stagedDefault :DefaultFailure = DefaultFailure[]
-                    let stagedConstructor :ConstructorFailure = ConstructorFailure[]
+                    let stagedArgument :ArgumentFailure = :ArgumentFailure[5 6]
+                    let stagedDefault :DefaultFailure = :DefaultFailure[]
+                    let stagedConstructor :ConstructorFailure = :ConstructorFailure[]
                     """)));
             assertScalar("4123123", success(session.submit(EvaluationSource.of(
                     "constructor-recovery-observe.lyra", "effects"))));
@@ -899,7 +899,7 @@ class NominalSessionTest {
                         let @pub parameterValue :Array<I32> = ::parameter[]
                         let @pub capturedValue :Array<I32> = ::captured[]
                     }
-                    let outer :Outer = Outer[]
+                    let outer :Outer = :Outer[]
                     """)));
             assertScalar("3", success(session.submit(EvaluationSource.of(
                     "wrapper-allocation-3.lyra", """
@@ -917,11 +917,11 @@ class NominalSessionTest {
                     class C { let @pub value :I32 = (selected) }
                     """)));
             assertScalar("1", success(session.submit(EvaluationSource.of(
-                    "mutable-callable-default-2.lyra", "let first :C = C[] first:.value"))));
+                    "mutable-callable-default-2.lyra", "let first :C = :C[] first:.value"))));
             assertScalar("9", success(session.submit(EvaluationSource.of(
                     "mutable-callable-default-3.lyra", """
                             selected := (=> || 9I32)
-                            let second :C = C[]
+                            let second :C = :C[]
                             second:.value
                             """))));
         }
@@ -936,7 +936,7 @@ class NominalSessionTest {
             success(session.submit(EvaluationSource.of("nested-returned-callable-2.lyra", """
                     let wrapper :Fn<;Fn<;I32>> = (=> || ::make[])
                     class Box { let @pub read :Fn<;I32> = ::wrapper[] }
-                    let box :Box = Box[]
+                    let box :Box = :Box[]
                     """)));
             assertScalar("14", success(session.submit(EvaluationSource.of(
                     "nested-returned-callable-3.lyra", "box::read[]"))));
@@ -952,7 +952,7 @@ class NominalSessionTest {
                                 let @pub @mut value :I32 = 1
                                 let @pub @mut read :Fn<;I32> = (=> || self:.value)
                             }
-                            let @mut counter :Counter = Counter[]
+                            let @mut counter :Counter = :Counter[]
                             let saved :Fn<;I32> = counter:.read
                             """)));
 
@@ -976,7 +976,7 @@ class NominalSessionTest {
     void nominalSnapshotsExposeStructDataButNotPrivateClassState() {
         try (LyraSession session = LyraSession.open()) {
             EvaluationResult.Success structResult = success(session.submit(EvaluationSource.of(
-                    "snapshot-struct.lyra", "struct Pair { let left :I32 let right :I32 } Pair[2 3]")));
+                    "snapshot-struct.lyra", "struct Pair { let left :I32 let right :I32 } :Pair[2 3]")));
             ValueSnapshot.Aggregate struct = assertInstanceOf(ValueSnapshot.Aggregate.class,
                     structResult.value().orElseThrow().data());
             assertEquals(AggregateKind.STRUCT, struct.kind());
@@ -986,7 +986,7 @@ class NominalSessionTest {
                     .map(ValueSnapshot.Scalar::value).toList());
 
             EvaluationResult.Success classResult = success(session.submit(EvaluationSource.of(
-                    "snapshot-class.lyra", "class Secret { let value :I32 = 9 } Secret[]")));
+                    "snapshot-class.lyra", "class Secret { let value :I32 = 9 } :Secret[]")));
             ValueSnapshot.Aggregate clazz = assertInstanceOf(ValueSnapshot.Aggregate.class,
                     classResult.value().orElseThrow().data());
             assertEquals(AggregateKind.CLASS, clazz.kind());

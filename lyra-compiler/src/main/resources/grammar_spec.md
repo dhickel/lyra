@@ -12,7 +12,9 @@ The grammar uses the following conventions:
 * Whitespace and comments may occur between tokens except where the lexical
   annotation rule below says otherwise.
 * A comma is optional between items only in the lists explicitly marked
-  `comma-list`.  Leading, trailing, and repeated commas are invalid.
+  `comma-list`, and between sibling forms of a module/block sequence or
+  marker-free match/cond arm sequence when the following sibling begins with
+  `::`.  Leading, trailing, and repeated commas are invalid.
 * All listed delimiters are required and balanced.
 * The matcher emits replay descriptors for these productions; it does not
   construct an AST or resolve a name.
@@ -27,25 +29,31 @@ type-name        ::= I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64
 modifier         ::= '@pub' | '@mut' | '@nil' ;
 literal          ::= '#T' | '#F' | '#NIL' | integer | decimal
                    | string | character ;
+negative-literal ::= adjacent '-' (integer | decimal) ;
 match-keyword    ::= 'match' ;
+cond-keyword     ::= 'cond' ;
 guard-keyword    ::= 'when' ;
-match-arm-marker ::= '??' ;
 operator         ::= '+' | '-' | '*' | '/' | '^' | '%'
                    | '<' | '<=' | '>' | '>=' | '==' | '!='
                    | 'eq?' | '!eq?' | 'and' | 'or' | 'xor' | 'not'
                    | '++' | '--' ;
 ```
 
-`+` and `-` signs are operators, not part of numeric literals.  A named
-annotation is exactly `name :Type`: whitespace is required before `:` and
-forbidden after it.  A return annotation has no name before its colon and is
-written `:Type`; whitespace remains forbidden after the colon.
+`+` and `-` signs are operators, not part of numeric literal magnitudes, except
+that a `-` written immediately adjacent to a numeric literal in an expression
+position is a bare negative literal normalized to the unary-minus operation.
+`match` and `cond` are reserved.  A named annotation is exactly `name :Type`:
+whitespace is required before `:` and forbidden after it.  A return annotation
+has no name before its colon and is written `:Type`; whitespace remains forbidden
+after the colon.  An explicit construction `:Type[...]` likewise forbids
+whitespace after its colon.
 
 ## Compilation units and imports
 
 ```ebnf
 program            ::= import-declaration* (nominal-declaration | form)* EOF ;
 form               ::= let-binding | reassignment | expression ;
+sibling-separator  ::= ε | ','   (* only before a sibling beginning with '::' *) ;
 
 import-declaration ::= 'import' ['@pub'] import-path
                        [ 'as' identifier
@@ -58,7 +66,7 @@ Imports must form the initial header.  `@pub` is accepted only on the
 selective-import alternative.  A selective import has at least one item.
 The grammar does not decide whether a module, export, alias, or member exists.
 
-## Nominal declarations (syntax implemented; execution incomplete)
+## Nominal declarations
 
 ```ebnf
 nominal-declaration ::= 'struct' ['@pub'] capitalized-identifier
@@ -74,9 +82,9 @@ named-type          ::= identifier ('->' identifier)* ;
 require explicit types; ordinary let bindings still require initializers. A class
 has at most one same-name constructor. Structs have none. Constructor parameter/
 return contracts, member uniqueness, privacy, data-only restrictions and definite
-initialization belong to semantics. Initial declaration/member resolution exists;
-complete initialization/flow, typed IR, JVM and session execution remain in progress.
-Syntax or resolver success is not an executable feature claim.
+initialization belong to semantics. Resolution, initialization/flow certification,
+typed IR, JVM emission and persistent-session execution are implemented in their
+own phases; this grammar remains only their syntax input.
 
 ## Bindings, assignment, blocks, and lambdas
 
@@ -108,6 +116,7 @@ annotation range but does not infer that contract.
 ```ebnf
 expression         ::= atom postfix* ;
 atom              ::= literal
+                     | negative-literal
                      | identifier
                      | parenthesized-expression
                      | block
@@ -117,14 +126,17 @@ atom              ::= literal
                      | iter-bracket
                      | while-bracket
                      | operator-bracket
+                     | explicit-construction
                      | typed-expression ;
 
 parenthesized-expression
                    ::= '('
                      ( ')'
                      | 'match' match-content ')'
+                     | 'cond' cond-content ')'
                      | 'iter' expression-list ')'
                      | 'while' expression-list ')'
+                     | '::' identifier argument-list ')'
                      | '=>' return-modifier* [return-annotation]
                        parameter-list expression ')'
                      | ':=' expression expression ')'
@@ -153,8 +165,11 @@ item in an `argument-list` or `expression-list` ends in an ordinary direct call
 and the next item begins with `::`, the `::` is otherwise parsed as a postfix
 receiver call on the preceding item. Such adjacent direct-call items require the
 optional comma to become explicit, for example `(+ ::left[], ::right[])` or
-`+[::left[], ::right[]]`. Parentheses do not group expressions; `(::left[])`
-would instead call the value returned by `left`.
+`+[::left[], ::right[]]`. The same narrow separator is accepted between sibling
+forms of a `program`/`block` sequence and between marker-free `match`/`cond` arms
+when, and only when, the following sibling begins with `::`. Parentheses are not
+general expression grouping, but the exact parenthesized direct call
+`(::left[])` preserves that direct call instead of applying its result.
 
 The conditional alternatives are, in source notation,
 `(predicate -> then : else)` and `(predicate -> then)`, with an optional
@@ -168,42 +183,46 @@ equality, identity, `and`, `or`, and `xor` have at least two operands; `-` and
 `/` have at least one; `%` and `^` have exactly two; and `not`, `++`, and `--`
 have exactly one.  Their operand types and all member legality are semantic.
 
-## Match expressions
+## Match and conditional expressions
 
 ```ebnf
-match-bracket      ::= '::' 'match' '[' match-content ']' ;
-iter-bracket       ::= '::' 'iter' '[' expression-list ']' ;
-while-bracket      ::= '::' 'while' '[' expression-list ']' ;
-match-content      ::= value-match | conditional-match ;
-value-match        ::= expression value-arm* fallback-arm ;
-conditional-match  ::= '_' condition-arm* fallback-arm ;
-value-arm          ::= '??' expression ['when' expression] '->' expression
-                     | '??' '_' 'when' expression '->' expression ;
-condition-arm      ::= '??' expression '->' expression ;
-fallback-arm       ::= '??' '_' '->' expression ;
+match-bracket      ::= 'match' '[' match-content ']' ;
+cond-form          ::= '(' 'cond' cond-content ')' ;
+iter-bracket       ::= 'iter' '[' expression-list ']' ;
+while-bracket      ::= 'while' '[' expression-list ']' ;
+match-content      ::= expression match-arm* fallback-arm ;
+cond-content       ::= cond-arm* fallback-arm ;
+match-arm          ::= arm-head ['when' expression] '->' expression ;
+arm-head           ::= expression | '_' ;
+cond-arm           ::= expression '->' expression ;
+fallback-arm       ::= '_' '->' expression ;
 ```
 
-`iter`, `while`, `match` and `when` are reserved words, not user identifiers.
-`iter` and `while` are accepted only as unqualified call targets. Iter requires
-a range and a callback; while requires a `Fn<;Bool>` predicate and a `Fn<;Unit>`
-action. Arity and types belong to semantic checking. `::iter` and `::while` begin
-fresh expressions, never receiver suffixes. Callback-loop execution remains
-under implementation.
-The exact `_` in the
-subject position selects conditional mode; the exact `_` in a pattern/condition
-position selects the wildcard alternative rather than an identifier expression.
-Other occurrences of `_` remain ordinary identifiers. These contextual exclusions
-apply to the `expression` alternatives above.
+The obsolete `::match[...]`, `::iter[...]` and `::while[...]` bracket spellings,
+the obsolete `??` arm marker, and the obsolete conditional `(match _ ...)` form
+are rejected with structured source-mapped diagnostics. Arms may be separated by
+a comma only when the following arm begins with `::`.
 
-Every match requires a final unguarded wildcard; it may be the only arm. No arm may
-follow it. Conditional mode does not allow `when`. Arms are not comma-separated.
-Traditional patterns may be arbitrary value expressions; later semantic phases
+`iter`, `while`, `match`, `cond` and `when` are reserved words, not user
+identifiers. `iter` and `while` are accepted only as unqualified call targets.
+Iter requires a range and a callback; while requires a `Fn<;Bool>` predicate and a
+`Fn<;Unit>` action. Arity and types belong to semantic checking. Every `iter`
+and `while` spelling begins a fresh expression. The exact `_` in a
+pattern/condition position selects the wildcard alternative rather than an
+identifier expression; other occurrences of `_` remain ordinary identifiers.
+These contextual exclusions apply to the `expression` alternatives above.
+
+Every match requires a real subject and a final unguarded wildcard fallback; the
+fallback may be the only arm, and no arm may follow it. `cond` has no subject, no
+`when`, and the same mandatory unconditional fallback. Arms are whitespace
+separated. Patterns may be arbitrary value expressions; later semantic phases
 check typed equality compatibility, guard/condition truthiness, and result type
 unification. No arm bindings, type patterns, or destructuring are provided.
 
-The parenthesized and bracketed forms produce the same match structure. They are
-special forms, not ordinary eager calls. The matcher preserves each arm's pattern,
-optional guard, result, wildcard role, separators, and source spans.
+The parenthesized and bracketed match forms produce the same match structure, and
+`cond` shares their lazy arm structure without a subject. All are special forms,
+not ordinary eager calls. The matcher preserves each arm's pattern, optional
+guard, result, wildcard role, arrow, and source spans.
 
 ## Arrays, tuples, conversions, and types
 
@@ -242,9 +261,19 @@ contract; `@pub` is not a nested contract modifier.
 
 Unary postfix brackets retain an index-shaped syntax node until type/value
 resolution; zero/multiple arguments retain a bracket-application node. Capitalization
-does not distinguish construction from indexing. Qualified construction uses the
-existing namespace value accessor, e.g. `model->:.Counter[0]`, while a named type
-annotation uses `:model->Counter`. Unknown type names are resolution failures.
+does not distinguish construction from indexing. Nominal construction is explicit
+and separately produced:
+
+```ebnf
+explicit-construction ::= ':' named-type argument-list ;
+```
+
+An explicit construction is the only nominal-construction spelling; the obsolete
+unprefixed `Type[args]` and qualified `model->:.Counter[0]` forms are rejected when
+their bracket target resolves to a nominal type, while primitive/`String`
+conversions and `Array`/`Tuple` literals keep their unprefixed spelling. A named
+type annotation uses `:model->Counter`. Unknown type names are resolution
+failures.
 
 ## Excluded syntax
 

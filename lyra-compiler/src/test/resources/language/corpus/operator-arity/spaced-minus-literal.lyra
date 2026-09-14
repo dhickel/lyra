@@ -1,0 +1,2 @@
+// operator-arity	reject	-	LYC-PARSE-003	a trivia-separated '-' is still the bracket-required operator
+let @pub run :Fn<;I32> = (=> | | - 1)

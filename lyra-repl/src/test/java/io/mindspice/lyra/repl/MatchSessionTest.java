@@ -12,8 +12,8 @@ class MatchSessionTest {
                     let @mut count :I32 = 0
                     let choose :Fn<Bool;Fn<;I32>> = (=> |enabled|
                       (match enabled
-                        ?? #T -> (=> || { count := (+ count 1) count })
-                        ?? _ -> (=> || count)))
+                        #T -> (=> || { count := (+ count 1) count })
+                        _ -> (=> || count)))
                     """);
             success(session, "let next :Fn<;I32> = (choose #T)");
             assertEquals("1", scalar(session, "(next)"));
@@ -30,18 +30,18 @@ class MatchSessionTest {
         try (var session = LyraSession.open()) {
             success(session, "let @mut count :I32 = 0 let zero :I32 = 0");
             assertEquals("7", scalar(session, """
-                    ::match[_
-                      ?? { count := (+ count 1) #F } -> (% 1 zero)
-                      ?? { count := (+ count 1) #T } -> 7I32
-                      ?? { count := 99 #T } -> 8I32
-                      ?? _ -> 9I32]
+                    (cond
+                      { count := (+ count 1) #F } -> (% 1 zero)
+                      { count := (+ count 1) #T } -> 7I32
+                      { count := 99 #T } -> 8I32
+                      _ -> 9I32)
                     """));
             assertEquals("2", scalar(session, "count"));
             var before = session.workspaceState();
             var result = session.submit("match-failure.lyra", """
                     let unpublished :I32 = (match count
-                      ?? 2 when { count := (+ count 1) #T } -> (% 1 zero)
-                      ?? _ -> 0)
+                      2 when { count := (+ count 1) #T } -> (% 1 zero)
+                      _ -> 0)
                     """);
             assertEquals("LYR-ARITH", assertInstanceOf(EvaluationResult.RuntimeFailure.class, result).code());
             assertEquals(before, session.workspaceState());

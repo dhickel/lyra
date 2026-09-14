@@ -12,7 +12,7 @@ class CallbackLoopIntegrationTest {
         var artifact = LanguageTestSupport.compile("""
                 let @pub run :Fn<Range<I8>;I32> = (=> |range| {
                     let @mut n :I32 = 0
-                    ::iter[range (match #T ?? #T -> || { n := (+ n 1) } ?? _ -> || {})]
+                    iter[range (match #T #T -> || { n := (+ n 1) } _ -> || {})]
                     n
                 })
                 """);
@@ -36,7 +36,7 @@ class CallbackLoopIntegrationTest {
                         ResolvedSource.memory(LogicalModuleId.parse("main"), "memory:loops/main", """
                                 import dep
                                 let @pub run :Fn<;I32> = (=> || {
-                                    ::iter[(0..3:1) dep->:.tick]
+                                    iter[(0..3:1) dep->:.tick]
                                     dep->:.count
                                 })
                                 """))).build();
@@ -49,7 +49,7 @@ class CallbackLoopIntegrationTest {
     void repeatedCallbacksCannotAcquireImportedMutationAuthority() {
         for (boolean nested : new boolean[]{false, true}) {
             String body = "let @mut target :Array<I32> = Array[0] "
-                    + "::iter[(0..3:1) || { target[0] := 1 target := dep->:.values }]";
+                    + "iter[(0..3:1) || { target[0] := 1 target := dep->:.values }]";
             String source = "import dep " + (nested
                     ? "let run :Fn<;Unit> = (=> || { " + body + " }) (run)" : body);
             var request = io.mindspice.lyra.compiler.api.CompileRequest.builder().rootModule("main")
@@ -70,7 +70,7 @@ class CallbackLoopIntegrationTest {
                 let choose :Fn<;Fn<;I32>> = (=> || {
                     let @mut selected :Fn<;I32> = (=> || 1)
                     let replacement :Fn<;I32> = (=> || 9)
-                    ::iter[(0..2:1) || { selected := replacement }]
+                    iter[(0..2:1) || { selected := replacement }]
                     selected
                 })
                 let @pub run :Fn<;I32> = (=> || { let selected = (choose) (selected) })
@@ -85,21 +85,21 @@ class CallbackLoopIntegrationTest {
                 let @pub run :Fn<;I64> = (=> || {
                     let zero :Fn<;I64> = (=> || 0)
                     let @mut saved :Array<Fn<;I64>> = Array[zero zero zero]
-                    ::iter[(0..3:1) |x| { saved[x] := (=> :I64 || x) }]
+                    iter[(0..3:1) |x| { saved[x] := (=> :I64 || x) }]
                     (+ (saved[0]) (* 10 (saved[1])) (* 100 (saved[2])))
                 })
                 let @pub retained :Fn<;I32> = (=> || {
                     let @mut n :I32 = 0
                     let replacement :Fn<;Unit> = (=> || { n := (+ n 10) })
                     let @mut action :Fn<;Unit> = (=> || { n := (+ n 1) })
-                    ::while[|| { action := replacement (< n 3) } action]
+                    while[|| { action := replacement (< n 3) } action]
                     n
                 })
                 let @pub selfReplace :Fn<;I32> = (=> || {
                     let @mut n :I32 = 0
                     let replacement :Fn<;Unit> = (=> || { n := (+ n 10) })
                     let @mut action :Fn<;Unit> = (=> || { n := (+ n 1) action := replacement })
-                    ::while[|| (< n 3) action]
+                    while[|| (< n 3) action]
                     n
                 })
                 let @pub invokeSelfReplace :Fn<;I32> = (=> || (selfReplace))
@@ -118,7 +118,7 @@ class CallbackLoopIntegrationTest {
                 let @pub run :Fn<I32;I32> = (=> |bound| {
                     let @mut total :I32 = 0
                     let range = ((+ bound 0)..(+ bound 3):1)
-                    ::iter[range (#T -> |x| { total := (+ total x) } : |y| {})]
+                    iter[range (#T -> |x| { total := (+ total x) } : |y| {})]
                     total
                 })
                 """);
@@ -132,13 +132,13 @@ class CallbackLoopIntegrationTest {
         var artifact = LanguageTestSupport.compile("""
                 let @pub run :Fn<;I32> = (=> || {
                     let @mut n :I32 = 0
-                    ::iter[(9223372036854775806...9223372036854775807:1) || { n := (+ n 1) }]
-                    ::iter[((- 9223372036854775807)...(- 9223372036854775808):(- 1)) || { n := (+ n 1) }]
+                    iter[(9223372036854775806...9223372036854775807:1) || { n := (+ n 1) }]
+                    iter[((- 9223372036854775807)...(- 9223372036854775808):(- 1)) || { n := (+ n 1) }]
                     n
                 })
                 let @pub longLoop :Fn<;I32> = (=> || {
                     let @mut n :I32 = 0
-                    ::while[|| (< n 1000000) || { n := (+ n 1) }]
+                    while[|| (< n 1000000) || { n := (+ n 1) }]
                     n
                 })
                 """);
@@ -155,7 +155,7 @@ class CallbackLoopIntegrationTest {
             var artifact = LanguageTestSupport.compile("""
                     let @pub run :Fn<%1$s,%1$s,%1$s;I64> = (=> |a b s| {
                         let @mut sum :I64 = 0
-                        ::iter[(a..b:s) |x| { sum := (+ sum I64[x]) }]
+                        iter[(a..b:s) |x| { sum := (+ sum I64[x]) }]
                         sum
                     })
                     let @pub inclusive :Fn<%1$s,%1$s,%1$s;I64> = (=> |a b s| {
@@ -200,7 +200,7 @@ class CallbackLoopIntegrationTest {
                     let @mut n :I64 = 0
                     let range = (3...1:(- 1))
                     let tick :Fn<;Unit> = (=> || { n := (+ n 1) })
-                    ::iter[range || ::iter[range tick]]
+                    iter[range || iter[range tick]]
                     (iter range (=> || { n := (+ n 1) }))
                     n
                 })
@@ -240,9 +240,9 @@ class CallbackLoopIntegrationTest {
     @Test
     void rejectsInvalidCallbackContracts() {
         for (String source : java.util.List.of(
-                "::iter[(0..10:1) || 2]", "::iter[(0..10:1) |x y| {}]",
-                "::iter[1 || {}]", "::iter[(0..10:1)]", "::while[|| 1 || {}]",
-                "::while[|| #F || 1]", "::while[|x| #F || {}]", "::while[]")) {
+                "iter[(0..10:1) || 2]", "iter[(0..10:1) |x y| {}]",
+                "iter[1 || {}]", "iter[(0..10:1)]", "while[|| 1 || {}]",
+                "while[|| #F || 1]", "while[|x| #F || {}]", "while[]")) {
             var result = io.mindspice.lyra.compiler.api.LyraCompiler.compile(
                     io.mindspice.lyra.compiler.api.CompileRequest.source("invalid.lyra", source));
             var failure = assertInstanceOf(io.mindspice.lyra.compiler.api.CompileResult.Failure.class, result, source);
@@ -255,8 +255,8 @@ class CallbackLoopIntegrationTest {
         var artifact = LanguageTestSupport.compile("""
                 let @pub run :Fn<;I64> = (=> || {
                     let @mut total :I64 = 0
-                    ::iter[(0..10:1) |x| { total := (+ total x) }]
-                    ::while[|| (< total 50) || { total := (+ total 1) }]
+                    iter[(0..10:1) |x| { total := (+ total x) }]
+                    while[|| (< total 50) || { total := (+ total 1) }]
                     total
                 })
                 """);

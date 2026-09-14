@@ -1,0 +1,2 @@
+// operators	reject	-	LYC-TYPE-004	unsigned numeric types reject an adjacent bare negative literal
+let value :U8 = -1U8

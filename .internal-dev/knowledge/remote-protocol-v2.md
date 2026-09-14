@@ -19,7 +19,7 @@ Credential-free REPL remote protocol v2: revision plus mutation-sequence freshne
 - Strict schema records cannot construct v1 messages; upgrade-diagnostic tests must send raw JSON bytes with `version:1`.
 
 ## Project Relevance
-Applies to any future transport work (Phase 12 launcher/bootstrap), the Phase 10 console wiring that routes `:load`/`:reload`/completion to the execution host, and raw-wire tests in Phase 13/14.
+Applies to any future transport work (Phase 12 launcher/bootstrap), the Phase 10 console wiring that routes `\load`/`\reload`/completion to the execution host, and raw-wire tests in Phase 13/14.
 
 ## Open Questions
 Phase 12 must decide how the application's own safe points pump the remote server in a live `run --repl` host (bootstrap polling versus the separate-controller composition used by the Phase 09 attachment adapter).

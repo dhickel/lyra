@@ -14,12 +14,13 @@ JavaFX tooling around Lyra's existing compiler, session API and JDI source maps.
 
 ## Key Takeaways
 
-- A REPL console command starts with a single colon; `::function[]` is ordinary source. Test it through the visible GUI, not only a backend helper.
+- A REPL console command starts with a single backslash; every colon-leading unit, including `:Type[]` and `::function[]`, is ordinary source. Test the distinction through the visible GUI, not only a backend helper.
 - Sessions own compiler identities `repl/submission-<evaluation UUID>.lyra`, even when diagnostics use a file origin. Register the actual protocol request ID before binding JDI locations. Normal imports use their own source IDs.
 - Protocol v2 admits one controller. Initialize a direct session host before constructing its server when a test expects a nonzero initial revision; the real application activation surface has its own registration gate.
 - Grammar/typing errors in editor fixtures are not reasons to invent editor-specific language semantics. Namespace value reads use `module->:.name`. Local lambdas may need complete return annotations, and a following direct-access expression can be parsed as access on the preceding initializer; use unambiguous block/source forms already supported by the compiler.
 - An invalid token stream is intentionally not exposed by the lexer. Re-lexing the prefix before the diagnostic can preserve correct earlier highlighting without synthesizing tokens.
 - UI tests must wait for the evaluation control to become enabled, not just for its output to appear: result output can precede committed-binding refresh.
+- Editor history follows the console's source-unit contract rather than command text: a load may add exact returned source but never its command/path; protocol-v2 loads intentionally return no source. Clear history only after an `OK` reset, and preserve it for failed or busy reset attempts. Exercise successful remote load and reset with visible Up-history navigation.
 - Use complete lines for breakpoint rebasing. A character-only prefix/suffix diff can match the first character of a deleted line against the surviving next line and drop the wrong breakpoint.
 - jpackage's default jlink options remove native commands, including the `java` launcher required by editor workers. Override those defaults while retaining `bin/java`; include the JDI/JDWP modules. Test an actual worker under the embedded runtime.
 - A JEP 493 runtime-linkable JDK without a `jmods` directory cannot link a new image containing `jdk.jlink`. Use the editor's explicit module set, not `ALL-MODULE-PATH`; the editor does not need to redistribute packaging tools. The OpenJDK contract is recorded at https://bugs.openjdk.org/browse/JDK-8317420.

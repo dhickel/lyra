@@ -1,0 +1,2 @@
+// match	reject	-	LYC-PARSE-013	value match requires a real subject; 'cond' replaces conditional match
+let @pub run :Fn<;I32> = (=> | | (match _ 1 -> 2 _ -> 3))

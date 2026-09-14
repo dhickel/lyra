@@ -114,7 +114,7 @@ public final class EditorWindow {
         outputTimer.setCycleCount(Animation.INDEFINITE); outputTimer.play();
         recoveryTimer = new Timeline(new KeyFrame(Duration.seconds(8), event -> writeRecovery()));
         recoveryTimer.setCycleCount(Animation.INDEFINITE); recoveryTimer.play();
-        appendOutput("Lyra REPL\nOpen a project, then enter an expression. Ctrl+Enter evaluates a selection; :help lists REPL commands.\n\n");
+        appendOutput("Lyra REPL\nOpen a project, then enter an expression. Ctrl+Enter evaluates a selection; \\help lists REPL commands.\n\n");
     }
 
     private MenuBar menu() {
@@ -171,6 +171,7 @@ public final class EditorWindow {
     }
     private Node statusBar() {
         Region spacer = new Region(); HBox.setHgrow(spacer, Priority.ALWAYS);
+        status.setId("status-label");
         HBox bar = new HBox(12, status, spacer, position); bar.getStyleClass().add("status-bar"); return bar;
     }
     private Node explorer() {
@@ -219,11 +220,12 @@ public final class EditorWindow {
     private Node repl() {
         transcript.setId("repl-output"); transcript.setEditable(false); transcript.setWrapText(true);
         transcript.getStyleClass().add("console-output");
-        replInput.setId("repl-input"); replInput.setPromptText("Lyra expression or :help   ·   Enter submits a complete form; Shift+Enter adds a line");
+        replInput.setId("repl-input"); replInput.setPromptText("Lyra expression or \\help   ·   Enter submits a complete form; Shift+Enter adds a line");
         replInput.setPrefRowCount(2); replInput.getStyleClass().add("console-input");
         replInput.setOnKeyPressed(event -> {
             if (event.getCode() == KeyCode.ENTER && !event.isShiftDown()
-                    && (event.isShortcutDown() || LexicalCompleteness.inspect(replInput.getText()).complete())) {
+                    && (event.isShortcutDown() || isCommandLine(replInput.getText())
+                    || LexicalCompleteness.inspect(replInput.getText()).complete())) {
                 submitRepl(); event.consume();
             } else if (event.getCode() == KeyCode.UP && !history.isEmpty() && replInput.getCaretPosition() == 0) {
                 if (historyCursor == history.size()) historyDraft = replInput.getText();
@@ -237,7 +239,7 @@ public final class EditorWindow {
         Button evaluate = button("Evaluate", "evaluate-repl", this::submitRepl); evaluate.disableProperty().bind(busy);
         HBox buttons = new HBox(8, new Label("λ"), evaluate, button("Interrupt", "interrupt", this::cancel),
                 button("Bindings", "query-bindings", this::queryBindings), button("Type", "query-type", this::queryType),
-                button("Reset", "reset-repl", () -> execute("Reset REPL", engine -> engine.reset().status().toString())),
+                button("Reset", "reset-repl", () -> execute("Reset REPL", this::resetRepl)),
                 button("Clear output", "clear-output", () -> transcript.clear()));
         buttons.setAlignment(Pos.CENTER_LEFT); buttons.setPadding(new Insets(6, 10, 6, 10));
         programInput.setId("program-input"); programInput.setPromptText("Program input for std->io readLine");
@@ -719,24 +721,95 @@ public final class EditorWindow {
     }
     private void submitRepl() {
         if (busy.get()) { status.setText("An evaluation is active. Use program stdin, Interrupt, or debugger controls."); return; }
-        String text = replInput.getText().strip(); if (text.isEmpty()) return;
-        replInput.clear(); remember(text); appendOutput("λ " + text + "\n");
-        if (!text.startsWith(":") || text.startsWith("::")) { execute("Evaluate", engine -> engine.evaluate(text)); return; }
-        int split = text.indexOf(' '); String command = split < 0 ? text : text.substring(0, split);
-        String argument = split < 0 ? "" : text.substring(split + 1).strip();
-        switch (command) {
-            case ":help" -> appendOutput(":help · :bindings · :type SOURCE · :load FILE · :reload MODULE · :reset · :history · :quit\nEnter submits a complete form; Shift+Enter inserts a newline. Program stdin is separate.\nRun starts a fresh session. Evaluate selection/definition updates the current session.\n");
-            case ":bindings" -> queryBindings();
-            case ":type" -> { if (argument.isEmpty()) appendOutput("Usage: :type SOURCE\n"); else execute("Type (no execution)", engine -> engine.type(argument)); }
-            case ":load" -> { if (argument.isEmpty()) appendOutput("Usage: :load FILE\n"); else if (requireWorkspace()) {
-                Path path = workspace.root().resolve(unquote(argument)); execute("Load file", engine -> engine.load(path));
-            }}
-            case ":reload" -> { if (argument.isEmpty()) appendOutput("Usage: :reload MODULE\n"); else execute("Reload module", engine -> engine.reload(argument)); }
-            case ":reset" -> execute("Reset", engine -> engine.reset().status());
-            case ":history" -> { for (int i = 0; i < history.size(); i++) appendOutput((i + 1) + "  " + history.get(i) + "\n"); }
-            case ":quit" -> stop();
-            default -> appendOutput("Unknown REPL command. Use :help.\n");
+        String text = replInput.getText(); if (text.isBlank()) return;
+        replInput.clear(); appendOutput("λ " + text + "\n");
+        if (!isCommandLine(text)) {
+            remember(text);
+            execute("Evaluate", engine -> engine.evaluate(text));
+            return;
         }
+        String line = text.stripLeading();
+        int end = 0;
+        while (end < line.length() && !Character.isWhitespace(line.charAt(end))) end++;
+        String command = line.substring(0, end);
+        String argument = line.substring(end).stripLeading();
+        switch (command) {
+            case "\\help" -> {
+                if (!argument.isBlank()) usage(command, 0);
+                else appendOutput(PlainConsole.HELP_TEXT);
+            }
+            case "\\bindings" -> {
+                if (!argument.isBlank()) usage(command, 0);
+                else queryBindings();
+            }
+            case "\\type" -> {
+                if (argument.isBlank()) appendOutput("LYR-REPL-USAGE: \\type expects a source argument\n");
+                else execute("Type (no execution)", engine -> engine.type(argument));
+            }
+            case "\\load" -> {
+                String path = oneCommandArgument(argument);
+                if (path == null) usage(command, 1);
+                else if (requireWorkspace()) {
+                    Path target = workspace.root().resolve(path); execute("Load file", engine -> engine.load(target));
+                }
+            }
+            case "\\reload" -> {
+                String module = oneCommandArgument(argument);
+                if (module == null) usage(command, 1);
+                else execute("Reload module", engine -> engine.reload(module));
+            }
+            case "\\reset" -> {
+                if (!argument.isBlank()) usage(command, 0);
+                else execute("Reset", this::resetRepl);
+            }
+            case "\\history" -> {
+                if (!argument.isBlank()) usage(command, 0);
+                else for (int i = 0; i < history.size(); i++) appendOutput((i + 1) + "  " + history.get(i) + "\n");
+            }
+            case "\\quit" -> {
+                if (!argument.isBlank()) usage(command, 0);
+                else stop();
+            }
+            default -> appendOutput("LYR-REPL-USAGE: unknown command: " + command + "\n");
+        }
+    }
+    private static boolean isCommandLine(String source) {
+        return source.stripLeading().startsWith("\\");
+    }
+    private void usage(String command, int arguments) {
+        appendOutput("LYR-REPL-USAGE: " + command + " expects " + arguments
+                + " argument" + (arguments == 1 ? "" : "s") + "\n");
+    }
+    private static String oneCommandArgument(String text) {
+        StringBuilder value = new StringBuilder();
+        char quote = 0;
+        boolean escaped = false, token = false;
+        for (int index = 0; index < text.length(); index++) {
+            char character = text.charAt(index);
+            if (escaped) { value.append(character); escaped = false; token = true; continue; }
+            if (character == 92) { escaped = true; token = true; continue; }
+            if (quote != 0) {
+                if (character == quote) quote = 0; else value.append(character);
+                token = true; continue;
+            }
+            if (character == '"' || character == 39) { quote = character; token = true; continue; }
+            if (Character.isWhitespace(character)) {
+                if (token) return index == text.stripTrailing().length() ? value.toString() : null;
+            } else { value.append(character); token = true; }
+        }
+        return escaped || quote != 0 || !token ? null : value.toString();
+    }
+    private ConsoleSession.ControlStatus resetRepl(EditorRuntime engine) {
+        ConsoleSession.Control reset = engine.reset();
+        if (reset.status() == ConsoleSession.ControlStatus.OK) {
+            fx(this::clearSourceHistory);
+        }
+        return reset.status();
+    }
+    private void clearSourceHistory() {
+        history.clear();
+        historyCursor = 0;
+        historyDraft = "";
     }
     private void remember(String text) { if (history.isEmpty() || !history.getLast().equals(text)) history.add(text); if (history.size() > 500) history.removeFirst(); historyCursor = history.size(); }
     private void evaluateSelection() {

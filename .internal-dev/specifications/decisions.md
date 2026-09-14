@@ -546,3 +546,42 @@
 - **Justification:** a field on the interface initialized from an enum that implements that interface is unsafe. JLS 12.4.2 initializes a class's superinterfaces that declare at least one default method before the class, so an interface with default methods is initialized while the enum's constants are still null. Measured before the change: the runtime shape (default methods) observed `LyraType.I32 == null` when `PrimitiveType` initialized first, while the compiler shape (all-abstract methods) never produced a null in either order, because enum-first initialization does not initialize an all-abstract-method interface at all. The four capitalized enum aliases were duplicate public surface with zero callers, and the compiler-side fields are removed as well because their safety depended solely on the interface's method shape.
 - **Alternatives rejected:** keeping the interface fields behind deprecation or a holder class (retains the hazard and the ambiguity); retaining the capitalized enum aliases as harmless convenience (duplicates primitive constant surface for no current caller).
 - **Caveat (accepted break):** this is an intentional Java source and binary compatibility break with no shim, alias, or compatibility adaptation. It is not a source-language, artifact-schema, or runtime-ABI change: generated artifacts reference no `LyraType` or `PrimitiveType` static field, so `RuntimeAbi.CURRENT`, `LANGUAGE_CONTRACT_VERSION`, and `ARTIFACT_SCHEMA_VERSION` are unchanged. Isolated initialization-order tests (a parent-first `URLClassLoader` whose only parent is the platform class loader, so delegation cannot resolve project types) initialize each type first in both modules and assert all fourteen constants and their operations are correct.
+
+## 2026-09-14 — Language contract version 2: marker-free match, `cond`, bare built-in brackets, bare negative literals, explicit nominal construction
+
+### Source and review
+
+- **Source:** owner-accepted plan `20260914-005314-resolve-and-close-lyra-github-issues-6-13-in-dependency` (Tranche 2) implementing GitHub issues #9, #10, #11 and #12 in one end-to-end source migration; baseline commit `58a8a19`, first tranche `de93506`. The plan's settled decisions and recorded owner answers supersede the earlier `??`/match-conditional/`::`-built-in/nominal-spelling choices.
+- **Affected specifications:** `language-core.md` (lexical rules, literals, calls and accessors, match, new conditional section, ranges/iteration, condition-controlled iteration, structs/classes construction, validation list), `grammar_spec.md`, `repl.md` (developer commands), `editor.md`, `backend-runtime.md` (language-contract versioning).
+- **Review timing:** at each remaining Tranche-2/3/4 validation gate, and whenever a further source-breaking change is proposed (it must take the next language-contract version).
+
+### Decision
+
+- **Decision (issue #11):** value `match` always takes a real subject and uses marker-free arms in both spellings. The former wildcard-subject conditional mode is removed and replaced by a dedicated, parenthesized-only `(cond condition -> result ... _ -> fallback)` special form with the same lazy arm, truthiness, unification, nilability, fallback and tail behavior. `??` and `(match _ ...)` are rejected with structured source-mapped diagnostics.
+- **Decision (issue #9):** `match`, `cond`, `iter` and `while` are reserved forms that use their bare bracket spelling (`match[...]`, `iter[...]`, `while[...]`). `::` remains reserved for direct calls of resolved local or imported function and method names; `::match[...]`, `::iter[...]` and `::while[...]` — including qualified and receiver readings — are rejected.
+- **Decision (issue #10):** a `-` immediately adjacent to a numeric literal in an expression position is a bare negative literal normalized to the existing unary-minus operation, so `-1`, `-128I8`, `-0.0` and `-1.0e3` are accepted with unchanged exactness, suffix, range, underflow, nonfinite and unsigned rejection. A trivia-separated `-` remains the bracket-required operator, and `--1` is never a literal.
+- **Decision (issue #12):** nominal construction is explicit, `:Type[args]` or `:module->Type[args]`, with no whitespace after the colon. Resolution, not capitalization, decides: the obsolete unprefixed `Type[args]` and qualified `model->:.Counter[0]` are rejected when their bracket target resolves to a nominal type, while uppercase value indexing, primitive/`String` conversions and `Array`/`Tuple` literal spellings are preserved unchanged. Construction continues to lower to the existing declared factory semantics.
+- **Decision (grammar boundary):** a single optional comma may separate sibling forms of a module/block sequence and sibling marker-free match/cond arms, but only when the following sibling begins with `::`; the exact parenthesized direct call `(::name[args])` preserves that direct call. No general grouping, statement punctuation or arm-separator feature is added.
+
+### Justification
+
+- Naming the conditional form separately removes the dual meaning of a wildcard subject, and removing the arm marker removes a token that carried no structural information.
+- Reserving `::` for resolved source calls keeps the authority boundary honest: compiler-recognized built-ins are not callable values and must not look like imported functions.
+- A bare negative literal is conventional surface syntax; normalizing it to the existing unary-minus operation keeps one semantic and IR path, so every numeric boundary rule is unchanged.
+- An explicit construction prefix makes the type-versus-value distinction visible at the syntax level instead of relying on later resolution of a bracket application, without changing runtime semantics.
+- The narrow comma exception is required because `::name[...]` is also a postfix receiver call; it is deliberately limited so no general comma or statement punctuation is introduced.
+
+### Alternatives rejected
+
+- Keeping `??` as an optional marker or adding an edition/legacy mode (the accepted change is immediate and has no alias, edition selector or second parsing mode).
+- Keeping conditional mode inside `match` as a second subject form.
+- A bracket `cond[...]` spelling (the conditional form is parenthesized only).
+- Accepting `::match`/`::iter`/`::while` as aliases or deprecating them gradually.
+- Treating any leading `-` as part of a literal regardless of trivia adjacency.
+- Requiring `:Type` for primitive conversions or `Array`/`Tuple` literals, or making uppercase identifiers construct.
+- General comma separation in blocks or arms, or general parenthesized grouping.
+
+### Caveat (accepted break) and versioning
+
+- This is an immediate source-breaking contract. It takes **language contract version 2**, applied coherently to `LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION` and the compiler's `ModuleRevision.LANGUAGE_CONTRACT_VERSION`, so module/export identity, `LYRA-EXPORT-ID` derivation, embedded facade metadata publication and artifact revision all move together. `RuntimeAbi` stays `1.0` and the artifact schema version stays `1`/`2`: this change alters the accepted source language, not the generated-class/runtime member ABI. Artifacts published under language contract 1 are rejected by the runtime with the explicit `LYR-COMPAT` diagnostic `unsupported language contract version: 1`, which `ArtifactMetadataReader` now reports before any version-derived identity check; the frozen `legacy-artifact-v1-normal.json` fixtures are retained as incompatible-artifact evidence rather than migrated.
+- Active fixtures, generators, oracles, models, examples and coverage documents are migrated in the same completed tranche; saved fuzz replays keep their original bytes and gain migrated semantic twins so the original counterexamples stay exercised.

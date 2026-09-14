@@ -13,7 +13,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.Optional;
 
 /**
- * Single-shot execution-host file capture for the console {@code :load}
+ * Single-shot execution-host file capture for the console {@code \\load}
  * command. Optional-console paths follow normal filesystem semantics: the
  * file must exist and be a regular file decoded as strict UTF-8, but no
  * permission or symbolic-link security policy is applied. The file is read

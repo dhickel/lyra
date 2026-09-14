@@ -24,14 +24,14 @@ import java.util.Objects;
  */
 public final class PlainConsole {
     public static final String HELP_TEXT = "Commands:\n"
-            + "  :help                 Show this help.\n"
-            + "  :bindings             List committed binding metadata.\n"
-            + "  :type SOURCE          Show SOURCE's type without executing or recording it.\n"
-            + "  :load PATH            Submit UTF-8 source from PATH on the execution host.\n"
-            + "  :reload MODULE        Rebuild one retained REPL-owned module.\n"
-            + "  :reset                Clear scratch bindings and in-memory history.\n"
-            + "  :history              List in-memory submitted source; never replays.\n"
-            + "  :quit                 Exit the console.\n";
+            + "  \\help                 Show this help.\n"
+            + "  \\bindings             List committed binding metadata.\n"
+            + "  \\type SOURCE          Show SOURCE's type without executing or recording it.\n"
+            + "  \\load PATH            Submit UTF-8 source from PATH on the execution host.\n"
+            + "  \\reload MODULE        Rebuild one retained REPL-owned module.\n"
+            + "  \\reset                Clear scratch bindings and in-memory history.\n"
+            + "  \\history              List in-memory submitted source; never replays.\n"
+            + "  \\quit                 Exit the console.\n";
 
     private final ConsoleSession session;
     private final RuntimeIoEnvironment ioEnvironment;
@@ -103,7 +103,7 @@ public final class PlainConsole {
         }
     }
 
-    /** Runs until :quit or EOF and returns the plain-console exit status. */
+    /** Runs until \\quit or EOF and returns the plain-console exit status. */
     public int run() {
         return run(new ConsoleInputCoordinator(ioEnvironment));
     }
@@ -140,7 +140,7 @@ public final class PlainConsole {
                     // Source readers may return a line terminator for an
                     // accepted editor line. It is transport framing, not
                     // part of the command argument; remove only that one
-                    // terminator so :type receives its source verbatim.
+                    // terminator so \\type receives its source verbatim.
                     if (handleCommand(commandLine(source), evaluationFailuresAffectStatus)) {
                         break;
                     }
@@ -170,10 +170,10 @@ public final class PlainConsole {
         String readSource(List<String> history) throws IOException;
     }
 
-    /** A single leading colon is reserved for console commands; {@code ::} is Lyra source. */
+    /** A single leading backslash is reserved for console commands at unit boundaries. */
     static boolean isCommandLine(String source) {
-        String line = source.stripLeading();
-        return line.startsWith(":") && !line.startsWith("::");
+        Objects.requireNonNull(source, "source");
+        return source.stripLeading().startsWith("\\");
     }
 
     private static String commandLine(String source) {

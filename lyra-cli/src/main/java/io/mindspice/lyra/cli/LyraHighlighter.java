@@ -43,7 +43,7 @@ final class LyraHighlighter extends DefaultHighlighter {
         Arrays.fill(colors, -1);
         for (Token token : tokens) {
             int color = switch (token.kind()) {
-                case LET, IMPORT, AS, MATCH, WHEN -> AttributedStyle.MAGENTA;
+                case LET, IMPORT, AS, MATCH, COND, ITER, WHILE, WHEN -> AttributedStyle.MAGENTA;
                 case TYPE_NAME, MODIFIER -> AttributedStyle.CYAN;
                 case STRING_LITERAL, CHAR_LITERAL -> AttributedStyle.GREEN;
                 case INTEGER_LITERAL, FLOAT_LITERAL, BOOLEAN_LITERAL, NIL_LITERAL -> AttributedStyle.YELLOW;
@@ -58,7 +58,7 @@ final class LyraHighlighter extends DefaultHighlighter {
             }
         }
         if (isCommandLine(source)) {
-            int start = source.indexOf(':');
+            int start = source.indexOf('\\');
             int end = start;
             while (end < source.length() && !Character.isWhitespace(source.charAt(end))) {
                 colors[end++] = AttributedStyle.CYAN;
@@ -132,8 +132,7 @@ final class LyraHighlighter extends DefaultHighlighter {
     }
 
     private static boolean isCommandLine(String source) {
-        String line = source.stripLeading();
-        return line.startsWith(":") && !line.startsWith("::");
+        return source.stripLeading().startsWith("\\");
     }
 
     private static boolean closes(TokenKind open, TokenKind close) {

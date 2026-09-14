@@ -41,6 +41,8 @@ public enum CallbackLoop {
                     : conditional.elseBranch().map(CallbackLoop::anonymousArity).orElse(-1);
             case SyntaxNode.Match match -> match.arms().stream().mapToInt(arm -> anonymousArity(arm.result()))
                     .filter(arity -> arity >= 0).findFirst().orElse(-1);
+            case SyntaxNode.Cond cond -> cond.arms().stream().mapToInt(arm -> anonymousArity(arm.result()))
+                    .filter(arity -> arity >= 0).findFirst().orElse(-1);
             case SyntaxNode.Coalesce coalesce -> anonymousArity(coalesce.fallback());
             default -> -1;
         };

@@ -17,8 +17,10 @@ First-class signed ranges and executable reserved iter/while callback loops.
   complete expected Fn contract during resolution; range-dependent callback
   specialization therefore cannot be implemented only in bytecode emission.
 - Ordinary `::name[...]` after another expression is a receiver method suffix,
-  even across whitespace/newlines. `::match[...]` has an explicit reserved-word
-  exception. The owner confirmed the same reserved-word policy for iter.
+  even across whitespace/newlines. `::match[...]`, `::iter[...]`, and `::while[...]`
+  are rejected reserved-form spellings; the accepted bare bracket forms are
+  `match[...]`, `iter[...]`, and `while[...]`. A narrow comma may disambiguate a
+  following sibling `::` head, but commas are not general separators.
 - Numeric lexing must stop before both `..` and `...`, at both decimal-point
   checks. Range type arguments must also preserve existing close-before-equals
   tokenization and canonical compiler/runtime type parity.

@@ -26,7 +26,7 @@ Source-local non-callable array/tuple persistence through exact typed bytecode a
 - Data-only arrays and tuples can survive a failed/cancelled generation through completed assignment into old storage even after the failed generation closes. This is not true of closures: they retain their producer module lifecycle. Never use this data result to justify closing escaped callable generations.
 - The current data authority requires a source-local producing generation in the same session domain. Multi-module consumers of aggregate capabilities are rejected before execution, and imported/partial aggregate contracts remain unsupported. Removing that guard requires retained imported ownership, not merely preserving an artifact loader.
 - Reset retires even empty pending link tables by a separate epoch, since namespace revision need not advance on reset. Returned snapshots contain no live generated classes or values.
-- `:type` source must not pass through the command path tokenizer. That tokenizer removes quotes and escapes, changing string/character literals and comments. Only file/path commands use shell-like argument tokenization; type queries preserve source text.
+- `\type` source must not pass through the command path tokenizer. That tokenizer removes quotes and escapes, changing string/character literals and comments. Only file/path commands use shell-like argument tokenization; type queries preserve source text.
 - A read-only helper shares the worktree and may report edits made by the root while it was exploring. Its late report is not an independent pre-edit baseline or validation of those edits.
 
 ## Project Relevance

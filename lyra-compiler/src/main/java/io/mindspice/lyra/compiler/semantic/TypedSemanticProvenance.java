@@ -382,27 +382,19 @@ final class TypedSemanticProvenance {
                 "typed expression does not retain its exact originating source span");
 
         if (expression.kind() == TypedExpressionKind.CONSTRUCTION) {
-            List<SyntaxNode.Expression> arguments;
-            SyntaxNode.Expression target;
-            if (syntax instanceof SyntaxNode.BracketApplication application) {
-                target = application.target();
-                arguments = application.arguments().arguments();
-            } else if (syntax instanceof SyntaxNode.IndexAccess index) {
-                target = index.receiver();
-                arguments = List.of(index.index());
-            } else {
-                throw invalid("typed construction has no bracket source");
+            if (!(syntax instanceof SyntaxNode.ExplicitConstruction construction)) {
+                throw invalid("typed construction has no explicit ':' source");
             }
+            List<SyntaxNode.Expression> arguments = construction.arguments().expressions();
             var origin = resolved.syntaxLinks().stream().filter(link -> link.kind() == SyntaxLinkKind.CALL
                             && link.span().equals(syntax.span())).flatMap(link -> link.declarationId().stream())
                     .flatMap(id -> resolved.nominals().stream().filter(value -> value.declaration().equals(id)))
                     .findFirst().orElseThrow(() -> invalid("construction has no resolved nominal origin"));
-            ResolvedReference reference;
-            if (target instanceof SyntaxNode.Identifier identifier) {
-                reference = findReference(identifier.span(), identifier.name(), ReferenceKind.VALUE);
-            } else if (target instanceof SyntaxNode.NamespaceMemberAccess namespace) {
-                reference = findReference(namespace.member().span(), namespace.member().name(), ReferenceKind.NAMESPACE_MEMBER);
-            } else throw invalid("construction target is not a type name");
+            ResolvedReference reference = construction.namespacePath().isPresent()
+                    ? findReference(construction.typeName().span(), construction.typeName().name(),
+                            ReferenceKind.NAMESPACE_MEMBER)
+                    : findReference(construction.typeName().span(), construction.typeName().name(),
+                            ReferenceKind.VALUE);
             requireReferenceLink(expression, reference, Optional.empty());
             require(expression.declarationId().equals(Optional.of(origin.declaration()))
                             && expression.type().equals(origin.schema().type())
@@ -517,23 +509,22 @@ final class TypedSemanticProvenance {
                     "typed conditional predicate is not truth-testable");
             return;
         }
+        if (syntax instanceof SyntaxNode.Cond condSyntax) {
+            validateCondExpression(condSyntax, expression, expectedType, moduleId);
+            return;
+        }
         if (syntax instanceof SyntaxNode.Match matchSyntax) {
             require(expression.kind() == TypedExpressionKind.MATCH,
                     "match source did not produce one typed match operation");
             TypedMatch match = expression.match().orElseThrow(() -> invalid(
                     "typed match has no closed arm metadata"));
-            require(match.mode() == (matchSyntax.mode() == SyntaxNode.MatchMode.TRADITIONAL
-                            ? TypedMatch.MatchMode.TRADITIONAL : TypedMatch.MatchMode.CONDITIONAL)
+            require(match.mode() == TypedMatch.MatchMode.TRADITIONAL
                             && match.arms().size() == matchSyntax.arms().size()
                             && match.childCount() == expression.children().size(),
                     "typed match metadata does not match its source mode/arms");
-            if (matchSyntax.subject().isPresent()) {
-                require(match.subjectChild().isPresent(), "traditional typed match has no subject child");
-                validateSourceExpression(matchSyntax.subject().orElseThrow(),
-                        expression.children().get(match.subjectChild().getAsInt()), moduleId);
-            } else {
-                require(match.subjectChild().isEmpty(), "conditional typed match invented a subject expression");
-            }
+            require(match.subjectChild().isPresent(), "traditional typed match has no subject child");
+            validateSourceExpression(matchSyntax.subject(),
+                    expression.children().get(match.subjectChild().getAsInt()), moduleId);
             LyraType resultType = expectedType.isPresent() ? expression.type() : inferredMatchType(matchSyntax);
             require(expression.type().equals(resultType),
                     "typed match does not have its independently inferred result type");
@@ -545,13 +536,9 @@ final class TypedSemanticProvenance {
                 if (sourceArm.pattern().isPresent()) {
                     require(arm.patternChild().isPresent(), "typed match arm lost its pattern/condition child");
                     TypedExpression pattern = expression.children().get(arm.patternChild().getAsInt());
-                    if (matchSyntax.mode() == SyntaxNode.MatchMode.CONDITIONAL) {
-                        validateSourceExpression(sourceArm.pattern().orElseThrow(), pattern, moduleId);
-                        require(truthTestable(pattern.type()), "conditional match condition is not truth-testable");
-                        require(arm.comparisonType().isEmpty(), "conditional match invented equality metadata");
-                    } else {
+                    {
                         LyraType comparison = inferredMatchComparison(
-                                matchSyntax.subject().orElseThrow(), sourceArm.pattern().orElseThrow());
+                                matchSyntax.subject(), sourceArm.pattern().orElseThrow());
                         require(arm.comparisonType().filter(comparison::equals).isPresent(),
                                 "typed match equality type is not source-derived");
                         validateSourceExpression(sourceArm.pattern().orElseThrow(), pattern, moduleId,
@@ -921,9 +908,7 @@ final class TypedSemanticProvenance {
             Optional<LyraType> folded = StructuralContextPlan.synthesizeArrayElements(
                     syntax.elements(), this::synthesizeAtomicTypeWithoutContext,
                     type -> Optional.of(syntaxType(type, TypePosition.BINDING).withoutQualifiers()),
-                    candidate -> candidate instanceof SyntaxNode.Conditional nested
-                            ? synthesizeStructuralConditional(nested)
-                            : Optional.empty());
+                    this::synthesizeControlResult);
             if (folded.isPresent()) {
                 return folded.orElseThrow();
             }
@@ -1370,9 +1355,7 @@ final class TypedSemanticProvenance {
                     sourceOperands,
                     this::synthesizeAtomicTypeWithoutContext,
                     type -> Optional.of(syntaxType(type, TypePosition.BINDING).withoutQualifiers()),
-                    candidate -> candidate instanceof SyntaxNode.Conditional nested
-                            ? synthesizeStructuralConditional(nested)
-                            : Optional.empty());
+                    this::synthesizeControlResult);
         }
         boolean numeric = !fixed.isEmpty() || !literals.isEmpty();
         if (numeric && (fixed.size() + literals.size() != known.size() + literals.size()
@@ -1726,6 +1709,12 @@ final class TypedSemanticProvenance {
                 return matchShape;
             }
         }
+        if (syntax instanceof SyntaxNode.Cond cond) {
+            Optional<LyraType> condShape = synthesizeStructuralArms(cond.arms());
+            if (condShape.isPresent()) {
+                return condShape;
+            }
+        }
         return StructuralContextPlan.synthesize(
                 syntax,
                 this::synthesizeAtomicTypeWithoutContext,
@@ -1791,6 +1780,9 @@ final class TypedSemanticProvenance {
         }
         if (syntax instanceof SyntaxNode.Match match) {
             return synthesizeStructuralMatch(match);
+        }
+        if (syntax instanceof SyntaxNode.Cond cond) {
+            return synthesizeStructuralArms(cond.arms());
         }
         if (syntax instanceof SyntaxNode.ArrayLiteral array) {
             if (array.explicitType().isPresent()) {
@@ -1912,8 +1904,87 @@ final class TypedSemanticProvenance {
                 thenType.orElseThrow(), elseType.orElseThrow()));
     }
 
+    private void validateCondExpression(
+            SyntaxNode.Cond condSyntax,
+            TypedExpression expression,
+            Optional<LyraType> expectedType,
+            ModuleId moduleId) {
+        require(expression.kind() == TypedExpressionKind.COND,
+                "cond source did not produce one typed cond operation");
+        TypedMatch match = expression.match().orElseThrow(() -> invalid(
+                "typed cond has no closed arm metadata"));
+        require(match.mode() == TypedMatch.MatchMode.CONDITIONAL
+                        && match.subjectChild().isEmpty()
+                        && match.arms().size() == condSyntax.arms().size()
+                        && match.childCount() == expression.children().size(),
+                "typed cond metadata does not match its source arms");
+        LyraType resultType = expectedType.isPresent()
+                ? expression.type()
+                : synthesizeStructuralArms(condSyntax.arms()).orElseThrow(() -> invalid(
+                        "inferred cond results do not provide a complete peer shape"));
+        require(expression.type().equals(resultType),
+                "typed cond does not have its independently inferred result type");
+        for (int index = 0; index < match.arms().size(); index++) {
+            TypedMatch.Arm arm = match.arms().get(index);
+            SyntaxNode.MatchArm sourceArm = condSyntax.arms().get(index);
+            require(arm.span().equals(sourceArm.span()) && arm.wildcard() == sourceArm.wildcard(),
+                    "typed cond arm does not retain its source role/span");
+            require(sourceArm.guard().isEmpty() && arm.guardChild().isEmpty(),
+                    "typed cond arm carries a guard");
+            if (sourceArm.pattern().isPresent()) {
+                require(arm.patternChild().isPresent(),
+                        "typed cond arm lost its condition child");
+                TypedExpression pattern = expression.children().get(arm.patternChild().getAsInt());
+                validateSourceExpression(sourceArm.pattern().orElseThrow(), pattern, moduleId);
+                require(truthTestable(pattern.type()), "cond condition is not truth-testable");
+                require(arm.comparisonType().isEmpty(), "cond invented equality metadata");
+            } else {
+                require(arm.patternChild().isEmpty() && arm.comparisonType().isEmpty(),
+                        "typed cond wildcard carries pattern/equality metadata");
+            }
+            validateSourceExpression(sourceArm.result(),
+                    expression.children().get(arm.resultChild()), moduleId,
+                    Optional.of(resultType));
+        }
+        require(expression.children().getLast().type().equals(expression.type()),
+                "typed cond fallback does not end at the result type");
+    }
+
+    private Optional<SyntaxNode.LetBinding> findSourceLetArms(
+            List<SyntaxNode.MatchArm> arms, SourceSpan nameSpan) {
+        for (SyntaxNode.MatchArm arm : arms) {
+            Optional<SyntaxNode.LetBinding> found = arm.pattern()
+                    .flatMap(value -> findSourceLet(value, nameSpan))
+                    .or(() -> arm.guard().flatMap(value -> findSourceLet(value, nameSpan)))
+                    .or(() -> findSourceLet(arm.result(), nameSpan));
+            if (found.isPresent()) {
+                return found;
+            }
+        }
+        return Optional.empty();
+    }
+
+    private Optional<SyntaxNode.Conditional> findPredicateConditionalArms(
+            List<SyntaxNode.MatchArm> arms, SourceSpan bindingSpan) {
+        for (SyntaxNode.MatchArm arm : arms) {
+            Optional<SyntaxNode.Conditional> found = arm.pattern()
+                    .flatMap(value -> findPredicateConditional(value, bindingSpan))
+                    .or(() -> arm.guard()
+                            .flatMap(value -> findPredicateConditional(value, bindingSpan)))
+                    .or(() -> findPredicateConditional(arm.result(), bindingSpan));
+            if (found.isPresent()) {
+                return found;
+            }
+        }
+        return Optional.empty();
+    }
+
     private Optional<LyraType> synthesizeStructuralMatch(SyntaxNode.Match match) {
-        List<SyntaxNode.Expression> results = match.arms().stream()
+        return synthesizeStructuralArms(match.arms());
+    }
+
+    private Optional<LyraType> synthesizeStructuralArms(List<SyntaxNode.MatchArm> arms) {
+        List<SyntaxNode.Expression> results = arms.stream()
                 .map(SyntaxNode.MatchArm::result).toList();
         List<Optional<LyraType>> shapes = results.stream()
                 .map(this::synthesizedTypeWithoutContext).toList();
@@ -1955,6 +2026,9 @@ final class TypedSemanticProvenance {
         }
         if (expression instanceof SyntaxNode.Match match) {
             return synthesizeStructuralMatch(match);
+        }
+        if (expression instanceof SyntaxNode.Cond cond) {
+            return synthesizeStructuralArms(cond.arms());
         }
         return Optional.empty();
     }
@@ -2172,9 +2246,14 @@ final class TypedSemanticProvenance {
                     .or(() -> findSourceLet(conditional.thenBranch(), nameSpan))
                     .or(() -> conditional.elseBranch().flatMap(value -> findSourceLet(value, nameSpan)));
         }
+        if (expression instanceof SyntaxNode.Cond cond) {
+            Optional<SyntaxNode.LetBinding> condFound = findSourceLetArms(cond.arms(), nameSpan);
+            if (condFound.isPresent()) {
+                return condFound;
+            }
+        }
         if (expression instanceof SyntaxNode.Match match) {
-            Optional<SyntaxNode.LetBinding> found = match.subject()
-                    .flatMap(value -> findSourceLet(value, nameSpan));
+            Optional<SyntaxNode.LetBinding> found = findSourceLet(match.subject(), nameSpan);
             if (found.isPresent()) {
                 return found;
             }
@@ -2310,9 +2389,15 @@ final class TypedSemanticProvenance {
                     .or(() -> conditional.elseBranch()
                             .flatMap(value -> findPredicateConditional(value, bindingSpan)));
         }
+        if (expression instanceof SyntaxNode.Cond cond) {
+            Optional<SyntaxNode.Conditional> condFound =
+                    findPredicateConditionalArms(cond.arms(), bindingSpan);
+            if (condFound.isPresent()) {
+                return condFound;
+            }
+        }
         if (expression instanceof SyntaxNode.Match match) {
-            Optional<SyntaxNode.Conditional> found = match.subject()
-                    .flatMap(value -> findPredicateConditional(value, bindingSpan));
+            Optional<SyntaxNode.Conditional> found = findPredicateConditional(match.subject(), bindingSpan);
             if (found.isPresent()) {
                 return found;
             }
@@ -2621,7 +2706,7 @@ final class TypedSemanticProvenance {
             case CONSTRUCTION -> EnumSet.of(Metadata.LINK, Metadata.DECLARATION, Metadata.SIGNATURE);
             case BLOCK -> EnumSet.of(Metadata.SCOPE);
             case CONDITIONAL -> EnumSet.of(Metadata.PREDICATE_BINDING);
-            case MATCH -> EnumSet.of(Metadata.MATCH);
+            case MATCH, COND -> EnumSet.of(Metadata.MATCH);
             case COALESCE, CALLABLE_CALL, ITER, WHILE, ARRAY_LITERAL, TUPLE_LITERAL,
                     INDEX_ACCESS, NARROWING -> EnumSet.noneOf(Metadata.class);
             case LAMBDA -> EnumSet.of(Metadata.LAMBDA, Metadata.SIGNATURE, Metadata.CAPTURES);
@@ -2653,10 +2738,10 @@ final class TypedSemanticProvenance {
                     "typed conditional has an invalid child count");
             case COALESCE -> require(expression.children().size() == 2,
                     "typed coalesce has an invalid child count");
-            case MATCH -> require(expression.match().isPresent()
+            case MATCH, COND -> require(expression.match().isPresent()
                             && expression.match().orElseThrow().childCount()
                             == expression.children().size(),
-                    "typed match metadata/children are incomplete");
+                    "typed match/cond metadata/children are incomplete");
             case ARRAY_LITERAL -> require(!expression.type().isNilable()
                             && expression.children().stream().allMatch(Objects::nonNull)
                             && expression.type().withoutQualifiers() instanceof ArrayType,

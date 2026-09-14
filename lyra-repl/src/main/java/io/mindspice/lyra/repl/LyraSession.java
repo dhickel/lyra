@@ -65,7 +65,7 @@ public final class LyraSession implements AutoCloseable {
     private volatile SessionRevision revision = SessionRevision.initial();
     /** Guarded by {@link #admission}; reads are only for admission/cancellation. */
     private ActiveOperation active;
-    /** Guarded by {@link #admission}; blocks reentrant session mutation during :type. */
+    /** Guarded by {@link #admission}; blocks reentrant session mutation during \\type. */
     private boolean typeQueryActive;
 
     private LyraSession(SessionOptions options) {

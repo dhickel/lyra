@@ -29,7 +29,7 @@ Phase 13 validation patterns for one persistent Lyra corpus across local, manage
 - Root initializer I/O belongs to the `LoadOptions` used to instantiate the application, not the later attachment's session options. Tests that assert initializer output must bind the same explicit `RuntimeIoEnvironment` at load time.
 - `RemoteEndpoint.display()` owns the no-auth authority warning; `toString()` is a diagnostic record rendering and intentionally does not promise the warning.
 - During graceful server shutdown, the connection handler must not run ordinary disconnect cleanup after observing the server-wide closed flag. That cleanup clears the writer queue and can race away the queued `CANCELLED` terminal frame. Server shutdown owns bounded drain, transport close and slot release for its connection snapshot; ordinary peer disconnect still owns cancellation cleanup.
-- Plain history files encode exact source entries with escaped line terminators. Numbering is added only by `:history` presentation; reopen the console to prove decoding rather than asserting numbered disk text.
+- Plain history files encode exact source entries with escaped line terminators. Numbering is added only by `\history` presentation; reopen the console to prove decoding rather than asserting numbered disk text.
 - JVM `CONSTANT_Utf8` uses modified UTF-8 over UTF-16 code units: NUL takes two bytes, ASCII non-NUL one, U+0080-U+07FF two, and every other code unit three. Astral characters therefore take six bytes. Preflight literals before class emission and return a structured emit diagnostic; never split literals or let the Class-File API exception escape.
 
 ## Project Relevance

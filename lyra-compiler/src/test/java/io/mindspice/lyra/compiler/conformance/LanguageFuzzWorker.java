@@ -53,7 +53,7 @@ public final class LanguageFuzzWorker {
     private static final String[] TOKENS = {"let", "@pub", "@mut", "@nil", "a", "b", "I32", "Array", "Tuple",
             "Fn", "#T", "#F", "#NIL", "0", "255U8", "18446744073709551615U64", "1.0e-99", "'x'",
             "\"😀\"", "=", ":=", "=>", "::", ":.", "->", ":", ",", ";", "|", "(", ")", "[", "]", "{", "}",
-            "+", "-", "*", "/", "%", "^", "<", ">", "==", "eq?", "and", "xor", "match", "when", "??", "_", "/*", "*/", "//\n"};
+            "+", "-", "*", "/", "%", "^", "<", ">", "==", "eq?", "and", "xor", "match", "cond", "when", "_", "/*", "*/", "//\n"};
 
     public static void main(String[] args) throws Throwable {
         try {
@@ -200,12 +200,12 @@ public final class LanguageFuzzWorker {
         String range = "(" + signedLoopLiteral(start) + (inclusive ? "..." : "..")
                 + signedLoopLiteral(end) + ":" + signedLoopLiteral(step) + ")";
         String callback = binding ? "|x| { sum := (+ sum x) }" : "|| { sum := (+ sum 1) }";
-        String iter = bracket ? "::iter[range " + callback + "]" : "(iter range " + callback + ")";
+        String iter = bracket ? "iter[range " + callback + "]" : "(iter range " + callback + ")";
         int count = random.nextInt(0, 21);
         String source = "let @pub run :Fn<;I64> = (=> || { let range = " + range
                 + " let @mut sum :I64 = 0 " + iter
                 + " let @mut n :I64 = 0 let @mut tests :I64 = 0 "
-                + "::while[|| { tests := (+ tests 1) (< n " + count + ") } || { n := (+ n 1) }] "
+                + "while[|| { tests := (+ tests 1) (< n " + count + ") } || { n := (+ n 1) }] "
                 + "(+ (* sum 10000) (* tests 100) n) })";
         FuzzCase result = new FuzzCase("loops", source);
         result.put("expected", sum * 10000L + (count + 1) * 100L + count);
@@ -213,8 +213,14 @@ public final class LanguageFuzzWorker {
         return result;
     }
 
+    /**
+     * Renders loop bounds through the adjacent bare negative literal spelling so the
+     * bounded campaign exercises it, including the signed minimum magnitude.  The
+     * arithmetic model is unchanged because the language normalizes the adjacent
+     * minus to the same unary-minus operation.
+     */
     private static String signedLoopLiteral(int value) {
-        return value < 0 ? "(- " + (-value) + ")" : Integer.toString(value);
+        return value < 0 ? "-" + (-value) : Integer.toString(value);
     }
 
     /** Number of completed mode rotations before this index; retained cases rotate profiles per ordinal. */
@@ -338,9 +344,9 @@ public final class LanguageFuzzWorker {
             String source = i == count - 1 ? "" : header + "import " + next + "\n";
             String result = "(+ value (" + call + "))";
             String terminal = random.nextBoolean() ? "" : "->";
-            String matchBody = next + terminal + ":.value ?? " + next + terminal
-                    + ":.value when " + next + terminal + "::ready[] -> " + result + " ?? _ -> (- 1)";
-            String match = random.nextBoolean() ? "(match " + matchBody + ")" : "::match[" + matchBody + "]";
+            String matchBody = next + terminal + ":.value " + next + terminal
+                    + ":.value when " + next + terminal + "::ready[] -> " + result + " _ -> (- 1)";
+            String match = random.nextBoolean() ? "(match " + matchBody + ")" : "match[" + matchBody + "]";
             source += "let @pub value :I32 = " + value + "\nlet @pub ready :Fn<;Bool> = (=> || #T)"
                     + "\nlet @pub run :Fn<;I32> = (=> | | "
                     + (i == count - 1 ? "value" : match) + ")\n";
@@ -382,8 +388,8 @@ public final class LanguageFuzzWorker {
             case 6 -> "/* outer /* inner */ */\n" + a;
             case 7 -> "::a[" + a + " " + b + "]";
             case 8 -> a + TOKENS[random.nextInt(TOKENS.length)] + b;
-            case 9 -> "(match " + a + " ?? " + b + " -> " + a + " ?? _ -> " + b + ")";
-            case 10 -> "::match[_ ?? " + a + " -> " + b + " ?? _]";
+            case 9 -> "(match " + a + " " + b + " -> " + a + " _ -> " + b + ")";
+            case 10 -> "match[_ " + a + " -> " + b + " _]";
             default -> throw new AssertionError();
         };
     }

@@ -406,20 +406,25 @@ final class ReplPackagingCompatibilityTest {
     }
 
     @Test
-    void legacySchema1FixtureLoadsUnchangedThroughTheCompilerBoundary() throws Exception {
+    void legacySchema1FixtureIsRejectedAsAnIncompatibleLanguageContract() throws Exception {
         byte[] legacy = getClass().getClassLoader().getResourceAsStream(
                 "legacy-artifact-v1-normal.json").readAllBytes();
-        ArtifactMetadata metadata = ArtifactMetadataReader.read(legacy);
-        assertFalse(metadata.replCapable());
-        assertEquals(ArtifactProfile.NORMAL, metadata.artifactProfile());
-        // The revision remains reproducible with the capability input absent.
-        assertEquals(metadata.artifactRevision(), ArtifactRevision.compute(
-                metadata.compilerBuild(), metadata.modules(), metadata.javaNameMap(),
-                metadata.profile(), metadata.packagingMode(), metadata.previewRequired(),
-                metadata.javaPackage(), metadata.sources(), metadata.runtimeRequirement(),
-                metadata.executionProfile(), metadata.hookRequirements(),
-                metadata.dependencyRequirements(), metadata.attachmentContext(),
-                metadata.imports(), metadata.reproducibleOptions(), false));
+        LyraCompatibilityException failure = assertThrows(LyraCompatibilityException.class,
+                () -> ArtifactMetadataReader.read(legacy));
+        assertTrue(failure.getMessage().contains("unsupported language contract version: 1"),
+                "unexpected compatibility diagnostic: " + failure.getMessage());
+        // A current-version normal artifact keeps the ordinary capability-free revision.
+        ArtifactMetadata current = compile(CompileRequest.builder()
+                .source("fixture-root.lyra", "let @pub answer :I32 = 42\n").build()).metadata();
+        assertFalse(current.replCapable());
+        assertEquals(ArtifactProfile.NORMAL, current.artifactProfile());
+        assertEquals(current.artifactRevision(), ArtifactRevision.compute(
+                current.compilerBuild(), current.modules(), current.javaNameMap(),
+                current.profile(), current.packagingMode(), current.previewRequired(),
+                current.javaPackage(), current.sources(), current.runtimeRequirement(),
+                current.executionProfile(), current.hookRequirements(),
+                current.dependencyRequirements(), current.attachmentContext(),
+                current.imports(), current.reproducibleOptions(), false));
     }
 
     private static CompiledArtifact compile(CompileRequest request) {

@@ -1,2 +1,2 @@
-// match	reject	-	LYC-PARSE-003	conditional match does not allow when guards
-let @pub run :Fn<;I32> = (=> | | (match _ ?? #T when #T -> 1 ?? _ -> 0))
+// match	reject	-	LYC-PARSE-003	cond does not allow when guards
+let @pub run :Fn<;I32> = (=> | | (cond #T when #T -> 1 _ -> 0))

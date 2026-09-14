@@ -368,6 +368,12 @@ public final class TypeChecker {
                 result = checkCoalesce(coalesce, expected, moduleId);
             } else if (syntax instanceof SyntaxNode.Match match) {
                 result = checkMatch(match, expected, moduleId);
+            } else if (syntax instanceof SyntaxNode.Cond cond) {
+                result = checkCond(cond, expected, moduleId);
+            } else if (syntax instanceof SyntaxNode.ExplicitConstruction construction) {
+                result = checkConstruction(
+                        construction.namespacePath(), construction.typeName(),
+                        construction.arguments().expressions(), construction.span(), moduleId);
             } else if (syntax instanceof SyntaxNode.Range range) {
                 result = checkRange(range, expected, moduleId);
             } else if (syntax instanceof SyntaxNode.PrefixAssignment assignment) {
@@ -400,8 +406,6 @@ public final class TypeChecker {
                 result = checkTupleLiteral(tuple, expected, moduleId);
             } else if (syntax instanceof SyntaxNode.IndexAccess index) {
                 result = checkIndexAccess(index, moduleId);
-            } else if (syntax instanceof SyntaxNode.BracketApplication application) {
-                result = checkConstruction(application.target(), application.arguments().expressions(), application.span(), moduleId);
             } else {
                 fail(CompilerDiagnosticCodes.TYPE_UNSUPPORTED_CONSTRUCT,
                         syntax.span(), "source expression has no typed semantic representation");
@@ -724,9 +728,6 @@ public final class TypeChecker {
         private ExprResult checkIndexAccess(
                 SyntaxNode.IndexAccess syntax,
                 ModuleId moduleId) {
-            if (constructionAt(syntax.span()).isPresent()) {
-                return checkConstruction(syntax.receiver(), List.of(syntax.index()), syntax.span(), moduleId);
-            }
             ExprResult receiver = checkExpression(syntax.receiver(), Optional.empty(), moduleId);
             if (receiver == null) {
                 return null;
@@ -785,22 +786,23 @@ public final class TypeChecker {
                     .flatMap(id -> graph.nominals().stream().filter(value -> value.declaration().equals(id))).findFirst();
         }
 
-        private ExprResult checkConstruction(SyntaxNode.Expression target, List<SyntaxNode.Expression> arguments,
-                SourceSpan span, ModuleId moduleId) {
+        private ExprResult checkConstruction(
+                Optional<SyntaxNode.NamespacePath> namespacePath,
+                SyntaxNode.Identifier typeName,
+                List<SyntaxNode.Expression> arguments,
+                SourceSpan span,
+                ModuleId moduleId) {
             ResolvedNominal nominal = constructionAt(span).orElse(null);
             if (nominal == null) {
                 fail(CompilerDiagnosticCodes.TYPE_INVALID_ACCESS, span, "construction requires a declared type name");
                 return null;
             }
             ResolvedReference reference;
-            if (target instanceof SyntaxNode.Identifier identifier) {
-                reference = findReference(identifier.span(), identifier.name(), ReferenceKind.VALUE);
-            } else if (target instanceof SyntaxNode.NamespaceMemberAccess namespace) {
-                typeNamespacePath(namespace.path(), moduleId);
-                reference = findReference(namespace.member().span(), namespace.member().name(), ReferenceKind.NAMESPACE_MEMBER);
+            if (namespacePath.isPresent()) {
+                typeNamespacePath(namespacePath.orElseThrow(), moduleId);
+                reference = findReference(typeName.span(), typeName.name(), ReferenceKind.NAMESPACE_MEMBER);
             } else {
-                fail(CompilerDiagnosticCodes.TYPE_INVALID_ACCESS, target.span(), "constructor target must be a type name");
-                return null;
+                reference = findReference(typeName.span(), typeName.name(), ReferenceKind.VALUE);
             }
             if (reference == null || typeReference(reference, moduleId) == null) return null;
             var signature = FunctionType.of(nominal.schema().constructorParameters(), nominal.schema().type()).signature();
@@ -971,6 +973,12 @@ public final class TypeChecker {
                     return matchShape;
                 }
             }
+            if (syntax instanceof SyntaxNode.Cond cond) {
+                Optional<LyraType> condShape = synthesizeStructuralCond(cond, moduleId);
+                if (condShape.isPresent()) {
+                    return condShape;
+                }
+            }
             return StructuralContextPlan.synthesize(
                     syntax,
                     atomicType -> synthesizeAtomicTypeWithoutContext(atomicType, moduleId),
@@ -1110,6 +1118,9 @@ public final class TypeChecker {
             if (syntax instanceof SyntaxNode.Match match) {
                 return synthesizeStructuralMatch(match, moduleId);
             }
+            if (syntax instanceof SyntaxNode.Cond cond) {
+                return synthesizeStructuralCond(cond, moduleId);
+            }
             if (syntax instanceof SyntaxNode.Coalesce coalesce) {
                 // A value-side #NIL still needs an expected @nil context.  An
                 // inferred coalesce therefore cannot manufacture that context
@@ -1167,7 +1178,19 @@ public final class TypeChecker {
         private Optional<LyraType> synthesizeStructuralMatch(
                 SyntaxNode.Match match,
                 ModuleId moduleId) {
-            List<SyntaxNode.Expression> results = match.arms().stream()
+            return synthesizeStructuralArms(match.arms(), moduleId);
+        }
+
+        private Optional<LyraType> synthesizeStructuralCond(
+                SyntaxNode.Cond cond,
+                ModuleId moduleId) {
+            return synthesizeStructuralArms(cond.arms(), moduleId);
+        }
+
+        private Optional<LyraType> synthesizeStructuralArms(
+                List<SyntaxNode.MatchArm> arms,
+                ModuleId moduleId) {
+            List<SyntaxNode.Expression> results = arms.stream()
                     .map(SyntaxNode.MatchArm::result).toList();
             List<Optional<LyraType>> shapes = results.stream()
                     .map(result -> synthesizeTypeWithoutContext(result, moduleId)).toList();
@@ -1548,9 +1571,7 @@ public final class TypeChecker {
                             List.of(thenSyntax, elseSyntax),
                             expression -> synthesizeAtomicTypeWithoutContext(expression, moduleId),
                             type -> Optional.ofNullable(typeFromSyntax(type, TypePosition.BINDING)),
-                            candidate -> candidate instanceof SyntaxNode.Conditional nested
-                                    ? synthesizeStructuralConditional(nested, moduleId)
-                                    : Optional.empty());
+                            candidate -> synthesizeControlResult(candidate, moduleId));
                     if (folded.isEmpty()) {
                         fail(CompilerDiagnosticCodes.TYPE_NIL_CONTEXT,
                                 StructuralContextPlan.firstContextFreeNilSpan(thenSyntax)
@@ -1653,22 +1674,38 @@ public final class TypeChecker {
                 SyntaxNode.Match match,
                 Optional<LyraType> expected,
                 ModuleId moduleId) {
-            ExprResult subject = null;
-            if (match.mode() == SyntaxNode.MatchMode.TRADITIONAL) {
-                subject = checkExpression(match.subject().orElseThrow(), Optional.empty(), moduleId);
-                if (subject == null) {
-                    return null;
-                }
+            ExprResult subject = checkExpression(match.subject(), Optional.empty(), moduleId);
+            if (subject == null) {
+                return null;
             }
+            return checkArms(
+                    match.subject(), subject, match.arms(), false, expected, moduleId, match.span());
+        }
 
+        private ExprResult checkCond(
+                SyntaxNode.Cond cond,
+                Optional<LyraType> expected,
+                ModuleId moduleId) {
+            return checkArms(
+                    null, null, cond.arms(), true, expected, moduleId, cond.span());
+        }
+
+        private ExprResult checkArms(
+                SyntaxNode.Expression subjectSyntax,
+                ExprResult subject,
+                List<SyntaxNode.MatchArm> arms,
+                boolean conditional,
+                Optional<LyraType> expected,
+                ModuleId moduleId,
+                SourceSpan span) {
             List<ExprResult> patterns = new ArrayList<>();
             List<ExprResult> guards = new ArrayList<>();
             List<Optional<LyraType>> comparisonTypes = new ArrayList<>();
-            for (SyntaxNode.MatchArm arm : match.arms()) {
+            for (SyntaxNode.MatchArm arm : arms) {
                 ExprResult pattern = null;
                 Optional<LyraType> comparisonType = Optional.empty();
                 if (arm.pattern().isPresent()) {
-                    if (match.mode() == SyntaxNode.MatchMode.CONDITIONAL) {
+                    if (conditional) {
                         pattern = checkExpression(arm.pattern().orElseThrow(), Optional.empty(), moduleId);
                         if (pattern == null) {
                             return null;
@@ -1676,12 +1713,12 @@ public final class TypeChecker {
                         if (!truthTestable(pattern.type())) {
                             fail(CompilerDiagnosticCodes.TYPE_INVALID_TRUTH_TEST,
                                     arm.pattern().orElseThrow().span(),
-                                    "conditional match condition is not truth-testable");
+                                    "cond condition is not truth-testable");
                             return null;
                         }
                     } else {
                         PatternTyping typed = checkMatchPattern(
-                                match.subject().orElseThrow(), subject,
+                                subjectSyntax, subject,
                                 arm.pattern().orElseThrow(), moduleId);
                         if (typed == null) {
                             return null;
@@ -1708,7 +1745,7 @@ public final class TypeChecker {
                 comparisonTypes.add(comparisonType);
             }
 
-            MatchResults results = checkMatchResults(match, expected, moduleId);
+            MatchResults results = checkMatchResults(arms, span, expected, moduleId);
             if (results == null) {
                 return null;
             }
@@ -1718,9 +1755,9 @@ public final class TypeChecker {
                 subjectIndex = OptionalInt.of(children.size());
                 children.add(subject.expression());
             }
-            List<TypedMatch.Arm> arms = new ArrayList<>();
-            for (int index = 0; index < match.arms().size(); index++) {
-                SyntaxNode.MatchArm arm = match.arms().get(index);
+            List<TypedMatch.Arm> typedArms = new ArrayList<>();
+            for (int index = 0; index < arms.size(); index++) {
+                SyntaxNode.MatchArm arm = arms.get(index);
                 OptionalInt patternIndex = OptionalInt.empty();
                 if (patterns.get(index) != null) {
                     patternIndex = OptionalInt.of(children.size());
@@ -1733,16 +1770,17 @@ public final class TypeChecker {
                 }
                 int resultIndex = children.size();
                 children.add(results.values().get(index).expression());
-                arms.add(new TypedMatch.Arm(
+                typedArms.add(new TypedMatch.Arm(
                         arm.span(), arm.wildcard(), patternIndex, guardIndex,
                         resultIndex, comparisonTypes.get(index)));
             }
             TypedMatch metadata = new TypedMatch(
-                    match.mode() == SyntaxNode.MatchMode.TRADITIONAL
-                            ? TypedMatch.MatchMode.TRADITIONAL
-                            : TypedMatch.MatchMode.CONDITIONAL,
-                    subjectIndex, arms);
-            return result(matchNode(match.span(), results.type(), children, metadata));
+                    conditional ? TypedMatch.MatchMode.CONDITIONAL
+                            : TypedMatch.MatchMode.TRADITIONAL,
+                    subjectIndex, typedArms);
+            return result(matchNode(
+                    conditional ? TypedExpressionKind.COND : TypedExpressionKind.MATCH,
+                    span, results.type(), children, metadata));
         }
 
         private PatternTyping checkMatchPattern(
@@ -1844,10 +1882,11 @@ public final class TypeChecker {
         }
 
         private MatchResults checkMatchResults(
-                SyntaxNode.Match match,
+                List<SyntaxNode.MatchArm> arms,
+                SourceSpan armSpan,
                 Optional<LyraType> expected,
                 ModuleId moduleId) {
-            List<SyntaxNode.Expression> syntax = match.arms().stream()
+            List<SyntaxNode.Expression> syntax = arms.stream()
                     .map(SyntaxNode.MatchArm::result).toList();
             if (expected.isPresent()) {
                 List<ExprResult> values = new ArrayList<>();
@@ -1943,6 +1982,9 @@ public final class TypeChecker {
             }
             if (expression instanceof SyntaxNode.Match match) {
                 return synthesizeStructuralMatch(match, moduleId);
+            }
+            if (expression instanceof SyntaxNode.Cond cond) {
+                return synthesizeStructuralCond(cond, moduleId);
             }
             return Optional.empty();
         }
@@ -3839,12 +3881,13 @@ public final class TypeChecker {
         }
 
         private TypedExpression matchNode(
+                TypedExpressionKind kind,
                 SourceSpan span,
                 LyraType type,
                 List<TypedExpression> children,
                 TypedMatch match) {
             return new TypedExpression(
-                    TypedExpressionKind.MATCH, span, type, children,
+                    kind, span, type, children,
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.empty(), List.of(), Optional.empty(), Optional.of(match));

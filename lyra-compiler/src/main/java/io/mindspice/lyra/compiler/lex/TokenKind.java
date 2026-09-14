@@ -17,6 +17,7 @@ public enum TokenKind {
     IMPORT,
     AS,
     MATCH,
+    COND,
     ITER,
     WHILE,
     WHEN,

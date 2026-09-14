@@ -15,7 +15,7 @@ class PersistentCallableTest {
     @Test
     @Timeout(30)
     void bothCallbackLoopsHonorSessionCancellation() throws Exception {
-        for (String loop : List.of("::while[|| #T || {}]", "::iter[(0..9223372036854775807:1) || {}]")) {
+        for (String loop : List.of("while[|| #T || {}]", "iter[(0..9223372036854775807:1) || {}]")) {
             try (var session = LyraSession.open()) {
                 success(session, "let @mut count :I32 = 0");
                 var before = session.workspaceState();
@@ -55,15 +55,15 @@ class PersistentCallableTest {
         try (var session = LyraSession.open()) {
             success(session, "let @mut n :I32 = 0");
             for (String source : List.of(
-                    "::iter[(0..5:1) || { n := (+ n 1) let z :I32 = 0 (% 1 z) {} }]",
-                    "::while[|| { n := (+ n 1) let z :I32 = 0 (% 1 z) #T } || { n := 99 }]")) {
+                    "iter[(0..5:1) || { n := (+ n 1) let z :I32 = 0 (% 1 z) {} }]",
+                    "while[|| { n := (+ n 1) let z :I32 = 0 (% 1 z) #T } || { n := 99 }]")) {
                 var failure = assertInstanceOf(EvaluationResult.RuntimeFailure.class, session.submit("failure.lyra", source));
                 assertEquals("LYR-ARITH", failure.code());
                 assertFalse(failure.frames().isEmpty());
             }
             assertEquals("2", scalar(session, "n"));
             var zero = assertInstanceOf(EvaluationResult.RuntimeFailure.class, session.submit("range-zero.lyra",
-                    "let step :I64 = 0 ::iter[(0..5:step) || { n := 99 }]"));
+                    "let step :I64 = 0 iter[(0..5:step) || { n := 99 }]"));
             assertEquals("LYR-ARITH", zero.code());
             assertFalse(zero.frames().isEmpty());
             assertEquals("2", scalar(session, "n"));
@@ -74,12 +74,12 @@ class PersistentCallableTest {
         try (var session = LyraSession.open()) {
             success(session, "let @mut count :I64 = 0 let range = (0..5:1)");
             assertEquals("(0..5:1)", scalar(session, "range"));
-            success(session, "::iter[range |x| { count := (+ count x) }]");
+            success(session, "iter[range |x| { count := (+ count x) }]");
             assertEquals("10", scalar(session, "count"));
-            success(session, "let run :Fn<;Unit> = (=> || ::while[|| (< count 15) || { count := (+ count 1) }])");
+            success(session, "let run :Fn<;Unit> = (=> || while[|| (< count 15) || { count := (+ count 1) }])");
             success(session, "(run)");
             assertEquals("15", scalar(session, "count"));
-            success(session, "::iter[range || { count := (+ count 1) }]");
+            success(session, "iter[range || { count := (+ count 1) }]");
             assertEquals("20", scalar(session, "count"));
         }
     }

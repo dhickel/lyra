@@ -1,4 +1,5 @@
 """Linux PTY assertions against the real Java 25 JLine provider, not a mock."""
+import ctypes
 import errno
 import fcntl
 import os
@@ -26,6 +27,14 @@ def controlling_terminal():
     os.setsid()
     fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
     assert os.tcgetpgrp(slave) == os.getpgrp(), "child is not the terminal foreground group"
+    # The Java test can SIGKILL this script after a timeout; without a parent
+    # death signal the REPL child would survive as an orphan and keep a live
+    # session. The disposition is inherited across exec and by the JVM's own
+    # descendants, so every grandchild dies with the PTY driver.
+    try:
+        ctypes.CDLL(None).prctl(1, signal.SIGKILL)
+    except Exception:
+        pass
 
 
 if mode == "rich-ignored":
@@ -89,20 +98,20 @@ def finish(status):
 
 try:
     if mode == "plain":
-        send(":help\n:quit\n")
+        send("\\help\n\\quit\n")
         finish(0)
         assert b"Commands:" in transcript, bytes(transcript)
         assert b"\x1b" not in transcript, bytes(transcript)
         assert b"lyra> " not in transcript, bytes(transcript)
     elif mode == "fallback":
         until(b"using plain console")
-        send(":help\n:quit\n")
+        send("\\help\n\\quit\n")
         finish(0)
         assert b"Commands:" in transcript, bytes(transcript)
         assert b"\x1b" not in transcript, bytes(transcript)
     elif mode == "vi":
         until(b"lyra> ")
-        send(":quix\x1brt\n")
+        send("\\quix\x1brt\n")
         finish(0)
         assert b"\x1b[?2004h" in transcript, bytes(transcript)
         assert b"\x1b[?2004l" in transcript, bytes(transcript)
@@ -129,12 +138,12 @@ try:
         assert b"\\uD83D\\uDE00" in result, (result, bytes(transcript))
         send("let @pub afterInput :String = \"次\"\n")
         until(b"lyra> ")
-        send(":history\n")
+        send("\\history\n")
         history = plain(until(b"lyra> "))
         assert b"1: import std->io as io io->::readLine[]" in history, history
         assert "2: let @pub afterInput :String = \"次\"".encode("utf-8") in history, history
         assert b": \xd0\xbf\xd1\x80\xd0\xbe\xd0\xb3\xd1\x80\xd0\xb0\xd0\xbc\xd0\xbc\xd0\xb0" not in history, history
-        send(":quit\n")
+        send("\\quit\n")
         finish(0)
     elif mode in ("rich-cancel", "plain-cancel"):
         # A generated constant-stack self-tail spin: the submission imports
@@ -162,17 +171,17 @@ try:
         send("let @pub after :I32 = 42\n")
         if mode == "rich-cancel":
             until(b"lyra> ")
-        send(":bindings\n")
+        send("\\bindings\n")
         if mode == "rich-cancel":
             bindings = plain(until(b"lyra> "))
         else:
-            send(":quit\n")
+            send("\\quit\n")
             finish(1)
-            bindings = plain(transcript[transcript.rindex(b":bindings") + len(b":bindings"):])
+            bindings = plain(transcript[transcript.rindex(b"\\bindings") + len(b"\\bindings"):])
         assert b"after :I32\n" in bindings, (bindings, bytes(transcript))
         assert b"spin" not in bindings, ("cancelled staged names published", bindings)
         if mode == "rich-cancel":
-            send(":quit\n")
+            send("\\quit\n")
             finish(0)
     else:
         assert mode in ("rich", "rich-ignored"), mode
@@ -184,7 +193,7 @@ try:
         assert b"lyra> " not in pending, ("paste submitted without Enter", bytes(transcript))
         send("\n")
         until(b"lyra> ")
-        send(":bindings\n")
+        send("\\bindings\n")
         bindings = plain(until(b"lyra> "))
         assert b"first :I32\nsecond :I32\n" in bindings, bindings
         send("(abandoned")
@@ -199,42 +208,49 @@ try:
         send("\n+ 1 2)\n")
         until(b"...> ")
         until(b"lyra> ")
-        send(":bindings\n")
+        send("\\bindings\n")
         bindings = plain(until(b"lyra> "))
         assert b"resized :I32\n" in bindings, bindings
-        send(":type 99\n")
+        send("\\type 99\n")
         assert b"I64" in plain(until(b"lyra> "))
-        send(":reload\n")
+        send("\\reload\n")
         assert b"LYR-REPL-USAGE" in plain(until(b"lyra> ")), bytes(transcript)
-        send(":type let @pub notThere :I32 = 5\n")
+        send("\\type let @pub notThere :I32 = 5\n")
         assert b"Unit" in plain(until(b"lyra> ")), bytes(transcript)
-        send(":bindings\n")
+        send("\\bindings\n")
         bindings = plain(until(b"lyra> "))
         assert b"notThere" not in bindings, ("type query published a name", bindings)
         if mode == "rich":
             # Execution-host file/module completion: listing reads the
             # configured source root without compiling or pinning, and the
             # completed path loads after Enter. The module must be imported
-            # before :reload can rebuild its retained graph.
+            # before \\reload can rebuild its retained graph.
             send("import newmod\n")
             until(b"lyra> ")
-            send(":load newm\t\n")
+            send("\\load newm\t\n")
             until(b"lyra> ")
-            assert b":load newmod.lyra" in plain(transcript), bytes(transcript)
-            send(":bindings\n")
+            assert b"\\load newmod.lyra" in plain(transcript), bytes(transcript)
+            send("\\bindings\n")
             bindings = plain(until(b"lyra> "))
             assert b"loaded :I32\n" in bindings, bindings
-            send(":reload newm\t\n")
+            send("\\reload newm\t\n")
             reloaded = plain(until(b"lyra> "))
-            assert b":reload newmod" in reloaded, reloaded
+            assert b"\\reload newmod" in reloaded, reloaded
             assert b"LYC-" not in reloaded, reloaded
-        send(":quit\n")
+        send("\\quit\n")
         finish(2)
         assert transcript.count(b"\x1b[?2004h") == transcript.count(b"\x1b[?2004l"), bytes(transcript)
     print("pty-ok:" + mode)
 finally:
     if process.poll() is None:
-        process.kill()
+        try:
+            # The child made itself a session leader (setsid above), so its
+            # process group is the REPL and every process it spawned. Killing
+            # the group reaps interrupted-mode grandchildren, not just the
+            # direct child.
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            process.kill()
         process.wait(timeout=5)
     os.close(master)
     os.close(slave)

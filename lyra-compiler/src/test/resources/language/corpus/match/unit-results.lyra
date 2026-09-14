@@ -1,2 +1,2 @@
 // match	value	Unit	null	match supports Unit-valued result branches
-let @pub run :Fn<;Unit> = (=> | | (match #T ?? #T -> () ?? _ -> ()))
+let @pub run :Fn<;Unit> = (=> | | (match #T #T -> () _ -> ()))

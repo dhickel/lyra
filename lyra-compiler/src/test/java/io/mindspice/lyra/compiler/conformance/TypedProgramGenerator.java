@@ -25,8 +25,8 @@ final class TypedProgramGenerator {
                 case CALL -> "((=> :" + type + " |value :" + type + "| value) " + l + ")";
                 case CONDITIONAL -> "{ let less :Bool = (< a b) (less -> " + l + " : " + r + ") }";
                 case COALESCE -> "{ let @nil maybe :" + type + " = " + l + " (maybe : " + r + ") }";
-                case MATCH -> brackets ? "::match[a ?? ((< a b) -> a : b) -> " + l + " ?? _ -> " + r + "]"
-                        : "(match a ?? ((< a b) -> a : b) -> " + l + " ?? _ -> " + r + ")";
+                case MATCH -> brackets ? "match[a ((< a b) -> a : b) -> " + l + " _ -> " + r + "]"
+                        : "(match a ((< a b) -> a : b) -> " + l + " _ -> " + r + ")";
             };
         }
 
@@ -74,23 +74,20 @@ final class TypedProgramGenerator {
             String expression;
             if (conditional) {
                 String maybeValue = addExpression("a", conditionOffset);
-                String match = brackets ? "::match[_ ?? (conditionOne) -> "
-                        + addExpression("a", firstDelta) + " ?? (conditionTwo) -> "
-                        + addExpression("b", secondDelta) + " ?? _ -> (% 1 b)]"
-                        : "(match _ ?? (conditionOne) -> " + addExpression("a", firstDelta)
-                        + " ?? (conditionTwo) -> " + addExpression("b", secondDelta)
-                        + " ?? _ -> (% 1 b))";
+                String match = "(cond (conditionOne) -> " + addExpression("a", firstDelta)
+                        + " (conditionTwo) -> " + addExpression("b", secondDelta)
+                        + " _ -> (% 1 b))";
                 expression = "let @nil maybe :I32 = ((== a 0) -> #NIL : " + maybeValue + ")\n"
                         + "let conditionOne :Fn<;@nil I32> = (=> | | { probes := (+ probes 10) maybe })\n"
                         + "let conditionTwo :Fn<;I32> = (=> | | { probes := (+ probes 20) b })\n"
                         + "let selected :I32 = " + match;
             } else {
-                String match = brackets ? "::match[(subject) ?? (patternOne) when (guard) -> "
-                        + addExpression("a", firstDelta) + " ?? (patternTwo) -> "
-                        + addExpression("b", secondDelta) + " ?? _ -> (% 1 b)]"
-                        : "(match (subject) ?? (patternOne) when (guard) -> "
-                        + addExpression("a", firstDelta) + " ?? (patternTwo) -> "
-                        + addExpression("b", secondDelta) + " ?? _ -> (% 1 b))";
+                String match = brackets ? "match[(subject) (patternOne) when (guard) -> "
+                        + addExpression("a", firstDelta) + " (patternTwo) -> "
+                        + addExpression("b", secondDelta) + " _ -> (% 1 b)]"
+                        : "(match (subject) (patternOne) when (guard) -> "
+                        + addExpression("a", firstDelta) + " (patternTwo) -> "
+                        + addExpression("b", secondDelta) + " _ -> (% 1 b))";
                 expression = "let subject :Fn<;I32> = (=> | | { probes := (++ probes) a })\n"
                         + "let patternOne :Fn<;I32> = (=> | | { probes := (+ probes 10) "
                         + addExpression("a", patternOffset) + " })\n"
@@ -118,8 +115,8 @@ final class TypedProgramGenerator {
                 default -> throw new AssertionError("validated comparisonCase");
             }
             return brackets
-                    ? "::match[" + subject + " ?? " + pattern + " -> 0 ?? _ -> 1000000]"
-                    : "(match " + subject + " ?? " + pattern + " -> 0 ?? _ -> 1000000)";
+                    ? "match[" + subject + " " + pattern + " -> 0 _ -> 1000000]"
+                    : "(match " + subject + " " + pattern + " -> 0 _ -> 1000000)";
         }
 
         private static String addExpression(String value, int delta) {

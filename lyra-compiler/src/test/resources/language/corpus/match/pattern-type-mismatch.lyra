@@ -1,3 +1,3 @@
 // match	reject	-	LYC-TYPE-001	match patterns must compare with the subject type
 let subject :String = "x"
-let @pub run :Fn<;I32> = (=> | | (match subject ?? 1 -> 2 ?? _ -> 3))
+let @pub run :Fn<;I32> = (=> | | (match subject 1 -> 2 _ -> 3))

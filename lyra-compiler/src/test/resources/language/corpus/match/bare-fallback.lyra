@@ -1,2 +1,2 @@
 // match	reject	-	LYC-PARSE-003	match arms require explicit pattern separators
-let @pub run :Fn<;I32> = (=> | | (match 1 -> 2 ?? _ -> 3))
+let @pub run :Fn<;I32> = (=> | | (match 1 -> 2 _ -> 3))

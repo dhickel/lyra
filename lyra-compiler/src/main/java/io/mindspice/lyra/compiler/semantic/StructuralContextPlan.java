@@ -174,6 +174,11 @@ final class StructuralContextPlan {
                     .map(SyntaxNode.MatchArm::result)
                     .anyMatch(StructuralContextPlan::containsContextFreeNil);
         }
+        if (expression instanceof SyntaxNode.Cond cond) {
+            return cond.arms().stream()
+                    .map(SyntaxNode.MatchArm::result)
+                    .anyMatch(StructuralContextPlan::containsContextFreeNil);
+        }
         if (expression instanceof SyntaxNode.Coalesce coalesce) {
             return containsContextFreeNil(coalesce.value())
                     || containsContextFreeNil(coalesce.fallback());
@@ -227,6 +232,11 @@ final class StructuralContextPlan {
                     .map(SyntaxNode.MatchArm::result)
                     .allMatch(StructuralContextPlan::isBaseLessNil);
         }
+        if (expression instanceof SyntaxNode.Cond cond) {
+            return cond.arms().stream()
+                    .map(SyntaxNode.MatchArm::result)
+                    .allMatch(StructuralContextPlan::isBaseLessNil);
+        }
         if (expression instanceof SyntaxNode.Coalesce coalesce) {
             // Coalescing does not make a bare value-side #NIL inferable.  Its
             // value role still needs an expected @nil contract.
@@ -267,6 +277,11 @@ final class StructuralContextPlan {
                     .map(StructuralContextPlan::firstContextFreeNilSpan)
                     .flatMap(Optional::stream).findFirst();
         }
+        if (expression instanceof SyntaxNode.Cond cond) {
+            return cond.arms().stream().map(SyntaxNode.MatchArm::result)
+                    .map(StructuralContextPlan::firstContextFreeNilSpan)
+                    .flatMap(Optional::stream).findFirst();
+        }
         if (expression instanceof SyntaxNode.Coalesce coalesce) {
             return firstContextFreeNilSpan(coalesce.value())
                     .or(() -> firstContextFreeNilSpan(coalesce.fallback()));
@@ -281,6 +296,7 @@ final class StructuralContextPlan {
                 || expression instanceof SyntaxNode.TupleLiteral
                 || expression instanceof SyntaxNode.Conditional
                 || expression instanceof SyntaxNode.Match
+                || expression instanceof SyntaxNode.Cond
                 || expression instanceof SyntaxNode.Coalesce) {
             return true;
         }
@@ -553,6 +569,19 @@ final class StructuralContextPlan {
                     ShapeKind.MATCH,
                     Optional.empty(),
                     match.arms().stream()
+                            .map(SyntaxNode.MatchArm::result)
+                            .map(value -> sourceShape(value, atomicType, explicitType, conditionalType))
+                            .toList());
+        }
+        if (source instanceof SyntaxNode.Cond cond) {
+            Optional<LyraType> synthesized = conditionalType.apply(source);
+            if (synthesized.isPresent()) {
+                return SourceShape.value(synthesized.orElseThrow());
+            }
+            return new SourceShape(
+                    ShapeKind.MATCH,
+                    Optional.empty(),
+                    cond.arms().stream()
                             .map(SyntaxNode.MatchArm::result)
                             .map(value -> sourceShape(value, atomicType, explicitType, conditionalType))
                             .toList());
@@ -835,6 +864,20 @@ final class StructuralContextPlan {
         if (source instanceof SyntaxNode.Match match) {
             LyraType result = peerType;
             for (SyntaxNode.MatchArm arm : match.arms()) {
+                if (!containsContextFreeNil(arm.result())) {
+                    continue;
+                }
+                Optional<LyraType> shaped = derive(arm.result(), peerType);
+                if (shaped.isEmpty()) {
+                    return Optional.empty();
+                }
+                result = mergeNilShape(result, shaped.orElseThrow());
+            }
+            return Optional.of(result);
+        }
+        if (source instanceof SyntaxNode.Cond cond) {
+            LyraType result = peerType;
+            for (SyntaxNode.MatchArm arm : cond.arms()) {
                 if (!containsContextFreeNil(arm.result())) {
                     continue;
                 }

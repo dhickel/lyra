@@ -1,0 +1,3 @@
+// nominal	value	I32	20	capitalization does not construct; uppercase values index
+let Values :Array<I32> = Array[10 20]
+let @pub run :Fn<;I32> = (=> | | Values[1])

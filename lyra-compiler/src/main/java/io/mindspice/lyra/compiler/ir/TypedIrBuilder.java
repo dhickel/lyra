@@ -205,7 +205,7 @@ public final class TypedIrBuilder {
                 case INDEX_ACCESS -> lowerIndexAccess(expression, site);
                 case CONDITIONAL -> lowerConditional(expression, site);
                 case COALESCE -> lowerCoalesce(expression, site);
-                case MATCH -> lowerMatch(expression, site);
+                case MATCH, COND -> lowerMatch(expression, site);
                 case RANGE -> new IrNode.RuntimeCheck(expression.span(), expression.type(), IrCheckKind.ARITHMETIC,
                         "LYR-ARITH", new IrNode.Range(expression.span(), expression.type(), child(expression, 0),
                         child(expression, 1), child(expression, 2),
@@ -583,7 +583,7 @@ public final class TypedIrBuilder {
             case SHORT_CIRCUIT -> IrEvaluationOrder.Kind.SHORT_CIRCUIT;
             case CONDITIONAL -> IrEvaluationOrder.Kind.BRANCH;
             case COALESCE -> IrEvaluationOrder.Kind.COALESCE;
-            case MATCH -> IrEvaluationOrder.Kind.MATCH;
+            case MATCH, COND -> IrEvaluationOrder.Kind.MATCH;
             case NOMINAL_DECLARATION -> IrEvaluationOrder.Kind.INSTANCE_INITIALIZATION;
             default -> IrEvaluationOrder.Kind.STRICT;
         };

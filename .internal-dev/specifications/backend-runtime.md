@@ -211,9 +211,10 @@ Nominal schemas and exact origins must participate in Java signatures, determini
 generated names, artifact compatibility and dependency loading. Distinct declarations
 or revisions with identical shapes are different types. Canonical signature parsing
 requires a schema environment, not arbitrary unknown-name acceptance. Any metadata
-or ABI changes require explicit versioning and compatibility tests. Existing artifact
-encodings without nominal types remain unchanged unless a tested compatibility
-revision is required.
+or ABI changes require explicit versioning and compatibility tests. Artifact encodings
+without nominal types retain their schema layout and runtime-ABI semantics, but a
+source-language contract revision changes the language version and derived revision
+identity; stale language-contract metadata is rejected rather than adapted.
 
 Generated callable signatures containing nominal types resolve against the exact
 schema environment on their producer artifact key. Cached signature metadata may
@@ -403,7 +404,7 @@ Custom loading preflights metadata before defining generated classes and reports
 
 Every class directory/JAR stores canonical UTF-8 JSON at `META-INF/lyra/artifact.json` and the source map at `META-INF/lyra/debug-map.json`. Duplicate, missing, malformed, unknown-required-field, or hash-inconsistent metadata is `LYR-COMPAT` before class definition. `schemaVersion` controls parsing; unknown optional fields are ignored.
 
-A versioned debug capability declaration (`replCapability`, schema 1) may accompany the NORMAL or ATTACHABLE execution profile without changing the generated ABI. It requires every reachable source snapshot to be embedded under `META-INF/lyra/sources/` with hash-consistent metadata, the canonical import resolution topology and reproducible scalar options to be recorded, and the exact fixed compiler/REPL/runtime dependency closure to be declared. Ordinary schema-1 encodings omit the field entirely and remain byte-identical, including the legacy fixture revisions. Debug bundled JARs use `Main-Class: io.mindspice.lyra.repl.ReplLauncher`; ordinary bundles keep `io.mindspice.lyra.runtime.LyraLauncher`. The runtime loader accepts the declared closure class entries only for debug-capable bundles and never defines them in the generated child loader.
+A versioned debug capability declaration (`replCapability`, schema 1) may accompany the NORMAL or ATTACHABLE execution profile without changing the generated ABI. It requires every reachable source snapshot to be embedded under `META-INF/lyra/sources/` with hash-consistent metadata, the canonical import resolution topology and reproducible scalar options to be recorded, and the exact fixed compiler/REPL/runtime dependency closure to be declared. Ordinary schema-1 encodings omit the field entirely and preserve the schema-1 layout; the current language-contract-v2 encoding remains deterministic, while retained language-contract-v1 fixtures are incompatible-artifact evidence rather than accepted current bytes. Debug bundled JARs use `Main-Class: io.mindspice.lyra.repl.ReplLauncher`; ordinary bundles keep `io.mindspice.lyra.runtime.LyraLauncher`. The runtime loader accepts the declared closure class entries only for debug-capable bundles and never defines them in the generated child loader.
 
 Required artifact fields are language-contract version, compiler version/build, runtime ABI major/minor, Java class-file target, `previewRequired`, artifact/root module ID/revision, sorted module IDs/revisions/source labels, canonical export IDs/signatures/JVM descriptors, logical-to-Java name map, debug-map version/hash, and packaging mode. `previewRequired` is true when any class that will be loaded from that artifact—including a bundled launcher/runtime class—uses the preview class-file minor version or depends on a preview runtime API. Preview use by the separate compiler process alone does not set it. Thin metadata also records the required external runtime's own preview/profile requirement, exact Maven coordinates, and minimum compatible ABI. Standard JAR `META-INF/MANIFEST.MF` is separately canonicalized and contains launcher data only for bundled output.
 

@@ -2348,7 +2348,7 @@ public final class SessionFlowCertificate {
         return switch (expression.kind()) {
             case ARRAY_LITERAL, TUPLE_LITERAL -> retainedComposite(expression, graph);
             case OPERATOR, SHORT_CIRCUIT, CONVERSION, NARROWING, RANGE -> retainedApply(expression, graph);
-            case CONDITIONAL, COALESCE, MATCH -> retainedAlternative(expression, graph);
+            case CONDITIONAL, COALESCE, MATCH, COND -> retainedAlternative(expression, graph);
             case BLOCK -> retainedSequence(expression, graph);
             case DECLARATION -> retainedDeclare(expression, graph);
             case REBINDING -> retainedRebind(expression, graph);
@@ -2430,7 +2430,7 @@ public final class SessionFlowCertificate {
                     arm.wildcard(), Optional.of(step.apply(arm.resultChild()))));
         }
         return Optional.of(new RetainedInitializerTransfer.Alternative(
-                RetainedInitializerTransfer.AlternativeKind.MATCH, expression.type(),
+                RetainedInitializerTransfer.AlternativeKind.of(expression.kind()), expression.type(),
                 prefix, branches, Optional.empty()));
     }
 
@@ -3643,7 +3643,7 @@ public final class SessionFlowCertificate {
                 return switch (kind) {
                     case CONDITIONAL -> CONDITIONAL;
                     case COALESCE -> COALESCE;
-                    case MATCH -> MATCH;
+                    case MATCH, COND -> MATCH;
                     default -> throw new IllegalArgumentException("not an alternative transfer: " + kind);
                 };
             }
@@ -4501,7 +4501,7 @@ public final class SessionFlowCertificate {
                             graph.contract(id).orElseThrow().valueType())));
                 }
                 case COALESCE -> children.forEach(child -> edge(child, result));
-                case MATCH -> expression.match().orElseThrow().arms().forEach(arm -> edge(children.get(arm.resultChild()), result));
+                case MATCH, COND -> expression.match().orElseThrow().arms().forEach(arm -> edge(children.get(arm.resultChild()), result));
                 case DECLARATION -> expression.declarationId().ifPresent(id -> {
                     if (!children.isEmpty()) edge(children.getFirst(), declaration(id, graph.contract(id).orElseThrow().valueType()));
                 });

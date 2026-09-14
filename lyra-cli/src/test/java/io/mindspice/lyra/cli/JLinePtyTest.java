@@ -74,7 +74,7 @@ final class JLinePtyTest {
         Process process = new ProcessBuilder(javaCommand(), "-cp", System.getProperty("java.class.path"),
                 LyraCli.class.getName(), "repl").start();
         try {
-            process.getOutputStream().write(":help\n:quit\n".getBytes(StandardCharsets.UTF_8));
+            process.getOutputStream().write("\\help\n\\quit\n".getBytes(StandardCharsets.UTF_8));
             process.getOutputStream().close();
             assertTrue(process.waitFor(15, TimeUnit.SECONDS));
             assertEquals(0, process.exitValue());
@@ -82,6 +82,7 @@ final class JLinePtyTest {
                     new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
             assertEquals("", new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8));
         } finally {
+            process.descendants().forEach(ProcessHandle::destroyForcibly);
             process.destroyForcibly();
         }
     }
@@ -116,6 +117,10 @@ final class JLinePtyTest {
             assertEquals(0, process.exitValue(), output);
             assertEquals("pty-ok:" + mode + "\n", output);
         } finally {
+            // The python driver kills its REPL child only while it runs its own
+            // teardown. When this test times out or is interrupted and the
+            // driver is force-killed, reap any surviving REPL descendant here.
+            process.descendants().forEach(ProcessHandle::destroyForcibly);
             process.destroyForcibly();
         }
     }
