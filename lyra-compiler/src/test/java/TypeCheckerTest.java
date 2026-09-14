@@ -70,34 +70,39 @@ public final class TypeCheckerTest {
     public void testMatchTypingModesInferenceAndFailures() {
         TypedSemanticGraph typed = success(
                 "let subject :I16 = 2 let traditional = (match subject "
-                        + "?? 1 -> 10I32 ?? 2I16 -> 20I64 ?? _ -> 30) "
-                        + "let conditional :@nil I32 = ::match[_ "
-                        + "?? #F -> 1 ?? subject -> 2 ?? _ -> #NIL]");
+                        + "1 -> 10I32 2I16 -> 20I64 _ -> 30) "
+                        + "let conditional :@nil I32 = (cond #F -> 1 subject -> 2 _ -> #NIL)");
         List<io.mindspice.lyra.compiler.semantic.TypedExpression> matches = typed.expressions().stream()
                 .filter(value -> value.kind() == TypedExpressionKind.MATCH).toList();
-        check(matches.size() == 2, "both match surfaces retain typed match operations");
+        check(matches.size() == 1, "the value match retains its typed match operation");
         check(matches.get(0).type().equals(io.mindspice.lyra.compiler.types.PrimitiveType.I64),
                 "traditional match results infer one lossless numeric common type");
-        check(matches.get(0).match().orElseThrow().subjectChild().isPresent()
+        check(matches.get(0).match().orElseThrow().mode()
+                        == io.mindspice.lyra.compiler.semantic.TypedMatch.MatchMode.TRADITIONAL
+                        && matches.get(0).match().orElseThrow().subjectChild().isPresent()
                         && matches.get(0).match().orElseThrow().arms().getLast().wildcard(),
                 "traditional match metadata closes subject and fallback child roles");
-        check(matches.get(1).type().isNilable()
-                        && matches.get(1).match().orElseThrow().subjectChild().isEmpty(),
-                "conditional match retains contextual nil result typing without a subject");
+        io.mindspice.lyra.compiler.semantic.TypedExpression conditional = typed.expressions().stream()
+                .filter(value -> value.kind() == TypedExpressionKind.COND).findFirst().orElseThrow();
+        check(conditional.type().isNilable()
+                        && conditional.match().orElseThrow().mode()
+                        == io.mindspice.lyra.compiler.semantic.TypedMatch.MatchMode.CONDITIONAL
+                        && conditional.match().orElseThrow().subjectChild().isEmpty(),
+                "cond retains contextual nil result typing without a subject");
         check(typed.conversions().stream().anyMatch(value -> value.step()
                         == io.mindspice.lyra.compiler.types.ConversionStep.NUMERIC_WIDENING),
                 "match result and equality operands retain explicit widening conversions");
 
-        failure("let bad = (match 1 ?? \"no\" -> 1 ?? _ -> 2)", "LYC-TYPE-001");
-        failure("let bad = (match 1 ?? 1 -> 1 ?? _ -> \"no\")", "LYC-TYPE-014");
+        failure("let bad = (match 1 \"no\" -> 1 _ -> 2)", "LYC-TYPE-001");
+        failure("let bad = (match 1 1 -> 1 _ -> \"no\")", "LYC-TYPE-014");
     }
 
     @Test
     public void testInferredAggregateMatchNumericProvenance() {
         TypedSemanticGraph typed = success(
-                "let tuple = Tuple[(match 0I32 ?? 0I32 -> 1 ?? _ -> 2U8)] "
-                        + "let array = Array[(match _ ?? #T -> 3 ?? _ -> 4U8) "
-                        + "(match 0I32 ?? 1I32 -> 5U8 ?? _ -> 6)]");
+                "let tuple = Tuple[(match 0I32 0I32 -> 1 _ -> 2U8)] "
+                        + "let array = Array[(cond #T -> 3 _ -> 4U8) "
+                        + "(match 0I32 1I32 -> 5U8 _ -> 6)]");
         var u8 = io.mindspice.lyra.compiler.types.PrimitiveType.U8;
         var tupleType = io.mindspice.lyra.compiler.types.TupleType.of(List.of(u8));
         var arrayType = io.mindspice.lyra.compiler.types.ArrayType.of(u8);
@@ -109,7 +114,16 @@ public final class TypeCheckerTest {
                 "array peer synthesis propagates independently inferred match result types");
         var matches = typed.expressions().stream()
                 .filter(value -> value.kind() == TypedExpressionKind.MATCH).toList();
-        check(matches.size() == 3 && matches.stream().allMatch(value -> value.type().equals(u8)
+        var conds = typed.expressions().stream()
+                .filter(value -> value.kind() == TypedExpressionKind.COND).toList();
+        check(matches.size() == 2 && conds.size() == 1
+                && matches.stream().allMatch(value -> value.type().equals(u8)
+                        && value.match().orElseThrow().mode()
+                        == io.mindspice.lyra.compiler.semantic.TypedMatch.MatchMode.TRADITIONAL)
+                && conds.getFirst().type().equals(u8)
+                && conds.getFirst().match().orElseThrow().mode()
+                        == io.mindspice.lyra.compiler.semantic.TypedMatch.MatchMode.CONDITIONAL
+                && matches.stream().allMatch(value -> value.type().equals(u8)
                         && value.match().orElseThrow().arms().stream()
                         .allMatch(arm -> value.children().get(arm.resultChild()).type().equals(u8))),
                 "typed match provenance and its contextual result conversions agree on U8");

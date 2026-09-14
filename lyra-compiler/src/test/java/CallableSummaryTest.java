@@ -870,8 +870,8 @@ public final class CallableSummaryTest {
                 "let @mut trace :I32 = 0 "
                         + "let choose :Fn<I32;I32> = (=> |value| "
                         + "(match { trace := 1 value } "
-                        + "?? { trace := 2 0I32 } -> { trace := 3 10I32 } "
-                        + "?? _ -> { trace := 4 20I32 }))");
+                        + "{ trace := 2 0I32 } -> { trace := 3 10I32 } "
+                        + "_ -> { trace := 4 20I32 }))");
         CallableSummary summary = summaryFor(graph, summaries(graph), "choose");
         assertTrue(summary.isFixedPoint());
         assertTrue(summary.returnFormula().formulas().size() >= 2,

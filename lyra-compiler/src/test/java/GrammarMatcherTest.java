@@ -25,11 +25,11 @@ import java.util.stream.Collectors;
 public final class GrammarMatcherTest {
     @Test
     public void testReservedWhileGrammar() {
-        for (String source : List.of("::while[|| #F || ()]",
-                "(while || #T || ())", "::while[test action]",
-                "::while[(=> :Bool || #F) (=> :Unit || ())]",
-                "(#T -> ::while[|| #F || ()] : ())",
-                "::iter[(0..10:1) |x| ::while[|| (< x 0) || ()]]")) {
+        for (String source : List.of("while[|| #F || ()]",
+                "(while || #T || ())", "while[test action]",
+                "while[(=> :Bool || #F) (=> :Unit || ())]",
+                "(#T -> while[|| #F || ()] : ())",
+                "iter[(0..10:1) |x| while[|| (< x 0) || ()]]")) {
             success(source);
         }
         for (String source : List.of("let while = 1", "let f = (=> |while :I32| ())",
@@ -39,19 +39,27 @@ public final class GrammarMatcherTest {
             check(GrammarMatcher.match(lex(source)) instanceof PhaseResult.Failure<?>,
                     "reserved while must reject: " + source);
         }
+        for (String source : List.of("::while[|| #F || ()]",
+                "ns->::while[|| #F || ()]", "value::while[|| #F || ()]")) {
+            expectFailure(source, CompilerDiagnosticCodes.PARSE_OBSOLETE_DIRECT_SPECIAL_FORM);
+        }
     }
 
     @Test
     public void testReservedIterCallBoundaries() {
         for (String separator : List.of(" ", "\n", "\n// boundary\n")) {
-            success("let r = (0..10:1)" + separator + "::iter[r || ()]");
-            success("(#T -> ::iter[(0..10:1) || ()] : ())");
+            success("let r = (0..10:1)" + separator + "iter[r || ()]");
+            success("(#T -> iter[(0..10:1) || ()] : ())");
         }
         for (String source : List.of("let iter = 1", "let f = (=> |iter :I32| ())",
                 "let f = iter", "iter", "::iter", "(iter -> ())",
                 "ns->::iter[(0..10:1) || ()]")) {
             check(GrammarMatcher.match(lex(source)) instanceof PhaseResult.Failure<?>,
                     "reserved iter must reject: " + source);
+        }
+        for (String source : List.of("::iter[(0..10:1) || ()]",
+                "ns->::iter[(0..10:1) || ()]", "value::iter[(0..10:1) || ()]")) {
+            expectFailure(source, CompilerDiagnosticCodes.PARSE_OBSOLETE_DIRECT_SPECIAL_FORM);
         }
         success("let iterator = 1 let iterate = iterator");
     }
@@ -60,14 +68,14 @@ public final class GrammarMatcherTest {
     public void testRangeExpressionGrammarAndMalformedBounds() {
         for (String source : List.of("(0..100:1)", "(100...0:(- 1))",
                 "(::start[]..::end[]:stride)", "(0.0..1.0:0.1)",
-                "(iter (0..10:1) |x| ())", "::iter[(0..10:1) || ()]",
+                "(iter (0..10:1) |x| ())", "iter[(0..10:1) || ()]", "(0..10:-1)",
                 "let r :Range<I32> = (0I32..10I32:1I32)",
                 "let r :Range<I32>=(0..10:1)")) {
             success(source);
         }
         for (String source : List.of("(0..10)", "(0..:1)", "(..10:1)",
                 "(0..10:)", "0..10:1", "(0..10:1 2)",
-                "(0..10:-1)", "let r :Range<I32,I64> = (0..1:1)")) {
+                "let r :Range<I32,I64> = (0..1:1)")) {
             check(GrammarMatcher.match(lex(source)) instanceof PhaseResult.Failure<?>,
                     "malformed range must fail grammar: " + source);
         }
@@ -147,7 +155,7 @@ public final class GrammarMatcherTest {
     public void testBracketMatchStartsANewExpressionRatherThanAReceiverCall() {
         for (String separator : List.of("", " ", "\n", "/* boundary */")) {
             LexedSource lexed = lex("((=> :I32 |value :I32| value)" + separator
-                    + "::match[1 ?? 1 -> 2 ?? _ -> 0])");
+                    + "match[1 1 -> 2 _ -> 0])");
             GrammarProgram program = success(lexed);
             GrammarDescriptor lambda = findFirst(program.root(), ProductionKind.LAMBDA);
             GrammarDescriptor match = findFirst(program.root(), ProductionKind.MATCH);
@@ -155,8 +163,8 @@ public final class GrammarMatcherTest {
                     "bracket match is the lambda call's argument, independent of trivia");
             check(lambda.endTokenIndex() == match.startTokenIndex(),
                     "the callable target ends before the bracket match accessor");
-            check(match.metadata().openingTokenIndex() == match.startTokenIndex() + 2
-                            && match.metadata().primaryTokenIndex() == match.startTokenIndex() + 1,
+            check(match.metadata().openingTokenIndex() == match.startTokenIndex() + 1
+                            && match.metadata().primaryTokenIndex() == match.startTokenIndex(),
                     "bracket match retains its exact accessor/keyword/opening roles");
             check(!collectKinds(program.root()).contains(ProductionKind.DIRECT_CALL),
                     "a bracket match argument is not a receiver method call");
@@ -167,23 +175,25 @@ public final class GrammarMatcherTest {
             DescriptorMetadata metadata = match.metadata();
             GrammarDescriptor invalid = withMetadata(match, new DescriptorMetadata(
                     metadata.openingTokenIndex(), metadata.closingTokenIndex(),
-                    match.startTokenIndex(), metadata.commaTokenIndices(),
+                    match.children().getFirst().startTokenIndex(), metadata.commaTokenIndices(),
                     metadata.modifierTokenIndices(), metadata.operatorTokenIndices()));
             expectThrows(IllegalArgumentException.class,
                     () -> replaceDescriptor(program, match, invalid).validateAgainst(lexed));
         }
-        expectFailure("(callee ::match)", CompilerDiagnosticCodes.PARSE_INVALID_ACCESSOR);
+        expectFailure("(callee ::match)", CompilerDiagnosticCodes.PARSE_OBSOLETE_DIRECT_SPECIAL_FORM);
         expectFailure("(callee ::when[])", CompilerDiagnosticCodes.PARSE_INVALID_ACCESSOR);
-        expectFailure("ns->::match[1 ?? _ -> 0]", CompilerDiagnosticCodes.PARSE_UNEXPECTED_TOKEN);
-        expectFailure("ns->inner->::match[1 ?? _ -> 0]", CompilerDiagnosticCodes.PARSE_INVALID_ACCESSOR);
+        expectFailure("::match[1 _ -> 0]", CompilerDiagnosticCodes.PARSE_OBSOLETE_DIRECT_SPECIAL_FORM);
+        expectFailure("ns->::match[1 _ -> 0]", CompilerDiagnosticCodes.PARSE_OBSOLETE_DIRECT_SPECIAL_FORM);
+        expectFailure("value::match[1 _ -> 0]", CompilerDiagnosticCodes.PARSE_OBSOLETE_DIRECT_SPECIAL_FORM);
+        expectFailure("ns->inner->::match[1 _ -> 0]", CompilerDiagnosticCodes.PARSE_OBSOLETE_DIRECT_SPECIAL_FORM);
     }
 
     @Test
     public void testConditionalArrowBeforeBracketMatchIsNotNamespaceQualification() {
         for (String source : List.of(
-                "(enabled -> ::match[_ ?? #T -> 42 ?? _ -> 0] : 7)",
-                "(enabled -> ::match[1 ?? _ -> 42])",
-                "(candidate value -> ::match[value ?? _ -> 42] : 7)")) {
+                "(enabled -> match[value #T -> 42 _ -> 0] : 7)",
+                "(enabled -> match[1 _ -> 42])",
+                "(candidate value -> match[value _ -> 42] : 7)")) {
             LexedSource lexed = lex(source);
             GrammarProgram program = success(lexed);
             GrammarDescriptor conditional = program.forms().getFirst();
@@ -205,9 +215,9 @@ public final class GrammarMatcherTest {
         for (String path : List.of("game->constants", "game->math->constants")) {
             for (String terminal : List.of("", "->")) {
                 String qualifier = path + terminal;
-                LexedSource lexed = lex("(match value ?? " + qualifier + ":.values[0] -> 7"
-                        + " ?? " + qualifier + "::pair[]:.0 when " + qualifier + "::pair[]:.1 -> 8"
-                        + " ?? _ -> 0)");
+                LexedSource lexed = lex("(match value " + qualifier + ":.values[0] -> 7"
+                        + " " + qualifier + "::pair[]:.0 when " + qualifier + "::pair[]:.1 -> 8"
+                        + " _ -> 0)");
                 GrammarProgram program = success(lexed);
                 GrammarDescriptor match = program.forms().getFirst();
                 check(match.kind() == ProductionKind.MATCH && match.children().size() == 4,
@@ -274,9 +284,16 @@ public final class GrammarMatcherTest {
                 + "let called = (receiver:.method 1) "
                 + "let compact = (consume |x :I32| x) "
                 + "let noArgs :Fn<;Unit> = (=> || ()) "
+                + "let matched = match[1 1 -> 2, ::pattern[] -> 3 _ -> 0] "
+                + "let conditional = (cond #T -> 1, ::condition[] -> 2 _ -> 0) "
+                + "let constructed = :Thing[] "
+                + "let negative = -1 "
+                + "let preserved = (::callee[]) "
+                + "let iterated = iter[(0..10:1) || ()] "
+                + "let waited = while[|| #F || ()] "
                 + "x := 1";
         GrammarProgram program = success(source);
-        check(program.forms().size() == 18, "all header and source forms are matched");
+        check(program.forms().size() == 25, "all header and source forms are matched");
         check(program.forms().getFirst().kind() == ProductionKind.IMPORT_DECLARATION,
                 "imports are first-class descriptors");
         check(program.forms().getLast().kind() == ProductionKind.REASSIGNMENT,
@@ -308,9 +325,30 @@ public final class GrammarMatcherTest {
                 ProductionKind.MEMBER_ACCESS,
                 ProductionKind.OPERATOR_S_EXPRESSION,
                 ProductionKind.OPERATOR_BRACKET,
-                ProductionKind.ARGUMENT_LIST)) {
+                ProductionKind.ARGUMENT_LIST,
+                ProductionKind.MATCH,
+                ProductionKind.MATCH_ARM,
+                ProductionKind.COND,
+                ProductionKind.CONSTRUCTION,
+                ProductionKind.CALLBACK_LOOP_BRACKET,
+                ProductionKind.PARENTHESIZED_DIRECT_CALL,
+                ProductionKind.NEGATIVE_LITERAL)) {
             check(kinds.contains(required), "descriptor tree contains " + required);
         }
+        GrammarDescriptor match = findFirst(program.root(), ProductionKind.MATCH);
+        check(match.children().size() == 5
+                        && match.metadata().commaTokenIndices().size() == 1,
+                "match children retain the subject, marker-free arms and narrow comma sibling");
+        GrammarDescriptor arm = findFirst(match, ProductionKind.MATCH_ARM);
+        check(arm.metadata().primaryTokenIndex() == arm.metadata().operatorTokenIndices().getFirst(),
+                "match arm primary token is its arrow");
+        check(arm.metadata().operatorTokenIndices().equals(
+                        List.of(arm.metadata().primaryTokenIndex())),
+                "match arm operator metadata contains exactly its arrow");
+        GrammarDescriptor cond = findFirst(program.root(), ProductionKind.COND);
+        check(cond.children().size() == 4
+                        && cond.metadata().commaTokenIndices().size() == 1,
+                "cond children retain marker-free arms, narrow comma sibling and no subject");
         program.validateAgainst(lex(source));
         program.assertReplayConsumed(0, lex(source).tokens().size());
     }
@@ -332,6 +370,21 @@ public final class GrammarMatcherTest {
         expectFailure("let x = (=> |x| x", CompilerDiagnosticCodes.PARSE_MISSING_DELIMITER);
         expectFailure("let x = Fn<I32;I32>", CompilerDiagnosticCodes.PARSE_INVALID_TYPE_FORM);
         expectFailure("let x = |x :I32| x", CompilerDiagnosticCodes.PARSE_INVALID_FORM);
+        expectFailure("let x = (match 1 ?? 1 -> 2 _ -> 3)",
+                CompilerDiagnosticCodes.PARSE_OBSOLETE_ARM_MARKER);
+        expectFailure("let x = (match _ 1 -> 2 _ -> 3)",
+                CompilerDiagnosticCodes.PARSE_OBSOLETE_CONDITIONAL_MATCH);
+        expectFailure("let x = ::match[1 _ -> 0]",
+                CompilerDiagnosticCodes.PARSE_OBSOLETE_DIRECT_SPECIAL_FORM);
+        expectFailure("let x = ns->::match[1 _ -> 0]",
+                CompilerDiagnosticCodes.PARSE_OBSOLETE_DIRECT_SPECIAL_FORM);
+        expectFailure("let x = value::match[1 _ -> 0]",
+                CompilerDiagnosticCodes.PARSE_OBSOLETE_DIRECT_SPECIAL_FORM);
+        expectFailure("let x = (match 1 1 -> 2, _ -> 3)", CompilerDiagnosticCodes.PARSE_INVALID_COMMA);
+        expectFailure("let x = (cond #T -> 1, _ -> 0)", CompilerDiagnosticCodes.PARSE_INVALID_COMMA);
+        expectFailure("let x = cond[#T -> 1 _ -> 0]", CompilerDiagnosticCodes.PARSE_INVALID_FORM);
+        success("let x = -1 let y = -128I8 let z = -0.0 let e = -1e3");
+        expectFailure("let x = --1", CompilerDiagnosticCodes.PARSE_INVALID_FORM);
         expectFailure("let x = (not 1 2)", CompilerDiagnosticCodes.PARSE_INVALID_OPERATOR_ARITY);
         expectFailure("let x = (+ 1)", CompilerDiagnosticCodes.PARSE_INVALID_OPERATOR_ARITY);
         expectFailure("let x = (% 1 2 3)", CompilerDiagnosticCodes.PARSE_INVALID_OPERATOR_ARITY);

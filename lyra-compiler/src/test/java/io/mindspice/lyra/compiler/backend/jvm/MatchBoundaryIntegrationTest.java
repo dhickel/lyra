@@ -17,11 +17,11 @@ class MatchBoundaryIntegrationTest {
                 let @pub run :Fn<I32;I32> = (=> |value| {
                   let expected :I32 = 10
                   (match value
-                    ?? expected -> ::answer[]
-                    ?? _ -> 0)
+                    expected -> ::answer[]
+                    _ -> 0)
                 })
                 let @pub conditional :Fn<Bool;I32> = (=> |enabled|
-                  ::match[_ ?? enabled -> ::answer[] ?? _ -> 0])
+                  (cond enabled -> ::answer[] _ -> 0))
                 """);
         try (var fixture = new LanguageTestSupport.Fixture(artifact)) {
             assertEquals(42, fixture.call("run", "Fn<I32;I32>", 10));
@@ -36,7 +36,7 @@ class MatchBoundaryIntegrationTest {
         var artifact = LanguageTestSupport.compile("""
                 let @pub nested :Fn<U32;U32> = (=> |a|
                   ((=> :U32 |value :U32| value)
-                    ::match[a ?? 1U32 -> ::match[a ?? _ -> 7U32] ?? _ -> a]))
+                    match[a 1U32 -> match[a _ -> 7U32] _ -> a]))
                 let @pub ordered :Fn<;I32> = (=> || {
                   let @mut trace :I32 = 0
                   let mark :Fn<I32;I32> = (=> |value| {
@@ -44,11 +44,11 @@ class MatchBoundaryIntegrationTest {
                   })
                   let add :Fn<I32,I32;I32> = (=> |a b| (+ a b))
                   let result :I32 = ::add[(mark 1)
-                    ::match[(mark 2)
-                      ?? (mark 3) when (mark 9) -> (mark 9)
-                      ?? (mark 2) when (mark 4) -> (mark 5)
-                      ?? _ -> (mark 9)]]
-                  result ::match[_ ?? #F -> (mark 9) ?? _ -> (mark 6)]
+                    match[(mark 2)
+                      (mark 3) when (mark 9) -> (mark 9)
+                      (mark 2) when (mark 4) -> (mark 5)
+                      _ -> (mark 9)]]
+                  (cond #F -> (mark 9) _ -> (mark 6))
                   (+ trace result)
                 })
                 """);
@@ -63,7 +63,7 @@ class MatchBoundaryIntegrationTest {
     void identifierConditionalPredicateCanSelectADirectMatchExpression() throws Throwable {
         var artifact = LanguageTestSupport.compile("""
                 let @pub run :Fn<Bool;I32> = (=> |enabled|
-                  (enabled -> ::match[_ ?? #T -> 42 ?? _ -> 0] : 7))
+                  (enabled -> (cond #T -> 42 _ -> 0) : 7))
                 """);
         try (var fixture = new LanguageTestSupport.Fixture(artifact)) {
             assertEquals(42, fixture.call("run", "Fn<Bool;I32>", true));
@@ -82,9 +82,9 @@ class MatchBoundaryIntegrationTest {
                         import constants as c
                         let @pub run :Fn<I32;I32> = (=> |value|
                           (match value
-                            ?? c->:.values[0] -> 7
-                            ?? c->::pair[]:.0 when c->::pair[]:.1 -> 8
-                            ?? _ -> 0))
+                            c->:.values[0] -> 7
+                            c->::pair[]:.0 when c->::pair[]:.1 -> 8
+                            _ -> 0))
                         """))).build();
         try (var fixture = new LanguageTestSupport.Fixture(LanguageTestSupport.compile(request))) {
             assertEquals(7, fixture.call("run", "Fn<I32;I32>", 7));
@@ -104,9 +104,9 @@ class MatchBoundaryIntegrationTest {
                         import game->constants
                         let @pub run :Fn<I32;I32> = (=> |value|
                           (match value
-                            ?? game->constants:.values[0] -> 7
-                            ?? game->constants::pair[]:.0 when game->constants::pair[]:.1 -> 8
-                            ?? _ -> 0))
+                            game->constants:.values[0] -> 7
+                            game->constants::pair[]:.0 when game->constants::pair[]:.1 -> 8
+                            _ -> 0))
                         """))).build();
         try (var fixture = new LanguageTestSupport.Fixture(LanguageTestSupport.compile(request))) {
             assertEquals(7, fixture.call("run", "Fn<I32;I32>", 7));
@@ -119,9 +119,9 @@ class MatchBoundaryIntegrationTest {
     void numericPatternComparisonDoesNotRetypeTheStoredSubjectPerArm() throws Throwable {
         var artifact = LanguageTestSupport.compile("""
                 let @pub run :Fn<;I32> = (=> ||
-                  (match 1 ?? 1U8 -> 42 ?? _ -> 0))
+                  (match 1 1U8 -> 42 _ -> 0))
                 let @pub wide :Fn<I64;I32> = (=> |value|
-                  (match value ?? 1U8 -> 1 ?? 2I32 -> 2 ?? _ -> 3))
+                  (match value 1U8 -> 1 2I32 -> 2 _ -> 3))
                 """);
         try (var fixture = new LanguageTestSupport.Fixture(artifact)) {
             assertEquals(42, fixture.call("run", "Fn<;I32>"));
@@ -135,13 +135,13 @@ class MatchBoundaryIntegrationTest {
     void unsignedSubjectsUseLosslessLogicalWideningForEachPattern() throws Throwable {
         var artifact = LanguageTestSupport.compile("""
                 let @pub byteCase :Fn<U8;I32> = (=> |value|
-                  (match value ?? 255I16 -> 1 ?? _ -> 0))
+                  (match value 255I16 -> 1 _ -> 0))
                 let @pub shortCase :Fn<U16;I32> = (=> |value|
-                  (match value ?? 65535I32 -> 2 ?? _ -> 0))
+                  (match value 65535I32 -> 2 _ -> 0))
                 let @pub intCase :Fn<U32;I32> = (=> |value|
-                  (match value ?? 4294967295I64 -> 3 ?? _ -> 0))
+                  (match value 4294967295I64 -> 3 _ -> 0))
                 let @pub floatCase :Fn<U32;I32> = (=> |value|
-                  (match value ?? 4294967295.0F64 -> 4 ?? _ -> 0))
+                  (match value 4294967295.0F64 -> 4 _ -> 0))
                 """);
         try (var fixture = new LanguageTestSupport.Fixture(artifact)) {
             assertEquals(1, fixture.call("byteCase", "Fn<U8;I32>", (byte) 255));
@@ -155,14 +155,14 @@ class MatchBoundaryIntegrationTest {
     void logicalComparisonConversionCoversSignedFloatingAndNilDomains() throws Throwable {
         var artifact = LanguageTestSupport.compile("""
                 let @pub signed :Fn<I8;I32> = (=> |value|
-                  (match value ?? 127I16 -> 1 ?? _ -> 0))
+                  (match value 127I16 -> 1 _ -> 0))
                 let @pub integerToFloat :Fn<I32;I32> = (=> |value|
-                  (match value ?? 16777217.0F64 -> 2 ?? _ -> 0))
+                  (match value 16777217.0F64 -> 2 _ -> 0))
                 let @pub floatToFloat :Fn<F32;I32> = (=> |value|
-                  (match value ?? 1.5F64 -> 3 ?? _ -> 0))
+                  (match value 1.5F64 -> 3 _ -> 0))
                 let @pub nilCase :Fn<;I32> = (=> || {
                   let @nil value :F32 = #NIL
-                  (match value ?? #NIL -> 4 ?? _ -> 0)
+                  (match value #NIL -> 4 _ -> 0)
                 })
                 """);
         try (var fixture = new LanguageTestSupport.Fixture(artifact)) {
@@ -180,7 +180,7 @@ class MatchBoundaryIntegrationTest {
     void inferredAggregateMatchUsesContextualNumericBranchType() throws Throwable {
         var artifact = LanguageTestSupport.compile("""
                 let @pub run :Fn<;U8> = (=> || {
-                  let values = Tuple[(match 0I32 ?? 0I32 -> 1 ?? _ -> 2U8)]
+                  let values = Tuple[(match 0I32 0I32 -> 1 _ -> 2U8)]
                   values:.0
                 })
                 """);
@@ -194,8 +194,8 @@ class MatchBoundaryIntegrationTest {
         var artifact = LanguageTestSupport.compile("""
                 let @pub run :Fn<;U8> = (=> || {
                   let values = Array[
-                    (match _ ?? #T -> 1 ?? _ -> 2U8)
-                    (match 0I32 ?? 1I32 -> 3U8 ?? _ -> 4)
+                    (cond #T -> 1 _ -> 2U8)
+                    (match 0I32 1I32 -> 3U8 _ -> 4)
                   ]
                   values[1]
                 })
@@ -209,9 +209,9 @@ class MatchBoundaryIntegrationTest {
     void unsignedSwitchCandidatesCompareMathematicalValues() throws Throwable {
         var artifact = LanguageTestSupport.compile("""
                 let @pub byteCase :Fn<U8;I32> = (=> |value|
-                  (match value ?? 200U8 -> 1 ?? 255U8 -> 2 ?? _ -> 3))
+                  (match value 200U8 -> 1 255U8 -> 2 _ -> 3))
                 let @pub shortCase :Fn<U16;I32> = (=> |value|
-                  ::match[value ?? 40000U16 -> 1 ?? 65535U16 -> 2 ?? _ -> 3])
+                  match[value 40000U16 -> 1 65535U16 -> 2 _ -> 3])
                 """);
         try (var fixture = new LanguageTestSupport.Fixture(artifact)) {
             assertEquals(1, fixture.call("byteCase", "Fn<U8;I32>", (byte) 200));
@@ -230,7 +230,7 @@ class MatchBoundaryIntegrationTest {
                   let @mut count :I32 = 0
                   let _ :I32 = 99
                   let result :I32 = (match { count := (+ count 1) 10I32 }
-                    ?? _ -> _)
+                    _ -> _)
                   (+ result count)
                 })
                 """);
@@ -245,9 +245,9 @@ class MatchBoundaryIntegrationTest {
                 let @pub run :Fn<;I32> = (=> || {
                   let _ :Array<I32> = Array[7]
                   (match _:.length
-                    ?? _[0] -> 0
-                    ?? 1 -> 42
-                    ?? _ -> 1)
+                    _[0] -> 0
+                    1 -> 42
+                    _ -> 1)
                 })
                 """);
         try (var fixture = new LanguageTestSupport.Fixture(artifact)) {
@@ -259,13 +259,13 @@ class MatchBoundaryIntegrationTest {
     void traditionalMatchUsesExistingNumericNilAndStructuralEquality() throws Throwable {
         var artifact = LanguageTestSupport.compile("""
                 let @pub numeric :Fn<I16;I32> = (=> |value|
-                  (match value ?? 2I32 -> 20 ?? _ -> 0))
+                  (match value 2I32 -> 20 _ -> 0))
                 let @pub nilValue :Fn<;I32> = (=> || {
                   let @nil value :I32 = #NIL
-                  (match value ?? #NIL -> 30 ?? _ -> 0)
+                  (match value #NIL -> 30 _ -> 0)
                 })
                 let @pub aggregate :Fn<Array<I32>;I32> = (=> |value|
-                  (match value ?? Array[1 2] -> 40 ?? _ -> 0))
+                  (match value Array[1 2] -> 40 _ -> 0))
                 """);
         try (var fixture = new LanguageTestSupport.Fixture(artifact)) {
             assertEquals(20, fixture.call("numeric", "Fn<I16;I32>", (short) 2));
@@ -282,14 +282,14 @@ class MatchBoundaryIntegrationTest {
                 let @pub run :Fn<;I32> = (=> || {
                   let @mut trace :I32 = 0
                   let result :I32 = (match { trace := (+ (* trace 10) 1) 7I32 }
-                    ?? { trace := (+ (* trace 10) 2) 6I32 }
+                    { trace := (+ (* trace 10) 2) 6I32 }
                       when { trace := 999 #T } -> 90
-                    ?? { trace := (+ (* trace 10) 3) 7I32 }
+                    { trace := (+ (* trace 10) 3) 7I32 }
                       when { trace := (+ (* trace 10) 4) #F } -> 91
-                    ?? _ when { trace := (+ (* trace 10) 5) #T }
+                    _ when { trace := (+ (* trace 10) 5) #T }
                       -> { trace := (+ (* trace 10) 6) 8 }
-                    ?? { trace := 999 7I32 } -> 92
-                    ?? _ -> 93)
+                    { trace := 999 7I32 } -> 92
+                    _ -> 93)
                   (+ trace result)
                 })
                 """);

@@ -102,10 +102,11 @@ public final class TypedIrTest {
                         + "let direct = ::fn[1] let callable = (fn 2) "
                         + "let @nil maybe :I32 = 1 let coalesced = (maybe : 4) "
                         + "let converted = I64[value] let guard = (and #T #F) "
-                        + "let branch = (#T -> direct : callable) let matched = (match value ?? 0 -> 1 ?? _ -> 2) "
-                        + "let range = (0..10:1) ::iter[range || {}] ::while[|| #F || {}] "
+                        + "let branch = (#T -> direct : callable) let matched = (match value 0 -> 1 _ -> 2) "
+                        + "let conditional = (cond #T -> 1 _ -> 2) "
+                        + "let range = (0..10:1) iter[range || {}] while[|| #F || {}] "
                         + "let block = { 1 } let changed = (value := (++ value)) "
-                        + "struct Point { let x :I32 } let point :Point = Point[1]")));
+                        + "struct Point { let x :I32 } let point :Point = :Point[1]")));
         Set<Class<?>> variants = new HashSet<>();
         IrTraversal.preOrder(ir.rootModule().body()).forEach(node -> variants.add(node.getClass()));
         assertEquals(Set.of(IrNode.class.getPermittedSubclasses()), variants,
@@ -274,7 +275,7 @@ public final class TypedIrTest {
     public void matchIrRetainsClosedModesArmRolesAndLazyEvaluationEdges() {
         TypedIr ir = phase(TypedIrBuilder.lower(typed(
                 "let subject :I32 = 2 let guard :Bool = #T "
-                        + "let value = (match subject ?? 1 when guard -> 10 ?? _ -> 20)")));
+                        + "let value = (match subject 1 when guard -> 10 _ -> 20)")));
         IrNode.Match match = IrTraversal.preOrder(ir.rootModule().body()).stream()
                 .filter(IrNode.Match.class::isInstance).map(IrNode.Match.class::cast)
                 .findFirst().orElseThrow();

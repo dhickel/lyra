@@ -59,8 +59,8 @@ public class NominalSyntaxTest {
                     })
                     let @pub current :Fn<;I32> = (=> || self:.value)
                 }
-                let point :Vec2 = Vec2[1.0 2.0]
-                let counter :Counter = Counter[0]
+                let point :Vec2 = :Vec2[1.0 2.0]
+                let counter :Counter = :Counter[0]
                 counter::increment[]
                 let saved :Fn<;Unit> = counter:.increment
                 """;
@@ -91,7 +91,7 @@ public class NominalSyntaxTest {
                 .modifiers().stream().map(SyntaxNode.Modifier::kind).toList());
         var point = assertInstanceOf(SyntaxNode.LetBinding.class, parsed.syntax().forms().get(2));
         assertInstanceOf(SyntaxNode.NamedType.class, point.annotation().orElseThrow().type());
-        assertEquals(2, assertInstanceOf(SyntaxNode.BracketApplication.class,
+        assertEquals(2, assertInstanceOf(SyntaxNode.ExplicitConstruction.class,
                 point.initializer()).arguments().expressions().size());
         assertInstanceOf(SyntaxNode.DirectCall.class, parsed.syntax().forms().get(4));
         var saved = assertInstanceOf(SyntaxNode.LetBinding.class, parsed.syntax().forms().get(5));
@@ -102,7 +102,7 @@ public class NominalSyntaxTest {
     void typeReferencesAndBracketsDoNotGuessNamesFromCapitalization() {
         var syntax = parse("""
                 struct Empty {} class Object {}
-                let value :pkg->model->Object = pkg->model->:.Object[]
+                let value :pkg->model->Object = :pkg->model->Object[]
                 let items :Array<pkg->model->Object>=Array<pkg->model->Object>[]
                 let UppercaseArray = Array<I32>[1]
                 UppercaseArray[0]
@@ -134,7 +134,7 @@ public class NominalSyntaxTest {
                 "class C { class D {} }", "class C :Parent {}", "{ class C {} }", "{ struct S {} }",
                 "let x :I32", "let class = 1", "let struct = 1", "class C {} import later",
                 "class C { let x :Array<Missing,> }", "class C { let x :pkg-> }",
-                "Counter[1,]", "Counter[,1]", "Counter[1 2", "class C { let x :I32, let y :I32 }")) {
+                ":Counter[1,]", ":Counter[,1]", ":Counter[1 2", "class C { let x :I32, let y :I32 }")) {
             var result = GrammarMatcher.match(lex(source));
             assertInstanceOf(PhaseResult.Failure.class, result, source);
             assertTrue(result.optionalValue().isEmpty(), source);
