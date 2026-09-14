@@ -9,24 +9,17 @@ import java.util.Set;
  * <p>This representation is independent of JVM descriptors.  In particular,
  * signedness, qualifiers, and nilability are retained even when two contracts
  * happen to use the same JVM representation.</p>
+ *
+ * <p>This interface declares no static constant fields.  Primitive constants
+ * are owned by {@link PrimitiveType} and must be referenced through that enum.
+ * This interface declares default methods, so when initialization begins with
+ * {@link PrimitiveType}, JLS 12.4.2 initializes this interface first and a
+ * constant field initialized from that enum would observe its constants as
+ * null.  Initializing this interface first instead reads a completed enum, so
+ * such a field would be wrong in only one of the two orders.</p>
  */
 public sealed interface LyraType
         permits PrimitiveType, ArrayType, RangeType, TupleType, FunctionType, QualifiedType, NominalType {
-    PrimitiveType I8 = PrimitiveType.I8;
-    PrimitiveType I16 = PrimitiveType.I16;
-    PrimitiveType I32 = PrimitiveType.I32;
-    PrimitiveType I64 = PrimitiveType.I64;
-    PrimitiveType U8 = PrimitiveType.U8;
-    PrimitiveType U16 = PrimitiveType.U16;
-    PrimitiveType U32 = PrimitiveType.U32;
-    PrimitiveType U64 = PrimitiveType.U64;
-    PrimitiveType F32 = PrimitiveType.F32;
-    PrimitiveType F64 = PrimitiveType.F64;
-    PrimitiveType BOOL = PrimitiveType.BOOL;
-    PrimitiveType CHAR = PrimitiveType.CHAR;
-    PrimitiveType STRING = PrimitiveType.STRING;
-    PrimitiveType UNIT = PrimitiveType.UNIT;
-
     String canonicalSpelling();
 
     default String canonical() {

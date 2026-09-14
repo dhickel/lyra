@@ -11,9 +11,9 @@ class NominalConstructionTest {
     private static final ModuleId MODULE = ModuleId.path("objects.lyra");
     private static final NominalType TYPE = new NominalType(new NominalTypeId(MODULE, "a".repeat(64), "Record", 0));
     private static final NominalSchema SCHEMA = new NominalSchema(TYPE, NominalSchema.Kind.CLASS, List.of(
-            new NominalSchema.Member("fixed", LyraType.I32, true, false, false),
-            new NominalSchema.Member("changing", LyraType.I32, true, true, false),
-            new NominalSchema.Member("hidden", LyraType.I32, false, true, false)), List.of());
+            new NominalSchema.Member("fixed", PrimitiveType.I32, true, false, false),
+            new NominalSchema.Member("changing", PrimitiveType.I32, true, true, false),
+            new NominalSchema.Member("hidden", PrimitiveType.I32, false, true, false)), List.of());
 
     private static LyraArtifactKey key() {
         return new LyraArtifactKey(OwnerThread.capture(), RuntimeIoEnvironment.defaults(), null, false, null,

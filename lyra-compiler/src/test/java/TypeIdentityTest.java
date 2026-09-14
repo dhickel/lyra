@@ -35,6 +35,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 
@@ -89,8 +90,20 @@ public final class TypeIdentityTest {
                         PrimitiveType.F32, PrimitiveType.F64, PrimitiveType.BOOL, PrimitiveType.CHAR,
                         PrimitiveType.STRING, PrimitiveType.UNIT)),
                 "all signed, unsigned, floating, and scalar primitives are present");
-        check(LyraType.I32 == PrimitiveType.I32 && LyraType.STRING == PrimitiveType.STRING,
-                "LyraType exposes canonical primitive constants");
+        check(Arrays.stream(LyraType.class.getDeclaredFields()).findAny().isEmpty(),
+                "LyraType declares no constant fields; the initialization-cycle alias fields are gone");
+        check(Arrays.stream(PrimitiveType.class.getDeclaredFields())
+                        .filter(field -> java.lang.reflect.Modifier.isStatic(field.getModifiers()))
+                        .filter(field -> !field.isEnumConstant())
+                        .allMatch(field -> field.isSynthetic() && field.getName().equals("$VALUES")),
+                "PrimitiveType declares only its enum constants, with no readable alias constants");
+        for (String alias : List.of("Bool", "Char", "String", "Unit")) {
+            check(Arrays.stream(LyraType.class.getDeclaredFields())
+                            .noneMatch(field -> field.getName().equals(alias))
+                            && Arrays.stream(PrimitiveType.class.getDeclaredFields())
+                            .noneMatch(field -> field.getName().equals(alias)),
+                    "removed primitive alias " + alias + " is absent from LyraType and PrimitiveType");
+        }
         check(PrimitiveType.fromSpelling("Bool").orElseThrow() == PrimitiveType.BOOL,
                 "primitive lookup uses source spelling");
         check(PrimitiveType.I32.canonicalSpelling().equals("I32")

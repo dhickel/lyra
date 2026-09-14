@@ -20,12 +20,6 @@ public enum PrimitiveType implements LyraType {
     STRING("String", null),
     UNIT("Unit", null);
 
-    /** Readable aliases for callers that prefer full modifier names. */
-    public static final PrimitiveType Bool = BOOL;
-    public static final PrimitiveType Char = CHAR;
-    public static final PrimitiveType String = STRING;
-    public static final PrimitiveType Unit = UNIT;
-
     private final String spelling;
     private final NumericDomain numericDomain;
 

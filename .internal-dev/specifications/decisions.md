@@ -531,3 +531,18 @@
 - **Justification:** the one-line relaxation made the four Unit/intrinsic inventory cases pass but turned the pinned closure-authority assertion red. A nominal-only same-workspace predicate fixed Unit-valued reads but then failed the separately correct callable boundary with `LYR-LINK`; broadly admitting that closure would erase the distinction the same test pins.
 - **Caveat:** a complete fix must carry route-scoped delegation from an authenticated nominal field (or construct the nominal under an authority that also owns its installed field values) while still rejecting the same imported closure when presented directly.
 - **Review timing:** at issue #7 design and implementation; the four pinned `LYR-LINK` inventory cases are the acceptance signal and must flip to value assertions together.
+
+## 2026-09-14 — Primitive constants are owned by PrimitiveType (issue #13)
+
+### Source and review
+
+- **Source:** GitHub issue #13 and owner answer on 2026-09-14 selecting removal of both alias sets. Baseline commit `58a8a19`.
+- **Affected specifications:** `backend-runtime.md` (Public Java API: primitive constant ownership and the compatibility break).
+- **Review timing:** revisit only if a future public type API needs primitive constants exposed on the `LyraType` interface (it must not) or if a Java source/binary compatibility guarantee is introduced.
+
+### Decision
+
+- **Decision:** `io.mindspice.lyra.compiler.types.LyraType` and `io.mindspice.lyra.runtime.LyraType` declare no constant fields. The fourteen primitive constants live only on the corresponding `PrimitiveType` enum, and the unused `PrimitiveType.Bool/Char/String/Unit` aliases are removed as well. Every repository consumer reads `PrimitiveType` directly.
+- **Justification:** a field on the interface initialized from an enum that implements that interface is unsafe. JLS 12.4.2 initializes a class's superinterfaces that declare at least one default method before the class, so an interface with default methods is initialized while the enum's constants are still null. Measured before the change: the runtime shape (default methods) observed `LyraType.I32 == null` when `PrimitiveType` initialized first, while the compiler shape (all-abstract methods) never produced a null in either order, because enum-first initialization does not initialize an all-abstract-method interface at all. The four capitalized enum aliases were duplicate public surface with zero callers, and the compiler-side fields are removed as well because their safety depended solely on the interface's method shape.
+- **Alternatives rejected:** keeping the interface fields behind deprecation or a holder class (retains the hazard and the ambiguity); retaining the capitalized enum aliases as harmless convenience (duplicates primitive constant surface for no current caller).
+- **Caveat (accepted break):** this is an intentional Java source and binary compatibility break with no shim, alias, or compatibility adaptation. It is not a source-language, artifact-schema, or runtime-ABI change: generated artifacts reference no `LyraType` or `PrimitiveType` static field, so `RuntimeAbi.CURRENT`, `LANGUAGE_CONTRACT_VERSION`, and `ARTIFACT_SCHEMA_VERSION` are unchanged. Isolated initialization-order tests (a parent-first `URLClassLoader` whose only parent is the platform class loader, so delegation cannot resolve project types) initialize each type first in both modules and assert all fourteen constants and their operations are correct.

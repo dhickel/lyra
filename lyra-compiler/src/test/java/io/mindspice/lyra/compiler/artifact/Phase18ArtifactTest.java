@@ -10,6 +10,7 @@ import io.mindspice.lyra.runtime.LyraType;
 import io.mindspice.lyra.runtime.ModuleMetadata;
 import io.mindspice.lyra.runtime.ModuleRevision;
 import io.mindspice.lyra.runtime.PackagingMode;
+import io.mindspice.lyra.runtime.PrimitiveType;
 import io.mindspice.lyra.runtime.RuntimeAbi;
 import io.mindspice.lyra.runtime.RuntimeProfile;
 import io.mindspice.lyra.runtime.SourceId;
@@ -140,7 +141,7 @@ final class Phase18ArtifactTest {
         SourceMetadata source = new SourceMetadata(SourceId.path("pkg/main.lyra"),
                 "source\"\\label", "b".repeat(64),
                 Optional.of("META-INF/lyra/sources/pkg/main.lyra"));
-        ExportMetadata export = new ExportMetadata(module, "value", LyraType.I32, "()I");
+        ExportMetadata export = new ExportMetadata(module, "value", PrimitiveType.I32, "()I");
         Map<String, String> names = Map.of(export.id().id(), "value");
         ArtifactRevision revision = ArtifactRevision.compute(
                 "build\\\"", List.of(moduleMetadata), names, RuntimeProfile.CURRENT,

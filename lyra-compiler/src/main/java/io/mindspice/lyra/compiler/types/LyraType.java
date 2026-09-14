@@ -9,26 +9,22 @@ import java.util.Set;
  * <p>This model deliberately contains only current language types.  In
  * particular, there is no universal, dynamic, or user-generic
  * type implementation.  The methods are abstract rather than default methods
- * so primitive enum initialization cannot recursively observe null interface
- * constants.</p>
+ * so primitive enum initialization can never recursively observe null
+ * interface constants.</p>
+ *
+ * <p>This interface declares no static constant fields.  Primitive constants
+ * are owned by {@link PrimitiveType} and must be referenced through that enum.
+ * A constant field on this interface initialized from an enum that implements
+ * it would be unsafe whenever this interface declares a default method: JLS
+ * 12.4.2 initializes a class's superinterfaces that declare at least one
+ * default method before the class, so this interface would be initialized
+ * while {@link PrimitiveType}'s constants were still null.  The abstract
+ * method set above currently avoids that trigger, but the field must not
+ * return, because its safety would then depend on this interface never
+ * gaining a default method.</p>
  */
 public sealed interface LyraType
         permits PrimitiveType, ArrayType, RangeType, TupleType, FunctionType, QualifiedType, NominalType {
-    PrimitiveType I8 = PrimitiveType.I8;
-    PrimitiveType I16 = PrimitiveType.I16;
-    PrimitiveType I32 = PrimitiveType.I32;
-    PrimitiveType I64 = PrimitiveType.I64;
-    PrimitiveType U8 = PrimitiveType.U8;
-    PrimitiveType U16 = PrimitiveType.U16;
-    PrimitiveType U32 = PrimitiveType.U32;
-    PrimitiveType U64 = PrimitiveType.U64;
-    PrimitiveType F32 = PrimitiveType.F32;
-    PrimitiveType F64 = PrimitiveType.F64;
-    PrimitiveType BOOL = PrimitiveType.BOOL;
-    PrimitiveType CHAR = PrimitiveType.CHAR;
-    PrimitiveType STRING = PrimitiveType.STRING;
-    PrimitiveType UNIT = PrimitiveType.UNIT;
-
     /** Returns the canonical spelling, with no whitespace. */
     String canonicalSpelling();
 

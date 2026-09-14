@@ -54,8 +54,8 @@ public final class GeneratedTypePlannerTest {
                 var typed = ir(source);
                 var runtime = NominalRuntimeContracts.from(typed);
                 var schema = runtime.schemas().getFirst();
-                var expected = array ? io.mindspice.lyra.runtime.ArrayType.of(io.mindspice.lyra.runtime.LyraType.I64.nilable())
-                        : io.mindspice.lyra.runtime.LyraType.I32;
+                var expected = array ? io.mindspice.lyra.runtime.ArrayType.of(io.mindspice.lyra.runtime.PrimitiveType.I64.nilable())
+                        : io.mindspice.lyra.runtime.PrimitiveType.I32;
                 String replay = "seed=" + seed + ", index=" + index + "\n" + source;
                 assertEquals(expected, schema.members().getFirst().type(), replay);
                 assertEquals(mutable, schema.members().getFirst().mutable(), replay);
@@ -90,7 +90,7 @@ public final class GeneratedTypePlannerTest {
         assertEquals(List.of("next", "data"), node.members().stream().map(io.mindspice.lyra.runtime.NominalSchema.Member::name).toList());
         assertEquals(node.type().nilable(), node.members().getFirst().type());
         assertTrue(node.members().getFirst().mutable());
-        assertEquals(List.of(io.mindspice.lyra.runtime.ArrayType.of(io.mindspice.lyra.runtime.LyraType.I32)), node.constructorParameters());
+        assertEquals(List.of(io.mindspice.lyra.runtime.ArrayType.of(io.mindspice.lyra.runtime.PrimitiveType.I32)), node.constructorParameters());
         assertFalse(holder.members().getFirst().publicAccess());
         assertTrue(holder.members().get(1).publicAccess());
         assertTrue(holder.members().get(1).mutable());

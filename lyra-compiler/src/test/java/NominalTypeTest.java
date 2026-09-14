@@ -14,7 +14,7 @@ public class NominalTypeTest {
         var nominal = type("Factory");
         var declaration = new io.mindspice.lyra.compiler.identity.DeclarationId(1);
         var root = io.mindspice.lyra.compiler.semantic.flow.ProjectionPath.root();
-        var signature = FunctionType.of(List.of(LyraType.I32), nominal);
+        var signature = FunctionType.of(List.of(PrimitiveType.I32), nominal);
         var formula = new io.mindspice.lyra.compiler.semantic.flow.ValueFormula.Constructor(
                 declaration, nominal, signature, root);
         assertEquals(signature, formula.type());
@@ -53,23 +53,23 @@ public class NominalTypeTest {
     @Test
     void heapSnapshotsAndNominalRoutesKeepExactContracts() {
         var type = type("Cell");
-        var field = new NominalSchema.Member("value", LyraType.I32, true, BindingMutability.MUTABLE, true);
+        var field = new NominalSchema.Member("value", PrimitiveType.I32, true, BindingMutability.MUTABLE, true);
         var schema = new NominalSchema(type, NominalSchema.Kind.CLASS, List.of(field), List.of());
         var value = io.mindspice.lyra.compiler.semantic.flow.ValueAlternatives.singleton(
-                io.mindspice.lyra.compiler.semantic.flow.ValueAlternative.scalar(LyraType.I32));
+                io.mindspice.lyra.compiler.semantic.flow.ValueAlternative.scalar(PrimitiveType.I32));
         var heap = new io.mindspice.lyra.compiler.semantic.flow.NominalObjectState(schema, java.util.Map.of(0, value), true);
         assertThrows(UnsupportedOperationException.class, () -> heap.fields().clear());
         assertThrows(IllegalArgumentException.class, () -> heap.write(1, value, true));
         assertThrows(IllegalArgumentException.class, () -> heap.write(0,
                 io.mindspice.lyra.compiler.semantic.flow.ValueAlternatives.empty(), true));
         var narrower = io.mindspice.lyra.compiler.semantic.flow.ValueAlternatives.singleton(
-                io.mindspice.lyra.compiler.semantic.flow.ValueAlternative.scalar(LyraType.I8));
+                io.mindspice.lyra.compiler.semantic.flow.ValueAlternative.scalar(PrimitiveType.I8));
         assertThrows(IllegalArgumentException.class, () -> heap.write(0, narrower, true));
         assertFalse(heap.repeatedAllocation().singleton());
         assertEquals(heap.fields(), heap.repeatedAllocation().fields());
         var route = io.mindspice.lyra.compiler.semantic.flow.ProjectionPath.of(
-                new io.mindspice.lyra.compiler.semantic.flow.ProjectionStep.NominalMember(type, 0, LyraType.I32));
-        assertEquals(LyraType.I32, io.mindspice.lyra.compiler.semantic.flow.ValueAlternative.typeAt(type, route));
+                new io.mindspice.lyra.compiler.semantic.flow.ProjectionStep.NominalMember(type, 0, PrimitiveType.I32));
+        assertEquals(PrimitiveType.I32, io.mindspice.lyra.compiler.semantic.flow.ValueAlternative.typeAt(type, route));
         assertThrows(IllegalArgumentException.class, () ->
                 io.mindspice.lyra.compiler.semantic.flow.ValueAlternative.typeAt(type("Other"), route));
         assertFalse(route.overlaps(io.mindspice.lyra.compiler.semantic.flow.ProjectionPath.tupleMember(0)));
@@ -92,7 +92,7 @@ public class NominalTypeTest {
                 List.of(field, field), List.of(other.nilable(), other.nilable())));
         assertThrows(IllegalArgumentException.class, () -> new NominalSchema(first, NominalSchema.Kind.STRUCT,
                 List.of(field), List.of()));
-        var callable = new NominalSchema.Member("callback", ArrayType.of(FunctionType.of(List.of(), LyraType.UNIT)),
+        var callable = new NominalSchema.Member("callback", ArrayType.of(FunctionType.of(List.of(), PrimitiveType.UNIT)),
                 true, BindingMutability.IMMUTABLE, false);
         var bad = new NominalSchema(other, NominalSchema.Kind.STRUCT, List.of(callable), List.of(callable.type()));
         assertThrows(IllegalArgumentException.class, () -> new NominalTypeEnvironment(List.of(schema, bad)));

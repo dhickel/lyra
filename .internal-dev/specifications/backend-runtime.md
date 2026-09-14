@@ -359,6 +359,8 @@ Bundled JARs contain `META-INF/MANIFEST.MF` with `Main-Class: io.mindspice.lyra.
 
 Maven artifacts are `io.mindspice:lyra-compiler`, `io.mindspice:lyra-runtime`, and `io.mindspice:lyra-cli`. Public packages begin `io.mindspice.lyra.compiler`, `.runtime`, and `.cli`.
 
+Primitive Lyra type constants are owned solely by the `PrimitiveType` enum in each module (`io.mindspice.lyra.compiler.types.PrimitiveType` and `io.mindspice.lyra.runtime.PrimitiveType`). Neither `LyraType` interface declares constant fields, and neither `PrimitiveType` declares readable aliases such as `Bool`, `Char`, `String`, or `Unit`; Java consumers reference `PrimitiveType.I32` and its siblings directly. A constant field on an interface initialized from an enum that implements that interface is unsafe: when the enum initializes, JLS 12.4.2 initializes its superinterfaces that declare at least one default method first (the pre-SE-9/JVMS phrasing was 'at least one non-abstract, non-static method'), so an interface with default methods is initialized while the enum's constants are still null and observes them as null. Interface static helpers (`array`, `tuple`, `function`, `parse`) remain valid; interface constant fields initialized from an implementing type do not, and the fields are not restored for compatibility. Removing them is an intentional Java source and binary compatibility break: recompiling is required and no alias, deprecated shim, or other compatibility adaptation is provided. This break is a Java API change only; it does not alter the source language contract, the artifact schema version, or the runtime ABI, because generated artifacts reference no `LyraType` or `PrimitiveType` static field.
+
 The minimum Java API shape is:
 
 ```java

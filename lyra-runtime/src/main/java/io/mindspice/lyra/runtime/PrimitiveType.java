@@ -22,11 +22,6 @@ public enum PrimitiveType implements LyraType {
     STRING("String", false, false, 0),
     UNIT("Unit", false, false, 0);
 
-    public static final PrimitiveType Bool = BOOL;
-    public static final PrimitiveType Char = CHAR;
-    public static final PrimitiveType String = STRING;
-    public static final PrimitiveType Unit = UNIT;
-
     private final String spelling;
     private final boolean integer;
     private final boolean signed;

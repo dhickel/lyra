@@ -348,7 +348,7 @@ public class NominalSemanticsTest {
                 """));
         var schema = graph.nominals().getFirst().schema();
         assertEquals(NominalSchema.Kind.STRUCT, schema.kind());
-        assertEquals(List.of(LyraType.I32, LyraType.I64), schema.constructorParameters());
+        assertEquals(List.of(PrimitiveType.I32, PrimitiveType.I64), schema.constructorParameters());
         assertEquals(List.of("x", "y", "label"), schema.members().stream().map(NominalSchema.Member::name).toList());
         assertTrue(schema.members().stream().allMatch(NominalSchema.Member::publicAccess));
         assertEquals(BindingMutability.MUTABLE, schema.members().getFirst().mutability());
@@ -369,7 +369,7 @@ public class NominalSemanticsTest {
                 counter::current[]
                 """));
         var nominal = graph.nominals().getFirst();
-        assertEquals(List.of(LyraType.I32), nominal.schema().constructorParameters());
+        assertEquals(List.of(PrimitiveType.I32), nominal.schema().constructorParameters());
         assertTrue(nominal.constructor().isPresent());
         assertFalse(nominal.schema().members().getFirst().publicAccess());
         assertTrue(graph.captures().stream().anyMatch(capture -> capture.declarationId().equals(nominal.self())));
@@ -457,7 +457,7 @@ public class NominalSemanticsTest {
                     expectedNames.add(name);
                     expectedVisibility.add(struct || pub);
                     expectedMutability.add(mutable ? BindingMutability.MUTABLE : BindingMutability.IMMUTABLE);
-                    if (!initialized) expectedParameters.add(LyraType.I32);
+                    if (!initialized) expectedParameters.add(PrimitiveType.I32);
                     source.append(" let ").append(mutable ? "@mut " : "").append(pub ? "@pub " : "")
                             .append(name).append(" :I32").append(initialized ? " = 7" : "");
                 }

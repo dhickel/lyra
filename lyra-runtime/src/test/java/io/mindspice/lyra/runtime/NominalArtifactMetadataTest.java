@@ -89,7 +89,7 @@ class NominalArtifactMetadataTest {
                 var required = new java.util.ArrayList<LyraType>();
                 int count = 1 + random.nextInt(5);
                 for (int field = 0; field < count; field++) {
-                    LyraType contract = random.nextBoolean() ? LyraType.I32 : nominal.nilable();
+                    LyraType contract = random.nextBoolean() ? PrimitiveType.I32 : nominal.nilable();
                     if (random.nextBoolean()) contract = ArrayType.of(contract);
                     boolean initialized = random.nextBoolean();
                     fields.add(new NominalSchema.Member("field" + field, contract, true, random.nextBoolean(), initialized));

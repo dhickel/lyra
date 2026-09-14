@@ -62,7 +62,7 @@ class NominalTypeContractTest {
     }
 
     @Test void structDataRejectsNestedFunctionsButStopsAtClassReferences() {
-        var callback = new NominalSchema.Member("callback", FunctionType.of(List.of(), LyraType.UNIT), false, true, true);
+        var callback = new NominalSchema.Member("callback", FunctionType.of(List.of(), PrimitiveType.UNIT), false, true, true);
         var object = type("Object");
         var objectSchema = new NominalSchema(object, NominalSchema.Kind.CLASS, List.of(callback), List.of());
         var box = type("Box");
@@ -74,7 +74,7 @@ class NominalTypeContractTest {
                 new NominalSchema(box, NominalSchema.Kind.STRUCT, List.of(nested), List.of(nested.type())))));
         assertThrows(IllegalArgumentException.class, () -> new NominalSchema(box,
                 NominalSchema.Kind.STRUCT, List.of(field), List.of()));
-        assertThrows(IllegalArgumentException.class, () -> new NominalSchema.Member("bad-name", LyraType.I32, true, false, false));
+        assertThrows(IllegalArgumentException.class, () -> new NominalSchema.Member("bad-name", PrimitiveType.I32, true, false, false));
         assertThrows(IllegalArgumentException.class, () -> new NominalTypeId(ModuleId.path("types.lyra"), "bad", "Box", 0));
         assertThrows(IllegalArgumentException.class, () -> new NominalTypeId(ModuleId.path("types.lyra"), "a".repeat(64), "box", 0));
         assertThrows(IllegalArgumentException.class, () -> new NominalTypeId(ModuleId.path("types.lyra"), "a".repeat(64), "Box", -1));
