@@ -6,7 +6,7 @@
 
 ## Git Commit
 
-f0ce3ebda841eb46b201789b78714c19a40fa54b (baseline HEAD; this changelog describes uncommitted Tranche 3 issue-#7 work built on the same worktree as the uncommitted issue-#8 nilable member-read contract fixes)
+dff9ae9c7d0f6dbd4c3bc283ba7a493f5831a11f (integrated Tranche 3 implementation commit)
 
 ## Change Summary
 
@@ -137,7 +137,7 @@ authentication untouched.
 - `.internal-dev/knowledge/nominal-session-linkage.md`: anchor/delegate
   design, sourceLocal interaction, parameter-preservation and exact direct
   retained-member callable-summary recovery rules.
-- `.internal-dev/bugs/retained-nominal/unit-initializer-later-observation-linkage.md`:
+- `.internal-dev/bugs/.archive/retained-nominal/unit-initializer-later-observation-linkage/report.md`:
   Status fixed with test references; historical diagnosis preserved.
 - `.internal-dev/bugs/retained-nominal/lambda-invoked-retained-member-callable-summary.md` (new):
   records the pre-existing `MISSING_CALLABLE_FACT` defect discovered during
@@ -214,9 +214,8 @@ suite or Phase 23/24/release gate was run.
 
 ## Follow-up Items
 
-- Archive the issue #7 bug record after commit (workflow contract).
-- Synchronize and close GitHub issue #15 only after commit evidence is
-  available; its local record remains active until then.
+- The fixed issue #7 bug record is archived under `.internal-dev/bugs/.archive/retained-nominal/`.
+- Synchronize GitHub issue #15 only after broader qualification; its local record remains active because it was discovered out of scope.
 - Extended fuzz campaign (`tools/fuzz-language.sh`) and Phase 23/24 gates
   remain for the completed tranche's release qualification; they were
   intentionally not run for this issue-#7 unit.

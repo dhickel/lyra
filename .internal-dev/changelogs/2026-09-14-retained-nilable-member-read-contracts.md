@@ -6,7 +6,7 @@
 
 ## Git Commit
 
-f0ce3ebda841eb46b201789b78714c19a40fa54b
+dff9ae9c7d0f6dbd4c3bc283ba7a493f5831a11f
 
 ## Change Summary
 
@@ -78,7 +78,7 @@ Tests, independent validators and records:
 - `lyra-repl/src/test/java/io/mindspice/lyra/repl/NominalSessionTest.java`
 - `.internal-dev/specifications/language-core.md`
 - `.internal-dev/knowledge/typed-ir-sealing.md`
-- `.internal-dev/bugs/retained-nominal/nilable-member-read-contract.md`
+- `.internal-dev/bugs/.archive/retained-nominal/nilable-member-read-contract/report.md`
 - `docs/language-testing.md`
 
 ## Behavioral Impact
@@ -117,4 +117,4 @@ session certificate. No other specification changed.
 - Run the default and extended fuzz campaigns (including the new
   `nil-member-*` retained operations) in the Tranche 3 qualification step
   before closing issue #8, together with issue #7's route-delegation work.
-- Archive the nilable-member-read bug report once this changelog is committed.
+- The fixed nilable-member-read report is archived under `.internal-dev/bugs/.archive/retained-nominal/`.

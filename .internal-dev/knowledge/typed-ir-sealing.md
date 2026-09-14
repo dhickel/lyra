@@ -10,7 +10,7 @@ Phase-12 closed typed-IR publication and validation invariants.
 - `.internal-dev/specifications/backend-runtime.md`
 - `.internal-dev/plans/20260830-194512-implement-the-complete-lyra-language-jvm-backend-runtime/plan.md`
 - `.internal-dev/plans/20260914-005314-resolve-and-close-lyra-github-issues-6-13-in-dependency/plan.md`
-- `.internal-dev/bugs/retained-nominal/nilable-member-read-contract.md`
+- `.internal-dev/bugs/.archive/retained-nominal/nilable-member-read-contract/report.md`
 - `lyra-compiler/src/main/java/io/mindspice/lyra/compiler/ir/TypedIrBuilder.java`
 - `lyra-compiler/src/main/java/io/mindspice/lyra/compiler/ir/IrValidator.java`
 - `lyra-compiler/src/main/java/io/mindspice/lyra/compiler/ir/IrProgramMetadata.java`
