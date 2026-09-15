@@ -33,6 +33,20 @@ Do not invent behavior outside the living language and backend/runtime specifica
 
 This is a Java-based compiler/runtime for a standalone functional JVM language, with an optional owner-confined REPL and credential-free loopback protocol v2 transport. The language uses LISP-like forms, unique accessor operators, and a grammar-driven parsing system. The normative target is direct Java 25 class/JAR output and standalone/Java use first, with Java game-engine interop later.
 
+## Versioning and Release Updates
+
+Lyra uses Semantic Versioning for the Maven coordinates, runtime/compiler metadata, CLI/editor artifacts, documentation examples, and installation layout. The current release is `0.1.0`; do not reintroduce `-SNAPSHOT` coordinates or stale versioned paths.
+
+When changing the version, update the root and every module POM, `LyraRuntimeConstants`, artifact/runtime coordinate checks, packaging and launcher scripts, integration-test artifact paths, release-audit tooling, examples, and user documentation together. Verify with a repository search before committing.
+
+Use SemVer stepping consistently:
+
+- While the major version is `0`, increment the minor version for new features or breaking contract changes, and increment the patch version for backward-compatible fixes and documentation-only releases.
+- From `1.0.0` onward, increment major for incompatible language, public API, runtime ABI, artifact, or CLI changes; minor for backward-compatible features; and patch for backward-compatible fixes.
+- Use explicit SemVer prerelease identifiers such as `0.2.0-alpha.1` when a prerelease is needed. Do not use Maven `SNAPSHOT` versions for installed or released artifacts.
+
+A version change is a coherent repository work unit: update the affected records, run the relevant build and release checks, and commit it before starting another unit.
+
 ## Build Commands
 
 - **Compile:** `mvn compile`

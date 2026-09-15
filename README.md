@@ -7,6 +7,42 @@ Lyra is an experimental standalone functional JVM scripting language. The curren
 - Java 25
 - Maven 3.9 or newer for building
 
+## Install
+
+Build the shaded CLI and install it as a versioned release with a stable
+`lyra` launcher:
+
+```sh
+mvn package
+./tools/install-lyra.sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+The installer requires Java 25, generates a Java 25 AOT startup cache for the
+installed CLI/REPL, and places releases under
+`$HOME/.local/share/lyra/versions`. The stable launcher points at the atomic
+`current` release, so upgrades preserve older versions for rollback. A system
+installation can use, for example:
+
+```sh
+sudo ./tools/install-lyra.sh --prefix /opt/lyra --bin-dir /usr/local/bin
+```
+
+The installed command surface is:
+
+```sh
+lyra                 # enter the REPL
+lyra repl            # explicit REPL
+lyra run program.lyra
+lyra compile program.lyra
+lyra attach HOST:PORT
+```
+
+AOT caches are tied to the exact Lyra JAR, Java runtime, operating system, and
+CPU architecture. They are generated locally for each release and ignored
+safely when unavailable or incompatible. `LYRA_JAVA_OPTS` remains available
+for explicit JVM options.
+
 ## Build
 
 ```sh
@@ -37,8 +73,8 @@ See [docs/editor.md](docs/editor.md) for shortcuts, the live-development workflo
 After packaging, the CLI can compile or run a source file:
 
 ```sh
-java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar compile program.lyra
-java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar run program.lyra -- arg1 arg2
+java -jar lyra-cli/target/lyra-cli-0.1.0.jar compile program.lyra
+java -jar lyra-cli/target/lyra-cli-0.1.0.jar run program.lyra -- arg1 arg2
 ```
 
 A runnable bundled artifact requires a public `main :Fn<Array<String>;I32>` export. Use `--help` and `--version` for the exact command surface. Thin artifacts require a compatible `lyra-runtime` on the class path; bundled artifacts include the launcher and runtime. Java 25 preview support is explicit in artifact metadata and launch options.
@@ -46,10 +82,10 @@ A runnable bundled artifact requires a public `main :Fn<Array<String>;I32>` expo
 The interactive and attachment surfaces are:
 
 ```sh
-java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar repl [DIR] [--source-root DIR]...
-java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar attach HOST:PORT
-java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar run ROOT --repl [--repl-port PORT] [--repl-wait] [-- ARGS...]
-java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar compile ROOT --repl --format bundled-jar --output app.jar
+java -jar lyra-cli/target/lyra-cli-0.1.0.jar repl [DIR] [--source-root DIR]...
+java -jar lyra-cli/target/lyra-cli-0.1.0.jar attach HOST:PORT
+java -jar lyra-cli/target/lyra-cli-0.1.0.jar run ROOT --repl [--repl-port PORT] [--repl-wait] [-- ARGS...]
+java -jar lyra-cli/target/lyra-cli-0.1.0.jar compile ROOT --repl --format bundled-jar --output app.jar
 ```
 
 `run --repl` starts an unauthenticated loopback-only listener before `main` and gates live work until the root initializes and registers. `compile --repl` records the same capability without ever listening; compiled artifacts activate only through `-Dlyra.repl.enabled=true` (plus optional `-Dlyra.repl.port` and `-Dlyra.repl.wait`). The full REPL workflow, security warning, and limits are documented in [docs/repl.md](docs/repl.md) with runnable sources under [examples/repl](examples/repl).

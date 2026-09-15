@@ -632,3 +632,24 @@
 
 - This changes private generated implementation members and bytecode but adds no public compiler/runtime API and does not relax issue #7/#8 occurrence, schema, `sourceLocal`, lifecycle or ABI 1.1 authority. Runtime ABI and language-contract versions are unchanged.
 - Numerical completion still requires a full-protocol Phase 23 run with finite positive equivalent S/F scores and `score(S)/score(F) <= 1.10`; reduced smoke evidence is diagnostic only.
+
+## 2026-09-14 — SemVer releases and versioned AOT-enabled CLI installation
+
+### Source and review
+
+- **Source:** owner decision during the CLI installation and Java 25 startup discussion.
+- **Affected specifications:** `backend-runtime.md` deployment surface, repository `AGENTS.md`, `README.md`, and the CLI installation workflow.
+- **Review timing:** when publishing a new release, changing the supported Java profile, or changing the installed launcher/cache layout.
+
+### Decision
+
+- Lyra release and Maven coordinates use Semantic Versioning. The current release is `0.1.0`; installed and released artifacts do not use Maven `SNAPSHOT` coordinates.
+- Before `1.0.0`, new features and breaking contract changes advance the minor version, while compatible fixes and documentation-only changes advance the patch version. From `1.0.0` onward, standard SemVer major/minor/patch meanings apply. Prereleases use explicit SemVer prerelease identifiers.
+- The installer keeps immutable releases under a versioned directory, exposes one stable `lyra` launcher through an atomic `current` pointer, and preserves older releases for rollback. It does not overwrite an active release as the normal upgrade path.
+- Java 25 AOT caches are generated during installation for the exact CLI JAR, Java runtime, operating system and architecture. A cache is optional at launch and is ignored when absent or incompatible; the normal CLI/REPL behavior remains available without it.
+- An installed `lyra` invocation with no arguments enters the REPL. Explicit `repl`, `run`, `compile`, and `attach` subcommands retain the existing CLI surface.
+
+### Justification and rejected alternatives
+
+- Versioned release directories and a stable pointer make upgrades atomic, preserve rollback, and prevent stale AOT cache reuse after a version change. In-place replacement was rejected as the default because it weakens rollback and risks partial upgrades.
+- AOT improves JVM class loading/linking startup without changing Lyra execution semantics. GC tuning, heap sizing and native-image conversion were intentionally excluded from this installation change.

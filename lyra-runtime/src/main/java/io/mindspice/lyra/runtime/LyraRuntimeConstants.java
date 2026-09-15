@@ -24,7 +24,7 @@ public final class LyraRuntimeConstants {
     public static final String RUNTIME_ARTIFACT_ID = "lyra-runtime";
     public static final String COMPILER_ARTIFACT_ID = "lyra-compiler";
     public static final String REPL_ARTIFACT_ID = "lyra-repl";
-    public static final String RUNTIME_VERSION = "1.0-SNAPSHOT";
+    public static final String RUNTIME_VERSION = "0.1.0";
     public static final String COMPILER_VERSION = RUNTIME_VERSION;
     public static final String REPL_VERSION = RUNTIME_VERSION;
     public static final int REPL_CAPABILITY_SCHEMA = ReplCapability.SCHEMA;

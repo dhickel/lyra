@@ -16,7 +16,7 @@ Authentication, credential files, hostile-client isolation, and security-specifi
 ## Local console
 
 ```sh
-java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar repl [DIR] [--source-root DIR]... \
+java -jar lyra-cli/target/lyra-cli-0.1.0.jar repl [DIR] [--source-root DIR]... \
     [--history PATH] [--keymap emacs|vi] [--plain]
 ```
 
@@ -62,11 +62,11 @@ counter->::next[]          // initialized module state is reused
 
 ```sh
 # run: activate an attachable root for one run
-java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar run ROOT.lyra --repl \
+java -jar lyra-cli/target/lyra-cli-0.1.0.jar run ROOT.lyra --repl \
     [--repl-port PORT] [--repl-wait] [-- ARGS...]
 
 # in another terminal
-java -jar lyra-cli/target/lyra-cli-1.0-SNAPSHOT.jar attach 127.0.0.1:PORT
+java -jar lyra-cli/target/lyra-cli-0.1.0.jar attach 127.0.0.1:PORT
 ```
 
 - `run --repl` compiles an attachable, debug-capable root and starts the loopback listener **before** the root is published. Live work is gated until initialization and actual root registration succeed; a client during initialization receives a truthful busy/unavailable result and never touches a partial root.

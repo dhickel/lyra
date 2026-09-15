@@ -91,6 +91,16 @@ if ! "$MAVEN_COMMAND" -Pjmh -pl lyra-compiler -am test-compile >"$BUILD_LOG" 2>&
     fail "profile-scoped test compilation failed"
 fi
 
+printf 'Installing the reactor runtime for JMH dependency resolution...\n'
+# The benchmark launch class path supplies reactor classes directly from target,
+# but Maven still resolves the compiler's runtime coordinate while building the
+# dependency class path. Install only that reactor prerequisite so SemVer
+# releases do not fall back to an obsolete SNAPSHOT from the local repository.
+if ! "$MAVEN_COMMAND" -pl lyra-runtime -am -Dmaven.test.skip=true install >>"$BUILD_LOG" 2>&1; then
+    cat "$BUILD_LOG" >&2
+    fail "reactor runtime installation failed"
+fi
+
 printf 'Resolving the JMH test class path...\n'
 if ! "$MAVEN_COMMAND" -q -Pjmh -pl lyra-compiler dependency:build-classpath \
         -Dmdep.outputFile="$CP_FILE" -Dmdep.includeScope=test >>"$BUILD_LOG" 2>&1; then

@@ -434,6 +434,8 @@ Help/version and successful library compilation exit 0. Source/package/runtime d
 
 Bundled JARs contain `META-INF/MANIFEST.MF` with `Main-Class: io.mindspice.lyra.runtime.LyraLauncher`, artifact metadata, generated classes, launcher, and runtime, and run as `java -jar app.jar` when preview is not required. Preview-requiring output must be started as `java --enable-preview -jar app.jar`; a JAR cannot enable preview itself. Thin JARs contain generated classes/metadata and run/use via an explicit class path with compatible `lyra-runtime`; they do not promise standalone `java -jar`. Both modes use identical module bytecode.
 
+The distributed CLI uses Semantic Versioning and is installed as immutable versioned releases with one stable `lyra` launcher. The launcher may pass a locally generated Java 25 AOT cache for the exact CLI JAR, Java runtime, operating system and architecture; an absent or incompatible cache is a normal fallback and never changes source or artifact semantics. The installed no-argument command enters the local REPL, while explicit `repl`, `run`, `compile` and `attach` commands retain the CLI surface.
+
 ### Public Java API
 
 Maven artifacts are `io.mindspice:lyra-compiler`, `io.mindspice:lyra-runtime`, and `io.mindspice:lyra-cli`. Public packages begin `io.mindspice.lyra.compiler`, `.runtime`, and `.cli`.

@@ -1,5 +1,6 @@
 package io.mindspice.lyra.compiler.artifact;
 
+import io.mindspice.lyra.runtime.LyraRuntimeConstants;
 import io.mindspice.lyra.runtime.PackagingMode;
 import io.mindspice.lyra.runtime.RuntimeAbi;
 import io.mindspice.lyra.runtime.RuntimeProfile;
@@ -13,7 +14,7 @@ import java.util.Optional;
  * Phase-19 public compiler WriteOptions contract.
  */
 final class ArtifactAssemblyOptions {
-    static final String DEFAULT_COMPILER_VERSION = "1.0-SNAPSHOT";
+    static final String DEFAULT_COMPILER_VERSION = LyraRuntimeConstants.COMPILER_VERSION;
     static final String DEFAULT_COMPILER_BUILD = "lyra-phase18";
 
     private final PackagingMode packagingMode;
@@ -51,7 +52,7 @@ final class ArtifactAssemblyOptions {
                     new ArtifactAssemblyException("thin artifacts require an external runtime requirement"));
             if (!requirement.groupId().equals("io.mindspice")
                     || !requirement.artifactId().equals("lyra-runtime")
-                    || !requirement.version().equals("1.0-SNAPSHOT")) {
+                    || !requirement.version().equals(LyraRuntimeConstants.RUNTIME_VERSION)) {
                 throw new ArtifactAssemblyException("thin artifacts require the Lyra runtime coordinate");
             }
             if (requirement.profile().javaClassFileTarget() != 25

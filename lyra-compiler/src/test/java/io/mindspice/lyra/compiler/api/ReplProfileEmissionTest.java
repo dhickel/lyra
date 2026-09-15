@@ -302,7 +302,7 @@ final class ReplProfileEmissionTest {
                         "\"executionProfile\":\"session\"")
                 .replace("{\"name\":\"$lyra$attachmentLifecycle\",\"descriptor\":\"()Lio/mindspice/lyra/runtime/ModuleLifecycle;\"},", "")
                 .replace("{\"name\":\"$lyra$attachmentSafePoint\",\"descriptor\":\"()V\"}", "")
-                .replace("{\"groupId\":\"io.mindspice\",\"artifactId\":\"lyra-runtime\",\"version\":\"1.0-SNAPSHOT\",\"profile\":\"attachable\"}", "");
+                .replace("{\"groupId\":\"io.mindspice\",\"artifactId\":\"lyra-runtime\",\"version\":\"0.1.0\",\"profile\":\"attachable\"}", "");
         assertThrows(LyraCompatibilityException.class,
                 () -> ArtifactMetadataReader.read(attachableWithSessionHooks),
                 "session metadata must not accept an attachment context");

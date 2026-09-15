@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class EditorDistributionIT {
     @TempDir Path project;
     @Test @Timeout(40) void packagedJarStartsACompilerReplAndDebugWorkerUsingOnlyDistributionLibraries() throws Exception {
-        Path jar = Path.of("target/lyra-editor-1.0-SNAPSHOT.jar").toAbsolutePath();
+        Path jar = Path.of("target/lyra-editor-0.1.0.jar").toAbsolutePath();
         assertTrue(Files.isRegularFile(jar));
         Path log = project.resolve("distribution.log");
         String javaCommand = Path.of(System.getProperty("java.home"), "bin", System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java").toString();
