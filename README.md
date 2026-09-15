@@ -31,7 +31,7 @@ sudo ./tools/install-lyra.sh --prefix /opt/lyra --bin-dir /usr/local/bin
 The installed command surface is:
 
 ```sh
-lyra                 # enter the REPL
+lyra                 # installed launcher: enter the REPL
 lyra repl            # explicit REPL
 lyra run program.lyra
 lyra compile program.lyra

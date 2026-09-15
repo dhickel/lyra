@@ -5,7 +5,6 @@ The installed `lyra` launcher requires Java 25. Product version is `0.1.0`.
 ## Commands
 
 ```text
-lyra
 lyra repl [DIR] [--source-root DIR]* [--history PATH] [--plain] [--keymap emacs|vi]
 lyra attach HOST:PORT
 lyra run ROOT [--source-root DIR]* [--repl] [--repl-port PORT] [--repl-wait] [-- ARGS...]
@@ -16,17 +15,17 @@ lyra --help
 lyra --version
 ```
 
-The installed Unix launcher maps no arguments to `repl`. The Java CLI entry point itself requires an explicit command, so use `java -jar lyra-cli-0.1.0.jar repl` when bypassing the installed launcher.
+The installed launcher maps no arguments to `repl`, so `lyra` opens the local REPL. The Java CLI entry point and the repository launcher script require an explicit command; use `java -jar lyra-cli-0.1.0.jar repl` or `lyra repl` when bypassing the installed wrapper. A no-argument direct invocation reports usage status 2.
 
 ## `repl` and `attach`
 
 `repl` opens an empty workspace. `DIR` and repeatable `--source-root` values must be existing directories and configure discovery only. `--history` selects an optional source-only history file. `--plain` disables the JLine console. `--keymap` accepts `emacs` or `vi`.
 
-`attach` requires one loopback `HOST:PORT` endpoint and accepts no options or credentials. IPv6 uses `[HOST]:PORT`. See [REPL and attachment](repl.md).
+`attach` requires one loopback `HOST:PORT` endpoint and accepts no options or credentials. IPv6 uses `[HOST]:PORT`. The Unix and Windows launchers use `JAVA_COMMAND` when set, always add `--enable-native-access=ALL-UNNAMED`, and append options from `LYRA_JAVA_OPTS`. Set `LYRA_JAVA_OPTS=--enable-preview` when starting an artifact whose metadata requires preview. See [REPL and attachment](repl.md).
 
 ## `run`
 
-`ROOT` is an existing `.lyra` path or a logical chain resolved through source roots. A path root adds its parent as the implicit source root only when no explicit source root is given. Only tokens after `--` become `main` arguments.
+`ROOT` is an existing `.lyra` path or a logical chain resolved through source roots. A path root adds its parent as the implicit source root only when no explicit source root is given. In a shell, quote logical roots containing `->` to prevent redirection. Only tokens after `--` become `main` arguments.
 
 The exact executable contract is:
 

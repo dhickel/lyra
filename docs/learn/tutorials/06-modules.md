@@ -39,7 +39,7 @@ let @pub main :Fn<Array<String>;I32> = (=> |args| {
 ## 2. Run the logical root
 
 ```sh
-lyra run app->main --source-root modules
+lyra run 'app->main' --source-root modules
 ```
 
 Expected output:

@@ -1,6 +1,6 @@
 # Operators
 
-Built-in operators have equivalent parenthesized and bracket forms:
+Compiler-recognized operators other than assignment have equivalent parenthesized and bracket forms:
 
 ```lyra
 (+ a b c)

@@ -5,12 +5,12 @@
 Arrays are homogeneous, fixed-size, and identity-bearing.
 
 ```lyra
-let values :Array<I32> = Array[1 2 3]
+let @mut values :Array<I32> = Array[1 2 3]
 let explicit = Array<I32>[1 2 3]
 let empty :Array<I32> = Array<I32>[]
 ```
 
-`Array[...]` needs a complete expected `Array<T>`. `Array<T>[...]` supplies the element type. `Array<T>[]` is an empty array, while bare `Array[]` is Unit.
+A nonempty `Array[...]` may infer its element type from its elements or receive a complete expected `Array<T>` contract. `Array<T>[...]` supplies the element type explicitly. `Array<T>[]` is an empty array, while bare `Array[]` is Unit. An all-`#NIL` array still requires contextual typing.
 
 ```lyra
 let first :I32 = values[0]
@@ -23,7 +23,7 @@ An index must be an integer value representing a valid nonnegative position. Inv
 ## Tuples
 
 ```lyra
-let pair = Tuple[42 "answer"]
+let pair = Tuple[42I32 "answer"]
 let explicit = Tuple<I32,String>[42 "answer"]
 let number :I32 = pair:.0
 ```

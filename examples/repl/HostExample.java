@@ -71,8 +71,8 @@ public final class HostExample {
                         EvaluationSource.of("read.lyra", "count"))).equals("7")) {
                     throw new AssertionError("attached count");
                 }
-                // Java hosts schedule service explicitly on the owner thread.
-                attachment.poll();
+                // Synchronous submission already ran on the owner thread.
+                // Cross-thread callers use submitDispatch(...) and poll().
                 // Close retires control resources; the root survives.
                 attachment.close();
                 // Reopen shares the retained root-lifetime domain.

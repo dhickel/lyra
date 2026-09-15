@@ -15,7 +15,7 @@ A block creates a lexical scope, evaluates forms in order, and returns its final
 
 ## Truthiness
 
-False values are `#F`, `#NIL`, numeric zero, floating `+0.0` and `-0.0`, the empty string, an empty array, and Unit. True values include `#T`, nonzero finite numbers, nonempty strings, nonempty arrays and tuples, functions, characters, and non-nil nominal references. Boolean operators return `Bool` rather than an operand.
+False values are `#F`, `#NIL`, numeric zero, floating `+0.0` and `-0.0`, the empty string, an empty array, and Unit. The language contract treats non-nil nominal references as true, alongside `#T`, nonzero finite numbers, nonempty strings, nonempty arrays and tuples, functions, and characters. The current compiler rejects `struct` and `class` values as truth-testable, so this is a documented implementation/specification discrepancy until reconciled. Boolean operators return `Bool` rather than an operand.
 
 ## Conditionals
 

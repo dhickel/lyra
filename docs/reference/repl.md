@@ -41,7 +41,7 @@ A finite submission may contain imports followed by declarations, assignments, a
 - Arrays, tuples, ranges, nominal objects, and compiler-certified callables retain identity and producer lifetime.
 - A declaration-only submission has no separate value result.
 
-Results contain immutable bounded snapshots rather than live Java objects. Defaults are depth 6, 100 aggregate elements, and 16 KiB rendered output. Snapshots preserve canonical type, nil/Unit distinctions, unsigned values, UTF-16 content, aliases/references, function descriptions, range components, and truncation. Formatting runs no user code. Public nominal members appear in declaration order; private class state is omitted.
+Results contain immutable bounded snapshots rather than live Java objects. Defaults are depth 6, 100 aggregate elements, and 16 KiB rendered output. Sessions retain at most 256 source records and 1 MiB of source text by default. Protocol v2 defaults to 1 MiB frames and 512 KiB source submissions; history files are bounded to 256 entries and 1 MiB. Snapshots preserve canonical type, nil/Unit distinctions, unsigned values, UTF-16 content, aliases/references, function descriptions, range components, and truncation. Formatting runs no user code. Public nominal members appear in declaration order; private class state is omitted.
 
 ## Imports and reload
 
@@ -68,15 +68,18 @@ try (LyraSession session = LyraSession.open()) {
 
 `EvaluationResult` distinguishes success, compilation failure, runtime failure, cancellation, busy, and closed outcomes. Submission/reset/close are owner-thread operations. `cancel(EvaluationId)` is the narrow cross-thread control and affects only the matching active evaluation. Cancellation is cooperative; blocking host I/O or code that does not reach generated boundaries can delay it.
 
-The canonical runnable API example is [`examples/repl/HostExample.java`](../../examples/repl/HostExample.java). It also shows the actual attachment signature:
+The canonical runnable API example is [`examples/repl/HostExample.java`](../../examples/repl/HostExample.java). An attached host first compiles with `LyraCompiler.compileAttachable(...)` and `CompileProfile.ATTACHABLE`, loads the artifact, instantiates the root, and opens the attachment on that root's owner thread:
 
 ```java
 ApplicationAttachment attachment = ApplicationAttachment.open(
         root, compiled.context(), SessionOptions.defaults());
-attachment.submit(EvaluationSource.of("change.lyra", "count := 7"));
-attachment.poll();
+EvaluationResult result = attachment.submit(
+        EvaluationSource.of("change.lyra", "count := 7")); // owner thread
+// Cross-thread callers use submitDispatch(...); the owner services it with poll().
 attachment.close(); // control surface closes; caller-owned root remains open
 ```
+
+The attachment context must come from the matching successful attachable compilation. The root, attachment open/poll/close operations, and generated safe points remain owner-thread confined.
 
 ## Application attachment
 

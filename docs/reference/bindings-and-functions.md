@@ -56,7 +56,7 @@ The compact form omits `=>` and lambda parentheses:
 iter[(0..3:1) |value| ::consume[value]]
 ```
 
-It is accepted only where a complete expected function type exists and cannot directly initialize a named declaration without such context.
+It is accepted only where a complete expected function type exists and cannot directly initialize any named declaration.
 
 Completely typed lambda-valued `let` declarations are signature-predeclared. This permits self recursion, forward function references, and mutual recursion. Ordinary eager values cannot be read before initialization, and eager cycles are errors.
 

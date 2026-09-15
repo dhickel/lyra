@@ -25,7 +25,7 @@ This `main` returns `3`, so the process requests exit status `3`. Tokens before 
 A logical root also works when a source root maps it to a file:
 
 ```sh
-lyra run app->main --source-root src -- first second
+lyra run 'app->main' --source-root src -- first second
 ```
 
 ## Diagnose entry failures

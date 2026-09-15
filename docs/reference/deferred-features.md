@@ -45,4 +45,4 @@ This page distinguishes current absence from an alternative spelling. Deferred c
 | `@const`, `@opt`, `@nilable`, `@static` | Not current modifiers |
 | `nor`, `nand`, `xnor`, `eqt?`, `eqv?` | Not current operators |
 
-Parentheses are callable application, not grouping. There is no general statement separator. Commas outside documented lists are invalid except for the narrow sibling-`::` disambiguation described in [lexical structure](lexical-structure.md#commas).
+Parentheses are callable application, not grouping. There is no general statement separator. Commas outside documented lists are invalid except for the narrow sibling-`::` disambiguation described in [lexical structure](lexical-structure.md#comma-separators).

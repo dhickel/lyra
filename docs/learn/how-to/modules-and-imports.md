@@ -17,7 +17,7 @@ src/
 configure `src` as a source root:
 
 ```sh
-lyra run app->main --source-root src
+lyra run 'app->main' --source-root src
 ```
 
 The logical name `game->math->vector` maps to `game/math/vector.lyra` beneath each configured root. Every root and resolver is queried. Missing and duplicate matches are diagnostics; root order is not a precedence rule.

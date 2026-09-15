@@ -9,8 +9,8 @@ reactor is packaged (`mvn clean verify`) and run from this directory with
 - `app-counter.lyra`: an attachable REPL-capable application for
   `run --repl`/`attach` and compiled `-Dlyra.repl.enabled=true` activation.
 - `HostExample.java`: the synchronous Java evaluation API plus explicit
-  attachment polling (compile with `javac`, run with the reactor test classes
-  on the classpath; see `examples/repl/run-java-host.sh`).
+  attachment lifecycle and owner-thread use (compile with `javac`, run with
+  reactor module classes on the classpath; see `examples/repl/run-java-host.sh`).
 - `run-java-host.sh`: scripted Java-host demonstration.
 
 ## 1. Local console: import, state, std->io, reload
@@ -71,6 +71,7 @@ ordinary main with no listener.
 ./run-java-host.sh
 ```
 
-The script compiles `HostExample.java` and drives a local session (persistent
-counter, cancellation identity, snapshots) and an attached root (explicit
-owner-thread poll, live `count` mutation, service reopen).
+The script compiles `HostExample.java` against the reactor's runtime, compiler,
+and REPL module classes. It drives a persistent local session and an attached
+root, then checks live `count` mutation, explicit owner-thread lifecycle, and
+service reopen.

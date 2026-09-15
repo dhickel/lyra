@@ -11,7 +11,7 @@ struct @pub Vec2 {
 }
 
 class @pub Counter {
-    let @mut value :I32
+    let @pub @mut value :I32
 
     Counter = (=> |start :I32| {
         self:.value := start
@@ -61,7 +61,10 @@ Every field must be definitely initialized on all completing paths. Immutable fi
 let current :I32 = counter:.value
 counter::increment[]
 let saved :Fn<;Unit> = counter:.increment
-counter:.increment := (=> || { counter:.value := 0 })
+let @mut counterForReplacement :Counter = counter
+counterForReplacement:.increment := (=> || {
+    counterForReplacement:.value := 0
+})
 ```
 
 `:.` reads a field or bound method value. `::` selects and invokes a method. `@mut` on a field or method slot permits replacement; it does not label a method as effectful. A method can mutate its receiver's mutable fields through immutable `self`, even when the caller's receiver binding is immutable. Direct external field assignment still requires ordinary mutation authority.

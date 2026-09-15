@@ -112,17 +112,16 @@ try (LyraSession session = LyraSession.open(SessionOptions.defaults())) {
 }
 ```
 
-An attachable application registers its own root explicitly on its owner thread and services work through generated safe points or explicit polling:
+An attachable application registers its own root explicitly on its owner thread. A synchronous submission executes immediately on that thread:
 
 ```java
 ApplicationAttachment attachment = ApplicationAttachment.open(
         root, compiled.context(), SessionOptions.defaults()); // owner thread
 try {
-    // Application code runs normally; generated safe points or explicit polling
-    // service at most one request on this owner thread.
-    while (running) {
-        attachment.poll();
-    }
+    EvaluationResult result = attachment.submit(
+            EvaluationSource.of("change.lyra", "count := 7"));
+    // Cross-thread callers use submitDispatch(...). Generated safe points or
+    // explicit attachment.poll() calls then service one queued request.
 } finally {
     attachment.close(); // closes control resources; the root survives and may reopen
 }
