@@ -36,7 +36,6 @@ This page distinguishes current absence from an alternative spelling. Deferred c
 | `::match[...]` | `match[...]` |
 | `::iter[...]` | `iter[...]` |
 | `::while[...]` | `while[...]` |
-| `cond[...]` | Parenthesized `(cond ...)` only |
 | `Type[args]` for a nominal | `:Type[args]` |
 | `module->:.Type[args]` | `:module->Type[args]` |
 | `name:Type` or `name : Type` | `name :Type` |

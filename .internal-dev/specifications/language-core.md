@@ -571,14 +571,20 @@ dynamically typed value.
 
 ### Conditional expressions
 
-`cond` is a reserved, compiler-recognized, lazy expression with a parenthesized
-spelling only. It has no subject:
+`cond` is a reserved, compiler-recognized, lazy expression with equivalent
+parenthesized and direct-bracket spellings. It has no subject:
 
 ```lyra
 (cond
   (< value 0) -> 0
   (> value 128) -> 128
   _ -> -1)
+
+cond[
+  (< value 0) -> 0
+  (> value 128) -> 128
+  _ -> -1
+]
 ```
 
 Each non-wildcard arm contains one condition expression, tested with ordinary
@@ -587,7 +593,7 @@ is truthy. Only the selected result evaluates. `when` guards are invalid in
 `cond`, and the final arm must be the unconditional `_ -> fallback`, which may be
 the only arm; a fallback-only `cond` evaluates only its fallback. No arm may
 follow the fallback. Arms are whitespace-separated with the same narrow
-sibling-`::` comma exception as match arms. `cond[...]` is not a valid spelling.
+sibling-`::` comma exception as match arms.
 
 `cond` preserves the result-unification, contextual typing, nilability,
 lossless numeric widening, laziness, flow, provenance, effect-order,

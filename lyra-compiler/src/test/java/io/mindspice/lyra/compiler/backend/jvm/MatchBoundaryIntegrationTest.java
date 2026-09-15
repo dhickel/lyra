@@ -22,12 +22,16 @@ class MatchBoundaryIntegrationTest {
                 })
                 let @pub conditional :Fn<Bool;I32> = (=> |enabled|
                   (cond enabled -> ::answer[] _ -> 0))
+                let @pub bracketed :Fn<Bool;I32> = (=> |enabled|
+                  cond[enabled -> ::answer[] _ -> 0])
                 """);
         try (var fixture = new LanguageTestSupport.Fixture(artifact)) {
             assertEquals(42, fixture.call("run", "Fn<I32;I32>", 10));
             assertEquals(0, fixture.call("run", "Fn<I32;I32>", 11));
             assertEquals(42, fixture.call("conditional", "Fn<Bool;I32>", true));
             assertEquals(0, fixture.call("conditional", "Fn<Bool;I32>", false));
+            assertEquals(42, fixture.call("bracketed", "Fn<Bool;I32>", true));
+            assertEquals(0, fixture.call("bracketed", "Fn<Bool;I32>", false));
         }
     }
 

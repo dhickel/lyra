@@ -518,12 +518,7 @@ public final class GrammarMatcher {
             } else if (kind == TokenKind.MATCH) {
                 result = parseBareMatchBracket();
             } else if (kind == TokenKind.COND) {
-                fail(
-                        CompilerDiagnosticCodes.PARSE_INVALID_FORM,
-                        current,
-                        "'cond' is a parenthesized special form; write"
-                                + " (cond condition -> result ... _ -> fallback)");
-                return null;
+                result = parseBareCondBracket();
             } else if (kind.isCallbackLoopKeyword()) {
                 result = parseBareLoopBracket();
             } else if (kind == TokenKind.COLON) {
@@ -775,6 +770,20 @@ public final class GrammarMatcher {
             return parseMatch(start, opening, keyword, TokenKind.RIGHT_BRACKET);
         }
 
+        private GrammarDescriptor parseBareCondBracket() {
+            int start = current;
+            int keyword = advance();
+            if (!at(TokenKind.LEFT_BRACKET)) {
+                fail(
+                        CompilerDiagnosticCodes.PARSE_INVALID_FORM,
+                        keyword,
+                        "'cond' requires bracket arguments in its bracket form: cond[condition ...]");
+                return null;
+            }
+            int opening = advance();
+            return parseCond(start, opening, keyword, TokenKind.RIGHT_BRACKET);
+        }
+
         private GrammarDescriptor parseBareLoopBracket() {
             int start = current;
             TokenKind keywordKind = token(current).kind();
@@ -950,7 +959,8 @@ public final class GrammarMatcher {
             int armCount = 0;
             while (!at(closingKind)) {
                 if (at(TokenKind.EOF)) {
-                    failMissingDelimiter("')' to close cond");
+                    failMissingDelimiter(closingKind == TokenKind.RIGHT_PAREN
+                            ? "')' to close cond" : "']' to close cond");
                     return null;
                 }
                 if (at(TokenKind.DOUBLE_QUESTION)) {

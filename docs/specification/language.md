@@ -346,6 +346,8 @@ expression-list     ::= [comma-list(expression)] ;
 range-token         ::= ".." | "..." ;
 
 match-bracket       ::= "match" "[" match-content "]" ;
+cond-form           ::= "(" "cond" cond-content ")"
+                       | "cond" "[" cond-content "]" ;
 match-content       ::= expression { match-arm } fallback-arm ;
 match-arm           ::= arm-head ["when" expression] "->" expression ;
 arm-head            ::= expression | "_" ;
@@ -856,18 +858,24 @@ All result expressions must have one common type under the same rules as full co
 
 ### 11.5 `cond`
 
-`cond` has no subject and only a parenthesized spelling:
+`cond` has no subject and equivalent parenthesized and direct-bracket spellings:
 
 ```lyra
 (cond
   (< value 0) -> 0
   (> value 128) -> 128
   _ -> -1)
+
+cond[
+  (< value 0) -> 0
+  (> value 128) -> 128
+  _ -> -1
+]
 ```
 
 Each non-wildcard arm contains one condition expression. Conditions evaluate once each, in source order, until one is true. Only that arm's result evaluates. `when` is forbidden. A final `_ -> fallback` is mandatory and may be the only arm. Result typing is identical to value-match result typing.
 
-`cond[...]` is invalid. `(match _ ...)` is obsolete and invalid.
+`(match _ ...)` is obsolete and invalid. The parenthesized and direct-bracket `cond` spellings have identical lazy semantics.
 
 ## 12. Mutation and aliasing
 
@@ -1177,11 +1185,10 @@ The following obsolete spellings are specifically invalid:
 ```text
 ?? pattern -> result
 (match _ condition -> result _ -> fallback)
-::match[...]  ::iter[...]  ::while[...]
+::match[...]  ::cond[...]  ::iter[...]  ::while[...]
 namespace->::match[...] and corresponding receiver forms
 Type[arguments] for nominal construction
 module->:.Type[arguments] for qualified nominal construction
-cond[...]
 ```
 
 Plain structs, classes, and value matching are current features. An excluded test or corpus category named `class` or `match` refers to an excluded subfeature such as inheritance or destructuring, not to the entire current feature.

@@ -571,8 +571,18 @@ public final class Parser {
         }
 
         private Object replayCond(GrammarDescriptor descriptor) {
-            SourceSpan opening = cursor.consume(TokenKind.LEFT_PAREN, descriptor);
-            SourceSpan keyword = cursor.consume(TokenKind.COND, descriptor);
+            SourceSpan opening;
+            SourceSpan keyword;
+            TokenKind closingKind;
+            if (cursor.currentToken(descriptor).kind() == TokenKind.LEFT_PAREN) {
+                opening = cursor.consume(TokenKind.LEFT_PAREN, descriptor);
+                keyword = cursor.consume(TokenKind.COND, descriptor);
+                closingKind = TokenKind.RIGHT_PAREN;
+            } else {
+                keyword = cursor.consume(TokenKind.COND, descriptor);
+                opening = cursor.consume(TokenKind.LEFT_BRACKET, descriptor);
+                closingKind = TokenKind.RIGHT_BRACKET;
+            }
             List<SyntaxNode.MatchArm> arms = new ArrayList<>();
             for (GrammarDescriptor child : descriptor.children()) {
                 if (child.kind() == ProductionKind.COMMA) {
@@ -584,7 +594,7 @@ public final class Parser {
                 }
                 arms.add(asMatchArm(replay(child), child));
             }
-            SourceSpan closing = cursor.consume(TokenKind.RIGHT_PAREN, descriptor);
+            SourceSpan closing = cursor.consume(closingKind, descriptor);
             return new SyntaxNode.Cond(arms, keyword, opening, closing, sourceView.span(descriptor));
         }
 

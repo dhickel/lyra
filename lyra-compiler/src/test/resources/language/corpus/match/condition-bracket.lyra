@@ -1,0 +1,2 @@
+// match	value	I32	7	bracket cond has the same lazy semantics as parenthesized cond
+let @pub run :Fn<;I32> = (=> || cond[#T -> 7 _ -> 9])

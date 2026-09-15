@@ -310,7 +310,8 @@ class FuzzInfrastructureTest {
         String conditionalSource = conditional.source();
         assertTrue(conditionalSource.contains("(cond (conditionOne) -> (+ a 2) "
                 + "(conditionTwo) -> (- b 2) _ -> (% 1 b))"));
-        assertFalse(conditionalSource.contains("cond[(conditionOne)"));
+        assertTrue(conditionalSource.contains("cond[(conditionOne) -> (+ a 2) "
+                + "(conditionTwo) -> (- b 2) _ -> (% 1 b)]"));
         assertFalse(conditionalSource.contains("match_"));
         assertEquals(new TypedProgramGenerator.MatchEvaluation(13, null), conditional.evaluate(1, 7));
         assertEquals(new TypedProgramGenerator.MatchEvaluation(30, null), conditional.evaluate(0, 2));

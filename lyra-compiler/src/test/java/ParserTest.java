@@ -184,7 +184,8 @@ public final class ParserTest {
                         + "let second = match[condition #T -> yes _ -> no] "
                         + "let third = (cond condition -> yes _ -> no) "
                         + "let fourth = (match value game->:.value when game->::ready[] "
-                        + "-> yes _ -> no)").syntax();
+                        + "-> yes _ -> no) "
+                        + "let fifth = cond[condition -> yes _ -> no]").syntax();
         SyntaxNode.Match traditional = (SyntaxNode.Match) let(program, "first").initializer();
         check(traditional.directAccessorSpan().isEmpty()
                         && traditional.subject() instanceof SyntaxNode.Identifier subject
@@ -216,6 +217,11 @@ public final class ParserTest {
                         && qualified.arms().getFirst().guard().orElseThrow()
                         instanceof SyntaxNode.NamespaceDirectCall,
                 "namespace-qualified pattern and guard expressions remain valid match heads");
+        SyntaxNode.Cond bracketedCond = (SyntaxNode.Cond) let(program, "fifth").initializer();
+        check(bracketedCond.arms().size() == 2
+                        && bracketedCond.arms().getFirst().pattern().isPresent()
+                        && bracketedCond.arms().getLast().wildcard(),
+                "bracket cond retains ordered condition and fallback arms");
     }
 
     @Test

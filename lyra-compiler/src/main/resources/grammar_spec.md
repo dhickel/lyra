@@ -187,7 +187,8 @@ have exactly one.  Their operand types and all member legality are semantic.
 
 ```ebnf
 match-bracket      ::= 'match' '[' match-content ']' ;
-cond-form          ::= '(' 'cond' cond-content ')' ;
+cond-form          ::= '(' 'cond' cond-content ')'
+                     | 'cond' '[' cond-content ']' ;
 iter-bracket       ::= 'iter' '[' expression-list ']' ;
 while-bracket      ::= 'while' '[' expression-list ']' ;
 match-content      ::= expression match-arm* fallback-arm ;
@@ -198,7 +199,7 @@ cond-arm           ::= expression '->' expression ;
 fallback-arm       ::= '_' '->' expression ;
 ```
 
-The obsolete `::match[...]`, `::iter[...]` and `::while[...]` bracket spellings,
+The obsolete `::match[...]`, `::cond[...]`, `::iter[...]` and `::while[...]` bracket spellings,
 the obsolete `??` arm marker, and the obsolete conditional `(match _ ...)` form
 are rejected with structured source-mapped diagnostics. Arms may be separated by
 a comma only when the following arm begins with `::`.
@@ -219,8 +220,8 @@ separated. Patterns may be arbitrary value expressions; later semantic phases
 check typed equality compatibility, guard/condition truthiness, and result type
 unification. No arm bindings, type patterns, or destructuring are provided.
 
-The parenthesized and bracketed match forms produce the same match structure, and
-`cond` shares their lazy arm structure without a subject. All are special forms,
+The parenthesized and bracketed match and `cond` forms produce the same lazy arm
+structure, with `cond` omitting the subject. All are special forms,
 not ordinary eager calls. The matcher preserves each arm's pattern, optional
 guard, result, wildcard role, arrow, and source spans.
 

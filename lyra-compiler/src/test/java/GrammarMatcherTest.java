@@ -286,6 +286,7 @@ public final class GrammarMatcherTest {
                 + "let noArgs :Fn<;Unit> = (=> || ()) "
                 + "let matched = match[1 1 -> 2, ::pattern[] -> 3 _ -> 0] "
                 + "let conditional = (cond #T -> 1, ::condition[] -> 2 _ -> 0) "
+                + "let bracketConditional = cond[#T -> 1 _ -> 0] "
                 + "let constructed = :Thing[] "
                 + "let negative = -1 "
                 + "let preserved = (::callee[]) "
@@ -293,7 +294,7 @@ public final class GrammarMatcherTest {
                 + "let waited = while[|| #F || ()] "
                 + "x := 1";
         GrammarProgram program = success(source);
-        check(program.forms().size() == 25, "all header and source forms are matched");
+        check(program.forms().size() == 26, "all header and source forms are matched");
         check(program.forms().getFirst().kind() == ProductionKind.IMPORT_DECLARATION,
                 "imports are first-class descriptors");
         check(program.forms().getLast().kind() == ProductionKind.REASSIGNMENT,
@@ -382,7 +383,9 @@ public final class GrammarMatcherTest {
                 CompilerDiagnosticCodes.PARSE_OBSOLETE_DIRECT_SPECIAL_FORM);
         expectFailure("let x = (match 1 1 -> 2, _ -> 3)", CompilerDiagnosticCodes.PARSE_INVALID_COMMA);
         expectFailure("let x = (cond #T -> 1, _ -> 0)", CompilerDiagnosticCodes.PARSE_INVALID_COMMA);
-        expectFailure("let x = cond[#T -> 1 _ -> 0]", CompilerDiagnosticCodes.PARSE_INVALID_FORM);
+        success("let x = cond[#T -> 1 _ -> 0]");
+        expectFailure("let x = ::cond[#T -> 1 _ -> 0]",
+                CompilerDiagnosticCodes.PARSE_OBSOLETE_DIRECT_SPECIAL_FORM);
         success("let x = -1 let y = -128I8 let z = -0.0 let e = -1.0e3 "
                 + "let b = -[9223372036854775808I64]");
         expectFailure("let x = - 1", CompilerDiagnosticCodes.PARSE_INVALID_FORM);

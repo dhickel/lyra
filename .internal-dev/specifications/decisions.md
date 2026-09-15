@@ -557,7 +557,7 @@
 
 ### Decision
 
-- **Decision (issue #11):** value `match` always takes a real subject and uses marker-free arms in both spellings. The former wildcard-subject conditional mode is removed and replaced by a dedicated, parenthesized-only `(cond condition -> result ... _ -> fallback)` special form with the same lazy arm, truthiness, unification, nilability, fallback and tail behavior. `??` and `(match _ ...)` are rejected with structured source-mapped diagnostics.
+- **Decision (issue #11):** value `match` always takes a real subject and uses marker-free arms in both spellings. The former wildcard-subject conditional mode is removed and replaced by a dedicated `(cond condition -> result ... _ -> fallback)` special form with equivalent parenthesized and direct-bracket spellings, and the same lazy arm, truthiness, unification, nilability, fallback and tail behavior. `??` and `(match _ ...)` are rejected with structured source-mapped diagnostics.
 - **Decision (issue #9):** `match`, `cond`, `iter` and `while` are reserved forms that use their bare bracket spelling (`match[...]`, `iter[...]`, `while[...]`). `::` remains reserved for direct calls of resolved local or imported function and method names; `::match[...]`, `::iter[...]` and `::while[...]` — including qualified and receiver readings — are rejected.
 - **Decision (issue #10):** a `-` immediately adjacent to a numeric literal in an expression position is a bare negative literal normalized to the existing unary-minus operation, so `-1`, `-128I8`, `-0.0` and `-1.0e3` are accepted with unchanged exactness, suffix, range, underflow, nonfinite and unsigned rejection. A trivia-separated `-` remains the bracket-required operator, and `--1` is never a literal.
 - **Decision (issue #12):** nominal construction is explicit, `:Type[args]` or `:module->Type[args]`, with no whitespace after the colon. Resolution, not capitalization, decides: the obsolete unprefixed `Type[args]` and qualified `model->:.Counter[0]` are rejected when their bracket target resolves to a nominal type, while uppercase value indexing, primitive/`String` conversions and `Array`/`Tuple` literal spellings are preserved unchanged. Construction continues to lower to the existing declared factory semantics.
@@ -575,11 +575,14 @@
 
 - Keeping `??` as an optional marker or adding an edition/legacy mode (the accepted change is immediate and has no alias, edition selector or second parsing mode).
 - Keeping conditional mode inside `match` as a second subject form.
-- A bracket `cond[...]` spelling (the conditional form is parenthesized only).
 - Accepting `::match`/`::iter`/`::while` as aliases or deprecating them gradually.
 - Treating any leading `-` as part of a literal regardless of trivia adjacency.
 - Requiring `:Type` for primitive conversions or `Array`/`Tuple` literals, or making uppercase identifiers construct.
 - General comma separation in blocks or arms, or general parenthesized grouping.
+
+### Amendment: direct-bracket `cond` spelling
+
+The initial parenthesized-only boundary was removed after implementation review. `cond[...]` is now accepted as the direct-bracket equivalent of `(cond ...)`; it remains a reserved special form, not an ordinary callable or a `::cond[...]` alias. The parser, replay descriptors, syntax tree, semantic pipeline, typed IR, lowering, diagnostics, conformance corpus, and documentation preserve one conditional meaning across both spellings.
 
 ### Caveat (accepted break) and versioning
 

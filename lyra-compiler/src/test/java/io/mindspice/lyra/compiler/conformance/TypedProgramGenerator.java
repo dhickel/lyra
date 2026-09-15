@@ -95,7 +95,11 @@ final class TypedProgramGenerator {
             String expression;
             if (conditional) {
                 String maybeValue = addExpression("a", conditionOffset);
-                String match = "(cond (conditionOne) -> " + addExpression("a", firstDelta)
+                String match = brackets
+                        ? "cond[(conditionOne) -> " + addExpression("a", firstDelta)
+                        + " (conditionTwo) -> " + addExpression("b", secondDelta)
+                        + " _ -> (% 1 b)]"
+                        : "(cond (conditionOne) -> " + addExpression("a", firstDelta)
                         + " (conditionTwo) -> " + addExpression("b", secondDelta)
                         + " _ -> (% 1 b))";
                 expression = "let @nil maybe :I32 = ((== a 0) -> #NIL : " + maybeValue + ")\n"

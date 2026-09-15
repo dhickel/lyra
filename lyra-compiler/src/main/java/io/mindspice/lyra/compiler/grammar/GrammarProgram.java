@@ -182,7 +182,7 @@ public record GrammarProgram(
         int opening = descriptor.metadata().openingTokenIndex();
         int closing = descriptor.metadata().closingTokenIndex();
         boolean prefixMayPrecedeOpening = switch (descriptor.kind()) {
-            case NOMINAL_DECLARATION, ARRAY_LITERAL, TUPLE_LITERAL, UNIT_LITERAL, MATCH, CONSTRUCTION,
+            case NOMINAL_DECLARATION, ARRAY_LITERAL, TUPLE_LITERAL, UNIT_LITERAL, MATCH, COND, CONSTRUCTION,
                     CALLBACK_LOOP_BRACKET -> true;
             default -> false;
         };
@@ -746,14 +746,18 @@ public record GrammarProgram(
         int closing = descriptor.metadata().closingTokenIndex();
         int start = descriptor.startTokenIndex();
         int keyword = keywordIndex(descriptor, source, TokenKind.COND);
+        boolean bracketed = source.tokens().get(opening).kind() == TokenKind.LEFT_BRACKET;
+        boolean parenthesized = !bracketed && start == opening;
+        boolean bare = bracketed && source.tokens().get(start).kind() == TokenKind.COND;
+        int expectedKeyword = parenthesized ? opening + 1 : start;
         if (closing != descriptor.endTokenIndex() - 1
-                || start != opening
-                || source.tokens().get(opening).kind() != TokenKind.LEFT_PAREN
-                || keyword != opening + 1
+                || (!parenthesized && !bare)
+                || keyword != expectedKeyword
                 || descriptor.children().isEmpty()) {
             throw new IllegalArgumentException("cond has inconsistent surface delimiters");
         }
-        validateArmSequence(descriptor.children(), 0, keyword + 1, closing, source, "cond");
+        validateArmSequence(descriptor.children(), 0,
+                bracketed ? opening + 1 : keyword + 1, closing, source, "cond");
     }
 
     /** Validates a marker-free arm sequence with its optional sibling-:: commas. */
@@ -1212,8 +1216,11 @@ public record GrammarProgram(
                         descriptor.kind());
             }
             case COND -> {
-                requireToken(source.tokens().get(opening), TokenKind.LEFT_PAREN, descriptor.kind());
-                requireToken(source.tokens().get(closing), TokenKind.RIGHT_PAREN, descriptor.kind());
+                boolean bracketed = openingKind == TokenKind.LEFT_BRACKET;
+                requireToken(source.tokens().get(opening),
+                        bracketed ? TokenKind.LEFT_BRACKET : TokenKind.LEFT_PAREN, descriptor.kind());
+                requireToken(source.tokens().get(closing),
+                        bracketed ? TokenKind.RIGHT_BRACKET : TokenKind.RIGHT_PAREN, descriptor.kind());
             }
             case CONSTRUCTION -> {
                 requireToken(source.tokens().get(opening), TokenKind.LEFT_BRACKET, descriptor.kind());

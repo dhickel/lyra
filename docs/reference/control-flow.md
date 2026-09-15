@@ -55,16 +55,22 @@ Every match ends with an unguarded `_ -> fallback`; the fallback may be the only
 
 ## Cond
 
-`cond` is subjectless and parenthesized only:
+`cond` is subjectless and supports equivalent parenthesized and direct-bracket forms:
 
 ```lyra
 (cond
   (< value 0) -> 0
   (> value 100) -> 100
   _ -> value)
+
+cond[
+  (< value 0) -> 0
+  (> value 100) -> 100
+  _ -> value
+]
 ```
 
-Conditions evaluate once in order using ordinary truthiness. The first truthy result is selected. `when` is not valid in `cond`. A final `_` fallback is mandatory. `cond[...]` is not valid.
+Conditions evaluate once in order using ordinary truthiness. The first truthy result is selected. `when` is not valid in `cond`. A final `_` fallback is mandatory. Both spellings have identical lazy evaluation and result typing.
 
 ## Ranges and `iter`
 

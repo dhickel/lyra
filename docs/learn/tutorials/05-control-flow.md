@@ -57,7 +57,11 @@ A block evaluates forms in source order and returns its final expression. A decl
 
 `match` always has a real subject, evaluates it once, tests arms in order, and requires a final unguarded `_ ->` fallback. `when` guards run only after their pattern matches.
 
-`cond` has no subject. It tests conditions in order and also requires a final `_ ->` fallback. `cond[...]` is not valid.
+`cond` has no subject. It tests conditions in order and also requires a final `_ ->` fallback. The parenthesized and direct-bracket spellings are equivalent:
+
+```lyra
+cond[#T -> "yes" _ -> "no"]
+```
 
 The final then-only conditional executes its body because `#T` is truthy and has `Unit` type.
 
