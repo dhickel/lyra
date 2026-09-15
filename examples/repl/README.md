@@ -2,7 +2,7 @@
 
 These sources drive the documented workflows end to end. All commands assume the
 reactor is packaged (`mvn clean verify`) and run from this directory with
-`CLI=../lyra-cli/target/lyra-cli-0.1.0.jar`.
+`CLI=../../lyra-cli/target/lyra-cli-0.1.0.jar`.
 
 - `counter.lyra`, `shapes.lyra`, `main-counter.lyra`: module imports, pinned
   reuse, `std->io`, and `\reload` via the local console.
@@ -21,18 +21,18 @@ java -jar $CLI repl .    # empty scratch workspace; this directory is only a sea
 
 ```lyra
 import counter
-counter->::next[]          ; 1
-counter->::next[]          ; 2  -- pinned instance, no rerun of the initializer
-import std->io io->::println["hi "]
-\bindings                  ; committed declarations/types only
-\reload counter            ; fresh closure, reports scheduled/attempted/completed
-counter->::next[]          ; continues from the rebuilt module's initializer
+counter->::next[]          // result: 1
+counter->::next[]          // result: 2; the pinned initializer does not rerun
+import std->io
+io->::println["hi "]
+\bindings                  // committed declarations and types only
+\reload counter            // fresh closure; reports scheduled/attempted/completed
+counter->::next[]          // uses the rebuilt module's initializer
 \quit
 ```
 
 Edit `counter.lyra` between `\reload` calls to observe changed topology; the old
-value already bound into scope keeps its original producer. The example uses
-`;` for presentation comments; Lyra source itself uses `//` comments.
+value already bound into scope keeps its original producer.
 
 ## 2. Imported aggregates and callable values
 

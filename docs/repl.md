@@ -105,21 +105,27 @@ The local evaluation API is synchronous and opening-thread-owned:
 
 ```java
 try (LyraSession session = LyraSession.open(SessionOptions.defaults())) {
-    EvaluationResult result = session.submit(SourceSubmission.of("let @mut count :I32 = 1", "label"));
+    EvaluationResult result = session.submit(
+            EvaluationSource.of("counter.lyra", "let @mut count :I32 = 1"));
     // ... read immutable result/snapshot metadata, then
-    session.submit(SourceSubmission.of("count := 42", "label"));
+    session.submit(EvaluationSource.of("update.lyra", "count := 42"));
 }
 ```
 
 An attachable application registers its own root explicitly on its owner thread and services work through generated safe points or explicit polling:
 
 ```java
-ApplicationAttachment attachment = ApplicationAttachment.open(root, config); // owner thread
-// application runs normally; generated safe points service at most one request
-while (running) {
-    attachment.poll(); // explicit owner-thread scheduling for Java hosts
+ApplicationAttachment attachment = ApplicationAttachment.open(
+        root, compiled.context(), SessionOptions.defaults()); // owner thread
+try {
+    // Application code runs normally; generated safe points or explicit polling
+    // service at most one request on this owner thread.
+    while (running) {
+        attachment.poll();
+    }
+} finally {
+    attachment.close(); // closes control resources; the root survives and may reopen
 }
-attachment.close(); // closes control resources; the root survives and may reopen
 ```
 
 Requests are non-reentrant, one evaluation is active at a time, and results are immutable bounded typed snapshots. See `lyra-repl`'s `SessionJavaConsumerTest` and `ApplicationAttachmentJavaConsumerTest` for forked consumer fixtures and `examples/repl` for a complete host.

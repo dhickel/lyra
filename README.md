@@ -57,6 +57,16 @@ The reactor contains five classpath modules:
 - `lyra-cli`: command parsing, compilation/execution commands, REPL/attachment adapters, and launch scripts;
 - `lyra-editor`: JavaFX workspace, compiler-backed editing, function/entry execution, persistent REPL, and JDI debugging. JavaFX is confined to this module.
 
+## Documentation
+
+- [Learning path](docs/learn/index.md): progressive tutorials, task guides, explanations, and a reference map
+- [Formal language specification](docs/specification/language.md): normative current language rules
+- [Language and product reference](docs/reference/index.md): lookup pages for syntax, tools, APIs, REPL, and editor behavior
+- [Readable grammar](lyra-compiler/src/main/resources/grammar_spec.md): concrete syntax aid subordinate to the formal specification
+- [REPL and attachment guide](docs/repl.md)
+- [Editor guide](docs/editor.md)
+- [Language testing guide](docs/language-testing.md)
+
 ## Editor
 
 ```sh
