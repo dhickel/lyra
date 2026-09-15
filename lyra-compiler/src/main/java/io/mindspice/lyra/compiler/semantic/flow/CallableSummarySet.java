@@ -11,6 +11,7 @@ import io.mindspice.lyra.compiler.types.LyraType;
 import io.mindspice.lyra.compiler.types.TupleType;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -34,6 +35,7 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
     private final Map<DeclarationId, LambdaId> lambdaByDeclaration;
     private final Map<DeclarationId, ModuleId> intrinsicDeclarations;
     private final List<CallableScc> components;
+    private final Set<DeclarationId> deferredCallableDeclarations;
     private final SummaryLimits limits;
 
     public CallableSummarySet(
@@ -41,10 +43,20 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
             Map<DeclarationId, LambdaId> lambdaByDeclaration,
             Map<DeclarationId, ModuleId> intrinsicDeclarations,
             List<CallableScc> components) {
+        this(summaries, lambdaByDeclaration, intrinsicDeclarations, components, Set.of());
+    }
+
+    public CallableSummarySet(
+            List<CallableSummary> summaries,
+            Map<DeclarationId, LambdaId> lambdaByDeclaration,
+            Map<DeclarationId, ModuleId> intrinsicDeclarations,
+            List<CallableScc> components,
+            Set<DeclarationId> deferredCallableDeclarations) {
         Objects.requireNonNull(summaries, "summaries");
         Objects.requireNonNull(lambdaByDeclaration, "lambdaByDeclaration");
         Objects.requireNonNull(intrinsicDeclarations, "intrinsicDeclarations");
         Objects.requireNonNull(components, "components");
+        Objects.requireNonNull(deferredCallableDeclarations, "deferredCallableDeclarations");
 
         TreeMap<LambdaId, CallableSummary> ordered = new TreeMap<>();
         for (CallableSummary summary : summaries) {
@@ -98,7 +110,15 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
         this.summaries = Collections.unmodifiableMap(new LinkedHashMap<>(ordered));
         this.lambdaByDeclaration = Collections.unmodifiableMap(new LinkedHashMap<>(declarationIndex));
         this.intrinsicDeclarations = Collections.unmodifiableMap(new LinkedHashMap<>(intrinsicIndex));
+        TreeSet<DeclarationId> deferred = new TreeSet<>();
+        for (DeclarationId declaration : deferredCallableDeclarations) {
+            DeclarationId value = Objects.requireNonNull(declaration, "deferred callable declaration");
+            if (!intrinsicIndex.containsKey(value) && !declarationIndex.containsKey(value)) {
+                deferred.add(value);
+            }
+        }
         this.components = List.copyOf(orderedComponents);
+        this.deferredCallableDeclarations = Collections.unmodifiableSet(deferred);
         this.limits = ordered.isEmpty()
                 ? SummaryLimits.DEFAULT
                 : ordered.firstEntry().getValue().limits();
@@ -177,8 +197,18 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
             }
         });
         declarations.keySet().forEach(intrinsics::remove);
+        TreeSet<DeclarationId> deferred = new TreeSet<>(predecessor.deferredCallableDeclarations);
+        deferred.addAll(current.deferredCallableDeclarations);
+        deferred.removeAll(declarations.keySet());
+        deferred.removeAll(intrinsics.keySet());
+        List<CallableSummary> orderedSummaries = new ArrayList<>(summaries.values());
         return new CallableSummarySet(
-                new ArrayList<>(summaries.values()), declarations, intrinsics);
+                orderedSummaries, declarations, intrinsics,
+                singletonComponents(orderedSummaries), deferred);
+    }
+
+    public Set<DeclarationId> deferredCallableDeclarations() {
+        return deferredCallableDeclarations;
     }
 
     public Map<LambdaId, CallableSummary> summaries() {
@@ -255,7 +285,9 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
         }
         List<CallableScc> orderedComponents = new ArrayList<>(selectedComponents);
         orderedComponents.sort(Comparator.comparingInt(CallableScc::ordinal));
-        return new CallableSummarySet(selected, declarations, intrinsics, orderedComponents);
+        TreeSet<DeclarationId> deferred = new TreeSet<>(deferredCallableDeclarations);
+        deferred.retainAll(selectedDeclarations);
+        return new CallableSummarySet(selected, declarations, intrinsics, orderedComponents, deferred);
     }
 
     public Map<DeclarationId, LambdaId> lambdaByDeclaration() {
@@ -314,12 +346,14 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
                 && summaries.equals(set.summaries)
                 && lambdaByDeclaration.equals(set.lambdaByDeclaration)
                 && intrinsicDeclarations.equals(set.intrinsicDeclarations)
-                && components.equals(set.components);
+                && components.equals(set.components)
+                && deferredCallableDeclarations.equals(set.deferredCallableDeclarations);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(summaries, lambdaByDeclaration, intrinsicDeclarations, components);
+        return Objects.hash(summaries, lambdaByDeclaration, intrinsicDeclarations, components,
+                deferredCallableDeclarations);
     }
 
     @Override
@@ -342,6 +376,9 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
         }
         for (CallableScc component : components) {
             result.append("scc=").append(component.canonicalKey()).append('\n');
+        }
+        for (DeclarationId declaration : deferredCallableDeclarations) {
+            result.append("deferred=").append(declaration).append('\n');
         }
         return result.toString();
     }
@@ -1580,10 +1617,20 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
                 new ArrayList<>(), new ArrayList<>(), new LinkedHashSet<>());
         TargetResolution resolution = target.map(this::targetAlternatives)
                 .orElseGet(TargetResolution::empty);
-        return resolution.complete()
+        return (resolution.complete()
                 && !resolution.alternatives().isEmpty()
                 && resolution.alternatives().stream()
-                .allMatch(value -> value.lambdaId().map(active::contains).orElse(false));
+                .allMatch(value -> value.lambdaId().map(active::contains).orElse(false)))
+                || isDeferredCallableTarget(target.orElse(null));
+    }
+
+    private boolean isDeferredCallableTarget(FormulaAlternatives target) {
+        return target != null && !target.formulas().isEmpty()
+                && target.formulas().stream().allMatch(formula ->
+                formula.resultRoute().isRoot()
+                        && formula.type().withoutQualifiers() instanceof FunctionType
+                        && formula instanceof ValueFormula.Declaration declaration
+                        && deferredCallableDeclarations.contains(declaration.declarationId()));
     }
 
     private Optional<FormulaAlternatives> substituteAlternatives(
@@ -1771,6 +1818,12 @@ public final class CallableSummarySet implements ImmutablePhaseArtifact {
         private SummaryTransferResult.Failure result() {
             return result;
         }
+    }
+
+    static List<CallableScc> singletonComponentsForTransfer(
+            Collection<CallableSummary> summaries) {
+        Objects.requireNonNull(summaries, "summaries");
+        return singletonComponents(new ArrayList<>(summaries));
     }
 
     private static List<CallableScc> singletonComponents(List<CallableSummary> summaries) {

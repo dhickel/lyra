@@ -3,6 +3,7 @@ package io.mindspice.lyra.compiler.ir;
 import io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes;
 import io.mindspice.lyra.compiler.diagnostic.Diagnostic;
 import io.mindspice.lyra.compiler.diagnostic.PhaseResult;
+import io.mindspice.lyra.compiler.identity.CaptureId;
 import io.mindspice.lyra.compiler.identity.DeclarationId;
 import io.mindspice.lyra.compiler.identity.FlowSiteId;
 import io.mindspice.lyra.compiler.identity.ReferenceId;
@@ -10,6 +11,7 @@ import io.mindspice.lyra.compiler.lex.TokenKind;
 import io.mindspice.lyra.compiler.semantic.AccessKind;
 import io.mindspice.lyra.compiler.semantic.DeclarationKind;
 import io.mindspice.lyra.compiler.semantic.MutationKind;
+import io.mindspice.lyra.compiler.semantic.ResolvedCapture;
 import io.mindspice.lyra.compiler.semantic.ResolvedDeclaration;
 import io.mindspice.lyra.compiler.semantic.ResolvedExport;
 import io.mindspice.lyra.compiler.semantic.ResolvedLambda;
@@ -30,6 +32,8 @@ import io.mindspice.lyra.compiler.source.SourceSpan;
 import io.mindspice.lyra.compiler.types.ConversionKind;
 import io.mindspice.lyra.compiler.types.LyraType;
 import io.mindspice.lyra.compiler.types.PrimitiveType;
+import io.mindspice.lyra.compiler.types.FunctionType;
+import io.mindspice.lyra.compiler.types.NominalType;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -414,16 +418,160 @@ public final class TypedIrBuilder {
             arguments.add(lowerExpression(child));
         }
         return new IrNode.CallableCall(expression.span(), expression.type(), target, arguments,
-                findCallId(site), Optional.of(site));
+                findCallId(site), Optional.of(site), callableStorageRouteProof(
+                        expression.children().getFirst()));
+    }
+
+    /**
+     * Issues the only optimized-call fact.  This runs after resolution and
+     * typing, so the fact is tied to the exact source occurrence, declaration,
+     * import/capture route, and callable signature rather than to a node shape.
+     */
+    private Optional<CallableStorageRouteProof> callableStorageRouteProof(
+            TypedExpression target) {
+        if (target.type().isNilable()
+                || !(target.type().withoutQualifiers() instanceof FunctionType function)) {
+            return Optional.empty();
+        }
+        FlowSiteId targetSite = typedGraph.flowSiteId(target);
+        if (target.kind() == TypedExpressionKind.MEMBER_ACCESS
+                && target.declarationId().isPresent()
+                && target.children().size() == 1
+                && target.children().getFirst().type().withoutQualifiers() instanceof NominalType receiver) {
+            Optional<ResolvedDeclaration> member = typedGraph.resolvedGraph()
+                    .declaration(target.declarationId().orElseThrow());
+            Optional<Integer> index = typedGraph.resolvedGraph().nominals().stream()
+                    .filter(nominal -> nominal.schema().type().equals(receiver))
+                    .flatMap(nominal -> java.util.stream.IntStream.range(0, nominal.members().size())
+                            .filter(candidate -> nominal.members().get(candidate)
+                                    .equals(target.declarationId().orElseThrow())).boxed())
+                    .findFirst();
+            if (member.filter(value -> value.kind() == DeclarationKind.MEMBER
+                            && value.contract().orElseThrow().valueType().equals(target.type()))
+                    .isPresent() && index.isPresent()) {
+                return Optional.of(new CallableStorageRouteProof(
+                        CallableStorageRouteProof.RouteKind.NOMINAL_MEMBER_GETTER,
+                        target.declarationId().orElseThrow(), Optional.empty(), Optional.empty(),
+                        Optional.empty(), Optional.empty(), Optional.empty(),
+                        java.util.OptionalInt.of(index.orElseThrow()),
+                        Optional.of(typedGraph.flowSiteId(target.children().getFirst())),
+                        function.signature(), targetSite));
+            }
+            return Optional.empty();
+        }
+        if (target.kind() != TypedExpressionKind.REFERENCE
+                && target.kind() != TypedExpressionKind.NAMESPACE_MEMBER_ACCESS) {
+            return Optional.empty();
+        }
+        TypedLink link = target.link().orElse(null);
+        return link == null ? Optional.empty() : namedCallableStorageRouteProof(
+                target.type(), link, targetSite);
+    }
+
+    private Optional<CallableStorageRouteProof> namedCallableStorageRouteProof(
+            LyraType targetType, TypedLink link, FlowSiteId targetSite) {
+        if (targetType.isNilable()
+                || !(targetType.withoutQualifiers() instanceof FunctionType function)
+                || link.declarationId().isEmpty() || link.referenceId().isEmpty()) {
+            return Optional.empty();
+        }
+        TypedReference typedReference = typedGraph.reference(
+                link.referenceId().orElseThrow()).orElse(null);
+        DeclarationId declarationId = link.declarationId().orElseThrow();
+        ResolvedDeclaration declaration = typedGraph.resolvedGraph()
+                .declaration(declarationId).orElse(null);
+        if (typedReference == null
+                || typedReference.targetDeclaration().filter(declarationId::equals).isEmpty()
+                || typedReference.type().filter(targetType::equals).isEmpty()
+                || declaration == null || declaration.effectiveContract().isEmpty()
+                || !declaration.effectiveContract().orElseThrow().valueType()
+                .withoutQualifiers().equals(function)) {
+            return Optional.empty();
+        }
+        Optional<CaptureId> captureId = typedReference.capture();
+        var externalAccess = execution.flatMap(value -> value.access(
+                typedReference.moduleId(),
+                declaration.originDeclaration().orElse(declarationId)));
+        CallableStorageRouteProof.RouteKind route;
+        if (isIntrinsicDeclaration(declarationId)) {
+            route = CallableStorageRouteProof.RouteKind.INTRINSIC;
+        } else if (captureId.isPresent()) {
+            ResolvedCapture capture = typedGraph.resolvedGraph()
+                    .capture(captureId.orElseThrow()).orElse(null);
+            if (capture == null || !capture.declarationId().equals(declarationId)
+                    || typedReference.fromLambda().filter(capture.lambdaId()::equals).isEmpty()) {
+                return Optional.empty();
+            }
+            route = capture.isSharedCell()
+                    ? CallableStorageRouteProof.RouteKind.SHARED_CELL
+                    : CallableStorageRouteProof.RouteKind.CAPTURE_VALUE;
+        } else if (declaration.kind() == DeclarationKind.PARAMETER) {
+            route = CallableStorageRouteProof.RouteKind.PARAMETER_ENTRY;
+        } else if (declaration.externalBinding().isPresent()) {
+            boolean certified = typedGraph.resolvedGraph().sessionFlowCertificate()
+                    .map(certificate -> certificate.certifiesExternalCallableStorageRoute(
+                            declaration.externalBinding().orElseThrow()))
+                    .orElse(false);
+            if (!certified) {
+                return Optional.empty();
+            }
+            route = CallableStorageRouteProof.RouteKind.EXTERNAL_BINDING;
+        } else if (externalAccess.isPresent()) {
+            route = CallableStorageRouteProof.RouteKind.SESSION_LINK;
+        } else if (declaration.imported() || link.moduleId().isPresent()) {
+            if (link.moduleId().isEmpty() || link.exportId().isEmpty()) {
+                return Optional.empty();
+            }
+            route = CallableStorageRouteProof.RouteKind.IMPORTED_STATE;
+        } else if (declaration.kind() == DeclarationKind.LET
+                || declaration.kind() == DeclarationKind.SELF) {
+            route = CallableStorageRouteProof.RouteKind.LOCAL_BINDING;
+        } else {
+            return Optional.empty();
+        }
+        boolean captureRoute = route == CallableStorageRouteProof.RouteKind.CAPTURE_VALUE
+                || route == CallableStorageRouteProof.RouteKind.SHARED_CELL;
+        boolean metadataFreeRoute = route == CallableStorageRouteProof.RouteKind.LOCAL_BINDING
+                || route == CallableStorageRouteProof.RouteKind.PARAMETER_ENTRY
+                || route == CallableStorageRouteProof.RouteKind.EXTERNAL_BINDING;
+        Optional<ModuleId> moduleId = captureRoute || metadataFreeRoute
+                ? Optional.empty() : link.moduleId();
+        Optional<io.mindspice.lyra.compiler.identity.ExportId> exportId =
+                captureRoute || metadataFreeRoute ? Optional.empty() : link.exportId();
+        Optional<io.mindspice.lyra.compiler.identity.ProducerId> producerId =
+                externalAccess.map(value -> value.target().origin().producerId());
+        Optional<io.mindspice.lyra.compiler.identity.GenerationId> generationId =
+                externalAccess.map(value -> value.target().origin().generationId());
+        return Optional.of(new CallableStorageRouteProof(route, declarationId,
+                captureRoute ? captureId : Optional.empty(), moduleId, exportId,
+                producerId, generationId, java.util.OptionalInt.empty(), Optional.empty(),
+                function.signature(), targetSite));
+    }
+
+    private boolean isIntrinsicDeclaration(DeclarationId start) {
+        DeclarationId current = start;
+        java.util.HashSet<DeclarationId> visited = new java.util.HashSet<>();
+        while (current != null && visited.add(current)) {
+            ResolvedDeclaration declaration = typedGraph.resolvedGraph().declaration(current).orElse(null);
+            if (declaration == null) return false;
+            if (declaration.kind() == DeclarationKind.INTRINSIC_EXPORT) return true;
+            current = declaration.originDeclaration().orElse(null);
+        }
+        return false;
     }
 
     private IrNode lowerDirectCall(TypedExpression expression, FlowSiteId site) {
         TypedLink link = expression.link().orElseThrow(() ->
                 new LoweringFailure(expression.span(), "direct call has no typed link"));
+        Optional<CallableStorageRouteProof> storageRouteProof = link.referenceId()
+                .flatMap(typedGraph::reference)
+                .flatMap(reference -> namedCallableStorageRouteProof(
+                        reference.valueType(), link, typedGraph.flowSiteId(reference.id())));
         return new IrNode.DirectCall(
                 expression.span(), expression.type(), link.referenceId(), link.declarationId(),
                 link.moduleId(), link.exportId(), link.accessKind(), Optional.empty(),
-                lowerChildren(expression), findCallId(site), Optional.of(site));
+                lowerChildren(expression), findCallId(site), Optional.of(site),
+                storageRouteProof);
     }
 
     private IrNode lowerAccess(TypedExpression expression, FlowSiteId site) {

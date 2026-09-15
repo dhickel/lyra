@@ -3,6 +3,7 @@ package io.mindspice.lyra.compiler.ir;
 import io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes;
 import io.mindspice.lyra.compiler.diagnostic.Diagnostic;
 import io.mindspice.lyra.compiler.diagnostic.PhaseResult;
+import io.mindspice.lyra.compiler.identity.CaptureId;
 import io.mindspice.lyra.compiler.identity.DeclarationId;
 import io.mindspice.lyra.compiler.identity.FlowSiteId;
 import io.mindspice.lyra.compiler.identity.ReferenceId;
@@ -10,6 +11,8 @@ import io.mindspice.lyra.compiler.semantic.AccessKind;
 import io.mindspice.lyra.compiler.semantic.DeclarationKind;
 import io.mindspice.lyra.compiler.semantic.MutationKind;
 import io.mindspice.lyra.compiler.semantic.ReferenceKind;
+import io.mindspice.lyra.compiler.semantic.ResolvedCapture;
+import io.mindspice.lyra.compiler.semantic.ResolvedDeclaration;
 import io.mindspice.lyra.compiler.semantic.ResolvedModule;
 import io.mindspice.lyra.compiler.semantic.ScopeKind;
 import io.mindspice.lyra.compiler.semantic.TypedExpression;
@@ -30,6 +33,7 @@ import io.mindspice.lyra.compiler.types.ExactNumericLiteral;
 import io.mindspice.lyra.compiler.types.FunctionType;
 import io.mindspice.lyra.compiler.types.LiteralTyping;
 import io.mindspice.lyra.compiler.types.LyraType;
+import io.mindspice.lyra.compiler.types.NominalType;
 import io.mindspice.lyra.compiler.types.PrimitiveType;
 import io.mindspice.lyra.compiler.types.TupleType;
 import io.mindspice.lyra.compiler.types.TypeRules;
@@ -46,6 +50,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -1977,6 +1982,19 @@ public final class IrValidator {
                         "direct call target declaration does not match its reference");
             }
             validateCallSignature(reference.type(), node.arguments(), node.type(), node.span());
+            IrReference irReference = ir.metadata().reference(referenceId).orElse(null);
+            Optional<CallableStorageRouteProof> expected = irReference == null
+                    ? Optional.empty()
+                    : expectedNamedCallableStorageProof(
+                            irReference.type().orElse(null), declarationId, Optional.of(referenceId),
+                            irReference.capture(), irReference.targetModule(),
+                            irReference.targetExport(), irReference.moduleId(), irReference.siteId());
+            if (!expected.equals(node.storageRouteProof())) {
+                add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK, node.span(),
+                        expected.isPresent()
+                                ? "direct call target is missing its exact authenticated storage-route proof"
+                                : "direct call target carries an unproved storage-route proof");
+            }
             if (!reference.targetModule().equals(node.targetModule())
                     || !reference.targetExport().equals(node.targetExport())) {
                 add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK, node.span(),
@@ -1988,10 +2006,9 @@ public final class IrValidator {
             }
 
             AccessKind accessKind = node.accessKind().orElse(null);
-            // The current typed language slice rejects receiver::method[] with
-            // LYC-TYPE-013 before IR publication.  Consequently a published
-            // direct-call node has only the local or namespace shapes below;
-            // accepting MEMBER_CALL here would silently erase receiver semantics.
+            // Nominal direct method syntax lowers to a callable call over the
+            // exact member getter. DirectCall retains only local/namespace names;
+            // accepting MEMBER_CALL here would erase receiver selection.
             if (reference.kind() == ReferenceKind.DIRECT_CALL_TARGET) {
                 if (accessKind != null || node.receiver().isPresent()) {
                     add(CompilerDiagnosticCodes.IR_INVALID_GRAPH, node.span(),
@@ -2018,6 +2035,178 @@ public final class IrValidator {
             validateOrdered(evaluation, node.span());
             validateCallSignature(Optional.ofNullable(node.target().type()),
                     node.arguments(), node.type(), node.span());
+
+            // The optimizer is allowed to trust only a producer-issued proof
+            // tied to this exact target occurrence. Recompute the proof from
+            // resolved semantic metadata here rather than trusting the
+            // lowering/backend classifier or any declaration/JVM shape.
+            Optional<CallableStorageRouteProof> expected = expectedCallableStorageProof(node.target());
+            if (!expected.equals(node.storageRouteProof())) {
+                add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK, node.span(),
+                        expected.isPresent()
+                                ? "callable target is missing its exact authenticated storage-route proof"
+                                : "callable target carries an unproved storage-route proof");
+            }
+        }
+
+        private Optional<CallableStorageRouteProof> expectedCallableStorageProof(IrNode target) {
+            if (target.type().isNilable()
+                    || !(target.type().withoutQualifiers() instanceof FunctionType function)
+                    || target.siteId().isEmpty()) {
+                return Optional.empty();
+            }
+            FlowSiteId site = target.siteId().orElseThrow();
+            if (target instanceof IrNode.Access access
+                    && access.accessKind() == AccessKind.MEMBER_VALUE
+                    && access.declarationId().isPresent()
+                    && access.receiver().isPresent()
+                    && access.receiver().orElseThrow().siteId().isPresent()
+                    && access.receiver().orElseThrow().type().withoutQualifiers()
+                    instanceof NominalType receiver) {
+                DeclarationId memberId = access.declarationId().orElseThrow();
+                ResolvedDeclaration member = semantic.resolvedGraph()
+                        .declaration(memberId).orElse(null);
+                OptionalInt index = semantic.resolvedGraph().nominals().stream()
+                        .filter(nominal -> nominal.schema().type().equals(receiver))
+                        .flatMap(nominal -> java.util.stream.IntStream.range(0, nominal.members().size())
+                                .filter(candidate -> nominal.members().get(candidate)
+                                        .equals(memberId)).boxed())
+                        .findFirst().stream().mapToInt(Integer::intValue).findFirst();
+                if (member != null && member.kind() == DeclarationKind.MEMBER
+                        && member.effectiveContract()
+                        .map(value -> value.valueType().equals(target.type())).orElse(false)
+                        && index.isPresent()) {
+                    return Optional.of(new CallableStorageRouteProof(
+                            CallableStorageRouteProof.RouteKind.NOMINAL_MEMBER_GETTER,
+                            memberId, Optional.empty(), Optional.empty(), Optional.empty(),
+                            Optional.empty(), Optional.empty(), index,
+                            access.receiver().orElseThrow().siteId(), function.signature(), site));
+                }
+                return Optional.empty();
+            }
+            if (!(target instanceof IrNode.Reference)
+                    && !(target instanceof IrNode.CaptureReference)
+                    && !(target instanceof IrNode.Access access
+                    && access.accessKind() == AccessKind.NAMESPACE_VALUE)) {
+                return Optional.empty();
+            }
+            DeclarationId declarationId;
+            Optional<ReferenceId> referenceId;
+            Optional<CaptureId> captureId;
+            Optional<ModuleId> targetModule;
+            Optional<io.mindspice.lyra.compiler.identity.ExportId> targetExport;
+            ModuleId consumerModule;
+            if (target instanceof IrNode.Reference reference) {
+                declarationId = reference.targetDeclaration().orElse(null);
+                referenceId = reference.referenceId();
+                captureId = reference.capture();
+            } else if (target instanceof IrNode.CaptureReference reference) {
+                declarationId = reference.declarationId().orElse(null);
+                referenceId = reference.referenceId();
+                captureId = reference.captureId();
+            } else {
+                IrNode.Access access = (IrNode.Access) target;
+                declarationId = access.declarationId().orElse(null);
+                referenceId = access.referenceId();
+                captureId = Optional.empty();
+            }
+            IrReference resolved = referenceId.flatMap(ir.metadata()::reference).orElse(null);
+            if (resolved == null || declarationId == null) return Optional.empty();
+            targetModule = resolved.targetModule();
+            targetExport = resolved.targetExport();
+            consumerModule = resolved.moduleId();
+            return expectedNamedCallableStorageProof(target.type(), declarationId, referenceId,
+                    captureId, targetModule, targetExport, consumerModule, site);
+        }
+
+        private Optional<CallableStorageRouteProof> expectedNamedCallableStorageProof(
+                LyraType targetType, DeclarationId declarationId,
+                Optional<ReferenceId> referenceId, Optional<CaptureId> captureId,
+                Optional<ModuleId> targetModule,
+                Optional<io.mindspice.lyra.compiler.identity.ExportId> targetExport,
+                ModuleId consumerModule, FlowSiteId site) {
+            if (targetType == null || targetType.isNilable()
+                    || !(targetType.withoutQualifiers() instanceof FunctionType function)
+                    || targetModule.isPresent() != targetExport.isPresent()) {
+                return Optional.empty();
+            }
+            ResolvedDeclaration declaration = semantic.resolvedGraph()
+                    .declaration(declarationId).orElse(null);
+            if (declaration == null || declaration.effectiveContract().isEmpty()
+                    || !declaration.effectiveContract().orElseThrow().valueType()
+                    .withoutQualifiers().equals(function)) {
+                return Optional.empty();
+            }
+            if (isIntrinsicDeclaration(declarationId)) {
+                return Optional.of(new CallableStorageRouteProof(
+                        CallableStorageRouteProof.RouteKind.INTRINSIC, declarationId,
+                        Optional.empty(), targetModule, targetExport,
+                        Optional.empty(), Optional.empty(), OptionalInt.empty(), Optional.empty(),
+                        function.signature(), site));
+            }
+            if (captureId.isPresent()) {
+                ResolvedCapture capture = semantic.resolvedGraph()
+                        .capture(captureId.orElseThrow()).orElse(null);
+                TypedReference typedReference = referenceId.flatMap(semantic::reference).orElse(null);
+                if (capture == null || !capture.declarationId().equals(declarationId)
+                        || typedReference == null
+                        || typedReference.fromLambda().filter(capture.lambdaId()::equals).isEmpty()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new CallableStorageRouteProof(
+                        capture.isSharedCell()
+                                ? CallableStorageRouteProof.RouteKind.SHARED_CELL
+                                : CallableStorageRouteProof.RouteKind.CAPTURE_VALUE,
+                        declarationId, captureId, Optional.empty(), Optional.empty(),
+                        Optional.empty(), Optional.empty(), OptionalInt.empty(), Optional.empty(),
+                        function.signature(), site));
+            }
+            var externalAccess = ir.sessionExecution().flatMap(value -> value.access(
+                    consumerModule, declaration.originDeclaration().orElse(declarationId)));
+            CallableStorageRouteProof.RouteKind route;
+            if (declaration.kind() == DeclarationKind.PARAMETER) {
+                route = CallableStorageRouteProof.RouteKind.PARAMETER_ENTRY;
+            } else if (declaration.externalBinding().isPresent()) {
+                boolean certified = semantic.resolvedGraph().sessionFlowCertificate()
+                        .map(certificate -> certificate.certifiesExternalCallableStorageRoute(
+                                declaration.externalBinding().orElseThrow()))
+                        .orElse(false);
+                if (!certified) {
+                    return Optional.empty();
+                }
+                route = CallableStorageRouteProof.RouteKind.EXTERNAL_BINDING;
+            } else if (externalAccess.isPresent()) {
+                route = CallableStorageRouteProof.RouteKind.SESSION_LINK;
+            } else if (declaration.imported() || targetModule.isPresent()) {
+                if (targetModule.isEmpty()) return Optional.empty();
+                route = CallableStorageRouteProof.RouteKind.IMPORTED_STATE;
+            } else if (declaration.kind() == DeclarationKind.LET
+                    || declaration.kind() == DeclarationKind.SELF) {
+                route = CallableStorageRouteProof.RouteKind.LOCAL_BINDING;
+            } else {
+                return Optional.empty();
+            }
+            boolean metadataFreeRoute = route == CallableStorageRouteProof.RouteKind.PARAMETER_ENTRY
+                    || route == CallableStorageRouteProof.RouteKind.LOCAL_BINDING
+                    || route == CallableStorageRouteProof.RouteKind.EXTERNAL_BINDING;
+            return Optional.of(new CallableStorageRouteProof(route, declarationId,
+                    Optional.empty(), metadataFreeRoute ? Optional.empty() : targetModule,
+                    metadataFreeRoute ? Optional.empty() : targetExport,
+                    externalAccess.map(value -> value.target().origin().producerId()),
+                    externalAccess.map(value -> value.target().origin().generationId()),
+                    OptionalInt.empty(), Optional.empty(), function.signature(), site));
+        }
+
+        private boolean isIntrinsicDeclaration(DeclarationId start) {
+            DeclarationId current = start;
+            Set<DeclarationId> visited = new HashSet<>();
+            while (current != null && visited.add(current)) {
+                ResolvedDeclaration declaration = semantic.resolvedGraph().declaration(current).orElse(null);
+                if (declaration == null) return false;
+                if (declaration.kind() == DeclarationKind.INTRINSIC_EXPORT) return true;
+                current = declaration.originDeclaration().orElse(null);
+            }
+            return false;
         }
 
         private void validateCallIdentity(
@@ -2184,6 +2373,11 @@ public final class IrValidator {
                 if (source == null || source.kind() != TypedExpressionKind.MEMBER_ACCESS
                         || !source.declarationId().equals(node.declarationId())) {
                     add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK, node.span(), "nominal access lacks its authorized source member");
+                } else if (source.children().size() != 1
+                        || !receiver.siteId().equals(Optional.of(
+                        semantic.flowSiteId(source.children().getFirst())))) {
+                    add(CompilerDiagnosticCodes.IR_UNRESOLVED_LINK, node.span(),
+                            "nominal access receiver differs from its authorized source occurrence");
                 }
                 return;
             }

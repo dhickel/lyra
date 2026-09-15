@@ -1,0 +1,3 @@
+// functions	value	I32	10	proven named S-expression and direct-call parity
+let add :Fn<I32,I32;I32> = (=> |left right| (+ left right))
+let @pub run :Fn<;I32> = (=> | | (+ (add 2 3), ::add[2 3]))

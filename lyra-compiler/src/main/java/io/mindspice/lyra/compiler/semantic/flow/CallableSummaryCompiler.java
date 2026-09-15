@@ -1820,8 +1820,9 @@ public final class CallableSummaryCompiler {
         }
 
         private String writeTargetKey(CapturedCellWrite write) {
-            return write.captureId().map(value -> "capture/" + value)
-                    .orElseGet(() -> "parameter/" + write.parameter())
+            return (write.isDeclarationWrite() ? "declaration/" + write.declarationId()
+                    : write.captureId().map(value -> "capture/" + value)
+                    .orElseGet(() -> "parameter/" + write.parameter()))
                     + "/" + write.declarationId()
                     + "/" + write.sharedCellId().map(Object::toString).orElse("-")
                     + "/" + write.kind() + "/" + write.route();
@@ -1845,10 +1846,7 @@ public final class CallableSummaryCompiler {
         private CapturedCellWrite withWriteValue(
                 CapturedCellWrite write,
                 FormulaAlternatives value) {
-            return new CapturedCellWrite(
-                    write.sequence(), write.captureId(), write.parameterIndex(),
-                    write.declarationId(), write.sharedCellId(), write.kind(),
-                    write.route(), value, write.span());
+            return write.withValue(value);
         }
 
         private static CapturedCellWrite.Kind writeKind(ProjectionPath route) {

@@ -41,6 +41,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -686,8 +687,10 @@ final class Phase15SmokeTest {
         TypedIr ir = lower("let @pub explode :Fn<I32;F64> = (=> |x| (/ 1 (- x x))) "
                 + "let @pub outer :Fn<I32;F64> = (=> |x| ::explode[x])");
         GeneratedTypePlan plan = GeneratedTypePlanner.plan(ir);
-        ClassLoader loader = defineAll(JvmBytecodeEmitter.emit(ir, plan));
-        Class<?> facade = Class.forName(plan.moduleFacades().get(ir.rootModule().moduleId()), true, loader);
+        JvmBytecodeArtifact artifact = JvmBytecodeEmitter.emit(ir, plan);
+        String facadeName = plan.moduleFacades().get(ir.rootModule().moduleId());
+        ClassLoader loader = defineAll(artifact);
+        Class<?> facade = Class.forName(facadeName, true, loader);
         Object instance = facade.getMethod("$lyra$create").invoke(null);
         io.mindspice.lyra.runtime.LyraRuntimeException failure = assertRuntimeCode(
                 () -> facade.getMethod("outer", int.class).invoke(instance, 1), "LYR-ARITH");
@@ -703,6 +706,16 @@ final class Phase15SmokeTest {
         assertSameSpan(call.span(), failure.frames().get(1).span());
         assertEquals("explode", failure.frames().get(0).function());
         assertEquals("outer", failure.frames().get(1).function());
+
+        CodeAttribute outerCode = (CodeAttribute) ClassFile.of().parse(artifact.bytes(facadeName)).methods().stream()
+                .filter(method -> method.methodName().stringValue().equals("outer"))
+                .findFirst().orElseThrow().code().orElseThrow();
+        assertEquals(Set.of("io/mindspice/lyra/runtime/LyraStackException",
+                        "java/lang/StackOverflowError"),
+                outerCode.exceptionHandlers().stream()
+                        .map(handler -> handler.catchType().orElseThrow().name().stringValue())
+                        .collect(java.util.stream.Collectors.toSet()),
+                "the facade must handle only existing and native stack overflow failures");
         facade.getMethod("close").invoke(instance);
     }
 

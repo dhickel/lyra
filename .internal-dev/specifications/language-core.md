@@ -406,6 +406,26 @@ Calls have exact positional arity. There is no partial application, automatic cu
 - `->` qualifies modules/namespaces; a qualified access ends with `::` for direct call or `:.` for value access.
 - Static/member legality follows static type information. These distinctions must survive parsing and semantic analysis.
 
+After resolution, `(f args)` and `::f[args]` are two source spellings of one
+named-call operation when they identify the same exact declaration and
+storage route. This includes local and recursive bindings, authenticated
+function parameters and captures, shared mutable cells, imported/session-linked
+bindings, intrinsics, and exact nominal member getters. The call target or
+receiver is evaluated and its current callable slot is selected exactly once,
+before arguments, in both spellings; replacing the slot during argument
+evaluation cannot retarget that call, while a saved member value retains its
+original selection. Aggregate/index projections, returned callables and other
+computed targets and retained names without an exact projected producer route remain
+dynamic calls with full runtime authentication in either spelling. Type, JVM descriptor,
+name, syntax spelling, or generated class shape alone never establishes route
+authority.
+
+Proven S-expression self recursion has the same constant-stack tail lowering
+as the direct spelling, including branch, match and cond result positions. A
+mutable self slot is looped only while it still contains the executing closure;
+rebinding or alias uncertainty falls back to invoking the value selected from
+the slot.
+
 `::` is reserved for direct calls of resolved source function or method names in
 the local or imported space. Compiler-recognized built-ins are not callable
 values and never use `::`: the operators, the primitive/`String` conversions, the

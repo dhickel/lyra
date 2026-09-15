@@ -213,14 +213,9 @@ public final class LanguageFuzzWorker {
         return result;
     }
 
-    /**
-     * Renders loop bounds through the adjacent bare negative literal spelling so the
-     * bounded campaign exercises it, including the signed minimum magnitude.  The
-     * arithmetic model is unchanged because the language normalizes the adjacent
-     * minus to the same unary-minus operation.
-     */
+    /** Renders negative range components as unambiguous unary expressions. */
     private static String signedLoopLiteral(int value) {
-        return value < 0 ? "-" + (-value) : Integer.toString(value);
+        return value < 0 ? "(- 0 " + (-value) + ")" : Integer.toString(value);
     }
 
     /** Number of completed mode rotations before this index; retained cases rotate profiles per ordinal. */

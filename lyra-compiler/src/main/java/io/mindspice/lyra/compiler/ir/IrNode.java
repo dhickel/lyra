@@ -776,7 +776,8 @@ public sealed interface IrNode extends ImmutablePhaseArtifact
             Optional<IrNode> receiver,
             List<IrNode> arguments,
             Optional<io.mindspice.lyra.compiler.semantic.flow.SummaryCallId> callId,
-            Optional<FlowSiteId> siteId) implements IrNode {
+            Optional<FlowSiteId> siteId,
+            Optional<CallableStorageRouteProof> storageRouteProof) implements IrNode {
         public DirectCall {
             requireSpanAndType(span, type);
             Objects.requireNonNull(referenceId, "referenceId");
@@ -788,6 +789,7 @@ public sealed interface IrNode extends ImmutablePhaseArtifact
             arguments = copy(arguments, "arguments");
             Objects.requireNonNull(callId, "callId");
             requireSite(siteId);
+            Objects.requireNonNull(storageRouteProof, "storageRouteProof");
         }
 
         public DirectCall(
@@ -801,7 +803,49 @@ public sealed interface IrNode extends ImmutablePhaseArtifact
                 Optional<IrNode> receiver,
                 List<IrNode> arguments) {
             this(span, type, referenceId, targetDeclaration, targetModule, targetExport,
-                    accessKind, receiver, arguments, Optional.empty(), Optional.empty());
+                    accessKind, receiver, arguments, Optional.empty(), Optional.empty(),
+                    Optional.empty());
+        }
+
+        public DirectCall(
+                SourceSpan span,
+                LyraType type,
+                Optional<ReferenceId> referenceId,
+                Optional<DeclarationId> targetDeclaration,
+                Optional<ModuleId> targetModule,
+                Optional<ExportId> targetExport,
+                Optional<AccessKind> accessKind,
+                Optional<IrNode> receiver,
+                List<IrNode> arguments,
+                Optional<io.mindspice.lyra.compiler.semantic.flow.SummaryCallId> callId,
+                Optional<FlowSiteId> siteId) {
+            this(span, type, referenceId, targetDeclaration, targetModule, targetExport,
+                    accessKind, receiver, arguments, callId, siteId, Optional.empty());
+        }
+
+        /** Proof metadata is validated independently and is not a semantic lowering difference. */
+        @Override
+        public boolean equals(Object other) {
+            return this == other
+                    || other instanceof DirectCall call
+                    && span.equals(call.span)
+                    && type.equals(call.type)
+                    && referenceId.equals(call.referenceId)
+                    && targetDeclaration.equals(call.targetDeclaration)
+                    && targetModule.equals(call.targetModule)
+                    && targetExport.equals(call.targetExport)
+                    && accessKind.equals(call.accessKind)
+                    && receiver.equals(call.receiver)
+                    && arguments.equals(call.arguments)
+                    && callId.equals(call.callId)
+                    && siteId.equals(call.siteId);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(span, type, referenceId, targetDeclaration,
+                    targetModule, targetExport, accessKind, receiver, arguments,
+                    callId, siteId);
         }
 
         @Override
@@ -816,17 +860,43 @@ public sealed interface IrNode extends ImmutablePhaseArtifact
             IrNode target,
             List<IrNode> arguments,
             Optional<io.mindspice.lyra.compiler.semantic.flow.SummaryCallId> callId,
-            Optional<FlowSiteId> siteId) implements IrNode {
+            Optional<FlowSiteId> siteId,
+            Optional<CallableStorageRouteProof> storageRouteProof) implements IrNode {
         public CallableCall {
             requireSpanAndType(span, type);
             Objects.requireNonNull(target, "target");
             arguments = copy(arguments, "arguments");
             Objects.requireNonNull(callId, "callId");
             requireSite(siteId);
+            Objects.requireNonNull(storageRouteProof, "storageRouteProof");
         }
 
         public CallableCall(SourceSpan span, LyraType type, IrNode target, List<IrNode> arguments) {
-            this(span, type, target, arguments, Optional.empty(), Optional.empty());
+            this(span, type, target, arguments, Optional.empty(), Optional.empty(), Optional.empty());
+        }
+
+        public CallableCall(SourceSpan span, LyraType type, IrNode target, List<IrNode> arguments,
+                            Optional<io.mindspice.lyra.compiler.semantic.flow.SummaryCallId> callId,
+                            Optional<FlowSiteId> siteId) {
+            this(span, type, target, arguments, callId, siteId, Optional.empty());
+        }
+
+        /** Proof metadata is validated independently and is not a semantic lowering difference. */
+        @Override
+        public boolean equals(Object other) {
+            return this == other
+                    || other instanceof CallableCall call
+                    && span.equals(call.span)
+                    && type.equals(call.type)
+                    && target.equals(call.target)
+                    && arguments.equals(call.arguments)
+                    && callId.equals(call.callId)
+                    && siteId.equals(call.siteId);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(span, type, target, arguments, callId, siteId);
         }
 
         @Override

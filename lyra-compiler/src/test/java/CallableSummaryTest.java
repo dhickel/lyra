@@ -61,6 +61,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -1373,6 +1374,18 @@ public final class CallableSummaryTest {
         assertEquals(one.optionalValue().orElseThrow().canonicalKey(),
                 two.optionalValue().orElseThrow().canonicalKey());
         assertEquals(one.optionalValue().orElseThrow(), two.optionalValue().orElseThrow());
+    }
+
+    @Test
+    public void canonicalSummaryIdentityIncludesDeferredCallableDeclarations() {
+        CallableSummarySet empty = new CallableSummarySet(List.of(), Map.of(), Map.of(), List.of());
+        CallableSummarySet deferred = new CallableSummarySet(List.of(), Map.of(), Map.of(), List.of(),
+                Set.of(new DeclarationId(50_001), new DeclarationId(50_000)));
+        CallableSummarySet reordered = new CallableSummarySet(List.of(), Map.of(), Map.of(), List.of(),
+                Set.of(new DeclarationId(50_000), new DeclarationId(50_001)));
+        assertFalse(empty.equals(deferred));
+        assertFalse(empty.canonicalKey().equals(deferred.canonicalKey()));
+        assertEquals(deferred.canonicalKey(), reordered.canonicalKey());
     }
 
     @Test

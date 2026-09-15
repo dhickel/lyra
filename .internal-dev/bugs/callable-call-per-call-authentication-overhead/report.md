@@ -36,12 +36,13 @@ Compile via LyraCompiler/CompileRequest, load, and invoke the `run` export repea
 
 ## Expected
 
-For an immutable, compiler-owned local binding whose contract exactly matches the call's
-static function type, the callable-value call should cost the same as the direct call:
-load the known closure and `invokeinterface` the typed Fn interface. The per-call
-authentication should apply only where the value could originate outside the artifact
-(parameters, aggregate slots, mutable cells, session/imported bindings), or should be
-hoisted/interened so its marginal cost is near zero.
+After resolution, callable-value and direct-name calls over the same exact authenticated
+declaration/storage route should share one lowering. Eligibility must come from sealed
+local/recursive, parameter, capture/shared-cell, import/session, intrinsic or member-route
+evidence, never from spelling, type/descriptor, generated class or declaration shape.
+Aggregate/index projections, returned callables and other computed targets remain dynamic
+with full per-call authentication. Dynamic expected signatures should be resolved once per
+producer-scoped generated instance without creating a global authority cache.
 
 ## Actual
 
@@ -91,20 +92,122 @@ Measured marginal cost ~450 ns/call, entirely consistent with the timing gap.
 
 ## Status
 
-Open. Reproduced on the current WIP worktree (commit c9415a8 + preserved uncommitted
-nominal-schema work).
+BLOCKED: the uncommitted Tranche 4 worktree based on
+`81b643c84f0b3eec905ccbfdabd1a6475a68c20c` is buildable and focused checks pass,
+but issue #6 is not complete. Final escalation found and repaired an additional
+mutable-self argument-rebinding compiler invariant and tightened receiver-proof and
+bytecode-validation checks. The remaining getter-side blocker is now implemented:
+nominal callable getters, public getters, setters, initialization boundaries and
+delegated-read route issuance no longer call `LyraClosureAuthority.resolveSignature`
+or parse per read. Each generated nominal representation carries deterministic
+private final per-instance expected callable signature fields, resolved exactly
+once from the bound producer authority in the generated constructor after exact
+schema availability and before use; every boundary still re-authenticates the
+exact object, field route, selected candidate, complete signature,
+owner/artifact/session and lifecycle. Focused structural tests prove the
+constructor resolves each distinct signature once, getter/adaptor methods contain
+no per-read resolution/parsing, and runtime tests keep wrong-signature,
+failed-construction, closed-producer and invalid-route rejection fail-closed.
+A later cross-generation regression repair completed full Maven validation and a
+fresh full-protocol Phase 23 gate. Extended fuzz, graphical UI, Phase 24, commit
+and issue closure remain outside this repair. GitHub issue #6 was checked
+read-only and remains OPEN.
+
+The implemented contract is broader and safer than the report's original proposed
+immutable-local shape check: both direct-name and callable-value IR calls may carry a
+producer-issued `CallableStorageRouteProof`, independently recomputed by `IrValidator`.
+The proof covers exact local/recursive, parameter, capture, shared-cell, import, retained
+producer/generation, compiler-certified source-root external binding, intrinsic and
+nominal member-index/receiver-occurrence routes only after their complete entry/write
+boundary authenticates the callable contract. Computed/aggregate targets, raw
+imported/intrinsic external bindings and retained names without an exact route remain
+dynamic. Expected dynamic signatures are private final per-state/per-closure-instance
+fields resolved once through that producer's authority; there is no static/global cache.
+
+The same tranche also unifies S/F receiver selection, guarded mutable self-tail lowering,
+complete source-bearing `StackOverflowError` regions, nilable-Fn coalesce stack-map typing,
+parenthesized/sibling direct-call regressions, conformance generation and machine-gated JMH
+pairs. Shared issue-#7 nominal delegate classes remain byte-identical and retain their
+existing occurrence authority.
 
 ## Next Action
 
-- Decide and implement the compiler fast path: in emitCallableCall, when the target is an
-  immutable compiler-owned declaration whose contract equals the call's static function
-  type, emit the direct declaration load + invokeinterface.
-- At minimum, hoist the parsed LyraSignature into a call-site static field and intern
-  LyraSignature instances so even the general path stops parsing per call.
-- Keep full per-call authentication for genuinely first-class targets (parameters,
-  aggregate slots, mutable cells, session/imported bindings).
-- Add a performance regression test comparing both fib forms once fixed.
-- Mirrored to GitHub: https://github.com/dhickel/lyra/issues/6 (created 2026-09-11).
+- Getter-side nominal signature metadata is implemented: nominal getters,
+  setters, initialization boundaries and delegated-read route issuance read
+  deterministic per-instance fields resolved exactly once per generated object
+  from its producer authority; the exact object/field-route/selected-candidate/
+  signature/owner/lifecycle authentication remains on every read. Structural
+  getter/adaptor inspection and failed/closed-producer runtime regressions
+  cover both spellings and both AOT/session emission modes.
+- Preserve the fresh full-protocol Phase 23 evidence; both `callParity.fib` and
+  `callParity.named` use finite positive primary scores and pass
+  `score(S)/score(F) <= 1.10`.
+- Run the remaining extended-fuzz/graphical-UI/Phase 24 validation required by the accepted plan when authorized, review the final
+  diff, commit the coherent Tranche 4 unit, post exact commit/test/gate evidence to GitHub,
+  then close issue #6.
+- Mirrored issue: https://github.com/dhickel/lyra/issues/6.
+
+## Cross-generation external-binding repair evidence (2026-09-14)
+
+- Root cause: parity lowering newly sent an unqualified callable from a prior submission through current-caller dynamic authentication. That declaration is an `EXTERNAL` binding using `$lyra$sessionAccessor`, not an imported `IrSessionExecution.ExternalAccess`; a generated root plus only `std/io` intentionally does not satisfy `Linkage.sourceLocal`, so current-caller authentication rejected the valid producer closure.
+- Repair: `CallableStorageRouteProof.EXTERNAL_BINDING` is issued and independently recomputed only when `SessionFlowCertificate` certifies the exact binding and every callable alternative has source-root lambda provenance. The runtime still validates the exact initialized accessor/capability. Raw imported/intrinsic alternatives keep the dynamic boundary; `sourceLocal` and general runtime authentication are unchanged.
+- `EditorRuntimeTest`, `PersistentCallableTest`, the 81-test `NominalSessionTest` anti-laundering suite, focused compiler/IR/session/Phase 23 structural tests and full `mvn test` pass.
+- Full `./tools/phase23-evidence.sh` gate mode passes. S/F ratios: fib `1.0046255892115525`, named `0.9974556625661044`; all selected allocation, latency, failure, footprint and parity gates pass.
+
+## Prior Attempt Evidence (2026-09-14)
+
+These historical counts preceded the final escalation and are not completion evidence.
+
+- `CallableCallParityTest` (24 tests) proves named-route behavior, selected-target-before-
+  argument semantics, S/F normalized instruction/call-graph parity, guarded deep self-tail
+  calls, structured overflow frame order (including an enclosing argument-evaluation call),
+  exact `StackOverflowError` catches, non-stack VM-error escape, nilable-Fn coalesce,
+  dynamic forgery rejection and isolated instance signature fields.
+- `TypedIrTest` (20 tests) proves S/F convergence on one resolved route classification and
+  independently rejects missing/forged direct and callable route proofs. Its import checks
+  and `SessionPinnedModuleCompilerTest` pin exact import and retained-session
+  producer/generation identities for S and direct calls.
+- Explicit-selector backend/JVM validation passed 247 tests; semantic/flow/session transfer
+  validation passed 220 tests; non-fuzz corpus/coverage validation passed 278 tests;
+  `LegacySchema1EncodingTest` passed 3 tests after refreshing the deterministic debug-map
+  fixture. `mvn -Pjmh -pl lyra-compiler -am -DskipTests test-compile` also passed.
+- `Phase23EvidenceGateContractTest` and `tools/phase23_gate.py --self-test` pass and pin
+  mandatory row presence, duplicates, finite-positive metrics, exact full-protocol metadata,
+  pair configuration equality and both sides of the ratio threshold. `bash -n` and Python
+  byte-compilation checks pass for the tooling.
+- No full Maven suite, fuzz campaign, UI suite, fresh/full Phase 23 benchmark, Phase 24 gate,
+  commit or GitHub close is claimed; those commands/actions were explicitly excluded from
+  this repair task. Pre-existing Phase 23 evidence is stale and is not qualification evidence
+  for this worktree.
+
+## Final Escalation Evidence (2026-09-14)
+
+- Final explicitly selected runtime/compiler/REPL run passed **799 tests**: 7 runtime,
+  669 compiler, 123 REPL, no failures/errors/skips. Exact selectors and outcomes are in
+  `.internal-dev/reviews/2026-09-14-callable-call-final-escalation.md` and
+  `/tmp/lyra-issue6-final-validation.log`.
+- `CallableCallParityTest` now has 28 tests; `TypedIrTest` has 21. New assertions cover
+  self selection before argument rebinding, exact target-overflow frame order,
+  post-entry foreign-SAM rejection, broader named-route normalized control flow,
+  exception tables, and semantic receiver-occurrence correspondence.
+- The mutable self regression initially failed with `INCONSISTENT_SUMMARY: write is
+  not a parameter write`. Branch/match joins now distinguish declaration writes and
+  retain their operation sites. Deferred callable declarations also enter summary
+  canonical identity. The default typed generator includes `MUTABLE_SELF_CALL`, with
+  its independent expected selection executed for every numeric type in a focused
+  coverage test. No fuzz campaign was run.
+- A blanket aggregate-authentication experiment failed the required raw/routed
+  coexistence test and was removed. Existing selected-value authorization is preserved;
+  `NominalSessionTest` subsequently passed all 81 tests. This was not a reason to
+  weaken or rewrite that regression.
+- JMH-profile compilation and explicitly selected Phase 23 contract/structural tests
+  passed (6 tests). Evaluator self-tests, shell/Python syntax and diff checks pass.
+  Protocol minimum counts are preserved; fixed 1.10/nextafter threshold edges and
+  invalid metrics on both pairs are tested. No benchmark measurements were taken.
+- No scratch source/class probes remain. Old disposable probe reports were moved to
+  `/tmp/lyra-issue6-abandoned-probe-reports/`; legitimate benchmark probes and all
+  production/regression sources remain. Two unused partial-implementation helpers
+  were removed. The pre-existing callback-loop/generator workaround was not changed.
 
 ## Extended form-homogeneity review (appended to issue #6)
 

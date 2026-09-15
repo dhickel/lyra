@@ -157,7 +157,9 @@ final class Phase17SmokeTest {
         facade.getMethod("close").invoke(first);
         assertEquals("LYR-CLOSED", code(failure(closureInvoke, firstClosure)));
         for (var field : firstState.getClass().getDeclaredFields()) {
-            if (!field.getType().isPrimitive() && !field.getName().equals("$lyra$lifecycle")) {
+            if (!field.getType().isPrimitive()
+                    && !field.getName().equals("$lyra$lifecycle")
+                    && !field.getName().startsWith("$lyra$signature$")) {
                 field.setAccessible(true);
                 assertEquals(null, field.get(firstState), field.getName());
             }

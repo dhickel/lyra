@@ -6,6 +6,9 @@
     "exactHandleEquivalentMaximumRatio": 15.0,
     "facadeEquivalentMaximumRatio": 15.0
   },
+  "callParity": {
+    "sFormToDirectNameMaximumRatio": 1.10
+  },
   "allocation": {
     "nonAllocatingMaximumBytesPerOperation": 1.0,
     "semanticAggregateEquivalentMaximumRatio": 4.0,

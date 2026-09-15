@@ -8,6 +8,7 @@ import io.mindspice.lyra.compiler.identity.CaptureId;
 import io.mindspice.lyra.compiler.identity.DeclarationId;
 import io.mindspice.lyra.compiler.identity.FlowSiteId;
 import io.mindspice.lyra.compiler.identity.LambdaId;
+import io.mindspice.lyra.compiler.ir.CallableStorageRouteProof;
 import io.mindspice.lyra.compiler.ir.IrCapture;
 import io.mindspice.lyra.compiler.ir.IrConstantValue;
 import io.mindspice.lyra.compiler.ir.IrCell;
@@ -18,6 +19,7 @@ import io.mindspice.lyra.compiler.ir.IrFailureSite;
 import io.mindspice.lyra.compiler.ir.IrImportBinding;
 import io.mindspice.lyra.compiler.ir.IrModule;
 import io.mindspice.lyra.compiler.ir.IrNode;
+import io.mindspice.lyra.compiler.ir.IrReference;
 import io.mindspice.lyra.compiler.ir.TypedIr;
 import io.mindspice.lyra.compiler.lex.TokenKind;
 import io.mindspice.lyra.compiler.semantic.AccessKind;
@@ -93,6 +95,7 @@ final class JvmBytecodeEmitter {
     private static final ClassDesc CD_UNIT = cd(RUNTIME + "LyraUnit");
     private static final ClassDesc CD_FAILURE_CATEGORY = cd(RUNTIME + "LyraFailureCategory");
     private static final ClassDesc CD_RUNTIME_EXCEPTION = cd(RUNTIME + "LyraRuntimeException");
+    private static final ClassDesc CD_STACK_EXCEPTION = cd(RUNTIME + "LyraStackException");
     private static final ClassDesc CD_JAVA_RUNTIME_EXCEPTION = cd("java.lang.RuntimeException");
     private static final ClassDesc CD_THROWABLE = cd("java.lang.Throwable");
     private static final ClassDesc CD_STRUCTURAL_EQUALITY = cd(RUNTIME + "LyraStructuralEquality");
@@ -627,6 +630,8 @@ final class JvmBytecodeEmitter {
         private Label loopLabel;
         private final List<FailureHandler> failureHandlers = new ArrayList<>();
         private final List<CallFailureHandler> callFailureHandlers = new ArrayList<>();
+        /** Source call boundaries currently enclosing emitted target/argument code. */
+        private final Deque<SourceSpan> activeCallBoundaries = new ArrayDeque<>();
         private final Deque<IrFailureSite> activeFailureSites = new ArrayDeque<>();
         private final Set<DeclarationId> initializedRootDeclarations = new HashSet<>();
         private final Set<DeclarationId> initializingRootDeclarations = new HashSet<>();
@@ -702,21 +707,33 @@ final class JvmBytecodeEmitter {
         private void emitCallFailureHandlers() {
             for (CallFailureHandler handler : callFailureHandlers) {
                 code.exceptionCatch(handler.start(), handler.end(), handler.handler(),
-                        CD_RUNTIME_EXCEPTION);
+                        handler.stackFailuresOnly() ? CD_STACK_EXCEPTION : CD_RUNTIME_EXCEPTION);
                 code.labelBinding(handler.handler());
-                emitSourceFrame(handler.span());
-                code.iconst_0();
-                code.invokeinterface(CD_LIST, "get", method("(I)Ljava/lang/Object;"));
-                code.checkcast(cd(RUNTIME + "SourceFrame"));
-                code.invokevirtual(CD_RUNTIME_EXCEPTION, "withFrame", method(
-                        "(L" + RUNTIME + "SourceFrame;)L" + RUNTIME + "LyraRuntimeException;"));
-                code.athrow();
+                int runtimeCause = code.allocateLocal(TypeKind.REFERENCE);
+                code.astore(runtimeCause);
+                if (handler.stackFailuresOnly()) {
+                    appendCallFramesAndThrow(runtimeCause, handler.stackFrames());
+                } else {
+                    code.aload(runtimeCause);
+                    code.invokevirtual(CD_RUNTIME_EXCEPTION, "code",
+                            method("()Ljava/lang/String;"));
+                    code.ldc("LYR-STACK");
+                    code.invokevirtual(cd("java.lang.String"), "equals",
+                            method("(Ljava/lang/Object;)Z"));
+                    Label ordinary = code.newLabel();
+                    code.ifeq(ordinary);
+                    appendCallFramesAndThrow(runtimeCause, handler.stackFrames());
+                    code.labelBinding(ordinary);
+                    appendCallFramesAndThrow(runtimeCause, List.of(handler.span()));
+                }
 
-                // A recursive ordinary call is the one generated boundary
-                // that translates StackOverflowError.  Other VM errors are
+                // Every generated call boundary translates StackOverflowError.
+                // The region may begin before target selection and arguments;
+                // all lexically enclosing call spans captured during emission
+                // are appended in callee-to-caller order. Other VM errors are
                 // deliberately not caught by generated code.
-                code.exceptionCatch(handler.start(), handler.end(), handler.stackHandler(),
-                        CD_STACK_OVERFLOW);
+                code.exceptionCatch(handler.stackStart(), handler.end(),
+                        handler.stackHandler(), CD_STACK_OVERFLOW);
                 code.labelBinding(handler.stackHandler());
                 int cause = code.allocateLocal(TypeKind.REFERENCE);
                 code.astore(cause);
@@ -728,14 +745,25 @@ final class JvmBytecodeEmitter {
                 code.invokestatic(CD_RUNTIME_EXCEPTION, "of", method(
                         "(L" + RUNTIME + "LyraFailureCategory;Ljava/lang/String;Ljava/lang/Throwable;)L"
                                 + RUNTIME + "LyraRuntimeException;"));
-                emitSourceFrame(handler.span());
+                int overflow = code.allocateLocal(TypeKind.REFERENCE);
+                code.astore(overflow);
+                appendCallFramesAndThrow(overflow, handler.stackFrames());
+            }
+        }
+
+        private void appendCallFramesAndThrow(
+                int failure, List<SourceSpan> frames) {
+            code.aload(failure);
+            for (SourceSpan frame : frames) {
+                emitSourceFrame(frame);
                 code.iconst_0();
                 code.invokeinterface(CD_LIST, "get", method("(I)Ljava/lang/Object;"));
                 code.checkcast(cd(RUNTIME + "SourceFrame"));
                 code.invokevirtual(CD_RUNTIME_EXCEPTION, "withFrame", method(
-                        "(L" + RUNTIME + "SourceFrame;)L" + RUNTIME + "LyraRuntimeException;"));
-                code.athrow();
+                        "(L" + RUNTIME + "SourceFrame;)L" + RUNTIME
+                                + "LyraRuntimeException;"));
             }
+            code.athrow();
         }
 
         /**
@@ -818,6 +846,19 @@ final class JvmBytecodeEmitter {
                 loadParameter(0);
                 code.ldc(layout.schema().type().canonicalSpelling());
                 code.invokespecial(base, "<init>", method("(" + NominalClassLayout.CONSTRUCTION + "Ljava/lang/String;)V"));
+                // Deterministic producer-scoped expected callable signature
+                // metadata, resolved exactly once from the bound producer
+                // authority after the exact nominal schema became available
+                // and before any getter/route boundary may read them.
+                for (GeneratedMemberPlan field : instanceSignatureFields()) {
+                    aloadReceiver();
+                    aloadReceiver();
+                    code.ldc(field.sourceName().orElseThrow(() -> invalidPlan(memberSpan(),
+                            "instance signature field has no canonical signature")));
+                    code.invokevirtual(base, "resolveExpectedSignature",
+                            method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+                    code.putfield(cd(classPlan.binaryName()), field.name(), type(field.descriptor()));
+                }
                 code.return_();
                 return;
             }
@@ -837,7 +878,7 @@ final class JvmBytecodeEmitter {
             int valueParameter = publicAccess ? 0 : 1;
             if (write && !delegatedWrite) {
                 loadParameter(valueParameter);
-                authenticateNominalFieldValue(field.member().type(), !publicAccess);
+                authenticateNominalFieldValue(field.member().type(), !publicAccess, true);
                 storeParameter(valueParameter);
             }
             if (initialize || initializingRead) {
@@ -868,7 +909,7 @@ final class JvmBytecodeEmitter {
                 if (delegatedRead(layout, field, publicAccess)) {
                     returnDelegatedFieldRead(layout, index, field);
                 } else {
-                    authenticateNominalFieldValue(field.member().type(), !publicAccess);
+                    authenticateNominalFieldValue(field.member().type(), !publicAccess, true);
                     returnPhysicalDescriptor(field.value().descriptor());
                 }
             }
@@ -928,11 +969,12 @@ final class JvmBytecodeEmitter {
             loadParameter(0);
             code.ldc(index);
             loadParameter(valueParameter);
-            code.ldc(delegate.signature().canonicalLyraSignature());
+            emitInstanceSignatureField(delegate.signature().canonicalLyraSignature());
             code.invokevirtual(cd(RUNTIME + "LyraNominalObject"),
                     "issueCallableMemberWriteRoute", method("("
                             + NominalClassLayout.AUTHORITY
-                            + "ILjava/lang/Object;Ljava/lang/String;)Ljava/lang/Object;"));
+                            + "ILjava/lang/Object;L" + RUNTIME
+                            + "LyraSignature;)Ljava/lang/Object;"));
             code.invokespecial(cd(delegateName), "<init>", method("(Ljava/lang/Object;)V"));
             code.checkcast(cd(delegate.functionInterface()));
             code.putfield(cd(classPlan.binaryName()), field.storageName(),
@@ -984,10 +1026,11 @@ final class JvmBytecodeEmitter {
             loadParameter(0);
             code.ldc(index);
             loadPhysical(field.value().physicalComponents().getFirst(), raw);
-            code.ldc(delegate.signature().canonicalLyraSignature());
+            emitInstanceSignatureField(delegate.signature().canonicalLyraSignature());
             code.invokevirtual(cd(RUNTIME + "LyraNominalObject"), "issueCallableMemberRoute",
                     method("(" + NominalClassLayout.AUTHORITY
-                            + "ILjava/lang/Object;Ljava/lang/String;)Ljava/lang/Object;"));
+                            + "ILjava/lang/Object;L" + RUNTIME
+                            + "LyraSignature;)Ljava/lang/Object;"));
             code.invokespecial(cd(delegateName), "<init>", method("(Ljava/lang/Object;)V"));
             // Retag the fresh delegate to its function interface before the
             // join so no stack-map frame ever needs to resolve a generated
@@ -996,7 +1039,7 @@ final class JvmBytecodeEmitter {
             code.goto_(done);
             code.labelBinding(rawPath);
             loadPhysical(field.value().physicalComponents().getFirst(), raw);
-            authenticateNominalFieldValue(field.member().type(), true);
+            authenticateNominalFieldValue(field.member().type(), true, true);
             code.labelBinding(done);
             returnPhysicalDescriptor(field.value().descriptor());
         }
@@ -1090,6 +1133,11 @@ final class JvmBytecodeEmitter {
 
         /** Checks exact reference leaves while retaining typed storage and alias identity. */
         private void authenticateNominalFieldValue(LyraType logical, boolean generated) {
+            authenticateNominalFieldValue(logical, generated, false);
+        }
+
+        private void authenticateNominalFieldValue(LyraType logical, boolean generated,
+                                                   boolean instanceSignatures) {
             if (logical.isMutable()) {
                 logical = logical.isNilable() ? logical.withoutQualifiers().nilable() : logical.withoutQualifiers();
             }
@@ -1109,7 +1157,11 @@ final class JvmBytecodeEmitter {
             if (base instanceof FunctionType function) {
                 code.aload(slot);
                 emitIoAuthority();
-                emitScopedSignatureOverAuthority(function.signature().canonicalSpelling());
+                if (instanceSignatures) {
+                    emitInstanceSignatureField(function.signature().canonicalSpelling());
+                } else {
+                    emitScopedSignatureOverAuthority(function.signature().canonicalSpelling());
+                }
                 code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT, generated ? "requireAuthenticatedForGeneratedInvocation" : "requireAuthenticated",
                         method("(Ljava/lang/Object;" + NominalClassLayout.AUTHORITY + "L" + RUNTIME + "LyraSignature;)L" + RUNTIME + "LyraClosure;"));
                 code.pop();
@@ -1136,7 +1188,7 @@ final class JvmBytecodeEmitter {
                     Label loop = code.newLabel(); code.labelBinding(loop);
                     code.iload(index); code.aload(slot); code.arraylength(); code.if_icmpge(done);
                     code.aload(slot); code.iload(index); code.aaload();
-                    authenticateNominalFieldValue(array.elementType(), generated); code.pop();
+                    authenticateNominalFieldValue(array.elementType(), generated, instanceSignatures); code.pop();
                     code.iinc(index, 1); code.goto_(loop);
                 }
             } else if (base instanceof TupleType tuple) {
@@ -1146,7 +1198,7 @@ final class JvmBytecodeEmitter {
                     if (!descriptor.startsWith("L") && !descriptor.startsWith("[")) continue;
                     code.aload(slot);
                     code.invokevirtual(cd(tupleName), "$lyra$get$" + index, method("()" + descriptor));
-                    authenticateNominalFieldValue(tuple.memberType(index), generated); code.pop();
+                    authenticateNominalFieldValue(tuple.memberType(index), generated, instanceSignatures); code.pop();
                 }
             } else if (base instanceof io.mindspice.lyra.compiler.types.RangeType) {
                 code.aload(slot); authenticateRange(logical); code.pop();
@@ -1257,11 +1309,25 @@ final class JvmBytecodeEmitter {
         private void emitClosureConstructor() {
             emitObjectSuperClosureConstructor();
             List<GeneratedMemberPlan> fields = classPlan.members().stream()
-                    .filter(GeneratedMemberPlan::isField).toList();
+                    .filter(GeneratedMemberPlan::isField)
+                    .filter(value -> value.kind() != GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD)
+                    .toList();
             int parameter = 0;
             for (GeneratedMemberPlan field : fields) {
                 aloadReceiver();
                 loadParameter(parameter++);
+                code.putfield(cd(classPlan.binaryName()), field.name(), type(field.descriptor()));
+            }
+            // Deterministic per-instance expected-callable signature fields,
+            // resolved exactly once from the producer authority received by
+            // the constructor, before any dynamic invocation may read them.
+            for (GeneratedMemberPlan field : instanceSignatureFields()) {
+                aloadReceiver();
+                loadParameter(0);
+                code.ldc(field.sourceName().orElseThrow(() ->
+                        invalidPlan(memberSpan(), "instance signature field has no canonical signature")));
+                code.invokevirtual(CD_AUTHORITY, "resolveSignature",
+                        method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
                 code.putfield(cd(classPlan.binaryName()), field.name(), type(field.descriptor()));
             }
             code.return_();
@@ -1308,6 +1374,8 @@ final class JvmBytecodeEmitter {
             FunctionType function = functionBase(intrinsicFunction.contract().orElseThrow().valueType());
             JvmSignaturePlan signature = owner.mapper.mapSignature(
                     function.signature(), JvmAbiBoundary.JAVA_VISIBLE);
+            Label stackStart = code.newLabel();
+            code.labelBinding(stackStart);
             aloadReceiver();
             code.invokevirtual(CD_CLOSURE, "checkInvocationFromGeneratedCode", method("()V"));
             line(memberSpan());
@@ -1316,7 +1384,8 @@ final class JvmBytecodeEmitter {
                 loadParameter(index);
             }
             recordCallFailureFrame(memberSpan(), () -> code.invokestatic(
-                    CD_LYRA_IO, intrinsicFunction.name(), method(intrinsicDescriptor(signature))));
+                    CD_LYRA_IO, intrinsicFunction.name(), method(intrinsicDescriptor(signature))),
+                    stackStart);
             returnPhysicalDescriptor(signature.returnValue().descriptor());
         }
 
@@ -1358,7 +1427,7 @@ final class JvmBytecodeEmitter {
                                                       JvmTypePlan physical) {
             if (containsNominal(logical)) {
                 loadParameter(index);
-                authenticateNominalFieldValue(logical, true);
+                authenticateNominalFieldValue(logical, true, true);
                 return true;
             }
             if (logical.withoutQualifiers() instanceof io.mindspice.lyra.compiler.types.RangeType) {
@@ -1384,7 +1453,7 @@ final class JvmBytecodeEmitter {
                 // nominal member delegate) survives the callable boundary.
                 code.dup();
                 emitCurrentAuthority();
-                emitSignatureOverAuthority(signature);
+                emitInstanceSignatureField(signature);
                 code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT,
                         "requireAuthenticatedForGeneratedInvocation",
                         method("(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
@@ -1397,7 +1466,7 @@ final class JvmBytecodeEmitter {
                 loadParameter(index);
                 code.dup();
                 emitCurrentAuthority();
-                emitSignatureOverAuthority(signature);
+                emitInstanceSignatureField(signature);
                 code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT,
                         "requireAuthenticatedForGeneratedInvocation",
                         method("(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
@@ -1405,6 +1474,56 @@ final class JvmBytecodeEmitter {
                 code.pop();
             }
             return true;
+        }
+
+        /**
+         * Complete callable write-boundary authentication for a declaration
+         * storage route.  A binding or cell may hold only runtime-authenticated
+         * closures (or route delegates), so the canonical proven-route call
+         * path needs no per-call re-authentication.  Nilable storage may hold
+         * null.  The original occurrence stays on the operand stack for the
+         * following store.
+         */
+        private void authenticateStoredCallableIfFunction(BindingContract contract,
+                                                          JvmTypePlan storage,
+                                                          SourceSpan span) {
+            LyraType base = contract.valueType().withoutQualifiers();
+            if (!(base instanceof FunctionType function)) {
+                return;
+            }
+            if (!storage.isSingleValue()
+                    || !storage.physicalComponents().getFirst().isReference()) {
+                throw invalidPlan(span, "function storage has no reference representation");
+            }
+            String signature = function.signature().canonicalSpelling();
+            if (contract.valueType().hasQualifier(io.mindspice.lyra.compiler.types.TypeQualifier.NIL)) {
+                code.dup();
+                Label nil = code.newLabel();
+                Label done = code.newLabel();
+                code.ifnull(nil);
+                code.dup();
+                emitCurrentAuthority();
+                emitInstanceSignatureField(signature);
+                code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT,
+                        "requireAuthenticatedForGeneratedInvocation", method(
+                                "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
+                                        + RUNTIME + "LyraSignature;)L" + RUNTIME
+                                        + "LyraClosure;"));
+                code.pop();
+                code.goto_(done);
+                code.labelBinding(nil);
+                code.labelBinding(done);
+            } else {
+                code.dup();
+                emitCurrentAuthority();
+                emitInstanceSignatureField(signature);
+                code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT,
+                        "requireAuthenticatedForGeneratedInvocation", method(
+                                "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
+                                        + RUNTIME + "LyraSignature;)L" + RUNTIME
+                                        + "LyraClosure;"));
+                code.pop();
+            }
         }
 
         private void emitStateMethod() {
@@ -1475,6 +1594,20 @@ final class JvmBytecodeEmitter {
             code.swap();
             GeneratedMemberPlan lifecycle = stateLifecycleField();
             code.putfield(cd(classPlan.binaryName()), lifecycle.name(), type(lifecycle.descriptor()));
+            // Deterministic per-instance expected-callable signature fields,
+            // resolved exactly once from the producer authority after it
+            // becomes available, before any dynamic invocation may read them.
+            for (GeneratedMemberPlan field : instanceSignatureFields()) {
+                aloadReceiver();
+                loadStateLifecycle();
+                code.invokevirtual(CD_LIFECYCLE, "closureAuthority",
+                        method("()L" + RUNTIME + "LyraClosureAuthority;"));
+                code.ldc(field.sourceName().orElseThrow(() ->
+                        invalidPlan(memberSpan(), "instance signature field has no canonical signature")));
+                code.invokevirtual(CD_AUTHORITY, "resolveSignature",
+                        method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
+                code.putfield(cd(classPlan.binaryName()), field.name(), type(field.descriptor()));
+            }
             if (owner.ir.sessionExecution().isPresent()) {
                 loadParameter(0);
                 code.new_(CD_MODULE_ID);
@@ -2011,6 +2144,7 @@ final class JvmBytecodeEmitter {
             for (GeneratedMemberPlan field : classPlan.members().stream()
                     .filter(GeneratedMemberPlan::isField)
                     .filter(value -> value.kind() != GeneratedMemberKind.STATE_LIFECYCLE_FIELD)
+                    .filter(value -> value.kind() != GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD)
                     .toList()) {
                 aloadReceiver();
                 emitZero(jvmType(field.descriptor()));
@@ -2570,6 +2704,8 @@ final class JvmBytecodeEmitter {
             // state, while the exact interface invocation avoids reparsing the
             // signature and re-authenticating the same closure on every typed
             // Java call.
+            Label stackStart = code.newLabel();
+            code.labelBinding(stackStart);
             loadFacadeState();
             emitStateFunction(facadeStateDeclaration(export));
             if (export.valueType().isNilable()) {
@@ -2591,9 +2727,9 @@ final class JvmBytecodeEmitter {
             for (int index = 0; index < function.arity(); index++) {
                 emitParameterFromFacade(index, function.parameterType(index), signature.parameters().get(index));
             }
-            code.invokeinterface(cd(owner.plan.functionInterfaces()
-                            .get(function.canonicalSpelling())),
-                    "invoke", method(signature.descriptor()));
+            recordFacadeCallBoundary(memberSpan(), () -> code.invokeinterface(
+                    cd(owner.plan.functionInterfaces().get(function.canonicalSpelling())),
+                    "invoke", method(signature.descriptor())), stackStart);
             // A Unit function invocation is a Java void method.  Unlike an
             // internal Lyra expression, it must not materialize LyraUnit on
             // the operand stack before returning.
@@ -2602,13 +2738,16 @@ final class JvmBytecodeEmitter {
 
         private void emitIntrinsicFacadeCall(
                 IrDeclaration intrinsic, FunctionType function, JvmSignaturePlan signature) {
+            Label stackStart = code.newLabel();
+            code.labelBinding(stackStart);
             emitIoAuthority();
             for (int index = 0; index < function.arity(); index++) {
                 emitParameterFromFacade(index, function.parameterType(index),
                         signature.parameters().get(index));
             }
             recordCallFailureFrame(memberSpan(), () -> code.invokestatic(
-                    CD_LYRA_IO, intrinsic.name(), method(intrinsicDescriptor(signature))));
+                    CD_LYRA_IO, intrinsic.name(), method(intrinsicDescriptor(signature))),
+                    stackStart);
         }
 
         private void emitFacadeFunctionValueGetter(GeneratedExportPlan export) {
@@ -3114,10 +3253,10 @@ final class JvmBytecodeEmitter {
                 return emitMatch(match);
             }
             if (node instanceof IrNode.DirectCall call) {
-                return emitDirectCall(call);
+                return withinCallBoundary(call.span(), () -> emitDirectCall(call));
             }
             if (node instanceof IrNode.CallableCall call) {
-                return emitCallableCall(call);
+                return withinCallBoundary(call.span(), () -> emitCallableCall(call));
             }
             if (node instanceof IrNode.Lambda lambdaNode) {
                 return emitLambda(lambdaNode);
@@ -3210,6 +3349,8 @@ final class JvmBytecodeEmitter {
         private JvmTypePlan emitLoop(IrNode.Loop loop) {
             // Retain both argument values before entering the loop. Authentication
             // belongs to the selected value, not to every repeated invocation.
+            Label stackStart = code.newLabel();
+            code.labelBinding(stackStart);
             JvmTypePlan inputPlan = emitNode(loop.input());
             if (!loop.conditionControlled()) authenticateRange(loop.input().type());
             int input = allocateLocal(inputPlan.physicalComponents().getFirst());
@@ -3219,7 +3360,8 @@ final class JvmBytecodeEmitter {
             int action = allocateLocal(actionPlan.physicalComponents().getFirst());
             code.astore(action);
             code.aload(action);
-            recordCallFailureFrame(loop.span(), () -> authenticateGeneratedFunctionValue(actionType));
+            recordCallFailureFrame(loop.span(), () -> authenticateGeneratedFunctionValue(actionType),
+                    stackStart);
             code.astore(action);
             var start = code.newLabel();
             var done = code.newLabel();
@@ -3590,6 +3732,7 @@ final class JvmBytecodeEmitter {
             JvmTypePlan storage = owner.mapper.mapBinding(contract).value();
             JvmTypePlan value = emitNode(declaration.initializer());
             adapt(value, storage);
+            authenticateStoredCallableIfFunction(contract, storage, declaration.span());
             if (stateMethod && isRootDeclaration(id)) {
                 storeStateDeclaration(id, storage);
             } else if (owner.cells.containsKey(id)) {
@@ -3651,6 +3794,9 @@ final class JvmBytecodeEmitter {
                 JvmTypePlan storage = storagePlan(id);
                 JvmTypePlan value = emitNode(rebinding.value());
                 adapt(value, storage);
+                authenticateStoredCallableIfFunction(
+                        declarations.get(id).contract().orElseThrow(),
+                        storage, rebinding.span());
                 storeDeclaration(id, storage);
             } else {
                 if (rebinding.mutationKind().filter(io.mindspice.lyra.compiler.semantic.MutationKind.ARRAY_ELEMENT::equals)
@@ -4916,10 +5062,20 @@ final class JvmBytecodeEmitter {
             code.goto_(fallbackLabel);
             code.labelBinding(valueLabel);
             loadNonNilFromSlots(source, target, slots);
+            if (coalesce.type().withoutQualifiers() instanceof FunctionType function) {
+                code.checkcast(cd(owner.plan.functionInterfaces().get(function.canonicalSpelling())));
+            }
             code.goto_(end);
             code.labelBinding(fallbackLabel);
             JvmTypePlan fallback = emitNode(coalesce.fallback());
             adapt(fallback, target);
+            if (coalesce.type().withoutQualifiers() instanceof FunctionType function) {
+                // Retag a freshly emitted fallback closure to its typed
+                // functional interface before the merge so no stack-map frame
+                // ever needs to resolve a generated class identity during
+                // emission or verification.
+                code.checkcast(cd(owner.plan.functionInterfaces().get(function.canonicalSpelling())));
+            }
             code.labelBinding(end);
             return target;
         }
@@ -5122,12 +5278,55 @@ final class JvmBytecodeEmitter {
             return null;
         }
 
+        private <T> T withinCallBoundary(
+                SourceSpan span, java.util.function.Supplier<T> emission) {
+            activeCallBoundaries.push(span);
+            try {
+                return emission.get();
+            } finally {
+                activeCallBoundaries.pop();
+            }
+        }
+
+        private void withinCallBoundary(SourceSpan span, Runnable emission) {
+            activeCallBoundaries.push(span);
+            try {
+                emission.run();
+            } finally {
+                activeCallBoundaries.pop();
+            }
+        }
+
         private JvmTypePlan emitDirectCall(IrNode.DirectCall call) {
             emitAttachmentSafePoint();
             DeclarationId id = call.targetDeclaration().orElseThrow(() ->
                     invalidPlan(call.span(), "direct call has no target declaration"));
+            Optional<CallableStorageRouteProof> proof = call.storageRouteProof();
+            if (proof.isPresent()) {
+                IrReference reference = call.referenceId()
+                        .flatMap(owner.ir.metadata()::reference)
+                        .orElseThrow(() -> invalidPlan(call.span(),
+                                "direct call storage-route proof has no reference metadata"));
+                requireStorageRouteProof(
+                        proof.orElseThrow(), id, reference, null, call.span());
+            }
             IrDeclaration intrinsic = intrinsicDeclaration(id);
             if (intrinsic != null) {
+                if (proof.isPresent()
+                        && (proof.orElseThrow().route()
+                        != CallableStorageRouteProof.RouteKind.INTRINSIC
+                        || intrinsic.contract().isEmpty()
+                        || !(intrinsic.contract().orElseThrow().valueType().withoutQualifiers()
+                        instanceof FunctionType function)
+                        || !proof.orElseThrow().signature().equals(function.signature()))) {
+                    throw invalidPlan(call.span(),
+                            "direct intrinsic call storage-route proof is inconsistent");
+                }
+                if (intrinsic.contract().isEmpty()
+                        || !(intrinsic.contract().orElseThrow().valueType().withoutQualifiers()
+                        instanceof FunctionType)) {
+                    throw invalidPlan(call.span(), "direct intrinsic call has no function contract");
+                }
                 return emitIntrinsicCall(intrinsic, call.arguments(), call.type(), call.span());
             }
             IrDeclaration declaration = declarations.get(id);
@@ -5135,6 +5334,16 @@ final class JvmBytecodeEmitter {
                 throw invalidPlan(call.span(), "direct call target declaration is absent");
             }
             FunctionType function = functionBase(declaration.contract().orElseThrow().valueType());
+            if (proof.isPresent()
+                    && !proof.orElseThrow().signature().equals(function.signature())) {
+                throw invalidPlan(call.span(),
+                        "direct call storage-route proof has another signature");
+            }
+            // Target selection and argument evaluation participate in the
+            // call's StackOverflowError translation region; the ordinary
+            // runtime-exception frame region covers only the invocation.
+            Label stackStart = code.newLabel();
+            code.labelBinding(stackStart);
             if (call.receiver().isPresent()) {
                 NominalFieldLocation location = owner.nominalFields.get(id);
                 if (location == null) throw invalidPlan(call.span(), "method call has no nominal slot");
@@ -5144,6 +5353,10 @@ final class JvmBytecodeEmitter {
                 emitLoadDeclaration(id, owner.mapper.map(declaration.contract().orElseThrow().valueType(),
                         JvmMappingContext.INTERNAL_VALUE));
             }
+            if (proof.isEmpty()) {
+                recordCallFailureFrame(call.span(),
+                        () -> authenticateGeneratedFunctionValue(function));
+            }
             JvmSignaturePlan signature = owner.mapper.mapSignature(function.signature(),
                     JvmAbiBoundary.JAVA_VISIBLE);
             for (int index = 0; index < function.arity(); index++) {
@@ -5151,7 +5364,7 @@ final class JvmBytecodeEmitter {
             }
             recordCallFailureFrame(call.span(), () -> code.invokeinterface(
                     cd(owner.plan.functionInterfaces().get(function.canonicalSpelling())),
-                    "invoke", method(signature.descriptor())));
+                    "invoke", method(signature.descriptor())), stackStart);
             JvmTypePlan result = owner.mapper.map(call.type(), JvmMappingContext.INTERNAL_VALUE);
             if (signature.returnValue().descriptor().equals("V")) {
                 emitUnit();
@@ -5171,16 +5384,40 @@ final class JvmBytecodeEmitter {
             }
             JvmSignaturePlan signature = owner.mapper.mapSignature(function.signature(),
                     JvmAbiBoundary.JAVA_VISIBLE);
-            emitAt(call.target(), owner.mapper.map(
-                    call.target().type(), JvmMappingContext.INTERNAL_VALUE));
-            recordCallFailureFrame(call.span(),
-                    () -> authenticateGeneratedFunctionValue(function));
+            // Target selection and argument evaluation participate in the
+            // call's StackOverflowError translation region; the ordinary
+            // runtime-exception frame region covers only the invocation.
+            Label stackStart = code.newLabel();
+            code.labelBinding(stackStart);
+            if (call.storageRouteProof().isPresent()) {
+                // The IR proof was issued after resolution and independently
+                // checked before emission. It names the exact storage route;
+                // only that fact permits omitting per-call authentication.
+                CallableStorageRouteProof proof = call.storageRouteProof().orElseThrow();
+                DeclarationId selected = targetDeclaration(call.target());
+                IrReference reference = targetReferenceId(call.target())
+                        .flatMap(owner.ir.metadata()::reference)
+                        .orElse(null);
+                if (selected == null || !proof.signature().equals(function.signature())) {
+                    throw invalidPlan(call.span(),
+                            "callable storage-route proof is inconsistent with its target");
+                }
+                requireStorageRouteProof(
+                        proof, selected, reference, call.target(), call.span());
+                emitAt(call.target(), owner.mapper.map(
+                        call.target().type(), JvmMappingContext.INTERNAL_VALUE));
+            } else {
+                emitAt(call.target(), owner.mapper.map(
+                        call.target().type(), JvmMappingContext.INTERNAL_VALUE));
+                recordCallFailureFrame(call.span(),
+                        () -> authenticateGeneratedFunctionValue(function));
+            }
             for (int index = 0; index < function.arity(); index++) {
                 emitAt(call.arguments().get(index), signature.parameters().get(index));
             }
             recordCallFailureFrame(call.span(), () -> code.invokeinterface(
                     cd(owner.plan.functionInterfaces().get(function.canonicalSpelling())),
-                    "invoke", method(signature.descriptor())));
+                    "invoke", method(signature.descriptor())), stackStart);
             JvmTypePlan result = owner.mapper.map(call.type(), JvmMappingContext.INTERNAL_VALUE);
             if (signature.returnValue().descriptor().equals("V")) emitUnit();
             else adaptPhysicalPlan(signature.returnValue(), result);
@@ -5200,12 +5437,14 @@ final class JvmBytecodeEmitter {
             }
             JvmSignaturePlan signature = owner.mapper.mapSignature(
                     function.signature(), JvmAbiBoundary.JAVA_VISIBLE);
+            Label stackStart = code.newLabel();
+            code.labelBinding(stackStart);
             emitIoAuthority();
             for (int index = 0; index < arguments.size(); index++) {
                 emitAt(arguments.get(index), signature.parameters().get(index));
             }
             recordCallFailureFrame(span, () -> code.invokestatic(
-                    CD_LYRA_IO, intrinsic.name(), method(intrinsicDescriptor(signature))));
+                    CD_LYRA_IO, intrinsic.name(), method(intrinsicDescriptor(signature))), stackStart);
             JvmTypePlan result = owner.mapper.map(resultType, JvmMappingContext.INTERNAL_VALUE);
             if (signature.returnValue().descriptor().equals("V")) {
                 emitUnit();
@@ -5223,7 +5462,7 @@ final class JvmBytecodeEmitter {
 
         private void authenticateGeneratedFunctionValue(FunctionType function) {
             emitCurrentAuthority();
-            emitSignatureOverAuthority(function.signature().canonicalSpelling());
+            emitInstanceSignatureField(function.signature().canonicalSpelling());
             code.invokestatic(CD_RUNTIME_CLOSURE_SUPPORT,
                     "requireAuthenticatedForGeneratedInvocation", method(
                             "(Ljava/lang/Object;L" + RUNTIME + "LyraClosureAuthority;L"
@@ -5234,6 +5473,37 @@ final class JvmBytecodeEmitter {
         }
 
         private void recordCallFailureFrame(SourceSpan span, Runnable invocation) {
+            recordCallFailureFrame(span, invocation, null);
+        }
+
+        /**
+         * Records one generated call boundary.  The ordinary runtime-exception
+         * region covers only {@code invocation}; the StackOverflowError region
+         * starts at the already-bound {@code stackStart} label (or at the
+         * invocation itself when absent) so target selection and argument
+         * evaluation overflow is translated to LYR-STACK with this call's
+         * frame without swallowing other VirtualMachineError instances or
+         * duplicating nested frames.
+         */
+        private void recordCallFailureFrame(SourceSpan span, Runnable invocation,
+                                            Label stackStart) {
+            recordCallFailureFrame(span, invocation, stackStart, false);
+        }
+
+        /**
+         * The typed Java facade is a host entry boundary, not another nested
+         * Lyra call. It still translates StackOverflowError across target and
+         * argument evaluation and appends its source frame to an existing
+         * LYR-STACK failure, but ordinary structured failures pass through
+         * without acquiring a synthetic module frame.
+         */
+        private void recordFacadeCallBoundary(SourceSpan span, Runnable invocation,
+                                              Label stackStart) {
+            recordCallFailureFrame(span, invocation, stackStart, true);
+        }
+
+        private void recordCallFailureFrame(SourceSpan span, Runnable invocation,
+                                            Label stackStart, boolean stackFailuresOnly) {
             Label start = code.newLabel();
             Label end = code.newLabel();
             Label handler = code.newLabel();
@@ -5241,7 +5511,14 @@ final class JvmBytecodeEmitter {
             code.labelBinding(start);
             invocation.run();
             code.labelBinding(end);
-            callFailureHandlers.add(new CallFailureHandler(start, end, handler, stackHandler, span));
+            ArrayList<SourceSpan> stackFrames = new ArrayList<>();
+            stackFrames.add(span);
+            for (SourceSpan enclosing : activeCallBoundaries) {
+                if (!enclosing.equals(span)) stackFrames.add(enclosing);
+            }
+            callFailureHandlers.add(new CallFailureHandler(
+                    stackStart == null ? start : stackStart, start, end, handler,
+                    stackHandler, List.copyOf(stackFrames), span, stackFailuresOnly));
         }
 
         private JvmTypePlan emitLambda(IrNode.Lambda lambdaNode) {
@@ -5257,6 +5534,18 @@ final class JvmBytecodeEmitter {
             code.dup();
             emitCurrentAuthority();
             emitCurrentState();
+            GeneratedMemberPlan selfCell = closure.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.CLOSURE_SELF_CELL_FIELD)
+                    .findFirst().orElse(null);
+            if (selfCell != null) {
+                DeclarationId self = lambda.ownerDeclaration().orElseThrow(() ->
+                        invalidPlan(lambdaNode.span(), "mutable self-cell closure has no owner"));
+                if (selfCell.descriptor().startsWith("[")) {
+                    emitLoadFunctionSlotForDeclaration(self);
+                } else {
+                    emitLoadCellForDeclaration(self);
+                }
+            }
             for (CaptureId captureId : lambda.captures().stream().sorted().toList()) {
                 IrCapture capture = captures.get(captureId);
                 if (capture == null) throw invalidPlan(lambdaNode.span(), "lambda capture is absent");
@@ -5276,6 +5565,25 @@ final class JvmBytecodeEmitter {
                     .findFirst().orElseThrow();
             code.invokespecial(cd(closureName), "<init>", method(constructor.descriptor()));
             return owner.mapper.map(lambdaNode.type(), JvmMappingContext.INTERNAL_VALUE);
+        }
+
+        private List<GeneratedMemberPlan> instanceSignatureFields() {
+            return classPlan.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD)
+                    .sorted(Comparator.comparing(GeneratedMemberPlan::name))
+                    .toList();
+        }
+
+        /** Leaves the receiver followed by the exact pre-resolved instance signature. */
+        private void emitInstanceSignatureField(String canonical) {
+            GeneratedMemberPlan field = classPlan.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD)
+                    .filter(value -> value.sourceName().filter(canonical::equals).isPresent())
+                    .findFirst().orElseThrow(() -> invalidPlan(memberSpan(),
+                            "generated class has no instance signature field for "
+                                    + canonical));
+            aloadReceiver();
+            code.getfield(cd(classPlan.binaryName()), field.name(), type(field.descriptor()));
         }
 
         private void emitCurrentAuthority() {
@@ -5334,12 +5642,114 @@ final class JvmBytecodeEmitter {
                     method("(Ljava/lang/String;)L" + RUNTIME + "LyraSignature;"));
         }
 
+        private void requireStorageRouteProof(
+                CallableStorageRouteProof proof, DeclarationId selected,
+                IrReference reference, IrNode target, SourceSpan span) {
+            boolean exactOccurrence = target == null
+                    ? reference != null && proof.targetSite().equals(reference.siteId())
+                    : target.siteId().filter(proof.targetSite()::equals).isPresent();
+            boolean anotherReferenceTarget = reference != null
+                    && reference.targetDeclaration().isPresent()
+                    && reference.targetDeclaration().filter(selected::equals).isEmpty();
+            if (!proof.declarationId().equals(selected) || !exactOccurrence
+                    || anotherReferenceTarget) {
+                throw invalidPlan(span,
+                        "callable storage-route proof identifies another target occurrence");
+            }
+            boolean linkedRoute = proof.route()
+                    == CallableStorageRouteProof.RouteKind.IMPORTED_STATE
+                    || proof.route() == CallableStorageRouteProof.RouteKind.SESSION_LINK
+                    || proof.route() == CallableStorageRouteProof.RouteKind.INTRINSIC;
+            if (linkedRoute && (reference == null
+                    || !proof.moduleId().equals(reference.targetModule())
+                    || !proof.exportId().equals(reference.targetExport()))) {
+                throw invalidPlan(span,
+                        "callable storage-route proof identifies another module/export route");
+            }
+            IrDeclaration declaration = declarations.get(selected);
+            if (declaration == null) {
+                throw invalidPlan(span,
+                        "callable storage-route proof identifies an absent declaration");
+            }
+            boolean valid = switch (proof.route()) {
+                case LOCAL_BINDING -> (declaration.kind() == DeclarationKind.LET
+                        || declaration.kind() == DeclarationKind.SELF)
+                        && !declaration.imported() && declaration.externalBinding().isEmpty();
+                case PARAMETER_ENTRY -> declaration.kind() == DeclarationKind.PARAMETER;
+                case CAPTURE_VALUE, SHARED_CELL -> {
+                    CaptureId captureId = proof.captureId().orElseThrow();
+                    IrCapture capture = captures.get(captureId);
+                    yield reference != null
+                            && reference.capture().filter(captureId::equals).isPresent()
+                            && capture != null
+                            && capture.declarationId().equals(selected)
+                            && capture.isSharedCell()
+                            == (proof.route()
+                            == CallableStorageRouteProof.RouteKind.SHARED_CELL);
+                }
+                case IMPORTED_STATE -> reference != null
+                        && reference.targetModule().isPresent()
+                        && !reference.moduleId().equals(
+                        reference.targetModule().orElseThrow());
+                case SESSION_LINK -> {
+                    DeclarationId origin = declaration.originDeclaration().orElse(selected);
+                    var access = reference == null ? Optional
+                            .<io.mindspice.lyra.compiler.ir.IrSessionExecution.ExternalAccess>empty()
+                            : owner.ir.externalAccess(reference.moduleId(), origin);
+                    yield access.isPresent()
+                            && proof.producerId().filter(access.orElseThrow().target()
+                            .origin().producerId()::equals).isPresent()
+                            && proof.generationId().filter(access.orElseThrow().target()
+                            .origin().generationId()::equals).isPresent();
+                }
+                case EXTERNAL_BINDING -> declaration.kind() == DeclarationKind.EXTERNAL
+                        && declaration.externalBinding().filter(binding ->
+                        owner.ir.typedSemanticGraph().resolvedGraph().sessionFlowCertificate()
+                                .map(certificate -> certificate.certifiesExternalCallableStorageRoute(binding))
+                                .orElse(false)).isPresent();
+                case INTRINSIC -> intrinsicDeclaration(selected) != null;
+                case NOMINAL_MEMBER_GETTER -> {
+                    NominalFieldLocation location = owner.nominalFields.get(selected);
+                    yield target instanceof IrNode.Access access
+                            && access.accessKind() == AccessKind.MEMBER_VALUE
+                            && access.receiver().isPresent()
+                            && location != null
+                            && proof.memberIndex().orElse(-1) == location.index()
+                            && access.receiver().orElseThrow().siteId()
+                            .equals(proof.receiverSite());
+                }
+            };
+            if (!valid) {
+                throw invalidPlan(span,
+                        "callable storage-route proof is incompatible with its emitted route");
+            }
+        }
+
+        private Optional<io.mindspice.lyra.compiler.identity.ReferenceId>
+                targetReferenceId(IrNode node) {
+            if (node instanceof IrNode.Reference reference) {
+                return reference.referenceId();
+            }
+            if (node instanceof IrNode.CaptureReference capture) {
+                return capture.referenceId();
+            }
+            if (node instanceof IrNode.Access access) {
+                return access.referenceId();
+            }
+            return Optional.empty();
+        }
+
         private DeclarationId targetDeclaration(IrNode node) {
             if (node instanceof IrNode.Reference reference) {
                 return reference.targetDeclaration().orElse(null);
             }
             if (node instanceof IrNode.CaptureReference capture) {
                 return capture.declarationId().orElse(null);
+            }
+            if (node instanceof IrNode.Access access
+                    && (access.accessKind() == AccessKind.NAMESPACE_VALUE
+                    || access.accessKind() == AccessKind.MEMBER_VALUE)) {
+                return access.declarationId().orElse(null);
             }
             return null;
         }
@@ -5597,10 +6007,27 @@ final class JvmBytecodeEmitter {
                 return;
             }
             if (node instanceof IrNode.DirectCall call
+                    && call.storageRouteProof().isPresent()
                     && call.targetDeclaration().equals(lambda.ownerDeclaration())
+                    && call.storageRouteProof().orElseThrow().declarationId()
+                    .equals(call.targetDeclaration().orElseThrow())
                     && call.receiver().isEmpty()) {
-                emitSelfTailCall(call);
+                withinCallBoundary(call.span(), () -> emitSelfTailCall(
+                        call.targetDeclaration().orElseThrow(), call.arguments(),
+                        call.type(), call.span()));
                 return;
+            }
+            if (node instanceof IrNode.CallableCall call
+                    && call.storageRouteProof().isPresent()
+                    && lambda.ownerDeclaration().isPresent()) {
+                DeclarationId target = targetDeclaration(call.target());
+                if (target != null
+                        && target.equals(lambda.ownerDeclaration().orElseThrow())
+                        && !(call.target() instanceof IrNode.Access)) {
+                    withinCallBoundary(call.span(), () -> emitSelfTailCall(
+                            target, call.arguments(), call.type(), call.span()));
+                    return;
+                }
             }
             JvmTypePlan value = emitNode(node);
             emitReturn(value);
@@ -5683,17 +6110,79 @@ final class JvmBytecodeEmitter {
             }
         }
 
-        private void emitSelfTailCall(IrNode.DirectCall call) {
+        private void emitSelfTailCall(DeclarationId id, List<IrNode> arguments,
+                                      LyraType callType, SourceSpan span) {
             if (loopLabel == null) {
-                throw invalidPlan(call.span(), "self-tail call outside a generated closure loop");
+                throw invalidPlan(span, "self-tail call outside a generated closure loop");
             }
-            FunctionType function = functionBase(declarations.get(call.targetDeclaration().orElseThrow())
-                    .contract().orElseThrow().valueType());
+            IrDeclaration declaration = declarations.get(id);
+            if (declaration == null || declaration.contract().isEmpty()) {
+                throw invalidPlan(span, "self-tail call target declaration is absent");
+            }
+            FunctionType function = functionBase(declaration.contract().orElseThrow().valueType());
             JvmSignaturePlan signature = owner.mapper.mapSignature(function.signature(),
                     JvmAbiBoundary.JAVA_VISIBLE);
+            if (!declaration.isMutable()) {
+                emitSelfTailLoop(function, signature, arguments);
+                return;
+            }
+            // Exact storage-route proof is not identity proof for a mutable
+            // slot: the current value must still be the executing closure
+            // before the loop is reused.  A rebound/aliased/narrowed slot
+            // falls back to an ordinary invocation of the selected value.
+            Label stackStart = code.newLabel();
+            code.labelBinding(stackStart);
+            JvmTypePlan target = owner.mapper.map(
+                    declaration.contract().orElseThrow().valueType(),
+                    JvmMappingContext.INTERNAL_VALUE);
+            emitLoadDeclaration(id, target);
+            int selected = allocateLocal(target);
+            storePhysical(target.physicalComponents().getFirst(), selected);
+            Label self = code.newLabel();
+            aloadReceiver();
+            loadPhysical(target.physicalComponents().getFirst(), selected);
+            code.if_acmpeq(self);
+            // Identity not established: ordinary invocation of the value
+            // selected before the arguments, exactly like a non-tail call.
+            loadPhysical(target.physicalComponents().getFirst(), selected);
+            for (int index = 0; index < function.arity(); index++) {
+                emitAt(arguments.get(index), signature.parameters().get(index));
+            }
+            recordCallFailureFrame(span, () -> code.invokeinterface(
+                    cd(owner.plan.functionInterfaces().get(function.canonicalSpelling())),
+                    "invoke", method(signature.descriptor())), stackStart);
+            JvmTypePlan result = owner.mapper.map(callType, JvmMappingContext.INTERNAL_VALUE);
+            if (signature.returnValue().descriptor().equals("V")) {
+                emitUnit();
+            } else {
+                adaptPhysicalPlan(signature.returnValue(), result);
+            }
+            emitReturn(result);
+            code.labelBinding(self);
+            // Identity established: reuse the checked frame with constant
+            // stack by writing the freshly evaluated arguments to the
+            // parameter slots and looping.
             List<Integer> temporary = new ArrayList<>();
             for (int index = 0; index < function.arity(); index++) {
-                emitAt(call.arguments().get(index), signature.parameters().get(index));
+                emitAt(arguments.get(index), signature.parameters().get(index));
+                int slot = allocateLocal(signature.parameters().get(index));
+                storePhysical(signature.parameters().get(index).physicalComponents().getFirst(), slot);
+                temporary.add(slot);
+            }
+            for (int index = 0; index < function.arity(); index++) {
+                loadPhysical(signature.parameters().get(index).physicalComponents().getFirst(),
+                        temporary.get(index));
+                int destination = code.parameterSlot(index);
+                code.storeLocal(typeKind(signature.parameters().get(index).descriptor()), destination);
+            }
+            code.goto_(loopLabel);
+        }
+
+        private void emitSelfTailLoop(FunctionType function, JvmSignaturePlan signature,
+                                      List<IrNode> arguments) {
+            List<Integer> temporary = new ArrayList<>();
+            for (int index = 0; index < function.arity(); index++) {
+                emitAt(arguments.get(index), signature.parameters().get(index));
                 int slot = allocateLocal(signature.parameters().get(index));
                 storePhysical(signature.parameters().get(index).physicalComponents().getFirst(), slot);
                 temporary.add(slot);
@@ -5715,7 +6204,7 @@ final class JvmBytecodeEmitter {
             }
             adapt(value, target);
             if (containsNominal(lambda.signature().returnType())) {
-                authenticateNominalFieldValue(lambda.signature().returnType(), true);
+                authenticateNominalFieldValue(lambda.signature().returnType(), true, true);
             }
             returnPhysicalDescriptor(target.descriptor());
         }
@@ -6852,6 +7341,24 @@ final class JvmBytecodeEmitter {
                 return;
             }
             if (closureMethod && lambda != null) {
+                IrDeclaration selfDeclaration = lambda.ownerDeclaration()
+                        .map(declarations::get)
+                        .filter(value -> value.id().equals(id) && value.isMutable())
+                        .orElse(null);
+                GeneratedMemberPlan selfCell = classPlan.members().stream()
+                        .filter(value -> value.kind() == GeneratedMemberKind.CLOSURE_SELF_CELL_FIELD)
+                        .findFirst().orElse(null);
+                if (selfDeclaration != null && selfCell != null) {
+                    emitLoadClosureSelfCell();
+                    if (selfCell.descriptor().startsWith("[")) {
+                        emitInt(0);
+                        code.aaload();
+                    } else {
+                        emitCellValue(id);
+                    }
+                    adapt(storagePlan(id), desired);
+                    return;
+                }
                 IrCapture capture = lambda.captures().stream()
                         .map(captures::get)
                         .filter(Objects::nonNull)
@@ -7076,7 +7583,28 @@ final class JvmBytecodeEmitter {
             BindingStorage local = locals.get(id);
             if (local != null) {
                 storeLocal(storage, local.slots());
+                if (isLocalFunctionDeclaration(id)) {
+                    Integer functionSlot = localFunctionSlots.get(id);
+                    if (functionSlot != null) {
+                        code.aload(functionSlot);
+                        emitInt(0);
+                        loadPhysical(storage.physicalComponents().getFirst(), local.slots().getFirst());
+                        code.aastore();
+                    }
+                }
                 return;
+            }
+            if (closureMethod && lambda != null
+                    && lambda.ownerDeclaration().filter(id::equals).isPresent()
+                    && declarations.get(id) != null && declarations.get(id).isMutable()) {
+                GeneratedMemberPlan selfCell = classPlan.members().stream()
+                        .filter(value -> value.kind()
+                                == GeneratedMemberKind.CLOSURE_SELF_CELL_FIELD)
+                        .findFirst().orElse(null);
+                if (selfCell != null) {
+                    emitStoreClosureSelfCell(id, storage, selfCell);
+                    return;
+                }
             }
             if (stateMethod && isRootDeclaration(id)) {
                 if (owner.cells.containsKey(id)) {
@@ -7131,6 +7659,35 @@ final class JvmBytecodeEmitter {
                 loadPhysical(jvmType(field.descriptor()), values.get(index));
             }
             code.invokespecial(cd(cellName), "<init>", method(constructor.descriptor()));
+        }
+
+        private void emitStoreClosureSelfCell(
+                DeclarationId id, JvmTypePlan storage, GeneratedMemberPlan selfCell) {
+            List<Integer> values = allocateLocals(storage);
+            storeLocal(storage, values);
+            emitLoadClosureSelfCell();
+            if (selfCell.descriptor().startsWith("[")) {
+                if (values.size() != 1) {
+                    throw invalidPlan(module.span(),
+                            "mutable function self slot must have one physical value");
+                }
+                emitInt(0);
+                loadPhysical(storage.physicalComponents().getFirst(), values.getFirst());
+                code.aastore();
+                return;
+            }
+            String cellName = owner.plan.cellClasses().get(id);
+            if (cellName == null) {
+                throw invalidPlan(module.span(), "mutable self cell class is absent: " + id);
+            }
+            GeneratedClassPlan cell = owner.plan.classPlan(cellName).orElseThrow();
+            GeneratedMemberPlan setter = cell.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.CELL_SET)
+                    .findFirst().orElseThrow();
+            for (int index = 0; index < values.size(); index++) {
+                loadPhysical(storage.physicalComponents().get(index), values.get(index));
+            }
+            code.invokevirtual(cd(cell.binaryName()), setter.name(), method(setter.descriptor()));
         }
 
         private void emitStoreCell(DeclarationId id, JvmTypePlan storage) {
@@ -7275,6 +7832,14 @@ final class JvmBytecodeEmitter {
                     .filter(value -> value.name().equals(prefix)
                             || value.name().startsWith(prefix + "$"))
                     .toList();
+        }
+
+        private void emitLoadClosureSelfCell() {
+            GeneratedMemberPlan field = classPlan.members().stream()
+                    .filter(value -> value.kind() == GeneratedMemberKind.CLOSURE_SELF_CELL_FIELD)
+                    .findFirst().orElseThrow(() -> invalidPlan(module.span(), "closure self-cell field absent"));
+            aloadReceiver();
+            code.getfield(cd(classPlan.binaryName()), field.name(), type(field.descriptor()));
         }
 
         private void emitLoadClosureState() {
@@ -7667,8 +8232,10 @@ final class JvmBytecodeEmitter {
         private record FailureHandler(Label label, SourceSpan span, String code, String summary) {
         }
 
-        private record CallFailureHandler(Label start, Label end, Label handler,
-                                          Label stackHandler, SourceSpan span) {
+        private record CallFailureHandler(Label stackStart, Label start, Label end,
+                                          Label handler, Label stackHandler,
+                                          List<SourceSpan> stackFrames,
+                                          SourceSpan span, boolean stackFailuresOnly) {
         }
     }
 

@@ -50,6 +50,20 @@ final class JvmAbiParity {
         Map<DeclarationId, IrDeclaration> declarations = ir.declarations().stream()
                 .collect(java.util.stream.Collectors.toMap(IrDeclaration::id, value -> value));
         if (!nominalLayouts.equals(plan.nominalLayouts())) differences.add("nominal storage/factory layouts differ from typed schemas");
+        for (var schema : ir.semanticGraph().resolvedGraph().nominalTypes().schemas()) {
+            String nominalName = plan.typeNames().nominalBinaryName(schema.type().canonicalSpelling());
+            var nominalClass = plan.classPlan(nominalName).orElse(null);
+            if (nominalClass == null) {
+                differences.add("missing generated nominal class: " + schema.type().canonicalSpelling());
+                continue;
+            }
+            TreeSet<String> nominalSignatures = new TreeSet<>();
+            schema.members().forEach(member ->
+                    collectNominalFieldSignatureLeaves(member.type(), nominalSignatures));
+            compareInstanceSignatureInventory(
+                    nominalClass, nominalSignatures, differences,
+                    "nominal " + schema.type().canonicalSpelling());
+        }
 
         for (IrExport export : ir.exports()) {
             if (ir.module(export.moduleId()).isEmpty()) continue;
@@ -297,6 +311,16 @@ final class JvmAbiParity {
             if (!lifecycleShape) {
                 differences.add("module-state lifecycle composition differs: " + module.moduleId());
             }
+            TreeSet<String> stateSignatures = expectedDynamicSignatures(
+                    module.body(), declarations, true);
+            module.body().forms().stream()
+                    .filter(IrNode.NominalDeclaration.class::isInstance)
+                    .map(IrNode.NominalDeclaration.class::cast)
+                    .flatMap(nominal -> nominal.schema().constructorParameters().stream())
+                    .forEach(type -> collectFunctionLeafSignatures(type, stateSignatures));
+            compareInstanceSignatureInventory(
+                    state, stateSignatures, differences,
+                    "module state " + module.moduleId());
             var expectedNominalFactories = module.body().forms().stream()
                     .filter(IrNode.NominalDeclaration.class::isInstance)
                     .map(IrNode.NominalDeclaration.class::cast)
@@ -343,7 +367,8 @@ final class JvmAbiParity {
             for (GeneratedMemberPlan member : state.members().stream()
                     .filter(GeneratedMemberPlan::isField)
                     .filter(member -> member.kind() != GeneratedMemberKind.STATE_LIFECYCLE_FIELD
-                            && member.kind() != GeneratedMemberKind.SESSION_RESULT_FIELD)
+                            && member.kind() != GeneratedMemberKind.SESSION_RESULT_FIELD
+                            && member.kind() != GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD)
                     .toList()) {
                 Optional<DeclarationId> id = stateFieldDeclaration(member.name());
                 if (id.isEmpty()) {
@@ -423,6 +448,15 @@ final class JvmAbiParity {
         Map<String, TupleType> tuples = new TreeMap<>();
         Map<String, FunctionType> functions = new TreeMap<>();
         collectTypeDefinitions(ir, tuples, functions);
+        Map<ModuleId, ScopeId> rootScopes = ir.modules().stream()
+                .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                        io.mindspice.lyra.compiler.ir.IrModule::moduleId,
+                        io.mindspice.lyra.compiler.ir.IrModule::rootScope));
+        Set<DeclarationId> rootDeclarations = ir.declarations().stream()
+                .filter(declaration -> declaration.scopeId().equals(
+                        rootScopes.get(declaration.moduleId())))
+                .map(IrDeclaration::id)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
 
         for (var schema : ir.semanticGraph().resolvedGraph().nominalTypes().schemas()) {
             var dependencies = expectedFor(expected, plan.typeNames().nominalBinaryName(schema.type().canonicalSpelling()));
@@ -488,6 +522,33 @@ final class JvmAbiParity {
                     GeneratedDependencyKind.CLOSURE_FUNCTION_INTERFACE, true);
             addExpectedDependency(dependencies, plan.moduleStates().get(lambda.moduleId()),
                     GeneratedDependencyKind.CLOSURE_MODULE_STATE, true);
+            IrDeclaration mutableSelf = lambda.ownerDeclaration()
+                    .map(declarations::get)
+                    .filter(value -> value.kind()
+                            == io.mindspice.lyra.compiler.semantic.DeclarationKind.LET
+                            && value.isMutable()
+                            && !rootDeclarations.contains(value.id())
+                            && value.signaturePredeclared()
+                            && value.initializerLambda().isPresent())
+                    .orElse(null);
+            if (mutableSelf != null) {
+                String selfStorage = plan.cellClasses().get(mutableSelf.id());
+                if (selfStorage == null) {
+                    selfStorage = mutableSelf.contract()
+                            .map(io.mindspice.lyra.compiler.types.BindingContract::valueType)
+                            .map(LyraType::withoutQualifiers)
+                            .filter(FunctionType.class::isInstance)
+                            .map(FunctionType.class::cast)
+                            .map(function -> plan.functionInterfaces().get(
+                                    function.canonicalSpelling()))
+                            .orElse(null);
+                }
+                addExpectedDependency(dependencies, selfStorage,
+                        plan.cellClasses().containsKey(mutableSelf.id())
+                                ? GeneratedDependencyKind.CLOSURE_SHARED_CELL
+                                : GeneratedDependencyKind.CLOSURE_CAPTURE_TYPE,
+                        true);
+            }
             for (CaptureId captureId : lambda.captures()) {
                 IrCapture capture = captures.get(captureId);
                 if (capture == null) {
@@ -779,6 +840,105 @@ final class JvmAbiParity {
             if (!actualCaptureNames.equals(expectedCaptureNames)) {
                 differences.add("closure capture inventory differs: " + lambda.id());
             }
+            TreeSet<String> closureSignatures = expectedDynamicSignatures(
+                    lambda.body(), declarations, false);
+            lambda.signature().parameterTypes().forEach(type ->
+                    collectFunctionLeafSignatures(type, closureSignatures));
+            collectFunctionLeafSignatures(lambda.signature().returnType(), closureSignatures);
+            compareInstanceSignatureInventory(
+                    closure, closureSignatures, differences, "closure " + lambda.id());
+        }
+    }
+
+    private static void compareInstanceSignatureInventory(
+            GeneratedClassPlan classPlan, Set<String> expected,
+            List<String> differences, String owner) {
+        Set<String> actual = classPlan.members().stream()
+                .filter(member -> member.kind() == GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD)
+                .map(member -> member.sourceName().orElse(""))
+                .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
+        if (!actual.equals(expected)) {
+            differences.add("instance signature inventory differs for " + owner);
+        }
+    }
+
+    private static TreeSet<String> expectedDynamicSignatures(
+            IrNode body, Map<DeclarationId, IrDeclaration> declarations,
+            boolean descendLambdas) {
+        TreeSet<String> signatures = new TreeSet<>();
+        collectDynamicSignatures(body, declarations, descendLambdas, signatures);
+        return signatures;
+    }
+
+    private static void collectDynamicSignatures(
+            IrNode node, Map<DeclarationId, IrDeclaration> declarations,
+            boolean descendLambdas, Set<String> signatures) {
+        if (node instanceof IrNode.CallableCall call
+                && call.storageRouteProof().isEmpty()
+                && call.target().type().withoutQualifiers() instanceof FunctionType function) {
+            signatures.add(function.signature().canonicalSpelling());
+        } else if (node instanceof IrNode.DirectCall call
+                && call.storageRouteProof().isEmpty()
+                && call.targetDeclaration().map(declarations::get).orElse(null)
+                instanceof IrDeclaration declaration
+                && declaration.contract().isPresent()
+                && declaration.contract().orElseThrow().valueType().withoutQualifiers()
+                instanceof FunctionType function) {
+            signatures.add(function.signature().canonicalSpelling());
+        } else if (node instanceof IrNode.Loop loop) {
+            collectFunctionLeafSignatures(loop.action().type(), signatures);
+            if (loop.conditionControlled()) {
+                collectFunctionLeafSignatures(loop.input().type(), signatures);
+            }
+        }
+        if (node instanceof IrNode.Declaration declaration
+                && declaration.contract().isPresent()) {
+            collectFunctionLeafSignatures(
+                    declaration.contract().orElseThrow().valueType(), signatures);
+        } else if (node instanceof IrNode.Rebinding rebinding
+                && rebinding.targetDeclaration().map(declarations::get).orElse(null)
+                instanceof IrDeclaration target
+                && target.contract().isPresent()) {
+            collectFunctionLeafSignatures(target.contract().orElseThrow().valueType(), signatures);
+        }
+        for (IrNode child : node.childrenInEvaluationOrder()) {
+            if (child instanceof IrNode.Lambda && !descendLambdas) continue;
+            collectDynamicSignatures(child, declarations, descendLambdas, signatures);
+        }
+    }
+
+    private static void collectFunctionLeafSignatures(
+            LyraType type, Set<String> signatures) {
+        LyraType base = type.withoutQualifiers();
+        if (base instanceof FunctionType function) {
+            signatures.add(function.signature().canonicalSpelling());
+            function.parameterTypes().forEach(parameter ->
+                    collectFunctionLeafSignatures(parameter, signatures));
+            collectFunctionLeafSignatures(function.returnType(), signatures);
+        } else if (base instanceof ArrayType array) {
+            collectFunctionLeafSignatures(array.elementType(), signatures);
+        } else if (base instanceof TupleType tuple) {
+            tuple.memberTypes().forEach(member ->
+                    collectFunctionLeafSignatures(member, signatures));
+        }
+    }
+
+    /**
+     * Mirrors {@link NominalClassLayout} instance metadata: only the callable
+     * signatures a nominal getter actually authenticates (the function leaf
+     * plus array/tuple leaves), never deeper function parameter/return
+     * positions.
+     */
+    private static void collectNominalFieldSignatureLeaves(
+            LyraType type, Set<String> signatures) {
+        LyraType base = type.withoutQualifiers();
+        if (base instanceof FunctionType function) {
+            signatures.add(function.signature().canonicalSpelling());
+        } else if (base instanceof ArrayType array) {
+            collectNominalFieldSignatureLeaves(array.elementType(), signatures);
+        } else if (base instanceof TupleType tuple) {
+            tuple.memberTypes().forEach(member ->
+                    collectNominalFieldSignatureLeaves(member, signatures));
         }
     }
 

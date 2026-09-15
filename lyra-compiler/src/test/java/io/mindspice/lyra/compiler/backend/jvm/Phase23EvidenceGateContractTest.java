@@ -19,6 +19,7 @@ public final class Phase23EvidenceGateContractTest {
         assertTrue(thresholds.contains("\"selfTailEquivalentMaximumRatio\": 5.0"));
         assertTrue(thresholds.contains("\"exactHandleEquivalentMaximumRatio\": 15.0"));
         assertTrue(thresholds.contains("\"facadeEquivalentMaximumRatio\": 15.0"));
+        assertTrue(thresholds.contains("\"sFormToDirectNameMaximumRatio\": 1.10"));
         assertTrue(thresholds.contains("\"nonAllocatingMaximumBytesPerOperation\": 1.0"));
         assertTrue(thresholds.contains("\"semanticAggregateEquivalentMaximumRatio\": 4.0"));
         assertTrue(thresholds.contains("\"closureMaximumBytesPerOperation\": 2048.0"));
@@ -32,9 +33,29 @@ public final class Phase23EvidenceGateContractTest {
         assertTrue(evaluator.contains("\"checks\""));
         assertTrue(evaluator.contains("return 1 if args.mode == \"gate\""),
                 "gate mode must return failure when a selected threshold fails");
+        assertTrue(evaluator.contains("callParity.fib")
+                        && evaluator.contains("callParity.named")
+                        && evaluator.contains("fibSExpressionCall")
+                        && evaluator.contains("fibDirectNameCall")
+                        && evaluator.contains("namedSExpressionCall")
+                        && evaluator.contains("namedDirectNameCall"),
+                "the evaluator must gate both issue-#6 S/F call-homogeneity pairs");
+        assertTrue(evaluator.contains("missing finite positive"),
+                "the evaluator must reject missing or nonpositive pair scores");
         String runner = Files.readString(root.resolve("tools/phase23-evidence.sh"));
         assertTrue(runner.contains("if (( GATE_EXIT != 0 ))"),
                 "the evidence runner must propagate a failed selected gate");
+        assertTrue(runner.contains("FORKS >= 2")
+                        && runner.contains("WARMUP_ITERATIONS >= 3")
+                        && runner.contains("MEASUREMENT_ITERATIONS >= 5")
+                        && runner.contains("WARMUP_TIME\" == 1s")
+                        && runner.contains("MEASUREMENT_TIME\" == 1s"),
+                "gate mode must preserve minimum two-fork, three/five budgets and one-second iterations");
+        assertTrue(runner.contains("\"fibSExpressionCall\"")
+                        && runner.contains("\"fibDirectNameCall\"")
+                        && runner.contains("\"namedSExpressionCall\"")
+                        && runner.contains("\"namedDirectNameCall\""),
+                "the evidence runner must require all issue-#6 parity rows");
     }
 
     private static Path repositoryRoot() throws IOException {

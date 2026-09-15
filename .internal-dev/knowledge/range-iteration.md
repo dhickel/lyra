@@ -23,7 +23,10 @@ First-class signed ranges and executable reserved iter/while callback loops.
   following sibling `::` head, but commas are not general separators.
 - Numeric lexing must stop before both `..` and `...`, at both decimal-point
   checks. Range type arguments must also preserve existing close-before-equals
-  tokenization and canonical compiler/runtime type parity.
+  tokenization and canonical compiler/runtime type parity. Generated negative
+  bounds and steps should use an explicit unary expression such as `(- 0 18)`;
+  directly concatenating bare negatives with the range punctuation can create
+  malformed source despite a correct traversal oracle.
 - A new expression needs more than a visitor case: source mutation topology,
   typed source provenance, shape checks, closed IR validation, ABI planning,
   runtime type parsing and the emitted-type capability guard all apply.

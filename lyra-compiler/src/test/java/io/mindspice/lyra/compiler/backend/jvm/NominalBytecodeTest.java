@@ -1203,6 +1203,64 @@ class NominalBytecodeTest {
         }
     }
 
+    @Test void nominalSignatureMetadataIsResolvedOncePerObjectAndFailedClosedLifecyclesStayFailClosed() throws Throwable {
+        var artifact = compile("""
+                class Box {
+                    let @pub @mut apply :Fn<I32;I32> = (=> |x| (+ x 1))
+                    let @mut hidden :Fn<I32;I32> = (=> |x| (+ x 2))
+                }
+                let @pub make :Fn<;Box> = (=> || :Box[])
+                let @pub run :Fn<Box,I32;I32> = (=> |box x| (box:.apply x))
+                """);
+        var nominal = artifact.metadata().nominalSchemas().schemas().getFirst().type();
+        var type = representation(artifact, "Box");
+        var producer = producer(artifact);
+        var ticket = begin(artifact, producer, type);
+        var box = type.getConstructor(LyraNominalConstruction.class).newInstance(ticket);
+        // One deterministic private final non-static metadata field per
+        // distinct callable member signature, resolved exactly once from the
+        // bound producer authority during construction.
+        var metadata = java.util.Arrays.stream(type.getDeclaredFields())
+                .filter(field -> field.getName().startsWith("$lyra$signature$")).toList();
+        assertEquals(1, metadata.size(), "apply and hidden share one exact Fn<I32;I32> metadata field");
+        var signatureField = metadata.getFirst();
+        assertTrue(Modifier.isPrivate(signatureField.getModifiers())
+                && Modifier.isFinal(signatureField.getModifiers())
+                && !Modifier.isStatic(signatureField.getModifiers()));
+        signatureField.setAccessible(true);
+        assertEquals(LyraSignature.parse("Fn<I32;I32>"), signatureField.get(box));
+        // A failed construction leaves every getter boundary fail-closed even
+        // though its metadata field was already resolved.
+        producer.open();
+        ticket.fail(new IllegalStateException("failed construction"));
+        assertInstanceOf(LyraInitializationException.class, assertThrows(InvocationTargetException.class,
+                () -> box.getClass().getMethod("$lyra$public$get$0").invoke(box)).getCause());
+        producer.close();
+        // The exact language-constructed getter path resolves its own metadata
+        // per object, returns the stored closure, invokes it, and rejects
+        // reads after the module closes.
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            Object first = module.export("make", "Fn<;" + nominal + ">").methodHandle().invokeWithArguments();
+            Object second = module.export("make", "Fn<;" + nominal + ">").methodHandle().invokeWithArguments();
+            var firstField = java.util.Arrays.stream(first.getClass().getDeclaredFields())
+                    .filter(field -> field.getName().startsWith("$lyra$signature$")).findFirst().orElseThrow();
+            var secondField = java.util.Arrays.stream(second.getClass().getDeclaredFields())
+                    .filter(field -> field.getName().startsWith("$lyra$signature$")).findFirst().orElseThrow();
+            firstField.setAccessible(true);
+            secondField.setAccessible(true);
+            assertEquals(LyraSignature.parse("Fn<I32;I32>"), firstField.get(first));
+            assertEquals(LyraSignature.parse("Fn<I32;I32>"), secondField.get(second));
+            Object stored = first.getClass().getMethod("$lyra$public$get$0").invoke(first);
+            java.lang.reflect.Method invoke = stored.getClass().getMethod("invoke", int.class);
+            invoke.setAccessible(true);
+            assertEquals(9, invoke.invoke(stored, 8));
+            assertSame(stored, first.getClass().getMethod("$lyra$public$get$0").invoke(first));
+            module.close();
+            assertInstanceOf(LyraClosedException.class, assertThrows(InvocationTargetException.class,
+                    () -> first.getClass().getMethod("$lyra$public$get$0").invoke(first)).getCause());
+        }
+    }
+
     @Test void typedFacadeRejectsForeignNominalStoresBeforeChangingTheBinding() throws Exception {
         var artifact = compile("struct Node { } let @pub @mut @nil stored :Node = #NIL "
                 + "let @pub read :Fn<;@nil Node> = (=> || stored)");

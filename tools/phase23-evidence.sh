@@ -45,6 +45,8 @@ if [[ "$EVIDENCE_MODE" == gate ]]; then
     (( FORKS >= 2 )) || fail "gate mode requires at least 2 forks"
     (( WARMUP_ITERATIONS >= 3 )) || fail "gate mode requires at least 3 warmup iterations"
     (( MEASUREMENT_ITERATIONS >= 5 )) || fail "gate mode requires at least 5 measurement iterations"
+    [[ "$WARMUP_TIME" == 1s ]] || fail "gate mode requires one-second warmup iterations"
+    [[ "$MEASUREMENT_TIME" == 1s ]] || fail "gate mode requires one-second measurement iterations"
 fi
 command -v "$MAVEN_COMMAND" >/dev/null 2>&1 || fail "Maven command not found: $MAVEN_COMMAND"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required to normalize JMH evidence"
@@ -247,6 +249,8 @@ required_scenarios = {
     "failure",
 }
 required_methods = {
+    "fibDirectNameCall",
+    "fibSExpressionCall",
     "generatedCachedExportHandleCall",
     "generatedColdLoadAndCall",
     "generatedFacadeCall",
@@ -256,6 +260,8 @@ required_methods = {
     "javaFacadeCall",
     "javaWarmDirectCall",
     "javaWarmExactHandleCall",
+    "namedDirectNameCall",
+    "namedSExpressionCall",
 }
 short_names = {item.get("benchmark", "").rsplit(".", 1)[-1] for item in raw_results}
 observed_scenarios = sorted({

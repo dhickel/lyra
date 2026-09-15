@@ -15,10 +15,14 @@ import io.mindspice.lyra.compiler.semantic.TypeChecker;
 import io.mindspice.lyra.compiler.semantic.TypedSemanticGraph;
 import io.mindspice.lyra.compiler.source.LogicalModuleId;
 import io.mindspice.lyra.compiler.source.ModuleGraph;
+import io.mindspice.lyra.compiler.source.ModuleGraphDiscovery;
 import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.source.SourceSpan;
 import io.mindspice.lyra.compiler.source.ModuleRevision;
 import io.mindspice.lyra.compiler.source.PhysicalSourceKey;
+import io.mindspice.lyra.compiler.source.ResolvedSource;
+import io.mindspice.lyra.compiler.source.SourceConfiguration;
+import io.mindspice.lyra.compiler.source.SourceResolver;
 import io.mindspice.lyra.compiler.source.SourceSnapshot;
 import io.mindspice.lyra.compiler.types.PrimitiveType;
 import org.junit.jupiter.api.Test;
@@ -29,6 +33,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -329,6 +334,196 @@ public final class TypedIrTest {
         assertTrue(ir.flowMetadata().callReferences().stream()
                 .anyMatch(reference -> reference.callId().equals(call.callId().orElseThrow())
                         && reference.siteId().filter(call.siteId().orElseThrow()::equals).isPresent()));
+    }
+
+    @Test
+    public void importedNamedCallsCarryTheirExactModuleStorageProof() {
+        SourceResolver resolver = SourceResolver.memory(
+                ResolvedSource.memory(LogicalModuleId.parse("dep"), "memory:proof/dep",
+                        "let @pub apply :Fn<I32;I32> = (=> |x| x)"),
+                ResolvedSource.memory(LogicalModuleId.parse("main"), "memory:proof/main",
+                        "import dep->{apply}\nlet @pub run :Fn<I32;I32> = (=> |x| (apply x))"));
+        ModuleGraph graph = success(ModuleGraphDiscovery.discover(
+                LogicalModuleId.parse("main"),
+                SourceConfiguration.of(List.of(), List.of(resolver))));
+        TypedSemanticGraph typed = success(TypeChecker.check(success(SemanticResolver.resolve(graph))));
+        TypedIr ir = phase(TypedIrBuilder.lower(typed));
+        CallableStorageRouteProof proof = IrTraversal.preOrder(ir).stream()
+                .filter(IrNode.CallableCall.class::isInstance)
+                .map(IrNode.CallableCall.class::cast)
+                .map(IrNode.CallableCall::storageRouteProof)
+                .flatMap(Optional::stream)
+                .filter(value -> value.route() == CallableStorageRouteProof.RouteKind.IMPORTED_STATE)
+                .findFirst().orElseThrow();
+        assertTrue(proof.moduleId().isPresent());
+        assertTrue(proof.exportId().isPresent());
+    }
+
+    @Test
+    public void namedCallSpellingsConvergeOnOneResolvedStorageClassification() {
+        TypedIr ir = phase(TypedIrBuilder.lower(typed(
+                "let f :Fn<I32;I32> = (=> |x| x) "
+                        + "let s :Fn<I32;I32> = (=> |x| (f x)) "
+                        + "let d :Fn<I32;I32> = (=> |x| ::f[x])")));
+        CallableStorageRouteProof sProof = IrTraversal.preOrder(ir).stream()
+                .filter(IrNode.CallableCall.class::isInstance)
+                .map(IrNode.CallableCall.class::cast)
+                .map(IrNode.CallableCall::storageRouteProof)
+                .flatMap(Optional::stream)
+                .findFirst().orElseThrow();
+        CallableStorageRouteProof directProof = IrTraversal.preOrder(ir).stream()
+                .filter(IrNode.DirectCall.class::isInstance)
+                .map(IrNode.DirectCall.class::cast)
+                .map(IrNode.DirectCall::storageRouteProof)
+                .flatMap(Optional::stream)
+                .findFirst().orElseThrow();
+        assertEquals(sProof.route(), directProof.route());
+        assertEquals(sProof.declarationId(), directProof.declarationId());
+        assertEquals(sProof.captureId(), directProof.captureId());
+        assertEquals(sProof.moduleId(), directProof.moduleId());
+        assertEquals(sProof.exportId(), directProof.exportId());
+        assertEquals(sProof.signature(), directProof.signature());
+    }
+
+    @Test
+    public void directNamedCallsCarryTheSameExactStorageProofKindsAsSFormCalls() {
+        TypedIr local = phase(TypedIrBuilder.lower(typed(
+                "let f :Fn<I32;I32> = (=> |x| x) "
+                        + "let g :Fn<I32;I32> = (=> |x| ::f[x])")));
+        IrNode.DirectCall localCall = IrTraversal.preOrder(local).stream()
+                .filter(IrNode.DirectCall.class::isInstance)
+                .map(IrNode.DirectCall.class::cast)
+                .findFirst().orElseThrow();
+        CallableStorageRouteProof localProof = localCall.storageRouteProof().orElseThrow();
+        assertEquals(CallableStorageRouteProof.RouteKind.LOCAL_BINDING, localProof.route());
+        assertEquals(localCall.targetDeclaration().orElseThrow(), localProof.declarationId());
+
+        SourceResolver resolver = SourceResolver.memory(
+                ResolvedSource.memory(LogicalModuleId.parse("dep"), "memory:direct-proof/dep",
+                        "let @pub apply :Fn<I32;I32> = (=> |x| x)"),
+                ResolvedSource.memory(LogicalModuleId.parse("main"), "memory:direct-proof/main",
+                        "import dep->{apply}\nlet @pub run :Fn<I32;I32> = (=> |x| ::apply[x])"));
+        ModuleGraph graph = success(ModuleGraphDiscovery.discover(
+                LogicalModuleId.parse("main"),
+                SourceConfiguration.of(List.of(), List.of(resolver))));
+        TypedSemanticGraph typed = success(TypeChecker.check(success(SemanticResolver.resolve(graph))));
+        TypedIr imported = phase(TypedIrBuilder.lower(typed));
+        CallableStorageRouteProof importedProof = IrTraversal.preOrder(imported).stream()
+                .filter(IrNode.DirectCall.class::isInstance)
+                .map(IrNode.DirectCall.class::cast)
+                .map(IrNode.DirectCall::storageRouteProof)
+                .flatMap(Optional::stream)
+                .findFirst().orElseThrow();
+        assertEquals(CallableStorageRouteProof.RouteKind.IMPORTED_STATE,
+                importedProof.route());
+        assertTrue(importedProof.moduleId().isPresent());
+        assertTrue(importedProof.exportId().isPresent());
+    }
+
+    @Test
+    public void directNamedCallProofIsMandatoryAndIndependentlyRecomputed() {
+        TypedIr valid = phase(TypedIrBuilder.lower(typed(
+                "let f :Fn<I32;I32> = (=> |x| x) "
+                        + "let g :Fn<I32;I32> = (=> |x| ::f[x])")));
+        IrModule original = valid.rootModule();
+        ArrayList<IrNode> forms = new ArrayList<>(original.body().forms());
+        IrNode.Declaration declaration = (IrNode.Declaration) forms.get(1);
+        IrNode.Lambda lambda = (IrNode.Lambda) declaration.initializer();
+        IrNode.DirectCall call = (IrNode.DirectCall) lambda.body();
+        IrNode.DirectCall unproved = new IrNode.DirectCall(
+                call.span(), call.type(), call.referenceId(), call.targetDeclaration(),
+                call.targetModule(), call.targetExport(), call.accessKind(), call.receiver(),
+                call.arguments(), call.callId(), call.siteId(), Optional.empty());
+        IrNode.Lambda alteredLambda = new IrNode.Lambda(
+                lambda.span(), lambda.type(), lambda.lambdaId(), lambda.signature(),
+                lambda.captures(), lambda.scopeId(), lambda.ownerDeclaration(), unproved,
+                lambda.siteId());
+        forms.set(1, new IrNode.Declaration(
+                declaration.span(), declaration.type(), declaration.declarationId(),
+                declaration.declarationKind(), declaration.contract(), alteredLambda,
+                declaration.siteId()));
+        IrNode.Sequence body = new IrNode.Sequence(
+                original.body().span(), original.body().type(), forms, original.body().siteId());
+        TypedIr candidate = new TypedIr(valid.semanticGraph(), List.of(new IrModule(
+                original.moduleId(), original.rootScope(), original.span(), body,
+                original.state(), original.submissionResult())), valid.metadata());
+
+        assertTrue(IrValidator.validateCandidate(candidate).stream().anyMatch(diagnostic ->
+                diagnostic.summary().contains("authenticated storage-route proof")));
+    }
+
+    @Test
+    public void callableStorageProofIsRecomputedInsteadOfTrustedFromIrShape() {
+        TypedIr valid = phase(TypedIrBuilder.lower(typed(
+                "let f :Fn<I32;I32> = (=> |x| x) "
+                        + "let g :Fn<I32;I32> = (=> |x| (f x))")));
+        IrModule original = valid.rootModule();
+        ArrayList<IrNode> forms = new ArrayList<>(original.body().forms());
+        IrNode.Declaration declaration = (IrNode.Declaration) forms.get(1);
+        IrNode.Lambda lambda = (IrNode.Lambda) declaration.initializer();
+        IrNode.CallableCall call = (IrNode.CallableCall) lambda.body();
+        CallableStorageRouteProof proof = call.storageRouteProof().orElseThrow();
+        CallableStorageRouteProof forged = new CallableStorageRouteProof(
+                CallableStorageRouteProof.RouteKind.EXTERNAL_BINDING,
+                proof.declarationId(), proof.captureId(), proof.moduleId(), proof.exportId(),
+                proof.producerId(), proof.generationId(), proof.memberIndex(),
+                proof.receiverSite(), proof.signature(), proof.targetSite());
+        IrNode.CallableCall alteredCall = new IrNode.CallableCall(
+                call.span(), call.type(), call.target(), call.arguments(), call.callId(),
+                call.siteId(), Optional.of(forged));
+        IrNode.Lambda alteredLambda = new IrNode.Lambda(
+                lambda.span(), lambda.type(), lambda.lambdaId(), lambda.signature(),
+                lambda.captures(), lambda.scopeId(), lambda.ownerDeclaration(), alteredCall,
+                lambda.siteId());
+        forms.set(1, new IrNode.Declaration(
+                declaration.span(), declaration.type(), declaration.declarationId(),
+                declaration.declarationKind(), declaration.contract(), alteredLambda,
+                declaration.siteId()));
+        IrNode.Sequence body = new IrNode.Sequence(
+                original.body().span(), original.body().type(), forms, original.body().siteId());
+        IrModule altered = new IrModule(original.moduleId(), original.rootScope(), original.span(),
+                body, original.state(), original.submissionResult());
+        TypedIr candidate = new TypedIr(valid.semanticGraph(), List.of(altered), valid.metadata());
+
+        assertTrue(IrValidator.validateCandidate(candidate).stream().anyMatch(diagnostic ->
+                diagnostic.summary().contains("authenticated storage-route proof")));
+    }
+
+    @Test
+    public void nominalCallProofCannotSubstituteAnotherSameTypedReceiverOccurrence() {
+        TypedIr valid = phase(TypedIrBuilder.lower(typed("""
+                class Box { let @pub value :Fn<;I32> = (=> || 7) }
+                let @pub run :Fn<Box,Box;I32> = (=> |first second| ((#T -> first : second):.value))
+                """)));
+        IrModule original = valid.rootModule();
+        ArrayList<IrNode> forms = new ArrayList<>(original.body().forms());
+        IrNode.Declaration declaration = (IrNode.Declaration) forms.getLast();
+        IrNode.Lambda lambda = (IrNode.Lambda) declaration.initializer();
+        IrNode.CallableCall call = (IrNode.CallableCall) lambda.body();
+        IrNode.Access access = (IrNode.Access) call.target();
+        IrNode.Branch receiver = (IrNode.Branch) access.receiver().orElseThrow();
+        IrNode substituted = receiver.thenBranch();
+        IrNode.Access alteredAccess = new IrNode.Access(access.span(), access.type(), access.accessKind(),
+                Optional.of(substituted), access.referenceId(), access.declarationId(), access.moduleId(),
+                access.exportId(), access.memberName(), access.tupleIndex(), access.siteId());
+        CallableStorageRouteProof proof = call.storageRouteProof().orElseThrow();
+        CallableStorageRouteProof forged = new CallableStorageRouteProof(proof.route(), proof.declarationId(),
+                proof.captureId(), proof.moduleId(), proof.exportId(), proof.producerId(), proof.generationId(),
+                proof.memberIndex(), substituted.siteId(), proof.signature(), proof.targetSite());
+        IrNode.CallableCall alteredCall = new IrNode.CallableCall(call.span(), call.type(), alteredAccess,
+                call.arguments(), call.callId(), call.siteId(), Optional.of(forged));
+        IrNode.Lambda alteredLambda = new IrNode.Lambda(lambda.span(), lambda.type(), lambda.lambdaId(),
+                lambda.signature(), lambda.captures(), lambda.scopeId(), lambda.ownerDeclaration(),
+                alteredCall, lambda.siteId());
+        forms.set(forms.size() - 1, new IrNode.Declaration(declaration.span(), declaration.type(),
+                declaration.declarationId(), declaration.declarationKind(), declaration.contract(),
+                alteredLambda, declaration.siteId()));
+        var body = new IrNode.Sequence(original.body().span(), original.body().type(), forms, original.body().siteId());
+        TypedIr candidate = new TypedIr(valid.semanticGraph(), List.of(new IrModule(original.moduleId(),
+                original.rootScope(), original.span(), body, original.state(), original.submissionResult())),
+                valid.metadata());
+        assertTrue(IrValidator.validateCandidate(candidate).stream().anyMatch(diagnostic ->
+                diagnostic.summary().contains("receiver differs from its authorized source occurrence")));
     }
 
     @Test

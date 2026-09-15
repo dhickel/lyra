@@ -190,6 +190,19 @@ record GeneratedMemberPlan(
                 Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), -1);
     }
 
+    public static GeneratedMemberPlan rawField(
+            GeneratedMemberKind kind,
+            String name,
+            String descriptor,
+            Optional<String> sourceName) {
+        if (!kind.isField()) {
+            throw new IllegalArgumentException("raw field factory needs a field member kind: " + kind);
+        }
+        Objects.requireNonNull(sourceName, "sourceName");
+        return new GeneratedMemberPlan(kind, name, descriptor, false, Optional.empty(),
+                sourceName, Optional.empty(), Optional.empty(), Optional.empty(), -1);
+    }
+
     public static GeneratedMemberPlan rawMethod(
             GeneratedMemberKind kind,
             String name,
@@ -261,9 +274,9 @@ record GeneratedMemberPlan(
     public boolean finalMember() {
         return switch (kind) {
             case TUPLE_FIELD, CLOSURE_AUTHORITY_FIELD, CLOSURE_STATE_FIELD,
-                    CLOSURE_CAPTURE_FIELD, CLOSURE_CAPTURE_PRESENCE_FIELD,
-                    CLOSURE_CAPTURE_PAYLOAD_FIELD,
-                    STATE_LIFECYCLE_FIELD, FACADE_STATE_FIELD -> true;
+                    CLOSURE_SELF_CELL_FIELD, CLOSURE_CAPTURE_FIELD,
+                    CLOSURE_CAPTURE_PRESENCE_FIELD, CLOSURE_CAPTURE_PAYLOAD_FIELD,
+                    INSTANCE_SIGNATURE_FIELD, STATE_LIFECYCLE_FIELD, FACADE_STATE_FIELD -> true;
             default -> false;
         };
     }

@@ -100,6 +100,18 @@ class PersistentCallableTest {
     }
 
     @Test
+    void stdIoGenerationCallableUsesItsCertifiedAccessorAcrossLaterNamedCalls() {
+        try (var session = LyraSession.open()) {
+            success(session, "import std->io as io\n"
+                    + "let @mut count :I32 = 0 "
+                    + "let next :Fn<;I32> = (=> || { count := (+ count 1) count })");
+            assertEquals("1", scalar(session, "::next[]"));
+            assertEquals("2", scalar(session, "(next)"));
+            assertEquals("2", scalar(session, "count"));
+        }
+    }
+
+    @Test
     void returnedCallablesRetainProducerCodeAndCapturedCellsAcrossSubmissions() {
         try (var session = LyraSession.open()) {
             success(session, "let @mut base :I32 = 1 let make :Fn<I32;Fn<;I32>> = (=> |n| (=> || (+ base n)))");

@@ -45,14 +45,12 @@ class NominalMemberDelegateAuthorityTest {
             if (field >= 0 && field < values.length && values[field] != selected) {
                 throw new LyraLinkException("selected value differs from the compiler-certified field route");
             }
-            return issueCallableMemberRoute(caller, field, selected,
-                    signature.canonicalSpelling());
+            return issueCallableMemberRoute(caller, field, selected, signature);
         }
 
         Object writeRoute(LyraClosureAuthority caller, int field, Object replacement,
                           LyraSignature signature) {
-            Object route = issueCallableMemberWriteRoute(caller, field, replacement,
-                    signature.canonicalSpelling());
+            Object route = issueCallableMemberWriteRoute(caller, field, replacement, signature);
             values[field] = replacement;
             return route;
         }

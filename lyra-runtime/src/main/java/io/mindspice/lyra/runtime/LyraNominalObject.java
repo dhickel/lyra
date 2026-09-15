@@ -131,14 +131,16 @@ public abstract class LyraNominalObject {
      * Issues one opaque, single-use occurrence route after the generated
      * getter has authenticated the exact object and selected its field value.
      * Existing delegates are normalized to their one raw selected closure and
-     * immutable route dependencies; no field is re-read.
+     * immutable route dependencies; no field is re-read. The expected
+     * signature arrives already resolved by the generated caller's
+     * producer-scoped instance metadata and is still compared against the
+     * exact schema field on every read.
      */
     protected final Object issueCallableMemberRoute(LyraClosureAuthority caller, int index,
-                                                     Object selected, String canonicalSignature) {
+                                                     Object selected, LyraSignature expectedSignature) {
         checkGeneratedRead(Objects.requireNonNull(caller, "caller"), index);
         authority.checkOpen();
-        LyraSignature declared = requireCallableFieldSignature(
-                index, canonicalSignature, authority);
+        LyraSignature declared = requireCallableFieldSignature(index, expectedSignature);
         CallableSelection selection = authenticateSelection(selected, authority, declared, false);
         return CallableMemberRoute.extend(this, index, declared, selection);
     }
@@ -152,12 +154,11 @@ public abstract class LyraNominalObject {
      */
     protected final Object issueCallableMemberWriteRoute(
             LyraClosureAuthority caller, int index, Object replacement,
-            String canonicalSignature) {
+            LyraSignature expectedSignature) {
         Objects.requireNonNull(caller, "caller");
         checkGeneratedWrite(caller, index);
         authority.checkOpen();
-        LyraSignature declared = requireCallableFieldSignature(
-                index, canonicalSignature, caller);
+        LyraSignature declared = requireCallableFieldSignature(index, expectedSignature);
         CallableSelection selection = authenticateWritableSelection(
                 replacement, caller, declared);
         return CallableMemberRoute.extend(this, index, declared, selection);
@@ -184,14 +185,25 @@ public abstract class LyraNominalObject {
     }
 
     private LyraSignature requireCallableFieldSignature(
-            int index, String canonicalSignature, LyraClosureAuthority resolver) {
-        Objects.requireNonNull(canonicalSignature, "canonicalSignature");
+            int index, LyraSignature expected) {
+        Objects.requireNonNull(expected, "expectedSignature");
         LyraSignature declared = callableFieldSignature(index);
-        LyraSignature expected = resolver.resolveSignature(canonicalSignature);
         if (!declared.equals(expected)) {
             throw new LyraLinkException("delegated member route differs from its exact schema field");
         }
         return declared;
+    }
+
+    /**
+     * Producer-scoped expected callable signature metadata: generated
+     * nominal constructors resolve each distinct member signature exactly
+     * once from this object's bound producer authority, after the exact
+     * nominal schema became available and before any getter/route boundary
+     * may read it. This is inert metadata; it never authorizes a live value
+     * or grants member access.
+     */
+    protected final LyraSignature resolveExpectedSignature(String canonical) {
+        return authority.resolveSignature(Objects.requireNonNull(canonical, "canonical"));
     }
 
     private static CallableSelection authenticateSelection(

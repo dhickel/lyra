@@ -2,6 +2,9 @@ package io.mindspice.lyra.compiler.api;
 
 import io.mindspice.lyra.compiler.backend.jvm.JvmBytecodeArtifact;
 import io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes;
+import io.mindspice.lyra.compiler.ir.CallableStorageRouteProof;
+import io.mindspice.lyra.compiler.ir.IrNode;
+import io.mindspice.lyra.compiler.ir.IrTraversal;
 import io.mindspice.lyra.compiler.source.ModuleId;
 import io.mindspice.lyra.compiler.session.PinnedModule;
 import io.mindspice.lyra.compiler.session.SessionModuleEnvironment;
@@ -126,6 +129,43 @@ final class SessionPinnedModuleCompilerTest {
         assertTrue(second.resolvedGraph().references().stream()
                 .anyMatch(reference -> reference.targetModule().isPresent()
                         && reference.targetExport().isEmpty()));
+    }
+
+    @Test
+    void retainedCallableInvocationCarriesTheExactSessionLinkProof() {
+        var library = source("library", "let @pub next :Fn<;I32> = (=> || 3)");
+        var first = success(SessionCompileRequest.builder()
+                .source("first.lyra", "import library")
+                .resolver(SourceResolver.single(library)).build());
+        var second = success(SessionCompileRequest.builder()
+                .source("second.lyra", "(library->:.next)")
+                .snapshot(first.snapshot()).build());
+
+        CallableStorageRouteProof proof = IrTraversal.preOrder(second.typedIr()).stream()
+                .filter(IrNode.CallableCall.class::isInstance)
+                .map(IrNode.CallableCall.class::cast)
+                .map(IrNode.CallableCall::storageRouteProof)
+                .flatMap(Optional::stream)
+                .findFirst().orElseThrow();
+        assertEquals(CallableStorageRouteProof.RouteKind.SESSION_LINK, proof.route());
+        var access = second.typedIr().sessionExecution().orElseThrow().externalAccesses().stream()
+                .filter(candidate -> candidate.declarationId().equals(proof.declarationId()))
+                .findFirst().orElseThrow();
+        assertEquals(Optional.of(access.target().origin().producerId()), proof.producerId());
+        assertEquals(Optional.of(access.target().origin().generationId()), proof.generationId());
+
+        var direct = success(SessionCompileRequest.builder()
+                .source("direct.lyra", "library->::next[]")
+                .snapshot(first.snapshot()).build());
+        CallableStorageRouteProof directProof = IrTraversal.preOrder(direct.typedIr()).stream()
+                .filter(IrNode.DirectCall.class::isInstance)
+                .map(IrNode.DirectCall.class::cast)
+                .map(IrNode.DirectCall::storageRouteProof)
+                .flatMap(Optional::stream)
+                .findFirst().orElseThrow();
+        assertEquals(CallableStorageRouteProof.RouteKind.SESSION_LINK, directProof.route());
+        assertEquals(proof.producerId(), directProof.producerId());
+        assertEquals(proof.generationId(), directProof.generationId());
     }
 
     @Test

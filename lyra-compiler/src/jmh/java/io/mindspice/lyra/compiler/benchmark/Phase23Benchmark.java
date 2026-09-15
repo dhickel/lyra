@@ -67,6 +67,8 @@ public class Phase23Benchmark {
     private static final String TUPLE_MAKER_SIGNATURE = "Fn<I32;Tuple<I32,String>>";
     private static final String STRING_LENGTH_SIGNATURE = "Fn<String;I32>";
     private static final String CONCAT_SIGNATURE = "Fn<String,String;String>";
+    private static final String FIB_SIGNATURE = "Fn<I32;I32>";
+    private static final String NAMED_SIGNATURE = "Fn<I32,I32;I32>";
     private static final String DIVIDE_SIGNATURE = "Fn<I32;F64>";
 
     static final String SOURCE = """
@@ -81,6 +83,10 @@ public class Phase23Benchmark {
             let @pub makeTuple :Fn<I32;Tuple<I32,String>> = (=> |value| Tuple[value "tuple"])
             let @pub stringLength :Fn<String;I32> = (=> |value| value:.length)
             let @pub concat :Fn<String,String;String> = (=> |left right| (+ left right))
+            let @pub fibS :Fn<I32;I32> = (=> |n| (match n 0 -> 0 1 -> 1 _ -> (+ (fibS (- n 1)) (fibS (- n 2)))))
+            let @pub fibF :Fn<I32;I32> = (=> |n| (match n 0 -> 0 1 -> 1 _ -> (+ ::fibF[(- n 1)], ::fibF[(- n 2)])))
+            let @pub namedS :Fn<I32,I32;I32> = (=> |left right| (add left right))
+            let @pub namedF :Fn<I32,I32;I32> = (=> |left right| ::add[left right])
             let zero :I32 = 0
             let @pub divide :Fn<I32;F64> = (=> |value| (/ value zero))
             """;
@@ -107,6 +113,10 @@ public class Phase23Benchmark {
     private MethodHandle exactStringLength;
     private MethodHandle exactConcat;
     private MethodHandle exactDivide;
+    private MethodHandle exactFibS;
+    private MethodHandle exactFibF;
+    private MethodHandle exactNamedS;
+    private MethodHandle exactNamedF;
 
     private MethodHandle cachedAdd;
     private MethodHandle facadeAdd;
@@ -158,6 +168,10 @@ public class Phase23Benchmark {
         exactStringLength = export("stringLength", STRING_LENGTH_SIGNATURE).methodHandle();
         exactConcat = export("concat", CONCAT_SIGNATURE).methodHandle();
         exactDivide = export("divide", DIVIDE_SIGNATURE).methodHandle();
+        exactFibS = export("fibS", FIB_SIGNATURE).methodHandle();
+        exactFibF = export("fibF", FIB_SIGNATURE).methodHandle();
+        exactNamedS = export("namedS", NAMED_SIGNATURE).methodHandle();
+        exactNamedF = export("namedF", NAMED_SIGNATURE).methodHandle();
         cachedAdd = module.export("add", ADD_SIGNATURE).methodHandle();
 
         counterFactoryAsObject = exactCounterFactory.asType(OBJECT_FROM_INT);
@@ -341,6 +355,31 @@ public class Phase23Benchmark {
         return (int) cachedAdd.invokeExact(input.left, input.right);
     }
 
+    /**
+     * Issue #6 call-homogeneity pair: the S-expression self-recursive fib
+     * and the direct-name spelling share the canonical proven-route lowering.
+     */
+    @Benchmark
+    public int fibSExpressionCall(InputState input) throws Throwable {
+        return (int) exactFibS.invokeExact(input.fibDepth);
+    }
+
+    @Benchmark
+    public int fibDirectNameCall(InputState input) throws Throwable {
+        return (int) exactFibF.invokeExact(input.fibDepth);
+    }
+
+    /** Issue #6 call-homogeneity pair for an ordinary named call. */
+    @Benchmark
+    public int namedSExpressionCall(InputState input) throws Throwable {
+        return (int) exactNamedS.invokeExact(input.left, input.right);
+    }
+
+    @Benchmark
+    public int namedDirectNameCall(InputState input) throws Throwable {
+        return (int) exactNamedF.invokeExact(input.left, input.right);
+    }
+
     @Benchmark
     public int generatedColdLoadAndCall() throws Throwable {
         LoadedArtifact coldLoaded = LyraRuntime.load(artifact);
@@ -403,6 +442,7 @@ public class Phase23Benchmark {
         int index = 1;
         int allocationValue = 7;
         int failureNumerator = 1;
+        int fibDepth = 24;
     }
 
     @State(Scope.Thread)

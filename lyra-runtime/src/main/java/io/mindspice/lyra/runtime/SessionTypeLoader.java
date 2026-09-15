@@ -115,14 +115,36 @@ final class SessionTypeLoader extends ClassLoader {
                     throw new LyraLinkException("invalid session tuple constructor: " + name);
                 }
             } else {
-                for (int index = 0; index < model.fields().size(); index++) {
-                    var field = model.fields().get(index);
-                    if (!field.fieldName().equalsString("$lyra$field$" + index)
+                boolean signatureFields = false;
+                int fieldCount = 0;
+                for (var field : model.fields()) {
+                    String fieldName = field.fieldName().stringValue();
+                    if (fieldName.startsWith("$lyra$signature$")) {
+                        // Deterministic producer-scoped expected callable
+                        // signature metadata: one private final instance
+                        // field per distinct callable member signature,
+                        // resolved exactly once per generated object.
+                        signatureFields = true;
+                        String suffix = fieldName.substring("$lyra$signature$".length());
+                        if (suffix.length() != 16
+                                || !suffix.chars().allMatch(SessionTypeLoader::isLowerHex)
+                                || !field.fieldType().stringValue().equals(
+                                "Lio/mindspice/lyra/runtime/LyraSignature;")
+                                || field.flags().flagsMask()
+                                != (ClassFile.ACC_PRIVATE | ClassFile.ACC_FINAL)) {
+                            throw new LyraLinkException(
+                                    "invalid session nominal signature metadata: " + name);
+                        }
+                        continue;
+                    }
+                    if (signatureFields
+                            || !fieldName.equals("$lyra$field$" + fieldCount)
                             || (field.flags().flagsMask() & (ClassFile.ACC_PRIVATE
                             | ClassFile.ACC_STATIC)) != ClassFile.ACC_PRIVATE) {
                         throw new LyraLinkException(
                                 "invalid session nominal field inventory: " + name);
                     }
+                    fieldCount++;
                 }
                 if (model.methods().stream().noneMatch(method ->
                         method.methodName().equalsString("<init>")
@@ -219,6 +241,10 @@ final class SessionTypeLoader extends ClassLoader {
                 || !nominalField.fieldType().equalsString(interfaceDescriptor)) {
             throw new LyraLinkException("invalid session nominal delegate members: " + name);
         }
+    }
+
+    private static boolean isLowerHex(int value) {
+        return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
     }
 
     @Override

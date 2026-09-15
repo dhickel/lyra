@@ -19,6 +19,66 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** Inventory drift must fail core tests when a new primitive or operator is introduced. */
 class LanguageCoverageTest {
+    @Test void mutableSelfCallModelPreservesSelectionInBothSpellings() throws Throwable {
+        var left = new TypedProgramGenerator.Expr(TypedProgramGenerator.Shape.A, "", null, null);
+        var right = new TypedProgramGenerator.Expr(TypedProgramGenerator.Shape.B, "", null, null);
+        var expression = new TypedProgramGenerator.Expr(
+                TypedProgramGenerator.Shape.MUTABLE_SELF_CALL, "", left, right);
+        for (NumericModel type : NumericModel.values()) {
+            String source = TypedProgramGenerator.program(expression, type);
+            var result = io.mindspice.lyra.compiler.api.LyraCompiler.compile(
+                    io.mindspice.lyra.compiler.api.CompileRequest.source("mutable-self-model.lyra", source));
+            var success = assertInstanceOf(io.mindspice.lyra.compiler.api.CompileResult.Success.class,
+                    result, source);
+            Object a = type.floating() ? type.finite(7, "LYR-ARITH") : type.box(java.math.BigInteger.valueOf(7));
+            Object b = type.floating() ? type.finite(99, "LYR-ARITH") : type.box(java.math.BigInteger.valueOf(99));
+            Object expected = expression.evaluate(type, a, b);
+            assertEquals(a, expected, "the replaced target is not the selected target");
+            try (var loaded = io.mindspice.lyra.runtime.LyraRuntime.load(success.artifact());
+                 var module = loaded.instantiate()) {
+                String signature = "Fn<" + type + "," + type + ";" + type + ">";
+                for (String name : java.util.List.of("run", "alternate")) {
+                    assertEquals(expected, module.export(name, signature).methodHandle().invokeWithArguments(a, b),
+                            type + "/" + name);
+                }
+            }
+        }
+    }
+
+    /**
+     * The release gate caught bracket-spelled generated programs whose direct-call child was re-read
+     * as a receiver call on a lambda target or as a namespace suffix after a bare-identifier
+     * predicate.  Every shape must keep that child intact in both spellings.
+     */
+    @Test void directCallChildrenSurviveTheGreedyPostfixParseInBothSpellings() throws Throwable {
+        var left = new TypedProgramGenerator.Expr(TypedProgramGenerator.Shape.A, "", null, null);
+        var right = new TypedProgramGenerator.Expr(TypedProgramGenerator.Shape.B, "", null, null);
+        var namedLeft = new TypedProgramGenerator.Expr(TypedProgramGenerator.Shape.NAMED_CALL, "", left, null);
+        var namedRight = new TypedProgramGenerator.Expr(TypedProgramGenerator.Shape.NAMED_CALL, "", right, null);
+        for (NumericModel type : NumericModel.values()) {
+            for (TypedProgramGenerator.Shape shape : TypedProgramGenerator.recursiveShapes()) {
+                String operator = shape == TypedProgramGenerator.Shape.BINARY ? "+" : "";
+                var expression = new TypedProgramGenerator.Expr(shape, operator, namedLeft, namedRight);
+                String source = TypedProgramGenerator.program(expression, type);
+                var result = io.mindspice.lyra.compiler.api.LyraCompiler.compile(
+                        io.mindspice.lyra.compiler.api.CompileRequest.source("direct-call-child.lyra", source));
+                var success = assertInstanceOf(io.mindspice.lyra.compiler.api.CompileResult.Success.class,
+                        result, type + "/" + shape + ": " + source);
+                Object a = type.floating() ? type.finite(7, "LYR-ARITH") : type.box(java.math.BigInteger.valueOf(7));
+                Object b = type.floating() ? type.finite(99, "LYR-ARITH") : type.box(java.math.BigInteger.valueOf(99));
+                Object expected = expression.evaluate(type, a, b);
+                try (var loaded = io.mindspice.lyra.runtime.LyraRuntime.load(success.artifact());
+                     var module = loaded.instantiate()) {
+                    String signature = "Fn<" + type + "," + type + ";" + type + ">";
+                    for (String name : java.util.List.of("run", "alternate")) {
+                        assertEquals(expected, module.export(name, signature).methodHandle().invokeWithArguments(a, b),
+                                type + "/" + shape + "/" + name);
+                    }
+                }
+            }
+        }
+    }
+
     @Test void everyPrimitiveAndOperatorHasPositiveAndNegativeCorpusCoverage() throws Exception {
         var corpus = LanguageCorpus.read();
         Set<String> primitives = Arrays.stream(PrimitiveType.values()).map(PrimitiveType::canonicalSpelling).collect(Collectors.toSet());
@@ -41,6 +101,9 @@ class LanguageCoverageTest {
         assertEquals(Set.of("primitives", "truthiness", "operators", "operator-arity", "evaluation", "bindings", "functions",
                 "nilability", "conditionals", "aggregates", "strings", "lexical", "conversions", "modules", "excluded", "runtime", "match", "ranges", "nominal"), features);
         assertTrue(LanguageFuzzWorker.MODES.contains("match"), "Match scenarios must remain in the bounded fuzz campaign");
+        assertTrue(TypedProgramGenerator.recursiveShapes().containsAll(java.util.List.of(
+                        TypedProgramGenerator.Shape.NAMED_CALL, TypedProgramGenerator.Shape.MUTABLE_SELF_CALL)),
+                "Generated typed programs must compare named calls and argument-time mutable self rebinding");
         var matches = corpus.stream().filter(test -> test.feature().equals("match")).toList();
         assertTrue(matches.stream().anyMatch(test -> test.outcome().equals("value") && test.source().contains("(match ")),
                 "Add a value-form match fixture");

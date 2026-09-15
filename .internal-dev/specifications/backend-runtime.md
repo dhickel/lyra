@@ -265,6 +265,19 @@ leaves without copying arrays, tuples or object references. During initializatio
 only the active capability may admit its own incomplete receiver as an internal
 self-field value; ordinary generated and public boundaries require complete objects.
 Generated callable signatures resolve through the producer-scoped metadata cache.
+Each generated nominal representation carries one deterministic private final
+instance field per distinct callable signature its exact member-value
+authentication traverses (the function leaf plus function leaves in array and
+tuple positions). The generated constructor resolves each field exactly once
+from the object's bound producer authority, after the exact nominal schema
+became available and before any getter, write, initialization or route boundary
+may read it; fields are never static/global and never authorize a live value.
+Nominal getters, public getters, setters and delegated-read route issuance read
+this metadata instead of resolving or parsing a signature per read, while every
+boundary still re-authenticates the exact object, field route, selected
+candidate, complete signature, owner/artifact/session and lifecycle. A failed
+or closed producer rejects construction and every later read fail-closed;
+partially initialized objects admit no metadata-authorized use.
 Artifact/Java surfaces and persistent sessions retain these exact identities,
 schemas, representations, callable facts and producer-bound factories.
 
@@ -337,7 +350,10 @@ artifacts, while a 1.0 runtime rejects 1.1 artifacts during metadata preflight.
 - Public function-valued signatures receive deterministic generated `@FunctionalInterface` types with exact descriptors.
 - Capturing lambdas become deterministic final closure classes with typed capture fields. Immutable captures store their selected value/reference; captured `@mut` bindings share one specialized cell.
 - Every exported/returned closure retains its module instance. Invocation checks OPEN state and owner thread; closing the module invalidates later closure invocation.
-- Direct self-tail calls, including calls in match-arm result positions, lower to loops and use constant JVM stack. Mutual/non-tail recursion uses JVM calls. `StackOverflowError` crossing a generated Lyra invocation boundary is the sole `VirtualMachineError` translated to `LYR-STACK`; all other `VirtualMachineError` instances escape unchanged.
+- Direct and proven callable-value self-tail calls, including calls in branch, match-arm and cond result positions, lower to loops and use constant JVM stack. A mutable self route additionally compares the selected slot value with the executing closure before looping; a rebound or uncertain selection uses an ordinary invocation. Mutual/non-tail recursion uses JVM calls.
+- Both direct-name and callable-value typed IR calls carry a producer-issued `CallableStorageRouteProof` only for an exact non-nil named storage/member route whose complete entry or write boundary authenticates the callable contract. The independent IR validator recomputes the route from resolved declarations, captures, exact import links, retained-session producer/generation identities, compiler-certified external bindings backed by exact live session accessors, nominal schema member indexes, receiver occurrences and the exact target site. The JVM planner may omit redundant per-call authentication only after that sealed proof; target shape, name, descriptor and structural interface identity are insufficient. A named call without such proof, including an uncertified external binding, uses the fully authenticated dynamic path.
+- Dynamic callable targets retain full per-call candidate, signature, route, owner/artifact/session, lifecycle, thread and safe-point authentication. Each generated module-state or closure instance has one deterministic private final field for each distinct expected dynamic callable signature it uses. Constructors resolve those fields once through that instance's producer authority after lifecycle/schema availability and before source execution; fields are never static/global and do not authorize a live value. Closed state may retain this inert metadata because every invocation still checks live authority and lifecycle.
+- A call selects its target or receiver once before evaluating arguments. `StackOverflowError` crossing a source-bearing generated call boundary covers target selection/authentication, argument evaluation and invocation and becomes source-mapped `LYR-STACK`; nested source-level Lyra call boundaries append `LyraRuntimeException` frames once in callee-to-caller order. A typed Java facade invocation of a user function is a host entry boundary, not another nested Lyra call: ordinary structured failures cross it unchanged. The facade still translates an unhandled `StackOverflowError` across the complete call region and appends its module frame exactly once to a translated or already structured `LYR-STACK` failure. Only `StackOverflowError` is caught from the `VirtualMachineError` hierarchy. Shared source-independent nominal delegate classes remain byte-identical across session generations and rely on their source-bearing generated caller boundary for translation rather than embedding generation-specific source frames.
 - MethodHandles support exact dynamic export lookup, not whole-program control flow.
 
 `iter` and `while` emit constant-stack bytecode loops. The selected callback

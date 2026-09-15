@@ -3944,8 +3944,12 @@ public final class SemanticResolver {
                 throw new IllegalStateException("reference has an unknown lambda context");
             }
             if (current.ownerDeclaration.isPresent()
-                    && current.ownerDeclaration.orElseThrow().equals(target.id)
-                    && !rebindingTargets.contains(useSpan)) {
+                    && current.ownerDeclaration.orElseThrow().equals(target.id)) {
+                // Immutable self references resolve through the executing
+                // closure receiver. Mutable self references use the closure's
+                // dedicated exact self-slot link rather than an ordinary
+                // capture, so tail lowering can compare the current slot with
+                // the executing closure before looping.
                 return Optional.empty();
             }
             if (target.kind == DeclarationKind.EXTERNAL) {

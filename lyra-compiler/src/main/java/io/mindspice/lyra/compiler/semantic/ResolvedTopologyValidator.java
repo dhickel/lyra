@@ -777,8 +777,10 @@ final class ResolvedTopologyValidator {
                 "source reference names an absent declaration"));
         boolean rebindingTarget = resolved.mutations().stream()
                 .anyMatch(mutation -> mutation.rootReference().filter(reference.id()::equals).isPresent());
-        if (current.ownerDeclaration().filter(target.id()::equals).isPresent() && !rebindingTarget
-                || target.kind() == DeclarationKind.IMPORT_MODULE
+        if (current.ownerDeclaration().filter(target.id()::equals).isPresent()) {
+            return List.of();
+        }
+        if (target.kind() == DeclarationKind.IMPORT_MODULE
                 || target.kind() == DeclarationKind.EXTERNAL
                 || current.ownerDeclaration().isPresent() && isModuleLinkedFunction(target)) {
             return List.of();

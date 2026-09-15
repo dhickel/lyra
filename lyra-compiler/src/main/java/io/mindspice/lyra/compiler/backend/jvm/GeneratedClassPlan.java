@@ -154,6 +154,7 @@ record GeneratedClassPlan(
                 if (!interfaces.isEmpty() || !annotations.isEmpty()) {
                     throw new IllegalArgumentException("nominal class cannot have interfaces or annotations");
                 }
+                validateInstanceSignatureFields(members);
             }
             case NOMINAL_MEMBER_DELEGATE -> {
                 if (!annotations.isEmpty() || interfaces.size() != 1) {
@@ -231,11 +232,13 @@ record GeneratedClassPlan(
                 requireKinds(memberKinds, Set.of(
                         GeneratedMemberKind.CLOSURE_AUTHORITY_FIELD,
                         GeneratedMemberKind.CLOSURE_STATE_FIELD,
+                        GeneratedMemberKind.CLOSURE_SELF_CELL_FIELD,
                         GeneratedMemberKind.CLOSURE_CAPTURE_FIELD,
                         GeneratedMemberKind.CLOSURE_CAPTURE_PRESENCE_FIELD,
                         GeneratedMemberKind.CLOSURE_CAPTURE_PAYLOAD_FIELD,
                         GeneratedMemberKind.CLOSURE_CONSTRUCTOR,
-                        GeneratedMemberKind.CLOSURE_INVOKE), "closure");
+                        GeneratedMemberKind.CLOSURE_INVOKE,
+                        GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD), "closure");
                 requireExactlyOne(members, GeneratedMemberKind.CLOSURE_AUTHORITY_FIELD,
                         "closure authority field");
                 requireExactlyOne(members, GeneratedMemberKind.CLOSURE_STATE_FIELD,
@@ -245,6 +248,7 @@ record GeneratedClassPlan(
                 requireExactlyOne(members, GeneratedMemberKind.CLOSURE_INVOKE,
                         "closure invocation");
                 validateClosureShape(interfaces, members);
+                validateInstanceSignatureFields(members);
             }
             case MODULE_STATE -> {
                 if (!interfaces.isEmpty() || !annotations.isEmpty()) {
@@ -261,6 +265,7 @@ record GeneratedClassPlan(
                         GeneratedMemberKind.SESSION_EXECUTE,
                         GeneratedMemberKind.SESSION_RESULT_GET,
                         GeneratedMemberKind.STATE_LIFECYCLE_FIELD,
+                        GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD,
                         GeneratedMemberKind.STATE_BINDING_FIELD,
                         GeneratedMemberKind.STATE_PRESENCE_FIELD,
                         GeneratedMemberKind.STATE_PAYLOAD_FIELD,
@@ -284,6 +289,7 @@ record GeneratedClassPlan(
                 }
                 validateStateShape(members);
                 validateSubmissionShape(members);
+                validateInstanceSignatureFields(members);
             }
             case MODULE_FACADE -> {
                 if (!annotations.isEmpty()) {
@@ -460,7 +466,8 @@ record GeneratedClassPlan(
         for (GeneratedMemberPlan field : members.stream()
                 .filter(GeneratedMemberPlan::isField)
                 .filter(member -> member.kind() != GeneratedMemberKind.STATE_LIFECYCLE_FIELD
-                        && member.kind() != GeneratedMemberKind.SESSION_RESULT_FIELD)
+                        && member.kind() != GeneratedMemberKind.SESSION_RESULT_FIELD
+                        && member.kind() != GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD)
                 .toList()) {
             if (!field.name().startsWith(fieldPrefix)) {
                 throw new IllegalArgumentException("module-state field has a noncanonical name");
@@ -586,6 +593,38 @@ record GeneratedClassPlan(
         }
     }
 
+    private static void validateInstanceSignatureFields(
+            List<GeneratedMemberPlan> members) {
+        List<GeneratedMemberPlan> fields = members.stream()
+                .filter(member -> member.kind() == GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD)
+                .toList();
+        List<String> names = fields.stream().map(GeneratedMemberPlan::name).toList();
+        List<String> sourceSignatures = fields.stream()
+                .map(member -> member.sourceName().orElse(""))
+                .toList();
+        if (!sourceSignatures.equals(sourceSignatures.stream().sorted().toList())
+                || new java.util.HashSet<>(names).size() != names.size()) {
+            throw new IllegalArgumentException(
+                    "instance signature fields must be uniquely and canonically ordered");
+        }
+        Set<String> signatures = new java.util.HashSet<>();
+        for (GeneratedMemberPlan field : fields) {
+            String canonical = field.sourceName().orElseThrow(() ->
+                    new IllegalArgumentException(
+                            "instance signature field needs its canonical Lyra signature"));
+            if (!canonical.startsWith("Fn<") || !canonical.endsWith(">")
+                    || !signatures.add(canonical)
+                    || !field.name().equals(
+                    GeneratedTypePlanner.instanceSignatureFieldName(canonical))
+                    || !field.descriptor().equals(
+                    "Lio/mindspice/lyra/runtime/LyraSignature;")
+                    || field.isStatic() || !field.finalMember()) {
+                throw new IllegalArgumentException(
+                        "instance signature field has a noncanonical name, type, or signature");
+            }
+        }
+    }
+
     private static void validateClosureShape(
             List<String> interfaces, List<GeneratedMemberPlan> members) {
         String implemented = interfaces.getFirst();
@@ -612,6 +651,25 @@ record GeneratedClassPlan(
             throw new IllegalArgumentException("closure module-state field has the wrong ABI");
         }
 
+        GeneratedMemberPlan selfCell = members.stream()
+                .filter(member -> member.kind() == GeneratedMemberKind.CLOSURE_SELF_CELL_FIELD)
+                .findFirst().orElse(null);
+        if (selfCell != null) {
+            String descriptor = selfCell.descriptor();
+            String selfInternalName = descriptor.startsWith("L") && descriptor.endsWith(";")
+                    ? descriptor.substring(1, descriptor.length() - 1)
+                    : descriptor.startsWith("[L") && descriptor.endsWith(";")
+                    ? descriptor.substring(2, descriptor.length() - 1) : "";
+            String selfSimpleName = selfInternalName.substring(
+                    selfInternalName.lastIndexOf('/') + 1);
+            boolean validCell = descriptor.startsWith("L") && descriptor.endsWith(";")
+                    && selfSimpleName.startsWith("$lyra$cell$");
+            boolean validFunctionSlot = descriptor.startsWith("[L") && descriptor.endsWith(";")
+                    && selfSimpleName.startsWith("$lyra$fn$");
+            if (!validCell && !validFunctionSlot) {
+                throw new IllegalArgumentException("mutable self storage has the wrong generated type");
+            }
+        }
         String capturePrefix = "$lyra$capture$";
         java.util.TreeMap<String, List<GeneratedMemberPlan>> captureGroups = new java.util.TreeMap<>();
         ArrayList<String> captureOrder = new ArrayList<>();
@@ -705,11 +763,16 @@ record GeneratedClassPlan(
         int stateIndex = members.indexOf(state);
         int constructorIndex = members.indexOf(constructor);
         int invokeIndex = members.indexOf(invoke);
-        if (authorityIndex != 0 || stateIndex != 1 || constructorIndex != captures.size() + 2
+        int selfCellIndex = selfCell == null ? -1 : members.indexOf(selfCell);
+        int expectedConstructorIndex = captures.size() + 2 + (selfCell == null ? 0 : 1);
+        if (authorityIndex != 0 || stateIndex != 1
+                || selfCell != null && selfCellIndex != 2
+                || constructorIndex != expectedConstructorIndex
                 || invokeIndex != constructorIndex + 1 || !invoke.isPublic()) {
             throw new IllegalArgumentException("closure members are not in canonical order or visibility");
         }
         String expectedConstructor = "(" + authority.descriptor() + state.descriptor()
+                + (selfCell == null ? "" : selfCell.descriptor())
                 + captures.stream().map(GeneratedMemberPlan::descriptor)
                 .collect(java.util.stream.Collectors.joining()) + ")V";
         if (!constructor.descriptor().equals(expectedConstructor)

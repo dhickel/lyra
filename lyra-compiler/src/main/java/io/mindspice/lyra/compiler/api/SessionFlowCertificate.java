@@ -85,6 +85,7 @@ public final class SessionFlowCertificate {
     private final Map<String, ExternalBinding> certifiedBindings;
     private final Set<CallableProofKey> callableProofs;
     private final Set<RouteProof> routeProofs;
+    private final Set<LambdaId> externalStorageRouteLambdas;
     private final Set<AggregateProofKey> aggregateProofs;
     private final Set<ObjectProofKey> objectProofs;
     private final Set<SourceSpan> aggregateUseSpans;
@@ -103,6 +104,7 @@ public final class SessionFlowCertificate {
             Map<String, ExternalBinding> certifiedBindings,
             Set<CallableProofKey> callableProofs,
             Set<RouteProof> routeProofs,
+            Set<LambdaId> externalStorageRouteLambdas,
             Set<AggregateProofKey> aggregateProofs,
             Set<ObjectProofKey> objectProofs,
             Set<SourceSpan> aggregateUseSpans,
@@ -119,6 +121,8 @@ public final class SessionFlowCertificate {
         this.certifiedBindings = immutableBindings(certifiedBindings);
         this.callableProofs = Set.copyOf(Objects.requireNonNull(callableProofs, "callableProofs"));
         this.routeProofs = Set.copyOf(Objects.requireNonNull(routeProofs, "routeProofs"));
+        this.externalStorageRouteLambdas = Set.copyOf(Objects.requireNonNull(
+                externalStorageRouteLambdas, "externalStorageRouteLambdas"));
         this.aggregateProofs = Set.copyOf(Objects.requireNonNull(aggregateProofs, "aggregateProofs"));
         this.objectProofs = Set.copyOf(Objects.requireNonNull(objectProofs, "objectProofs"));
         this.aggregateUseSpans = Set.copyOf(
@@ -290,6 +294,28 @@ public final class SessionFlowCertificate {
                 || value.alternatives().alternatives().stream()
                 .flatMap(alternative -> alternative.callableFlows().stream())
                 .allMatch(this::certifiesCallable);
+    }
+
+    /**
+     * Checks whether an exact external function binding contains only source-root
+     * closures admitted at their generated storage boundary. Imported/intrinsic
+     * raw closures and opaque callable alternatives deliberately remain dynamic.
+     */
+    public boolean certifiesExternalCallableStorageRoute(ExternalBinding binding) {
+        Objects.requireNonNull(binding, "binding");
+        if (!certifiesBinding(binding)
+                || binding.type().isNilable()
+                || !(binding.type().withoutQualifiers() instanceof FunctionType)) {
+            return false;
+        }
+        BindingFlowValue value = boundaryState.bindings().get(binding.declarationId());
+        return value != null && value.alternatives().alternatives().stream().allMatch(alternative ->
+                !alternative.callableFlows().isEmpty()
+                        && alternative.callableFlows().stream().allMatch(callable ->
+                        callable.route().equals(ProjectionPath.root())
+                                && callable.lambdaId()
+                                .filter(externalStorageRouteLambdas::contains).isPresent()
+                                && certifiesCallable(callable)));
     }
 
     /** True only for a callable value (including a routed aggregate callable) in this proof. */
@@ -2104,6 +2130,15 @@ public final class SessionFlowCertificate {
                 : CallableSummarySet.combine(
                         predecessor.callableSummaries(),
                         graph.semanticFlowFacts().callableSummaries());
+        ModuleId root = graph.resolvedGraph().moduleGraph().rootModule();
+        Set<LambdaId> externalStorageRouteLambdas = new LinkedHashSet<>();
+        if (predecessor != null) {
+            externalStorageRouteLambdas.addAll(predecessor.externalStorageRouteLambdas);
+        }
+        graph.semanticFlowFacts().callableSummaries().orderedSummaries().stream()
+                .filter(summary -> summary.moduleId().equals(root))
+                .map(CallableSummary::lambdaId)
+                .forEach(externalStorageRouteLambdas::add);
         TreeMap<FreshAllocationSite, AllocationProvenance> allocations = new TreeMap<>();
         if (predecessor != null) {
             allocations.putAll(predecessor.allocationProvenance);
@@ -2141,7 +2176,6 @@ public final class SessionFlowCertificate {
             nominals.putAll(predecessor.retainedNominals);
             nominalNames.putAll(predecessor.nominalNames);
         }
-        ModuleId root = graph.resolvedGraph().moduleGraph().rootModule();
         for (ResolvedNominal nominal : graph.resolvedGraph().nominals()) {
             var declaration = graph.resolvedGraph().declaration(nominal.declaration()).orElseThrow();
             if (!declaration.moduleId().equals(root)
@@ -2202,7 +2236,8 @@ public final class SessionFlowCertificate {
         routes.addAll(new RouteDerivation(boundary, summaries, nominals, constructions, graph).derive());
         return new SessionFlowCertificate(
                 graph.allocator(), boundary, summaries, bindings,
-                callableProofs, routes, aggregateProofs, objectProofs, aggregateUseSpans,
+                callableProofs, routes, externalStorageRouteLambdas,
+                aggregateProofs, objectProofs, aggregateUseSpans,
                 objectUseSpans,
                 allocations, constructions,
                 nominals, nominalNames, sourceIds,

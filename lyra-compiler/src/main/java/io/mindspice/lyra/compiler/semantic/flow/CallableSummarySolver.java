@@ -186,7 +186,9 @@ public final class CallableSummarySolver {
             }
             return new CallableSummaryResult.Success(
                     new CallableSummarySet(
-                            new ArrayList<>(solved.values()), declarations, intrinsics, components));
+                            new ArrayList<>(solved.values()), declarations, intrinsics, components,
+                            deferredCallableDeclarations(computedCallableDeclarations,
+                                    externalCallableDeclarations)));
         } catch (TransferFailureException failure) {
             return new CallableSummaryResult.Failure(failure.failure());
         } catch (MissingFactException failure) {
@@ -207,6 +209,14 @@ public final class CallableSummarySolver {
                     failure.getMessage() == null ? "invalid callable summary" : failure.getMessage(),
                     Optional.empty());
         }
+    }
+
+    private static Set<DeclarationId> deferredCallableDeclarations(
+            Set<DeclarationId> computed,
+            Set<DeclarationId> external) {
+        TreeSet<DeclarationId> result = new TreeSet<>(computed);
+        result.addAll(external);
+        return result;
     }
 
     private static TreeMap<LambdaId, CallableSummary> index(
@@ -678,7 +688,10 @@ public final class CallableSummarySolver {
         ArrayList<CallableCallReference> materializedCalls = new ArrayList<>();
         CallableSummarySet transferSet = new CallableSummarySet(
                 new ArrayList<>(solved.values()), lambdaByDeclaration,
-                intrinsicDeclarations);
+                intrinsicDeclarations,
+                CallableSummarySet.singletonComponentsForTransfer(solved.values()),
+                deferredCallableDeclarations(computedCallableDeclarations,
+                        externalCallableDeclarations));
         for (CallableCallReference call : raw.callReferences()) {
             calls.put(call.id(), call);
         }

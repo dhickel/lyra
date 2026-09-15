@@ -1,7 +1,11 @@
 package io.mindspice.lyra.compiler.backend.jvm;
 
+import io.mindspice.lyra.compiler.types.ArrayType;
+import io.mindspice.lyra.compiler.types.FunctionType;
 import io.mindspice.lyra.compiler.types.LyraSignature;
+import io.mindspice.lyra.compiler.types.LyraType;
 import io.mindspice.lyra.compiler.types.NominalSchema;
+import io.mindspice.lyra.compiler.types.TupleType;
 
 import java.util.List;
 import java.util.Objects;
@@ -94,6 +98,46 @@ record NominalClassLayout(String binaryName, NominalSchema schema, List<Field> f
                         GeneratedMemberKind.NOMINAL_PUBLIC_SET, "$lyra$public$set$" + field.index(), field.publicSetterDescriptor(), false));
             }
         }
+        // Deterministic producer-scoped expected callable signature metadata.
+        // One private final field per distinct callable signature the exact
+        // member-value authentication traverses; the generated constructor
+        // resolves each exactly once from the bound producer authority and
+        // every getter/route boundary reads the field instead of resolving
+        // or parsing per read.
+        for (String canonical : callableFieldSignatureSpellings()) {
+            result.add(GeneratedMemberPlan.rawField(
+                    GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD,
+                    GeneratedTypePlanner.instanceSignatureFieldName(canonical),
+                    "Lio/mindspice/lyra/runtime/LyraSignature;",
+                    java.util.Optional.of(canonical)));
+        }
         return List.copyOf(result);
+    }
+
+    /**
+     * Exactly the callable signatures {@code authenticateNominalFieldValue}
+     * checks on this layout: the function leaf itself plus function leaves in
+     * array/tuple positions. Nested nominal/range/primitive leaves and deeper
+     * function parameter/return positions are not authenticated and need no
+     * metadata.
+     */
+    private java.util.TreeSet<String> callableFieldSignatureSpellings() {
+        java.util.TreeSet<String> signatures = new java.util.TreeSet<>();
+        for (Field field : fields) {
+            collectCallableFieldLeaves(field.member().type(), signatures);
+        }
+        return signatures;
+    }
+
+    private static void collectCallableFieldLeaves(
+            LyraType type, java.util.Set<String> signatures) {
+        LyraType base = type.withoutQualifiers();
+        if (base instanceof FunctionType function) {
+            signatures.add(function.signature().canonicalSpelling());
+        } else if (base instanceof ArrayType array) {
+            collectCallableFieldLeaves(array.elementType(), signatures);
+        } else if (base instanceof TupleType tuple) {
+            tuple.memberTypes().forEach(member -> collectCallableFieldLeaves(member, signatures));
+        }
     }
 }

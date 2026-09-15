@@ -129,6 +129,27 @@ public final class GeneratedTypePlannerTest {
                 assertTrue(structuralEquality.isEmpty());
             }
         }
+        var schemas = ir.semanticGraph().resolvedGraph().nominalTypes().schemas();
+        var holderSchema = schemas.stream()
+                .filter(schema -> schema.type().id().name().equals("Holder")).findFirst().orElseThrow();
+        var nodeSchema = schemas.stream()
+                .filter(schema -> schema.type().id().name().equals("Node")).findFirst().orElseThrow();
+        var holderPlan = generated.classPlan(
+                generated.nominalLayouts().get(holderSchema.type().canonicalSpelling()).binaryName()).orElseThrow();
+        var holderSignatures = holderPlan.members().stream()
+                .filter(member -> member.kind() == GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD).toList();
+        assertEquals(1, holderSignatures.size(),
+                "Holder.read must plan exactly one expected callable signature field");
+        assertEquals("Fn<;@nil" + nodeSchema.type().canonicalSpelling() + ">",
+                holderSignatures.getFirst().sourceName().orElseThrow());
+        assertTrue(holderSignatures.getFirst().isPrivate() && holderSignatures.getFirst().isFinal()
+                        && !holderSignatures.getFirst().isStatic(),
+                "nominal signature metadata must be private final per-instance fields");
+        var nodePlan = generated.classPlan(
+                generated.nominalLayouts().get(nodeSchema.type().canonicalSpelling()).binaryName()).orElseThrow();
+        assertTrue(nodePlan.members().stream().noneMatch(
+                        member -> member.kind() == GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD),
+                "a nominal layout without callable members plans no signature metadata");
     }
 
     @Test
@@ -821,6 +842,7 @@ public final class GeneratedTypePlannerTest {
         java.util.Set<String> actualFields = state.members().stream()
                 .filter(GeneratedMemberPlan::isField)
                 .filter(member -> member.kind() != GeneratedMemberKind.STATE_LIFECYCLE_FIELD)
+                .filter(member -> member.kind() != GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD)
                 .map(GeneratedMemberPlan::name)
                 .map(name -> name.replaceFirst("\\$(present|payload)$", ""))
                 .collect(java.util.stream.Collectors.toSet());
@@ -828,6 +850,35 @@ public final class GeneratedTypePlannerTest {
         assertTrue(ir.declarations().stream().anyMatch(declaration ->
                 !declaration.scopeId().equals(module.state().rootScope())
                         && !actualFields.contains("$lyra$binding$" + declaration.id().value())));
+    }
+
+    @Test
+    void instanceSignatureFieldsRetainTheirCanonicalPrivateFinalShape() {
+        GeneratedTypePlan plan = GeneratedTypePlanner.plan(ir(
+                "let @pub apply :Fn<Fn<I32;I32>,I32;I32> = (=> |f x| (f x))"));
+        GeneratedClassPlan owner = plan.classes().stream()
+                .filter(candidate -> candidate.members().stream().anyMatch(member ->
+                        member.kind() == GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD))
+                .findFirst().orElseThrow();
+        GeneratedMemberPlan signature = owner.members().stream()
+                .filter(member -> member.kind() == GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD)
+                .findFirst().orElseThrow();
+        assertTrue(signature.isPrivate() && signature.finalMember() && !signature.isStatic());
+        assertEquals("Lio/mindspice/lyra/runtime/LyraSignature;", signature.descriptor());
+        assertEquals(GeneratedTypePlanner.instanceSignatureFieldName(
+                signature.sourceName().orElseThrow()), signature.name());
+
+        List<GeneratedMemberPlan> forgedMembers = owner.members().stream()
+                .map(member -> member.equals(signature)
+                        ? GeneratedMemberPlan.rawField(
+                                GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD,
+                                member.name(), "Ljava/lang/Object;", member.sourceName())
+                        : member)
+                .toList();
+        assertThrows(IllegalArgumentException.class, () -> new GeneratedClassPlan(
+                owner.binaryName(), owner.kind(), owner.stableKey(), owner.moduleId(),
+                owner.finalClass(), owner.functionalInterface(), owner.interfaces(),
+                owner.annotations(), owner.dependencies(), forgedMembers, owner.nominalLayout()));
     }
 
     @Test

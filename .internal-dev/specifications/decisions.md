@@ -607,3 +607,28 @@
 - Opaque occurrence evidence makes the compiler-certified selection a real capability boundary; a public/protected `(source,target,index)` constructor was rejected because caller-minted objects could authorize an unrelated same-signature closure.
 - Session-wide or closure-identity authorization, heap scans, copied values, field rereads at invocation, source replay, schema-only evidence and a `sourceLocal` relaxation were rejected because they either launder authority or change saved-selection semantics.
 - Delegate classes remain session-only structural classes. Ordinary AOT class inventories contain no delegates, and no protocol-v2 or JavaFX boundary changes.
+
+## 2026-09-14 — Named-call parity uses sealed storage-route proof and instance signature metadata (issue #6)
+
+### Source and review
+
+- **Source:** owner-accepted plan `20260914-005314-resolve-and-close-lyra-github-issues-6-13-in-dependency`, Tranche 4 issue #6, and the callable-call overhead/form-homogeneity report.
+- **Affected specifications:** `language-core.md` and `backend-runtime.md`.
+- **Review timing:** whenever a new callable storage route, generated call adapter, or callable authentication boundary is added; recheck the Phase 23 S/F ratio gate after JVM/runtime changes.
+
+### Decision
+
+- S-expression and direct-name calls converge after resolution only when a producer-issued IR fact identifies the same exact non-nil declaration/member storage route and complete callable signature. Both IR call forms carry that fact. The independent IR validator recomputes local, parameter, capture, shared-cell, exact import, retained producer/generation, compiler-certified external-binding/accessor, intrinsic and nominal member-index/receiver-occurrence facts from resolved topology and the exact target site before a backend can use them. Syntax, declaration name, descriptor, generated class and structural function type are never proof; an uncertified retained direct name remains on the dynamic authenticated path.
+- Proven routes omit only redundant call-site authentication. Their storage/member entry and write boundaries authenticate the complete callable contract. Computed/aggregate targets remain dynamic and re-authenticate the candidate and all owner, route, lifecycle, thread and safe-point constraints for every call.
+- Each generated state or closure instance resolves each distinct expected dynamic signature once through its own producer authority into a deterministic private final field. No static/global signature or nominal cache is introduced, and cached metadata grants no live-value authority.
+- Proven S-expression self calls use the existing tail loop. Mutable self calls first select the current slot and compare it with the executing closure; failed identity falls back to an ordinary call. Generated source-bearing call regions translate only `StackOverflowError`, covering target/authentication, arguments and invocation, and append source frames in callee-to-caller order. The typed Java facade is a host entry rather than a nested source-level Lyra call, so an ordinary structured user-function failure crosses it unchanged; its source-bearing stack boundary independently translates an unhandled `StackOverflowError` and appends the module frame once to both newly translated and already structured `LYR-STACK` failures. Source-independent shared nominal delegates retain generation-stable class definitions and rely on the caller boundary for source mapping.
+
+### Justification and rejected alternatives
+
+- Reusing the direct path based on IR shape or signature compatibility would allow an unauthenticated value to inherit authority. Retaining unconditional per-call parsing/authentication would preserve safety but not language-form homogeneity. Global signature caches would cross producer/schema environments and were rejected.
+- Re-reading a mutable target after argument evaluation, unconditional mutable self looping, catching `VirtualMachineError` broadly, or treating the host facade as an ordinary nested Lyra frame would change observable semantics, the pinned Java failure contract, or host-failure behavior. Recreating every ordinary failure merely to append a facade module frame also violates the owner-ratified expected-failure allocation gate. Embedding source-specific handlers in shared structural delegate classes was rejected because it changes one stable binary name across session generations.
+
+### Caveats and compatibility
+
+- This changes private generated implementation members and bytecode but adds no public compiler/runtime API and does not relax issue #7/#8 occurrence, schema, `sourceLocal`, lifecycle or ABI 1.1 authority. Runtime ABI and language-contract versions are unchanged.
+- Numerical completion still requires a full-protocol Phase 23 run with finite positive equivalent S/F scores and `score(S)/score(F) <= 1.10`; reduced smoke evidence is diagnostic only.

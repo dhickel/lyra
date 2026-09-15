@@ -5,10 +5,10 @@ import java.util.SplittableRandom;
 
 /** Bounded, well-typed trees with independent oracles and equivalent renderings. */
 final class TypedProgramGenerator {
-    enum Shape { A, B, BINARY, BLOCK, ARRAY, TUPLE, CALL, CONDITIONAL, COALESCE, MATCH }
+    enum Shape { A, B, BINARY, BLOCK, ARRAY, TUPLE, CALL, NAMED_CALL, MUTABLE_SELF_CALL, CONDITIONAL, COALESCE, MATCH }
     private static final List<Shape> RECURSIVE_SHAPES = List.of(
             Shape.BINARY, Shape.BLOCK, Shape.ARRAY, Shape.TUPLE, Shape.CALL,
-            Shape.CONDITIONAL, Shape.COALESCE, Shape.MATCH);
+            Shape.NAMED_CALL, Shape.MUTABLE_SELF_CALL, Shape.CONDITIONAL, Shape.COALESCE, Shape.MATCH);
 
     record Expr(Shape shape, String operator, Expr left, Expr right) {
         String source(NumericModel type, boolean brackets) {
@@ -22,12 +22,32 @@ final class TypedProgramGenerator {
                 case BLOCK -> "{ let temporary :" + type + " = " + l + " temporary }";
                 case ARRAY -> "Array<" + type + ">[" + l + ", a][0]";
                 case TUPLE -> "Tuple<" + type + ",Bool>[" + l + ", #T]:.0";
-                case CALL -> "((=> :" + type + " |value :" + type + "| value) " + l + ")";
-                case CONDITIONAL -> "{ let less :Bool = (< a b) (less -> " + l + " : " + r + ") }";
+                case CALL -> "((=> :" + type + " |value :" + type + "| value) "
+                        + preservedDirectCall(left, l, brackets) + ")";
+                case NAMED_CALL -> brackets ? "::identity[" + l + "]" : "(identity " + l + ")";
+                case MUTABLE_SELF_CALL -> {
+                    String argument = "{ selected := (=> |ignored| " + r + ") 0 }";
+                    String recurse = brackets ? "::selected[" + argument + "]" : "(selected " + argument + ")";
+                    yield "{ let @mut selected :Fn<I32;" + type + "> = (=> |remaining| "
+                            + "((== remaining 0) -> " + l + " : " + recurse + "))"
+                            + (brackets ? ", ::selected[1] }" : " (selected 1) }");
+                }
+                case CONDITIONAL -> "{ let less :Bool = (< a b) (less -> "
+                        + preservedDirectCall(left, l, brackets) + " : " + r + ") }";
                 case COALESCE -> "{ let @nil maybe :" + type + " = " + l + " (maybe : " + r + ") }";
                 case MATCH -> brackets ? "match[a ((< a b) -> a : b) -> " + l + " _ -> " + r + "]"
                         : "(match a ((< a b) -> a : b) -> " + l + " _ -> " + r + ")";
             };
+        }
+
+        /**
+         * The greedy postfix parse reads a direct call that follows a lambda call target or a
+         * bare-identifier conditional predicate as a receiver call or a namespace suffix.  In the
+         * bracket spelling the exact parenthesized direct call is the only spelling that keeps the
+         * call itself as the intended child.
+         */
+        private static String preservedDirectCall(Expr child, String rendered, boolean brackets) {
+            return brackets && child.shape() == Shape.NAMED_CALL ? "(" + rendered + ")" : rendered;
         }
 
         Object evaluate(NumericModel type, Object a, Object b) {
@@ -35,7 +55,8 @@ final class TypedProgramGenerator {
                 case A -> a;
                 case B -> b;
                 case BINARY -> type.operation(operator, left.evaluate(type, a, b), right.evaluate(type, a, b));
-                case BLOCK, ARRAY, TUPLE, CALL, COALESCE -> left.evaluate(type, a, b);
+                // Rebinding in an argument does not replace the already-selected closure.
+                case BLOCK, ARRAY, TUPLE, CALL, NAMED_CALL, MUTABLE_SELF_CALL, COALESCE -> left.evaluate(type, a, b);
                 case CONDITIONAL -> {
                     boolean less = type.floating() ? ((Number) a).doubleValue() < ((Number) b).doubleValue()
                             : type.integer(a).compareTo(type.integer(b)) < 0;
@@ -199,8 +220,9 @@ final class TypedProgramGenerator {
     }
 
     static String program(Expr expression, NumericModel type) {
+        String identity = "let identity :Fn<" + type + ";" + type + "> = (=> |value| value)\n";
         String signature = " :Fn<" + type + "," + type + ";" + type + "> = (=> |a b| ";
-        return "let @pub run" + signature + expression.source(type, false) + ")\n"
+        return identity + "let @pub run" + signature + expression.source(type, false) + ")\n"
                 + "/* Equivalent operator spelling, optional commas, and nested /* trivia */. */\n"
                 + "let @pub alternate" + signature + expression.source(type, true) + ")\n";
     }

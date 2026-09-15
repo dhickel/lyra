@@ -52,12 +52,117 @@ final class GeneratedTypePlanner {
             "Lio/mindspice/lyra/runtime/LyraClosureAuthority;";
     private static final String LIFECYCLE_DESCRIPTOR =
             "Lio/mindspice/lyra/runtime/ModuleLifecycle;";
+    private static final String SIGNATURE_DESCRIPTOR =
+            "Lio/mindspice/lyra/runtime/LyraSignature;";
     private static final String OPTIONS_DESCRIPTOR =
             "Lio/mindspice/lyra/runtime/RuntimeOptions;";
     private static final String METADATA_DESCRIPTOR =
             "Lio/mindspice/lyra/runtime/ArtifactMetadata;";
 
     private GeneratedTypePlanner() {
+    }
+
+    /** Deterministic per-instance signature field name for one canonical signature. */
+    static String instanceSignatureFieldName(String canonical) {
+        return "$lyra$signature$" + JvmStableHash.sha256(
+                "LYRA-JVM-INSTANCE-SIGNATURE-FIELD", canonical).substring(0, 16);
+    }
+
+    /**
+     * Exact expected callable signatures a generated body authenticates on
+     * the dynamic path: opaque callable-call targets and loop callbacks.
+     * Proven declaration-route calls do not authenticate per call and
+     * therefore need no field.
+     */
+    private static TreeSet<String> dynamicInvocationSignatures(
+            IrNode body, Map<DeclarationId, IrDeclaration> declarations,
+            boolean descendLambdas) {
+        TreeSet<String> signatures = new TreeSet<>();
+        collectDynamicSignatures(body, signatures, declarations, descendLambdas);
+        return signatures;
+    }
+
+    private static void collectDynamicSignatures(
+            IrNode node, Set<String> signatures,
+            Map<DeclarationId, IrDeclaration> declarations, boolean descendLambdas) {
+        if (node instanceof IrNode.CallableCall call
+                && call.storageRouteProof().isEmpty()) {
+            signatures.add(((FunctionType) call.target().type().withoutQualifiers())
+                    .signature().canonicalSpelling());
+        } else if (node instanceof IrNode.DirectCall call
+                && call.storageRouteProof().isEmpty()
+                && call.targetDeclaration().isPresent()) {
+            IrDeclaration declaration = declarations.get(
+                    call.targetDeclaration().orElseThrow());
+            if (declaration != null && declaration.contract().isPresent()
+                    && declaration.contract().orElseThrow().valueType().withoutQualifiers()
+                    instanceof FunctionType function) {
+                signatures.add(function.signature().canonicalSpelling());
+            }
+        } else if (node instanceof IrNode.Loop loop) {
+            signatures.add(((FunctionType) loop.action().type().withoutQualifiers())
+                    .signature().canonicalSpelling());
+            if (loop.conditionControlled()) {
+                signatures.add(((FunctionType) loop.input().type().withoutQualifiers())
+                        .signature().canonicalSpelling());
+            }
+        }
+        // Callable write boundaries (initializers and rebindings) resolve the
+        // declared function signature once per store on the emitting class.
+        if (node instanceof IrNode.Declaration declaration
+                && declaration.contract().isPresent()) {
+            signatures.addAll(functionLeafSignatures(
+                    declaration.contract().orElseThrow().valueType()));
+        } else if (node instanceof IrNode.Rebinding rebinding
+                && rebinding.targetDeclaration().isPresent()) {
+            IrDeclaration target = declarations.get(rebinding.targetDeclaration().orElseThrow());
+            if (target != null && target.contract().isPresent()) {
+                signatures.addAll(functionLeafSignatures(
+                        target.contract().orElseThrow().valueType()));
+            }
+        }
+        for (IrNode child : node.childrenInEvaluationOrder()) {
+            // Nested lambda bodies compile as their own closure classes and
+            // host their own signature fields.  Module states descend into
+            // every lambda because nominal constructor bodies are emitted
+            // inline in the state factory method.
+            if (child instanceof IrNode.Lambda && !descendLambdas) {
+                continue;
+            }
+            collectDynamicSignatures(child, signatures, declarations, descendLambdas);
+        }
+    }
+
+    /** Every function-type leaf of a type, including nested aggregate positions. */
+    private static TreeSet<String> functionLeafSignatures(LyraType type) {
+        TreeSet<String> signatures = new TreeSet<>();
+        collectFunctionLeaves(type, signatures);
+        return signatures;
+    }
+
+    private static void collectFunctionLeaves(LyraType type, Set<String> signatures) {
+        LyraType base = type.withoutQualifiers();
+        if (base instanceof FunctionType function) {
+            signatures.add(function.signature().canonicalSpelling());
+            function.parameterTypes().forEach(parameter -> collectFunctionLeaves(parameter, signatures));
+            collectFunctionLeaves(function.returnType(), signatures);
+        } else if (base instanceof ArrayType array) {
+            collectFunctionLeaves(array.elementType(), signatures);
+        } else if (base instanceof TupleType tuple) {
+            tuple.memberTypes().forEach(member -> collectFunctionLeaves(member, signatures));
+        }
+    }
+
+    private static List<GeneratedMemberPlan> instanceSignatureFields(
+            Set<String> signatureSpellings) {
+        ArrayList<GeneratedMemberPlan> fields = new ArrayList<>();
+        for (String canonical : new TreeSet<>(signatureSpellings)) {
+            fields.add(GeneratedMemberPlan.rawField(
+                    GeneratedMemberKind.INSTANCE_SIGNATURE_FIELD,
+                    instanceSignatureFieldName(canonical), SIGNATURE_DESCRIPTOR,
+                    Optional.of(canonical)));
+        }
+        return fields;
     }
 
     public static GeneratedTypePlan plan(TypedIr ir) {
@@ -506,9 +611,50 @@ final class GeneratedTypePlanner {
             dependencies.add(new GeneratedClassDependency(stateName,
                     GeneratedDependencyKind.CLOSURE_MODULE_STATE, true,
                     "closure retains and accesses its module-state instance"));
+            Optional<IrDeclaration> mutableSelf = lambda.ownerDeclaration()
+                    .map(declarations::get)
+                    .filter(value -> value.kind() == DeclarationKind.LET
+                            && value.isMutable() && !rootDeclarations.contains(value.id())
+                            && value.signaturePredeclared() && value.initializerLambda().isPresent());
+            mutableSelf.ifPresent(value -> {
+                String descriptor;
+                if (cellClasses.containsKey(value.id())) {
+                    String cellName = cellClasses.get(value.id());
+                    descriptor = "L" + cellName.replace('.', '/') + ";";
+                    dependencies.add(new GeneratedClassDependency(cellName,
+                            GeneratedDependencyKind.CLOSURE_SHARED_CELL, true,
+                            "mutable self reference retains its exact shared cell"));
+                } else {
+                    FunctionType function = value.contract()
+                            .map(BindingContract::valueType)
+                            .map(LyraType::withoutQualifiers)
+                            .filter(FunctionType.class::isInstance)
+                            .map(FunctionType.class::cast)
+                            .orElseThrow(() -> new IllegalArgumentException(
+                                    "mutable self declaration is not a function"));
+                    String functionName = names.functionNames().get(function.canonicalSpelling());
+                    if (functionName == null) {
+                        throw new IllegalArgumentException(
+                                "mutable self declaration has no generated interface");
+                    }
+                    descriptor = "[L" + functionName.replace('.', '/') + ";";
+                    dependencies.add(new GeneratedClassDependency(functionName,
+                            GeneratedDependencyKind.CLOSURE_CAPTURE_TYPE, true,
+                            "mutable self reference retains its exact local function slot"));
+                }
+                members.add(GeneratedMemberPlan.rawField(
+                        GeneratedMemberKind.CLOSURE_SELF_CELL_FIELD,
+                        "$lyra$selfCell", descriptor));
+            });
             ArrayList<String> constructorDescriptors = new ArrayList<>();
             constructorDescriptors.add(AUTHORITY_DESCRIPTOR);
             constructorDescriptors.add(stateDescriptor);
+            mutableSelf.ifPresent(value -> {
+                String descriptor = members.stream()
+                        .filter(field -> field.kind() == GeneratedMemberKind.CLOSURE_SELF_CELL_FIELD)
+                        .findFirst().orElseThrow().descriptor();
+                constructorDescriptors.add(descriptor);
+            });
             for (var captureId : lambda.captures().stream().sorted().toList()) {
                 IrCapture capture = captures.get(captureId);
                 if (capture == null) {
@@ -565,6 +711,13 @@ final class GeneratedTypePlanner {
                     "<init>", "(" + String.join("", constructorDescriptors) + ")V", false));
             members.add(GeneratedMemberPlan.method(GeneratedMemberKind.CLOSURE_INVOKE,
                     "invoke", signature, false, Optional.empty(), Optional.empty()));
+            TreeSet<String> instanceSignatures = dynamicInvocationSignatures(
+                    lambda.body(), declarations, false);
+            for (LyraType parameter : lambda.signature().parameterTypes()) {
+                instanceSignatures.addAll(functionLeafSignatures(parameter));
+            }
+            instanceSignatures.addAll(functionLeafSignatures(lambda.signature().returnType()));
+            members.addAll(instanceSignatureFields(instanceSignatures));
             String functionName = names.functionNames().get(lambda.signature().canonicalSpelling());
             if (functionName == null) {
                 throw new IllegalArgumentException("lambda signature has no generated function interface");
@@ -871,6 +1024,18 @@ final class GeneratedTypePlanner {
             });
             members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CONSTRUCTOR,
                     "<init>", "(Lio/mindspice/lyra/runtime/LyraArtifactKey;)V", false));
+            // Nominal constructor lambda bodies and factory parameter
+            // authentication are emitted inline in this state's factory
+            // method, so their signatures belong to the state instance.
+            TreeSet<String> stateSignatures = dynamicInvocationSignatures(
+                    module.body(), declarations, true);
+            for (IrNode form : module.body().forms()) {
+                if (!(form instanceof IrNode.NominalDeclaration nominal)) continue;
+                for (LyraType parameter : nominal.schema().constructorParameters()) {
+                    stateSignatures.addAll(functionLeafSignatures(parameter));
+                }
+            }
+            members.addAll(instanceSignatureFields(stateSignatures));
             members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_AUTHORITY_GET,
                     "$lyra$closureAuthority", "()" + AUTHORITY_DESCRIPTOR, false));
             members.add(GeneratedMemberPlan.rawMethod(GeneratedMemberKind.STATE_CHECK_OPEN,
