@@ -2889,7 +2889,7 @@ final class TypedSemanticProvenance {
         LyraType base = type.withoutQualifiers();
         return type.isNilable() || base instanceof PrimitiveType
                 || base instanceof ArrayType || base instanceof TupleType
-                || base instanceof FunctionType;
+                || base instanceof FunctionType || base instanceof NominalType;
     }
 
     private boolean identityBearing(LyraType type) {

@@ -4130,7 +4130,7 @@ public final class SessionFlowCertificate {
             LyraType base = type.withoutQualifiers();
             return type.isNilable() || base instanceof PrimitiveType
                     || base instanceof ArrayType || base instanceof TupleType
-                    || base instanceof FunctionType;
+                    || base instanceof FunctionType || base instanceof NominalType;
         }
 
         private static List<RetainedInitializerTransfer> checkedTransfers(

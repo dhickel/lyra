@@ -967,6 +967,77 @@ class NominalBytecodeTest {
         }
     }
 
+    @Test void nominalReferencesAreTruthTestableInAllTruthContexts() throws Throwable {
+        var artifact = compile("""
+                struct Point { let x :I32 }
+                class Box { let value :I32 = 1 }
+                let @pub structConditional :Fn<;Bool> = (=> || {
+                    let point :Point = :Point[1]
+                    (point -> #T : #F)
+                })
+                let @pub classConditional :Fn<;Bool> = (=> || {
+                    let box :Box = :Box[]
+                    (box -> #T : #F)
+                })
+                let @pub directAnd :Fn<;Bool> = (=> || {
+                    let point :Point = :Point[1]
+                    let box :Box = :Box[]
+                    (and point box)
+                })
+                let @pub directOr :Fn<;Bool> = (=> || {
+                    let point :Point = :Point[1]
+                    let box :Box = :Box[]
+                    (or (not box) point)
+                })
+                let @pub directXor :Fn<;Bool> = (=> || {
+                    let point :Point = :Point[1]
+                    (xor point #F)
+                })
+                let @pub directNot :Fn<;Bool> = (=> || {
+                    let box :Box = :Box[]
+                    (not box)
+                })
+                let @pub conditionalChain :Fn<;Bool> = (=> || {
+                    let box :Box = :Box[]
+                    (cond box -> #T _ -> #F)
+                })
+                let @pub guardedMatch :Fn<;Bool> = (=> || {
+                    let box :Box = :Box[]
+                    (match 1 _ when box -> #T _ -> #F)
+                })
+                let @pub nilableNil :Fn<;Bool> = (=> || {
+                    let @nil point :Point = #NIL
+                    (point -> #T : #F)
+                })
+                let @pub nilablePresent :Fn<;Bool> = (=> || {
+                    let @nil point :Point = :Point[1]
+                    (point -> #T : #F)
+                })
+                """);
+        try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
+            assertTrue((boolean) module.export("structConditional", "Fn<;Bool>")
+                    .methodHandle().invokeExact());
+            assertTrue((boolean) module.export("classConditional", "Fn<;Bool>")
+                    .methodHandle().invokeExact());
+            assertTrue((boolean) module.export("directAnd", "Fn<;Bool>")
+                    .methodHandle().invokeExact());
+            assertTrue((boolean) module.export("directOr", "Fn<;Bool>")
+                    .methodHandle().invokeExact());
+            assertTrue((boolean) module.export("directXor", "Fn<;Bool>")
+                    .methodHandle().invokeExact());
+            assertFalse((boolean) module.export("directNot", "Fn<;Bool>")
+                    .methodHandle().invokeExact());
+            assertTrue((boolean) module.export("conditionalChain", "Fn<;Bool>")
+                    .methodHandle().invokeExact());
+            assertTrue((boolean) module.export("guardedMatch", "Fn<;Bool>")
+                    .methodHandle().invokeExact());
+            assertFalse((boolean) module.export("nilableNil", "Fn<;Bool>")
+                    .methodHandle().invokeExact());
+            assertTrue((boolean) module.export("nilablePresent", "Fn<;Bool>")
+                    .methodHandle().invokeExact());
+        }
+    }
+
     @Test void sourceFactoriesExecuteStructDefaultsAndClassConstructors() throws Throwable {
         var structs = compile("""
                 struct Point {

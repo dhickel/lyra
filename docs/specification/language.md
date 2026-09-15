@@ -685,7 +685,7 @@ A non-nil `Range<T>` is not truth-testable. Boolean operators return `Bool`, nev
 
 Every nilable contract is truth-testable. A nilable value is false when it is `#NIL`. A present value follows the rules above when its base type is otherwise truth-testable. A present value whose base type is not otherwise truth-testable is true.
 
-The language contract treats every non-nil nominal reference as true. Section 18 records the present conformance discrepancy affecting that rule.
+Every non-nil nominal reference is true. The compiler and backend apply this rule to `struct` and `class` values.
 
 ## 9. Operators
 
@@ -1231,11 +1231,11 @@ Conformance evidence SHOULD include positive, negative, boundary, and runtime-fa
 
 Absence of an implementation crash is not semantic evidence. Tests must assert values, types, diagnostics, effects, identities, or failures.
 
-### 18.4 Current conformance discrepancy
+### 18.4 Nominal truthiness conformance
 
-The normative truth rule in Section 8.3 treats every non-nil nominal reference as true. The current compiler's truth-test predicate accepts primitives, arrays, tuples, functions, and nilable contracts, but does not accept non-nil `struct` or `class` types. Its bytecode emitter can represent non-null reference truth, so the disagreement is in static admission rather than the low-level branch operation.
+Non-nil `struct` and `class` references are truth-testable and evaluate as true. A nilable nominal value is false only when it is `#NIL`; a present value is true. This rule applies consistently to conditional predicates, `and`, `or`, `xor`, `not`, `cond` conditions, and `match` guards.
 
-Until the compiler and governing language contract are reconciled, implementations claiming exact correspondence with the current compiler MUST report this difference. This document retains the intended language rule rather than silently redefining nominal truthiness from an implementation omission.
+The compiler's static truth-test admission, typed semantic validation, retained-session validation, and JVM emission all accept this rule. The conformance suite covers conditional, boolean-operator, `cond`, and match-guard uses of nominal values.
 
 ## Appendix A. Operator summary
 

@@ -1,0 +1,17 @@
+// truthiness	value	Bool	true	non-nil nominal references are truth-testable
+struct Point {
+    let x :I32
+}
+class Box {
+    let value :I32 = 1
+}
+let @pub run :Fn<;Bool> = (=> || {
+    let point :Point = :Point[1]
+    let box :Box = :Box[]
+    let conditional :Bool = (point -> #T : #F)
+    let shortCircuit :Bool = (or (not box) point)
+    let exclusive :Bool = (xor point #F)
+    let conditionalChain :Bool = (cond box -> #T _ -> #F)
+    let guardedMatch :Bool = (match 1 _ when box -> #T _ -> #F)
+    (and conditional shortCircuit exclusive conditionalChain guardedMatch)
+})

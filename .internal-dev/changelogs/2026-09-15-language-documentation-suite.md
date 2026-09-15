@@ -28,12 +28,12 @@ No compiler or runtime behavior changes. Public documentation now exposes curren
 
 ## Specification Impact
 
-The new formal document presents the existing language-contract version 2 and does not change the governing internal specifications. It explicitly records the existing nominal truthiness implementation/specification discrepancy rather than silently changing either contract.
+The new formal document presents the existing language-contract version 2 and does not change the governing internal specifications. A later compiler correction brought nominal truthiness into conformance and the documentation now states the implemented rule.
 
 ## Risks
 
-The current Phase 24 release audit remains blocked by independent build/evidence issues and is not claimed as passing. The graphical editor tests remain display-gated, and native Windows/macOS editor packaging was not exercised. Nominal truthiness remains a known code/specification mismatch.
+The current Phase 24 release audit remains blocked by independent build/evidence issues and is not claimed as passing. The graphical editor tests remain display-gated, and native Windows/macOS editor packaging was not exercised.
 
 ## Follow-up Items
 
-Reconcile nominal truthiness, add direct conformance coverage for the resolved behavior, and rerun the Phase 24 audit in an isolated clean environment before claiming release completion.
+Rerun the Phase 24 audit in an isolated clean environment before claiming release completion.

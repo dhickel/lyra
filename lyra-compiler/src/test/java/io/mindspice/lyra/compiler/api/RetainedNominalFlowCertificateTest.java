@@ -61,6 +61,10 @@ final class RetainedNominalFlowCertificateTest {
                 new Probe("short circuit", "Bool", "(and #T #F)", TypedExpressionKind.SHORT_CIRCUIT, true, ""),
                 new Probe("block/declaration/rebinding", "I32", "{ let @mut local :I32 = 1I32 local := 2I32 local }", TypedExpressionKind.BLOCK, true, ""),
                 new Probe("conditional", "I32", "(maybe -> 1I32 : 2I32)", TypedExpressionKind.CONDITIONAL, true, ""),
+                new Probe("nominal conditional", "Bool", "(externalNominal -> #T : #F)", TypedExpressionKind.CONDITIONAL, true, ""),
+                new Probe("nominal short circuit", "Bool", "(and externalNominal #T)", TypedExpressionKind.SHORT_CIRCUIT, true, ""),
+                new Probe("nominal match guard", "Bool", "(match 1I32 _ when externalNominal -> #T _ -> #F)", TypedExpressionKind.MATCH, true, ""),
+                new Probe("nominal cond", "Bool", "(cond externalNominal -> #T _ -> #F)", TypedExpressionKind.COND, true, ""),
                 new Probe("coalesce", "I32", "(maybe : 1I32)", TypedExpressionKind.COALESCE, true, ""),
                 new Probe("match", "I32", "(match 1I32 1I32 -> 1I32 _ -> 2I32)", TypedExpressionKind.MATCH, true, ""),
                 new Probe("cond", "I32", "(cond maybe -> 1I32 _ -> 2I32)", TypedExpressionKind.COND, true, ""),
@@ -76,7 +80,7 @@ final class RetainedNominalFlowCertificateTest {
                 new Probe("top-level rebinding", "I32", "local := 1I32", TypedExpressionKind.REBINDING, false, "LYC-PARSE-003"));
         for (Probe probe : probes) {
             String source = "import std->io let inc :Fn<I32;I32> = (=> |value| value) let zero :Fn<;I32> = (=> || 0I32) let external :I32 = 1I32 "
-                    + "let @nil maybe :I32 = #NIL class Nested { let value :I32 = 1I32 } class C { "
+                    + "let @nil maybe :I32 = #NIL class Nested { let value :I32 = 1I32 } let externalNominal :Nested = :Nested[] class C { "
                     + "let seed :I32 = 1I32 let value :" + probe.type() + " = " + probe.initializer() + " }";
             SessionCompileResult result = LyraCompiler.compileSession(
                     new SessionCompileRequest("inventory-" + probe.name() + ".lyra", source,

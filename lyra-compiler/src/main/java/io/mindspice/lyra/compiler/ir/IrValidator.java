@@ -2593,7 +2593,7 @@ public final class IrValidator {
             return type.isNilable() || base instanceof PrimitiveType
                     || base instanceof io.mindspice.lyra.compiler.types.ArrayType
                     || base instanceof io.mindspice.lyra.compiler.types.TupleType
-                    || base instanceof FunctionType;
+                    || base instanceof FunctionType || base instanceof NominalType;
         }
     }
 }

@@ -4125,7 +4125,8 @@ public final class TypeChecker {
                     || base instanceof PrimitiveType
                     || base instanceof ArrayType
                     || base instanceof TupleType
-                    || base instanceof FunctionType;
+                    || base instanceof FunctionType
+                    || base instanceof NominalType;
         }
 
 
