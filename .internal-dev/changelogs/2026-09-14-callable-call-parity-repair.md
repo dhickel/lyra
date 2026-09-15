@@ -6,7 +6,7 @@
 
 ## Git Commit
 
-`81b643c84f0b3eec905ccbfdabd1a6475a68c20c` (dirty-worktree baseline; this repair is intentionally uncommitted)
+`9364f006a6fe305f5bd29fd836baaea0afc31536` (single coherent parity commit on baseline `81b643c84f0b3eec905ccbfdabd1a6475a68c20c`)
 
 ## Change Summary
 
