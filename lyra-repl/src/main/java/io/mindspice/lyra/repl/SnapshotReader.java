@@ -66,7 +66,7 @@ final class SnapshotReader {
                 throw new LyraLinkException("range result does not match its element width");
             }
             return leaf(type, new ValueSnapshot.Scalar(ScalarKind.RANGE,
-                    "(" + range.start() + (range.inclusive() ? "..." : "..") + range.end() + ":" + range.step() + ")"));
+                    "(" + range.start() + (range.inclusive() ? "..=" : "..") + range.end() + ":" + range.step() + ")"));
         }
         if (base instanceof FunctionType function) {
             if (value instanceof io.mindspice.lyra.runtime.LyraNominalMemberDelegate delegate) {

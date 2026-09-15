@@ -213,7 +213,7 @@ public final class TypedIrBuilder {
                 case RANGE -> new IrNode.RuntimeCheck(expression.span(), expression.type(), IrCheckKind.ARITHMETIC,
                         "LYR-ARITH", new IrNode.Range(expression.span(), expression.type(), child(expression, 0),
                         child(expression, 1), child(expression, 2),
-                        expression.operator().filter("..."::equals).isPresent(), Optional.empty()), Optional.of(site), Optional.of(site));
+                        expression.operator().filter("..="::equals).isPresent(), Optional.empty()), Optional.of(site), Optional.of(site));
                 case ITER, WHILE -> new IrNode.Loop(expression.span(), expression.type(),
                         expression.kind() == TypedExpressionKind.WHILE,
                         child(expression, 0), child(expression, 1), findCallId(site), Optional.of(site));

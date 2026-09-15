@@ -132,8 +132,8 @@ class CallbackLoopIntegrationTest {
         var artifact = LanguageTestSupport.compile("""
                 let @pub run :Fn<;I32> = (=> || {
                     let @mut n :I32 = 0
-                    iter[(9223372036854775806...9223372036854775807:1) || { n := (+ n 1) }]
-                    iter[((- 9223372036854775807)...(- 9223372036854775808):(- 1)) || { n := (+ n 1) }]
+                    iter[(9223372036854775806..=9223372036854775807:1) || { n := (+ n 1) }]
+                    iter[((- 9223372036854775807)..=(- 9223372036854775808):(- 1)) || { n := (+ n 1) }]
                     n
                 })
                 let @pub longLoop :Fn<;I32> = (=> || {
@@ -160,7 +160,7 @@ class CallbackLoopIntegrationTest {
                     })
                     let @pub inclusive :Fn<%1$s,%1$s,%1$s;I64> = (=> |a b s| {
                         let @mut sum :I64 = 0
-                        (iter (a...b:s) |x| { sum := (+ sum I64[x]) })
+                        (iter (a..=b:s) |x| { sum := (+ sum I64[x]) })
                         sum
                     })
                     """.formatted(type));
@@ -198,7 +198,7 @@ class CallbackLoopIntegrationTest {
         var artifact = LanguageTestSupport.compile("""
                 let @pub run :Fn<;I64> = (=> || {
                     let @mut n :I64 = 0
-                    let range = (3...1:(- 1))
+                    let range = (3..=1:(- 1))
                     let tick :Fn<;Unit> = (=> || { n := (+ n 1) })
                     iter[range || iter[range tick]]
                     (iter range (=> || { n := (+ n 1) }))

@@ -554,7 +554,7 @@ public final class TypeChecker {
             }
             return result(node(TypedExpressionKind.RANGE, syntax.span(), rangeType,
                     numeric.expressions, Optional.empty(), Optional.empty(), Optional.empty(),
-                    Optional.of(syntax.inclusive() ? "..." : ".."), Optional.empty(), Optional.empty(),
+                    Optional.of(syntax.inclusive() ? "..=" : ".."), Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
                     List.of(), Optional.empty()));
         }

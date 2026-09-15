@@ -34,7 +34,7 @@ let saved :Fn<;Unit> = counter:.increment
 
 Parentheses are not general grouping. `(function argument)` is a call. The exact wrapper `(::function[])` preserves that direct call, but it does not add general grouping syntax.
 
-Compiler-recognized built-ins use bare heads, never `::`. Examples include `+[a b]`, `I32[value]`, `Array<I32>[1 2]`, `match[...]`, `iter[...]`, and `while[...]`. `cond` has only its parenthesized special form. `std->io` exports are ordinary resolved module functions, so `io->::println["text"]` does use `::`.
+Compiler-recognized built-ins use bare heads, never `::`. Examples include `+[a b]`, `I32[value]`, `Array<I32>[1 2]`, `match[...]`, `cond[...]`, `iter[...]`, and `while[...]`. `cond` supports both its parenthesized and direct-bracket special forms. `std->io` exports are ordinary resolved module functions, so `io->::println["text"]` does use `::`.
 
 These distinctions preserve static name resolution and call-target selection. A matching name, JVM descriptor, or generated function-interface shape does not by itself grant callable authority.
 

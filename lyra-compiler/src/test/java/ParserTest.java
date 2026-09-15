@@ -65,7 +65,7 @@ public final class ParserTest {
         for (int i = 0; i < cases; i++) {
             String separator = separators.get(random.nextInt(separators.size()));
             String callback = random.nextBoolean() ? "|| ()" : "|x| ()";
-            String range = "(0" + (random.nextBoolean() ? ".." : "...")
+            String range = "(0" + (random.nextBoolean() ? ".." : "..=")
                     + random.nextInt(100) + ":1)";
             Parsed parsed = parse("let r = " + range + separator
                     + "iter[r " + callback + "]");
@@ -77,7 +77,7 @@ public final class ParserTest {
     @Test
     public void testFirstClassRangeSyntaxRetainsBoundsStepAndEndpointKind() {
         Parsed parsed = parse("let values :Range<I32> = (0..100:1) "
-                + "let reverse = (100...0:(- 1)) "
+                + "let reverse = (100..=0:(- 1)) "
                 + "\niter[values |x| iter[reverse || ()]]");
         SyntaxNode.LetBinding values = let(parsed.syntax(), "values");
         SyntaxNode.RangeType type = (SyntaxNode.RangeType) values.annotation().orElseThrow().type();
@@ -89,7 +89,7 @@ public final class ParserTest {
         check(range.end() instanceof SyntaxNode.IntegerLiteral, "range end is an expression");
         check(range.step() instanceof SyntaxNode.IntegerLiteral, "range step is an expression");
         SyntaxNode.Range reverse = (SyntaxNode.Range) let(parsed.syntax(), "reverse").initializer();
-        check(reverse.inclusive(), "triple dot range includes a reached endpoint");
+        check(reverse.inclusive(), "..= range includes a reached endpoint");
         check(reverse.step() instanceof SyntaxNode.OperatorSExpression,
                 "negative step uses the ordinary negation expression");
     }

@@ -76,12 +76,12 @@ Conditions evaluate once in order using ordinary truthiness. The first truthy re
 
 ```lyra
 let up :Range<I32> = (0..5:1)       // 0, 1, 2, 3, 4
-let down :Range<I32> = (5...1:-2)   // 5, 3, 1
+let down :Range<I32> = (5..=1:-2)   // 5, 3, 1
 iter[up |value| ::consume[value]]
 iter[up || ::tick[]]
 ```
 
-`..` excludes the endpoint. `...` includes it only if the step reaches it. Start, end, and step evaluate once, left to right, at range construction. A range is immutable, reusable, and does not allocate its sequence of elements.
+`..` excludes the endpoint. `..=` includes it if the step reaches it. Start, end, and step evaluate once, left to right, at range construction. A range is immutable, reusable, and does not allocate its sequence of elements.
 
 Bounds and step use one signed integer type: `I8`, `I16`, `I32`, or `I64`. Zero step is a compile error when constant and `LYR-ARITH` otherwise. A step directed away from the endpoint yields no elements. An inclusive equal-endpoint range yields one element; an exclusive one is empty.
 

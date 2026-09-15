@@ -24,13 +24,14 @@
 - **Source:** owner accepted enclosed range syntax and ordinary compact/full
   callback lambdas, requested both callback arities, authorized implementation,
   then renamed the built-in from `each` to `iter`.
-- **Decision:** `(start..end:step)` excludes the end; `(start...end:step)` includes
+- **Decision:** `(start..end:step)` excludes the end; `(start..=end:step)` includes
   a reached end. Range construction is eager once; traversal is reusable and
   synchronous. `iter` takes a range and `Fn<T;Unit>` or `Fn<;Unit>` and returns Unit.
 - **Rationale:** range data remains first-class while iteration reuses existing
-  function, lambda and closure semantics. Explicit existing unary negation avoids
-  a new signed-literal syntax. Safe terminal arithmetic avoids an overflowing
-  increment after the final element.
+  function, lambda and closure semantics. The `..=` marker makes inclusive ranges
+  visually distinct while matching established Rust notation. Explicit existing
+  unary negation avoids a new signed-literal syntax. Safe terminal arithmetic
+  avoids an overflowing increment after the final element.
 - **Initial scope assumption:** signed integer widths I8–I64, as announced while
   asking the owner about unsigned support. Unsigned descending ranges need a
   separate signed-step contract.
@@ -558,7 +559,7 @@
 ### Decision
 
 - **Decision (issue #11):** value `match` always takes a real subject and uses marker-free arms in both spellings. The former wildcard-subject conditional mode is removed and replaced by a dedicated `(cond condition -> result ... _ -> fallback)` special form with equivalent parenthesized and direct-bracket spellings, and the same lazy arm, truthiness, unification, nilability, fallback and tail behavior. `??` and `(match _ ...)` are rejected with structured source-mapped diagnostics.
-- **Decision (issue #9):** `match`, `cond`, `iter` and `while` are reserved forms that use their bare bracket spelling (`match[...]`, `iter[...]`, `while[...]`). `::` remains reserved for direct calls of resolved local or imported function and method names; `::match[...]`, `::iter[...]` and `::while[...]` — including qualified and receiver readings — are rejected.
+- **Decision (issue #9):** `match`, `cond`, `iter` and `while` are reserved forms that use their bare bracket spelling (`match[...]`, `iter[...]`, `while[...]`). `::` remains reserved for direct calls of resolved local or imported function and method names; `::match[...]`, `::cond[...]`, `::iter[...]` and `::while[...]` — including qualified and receiver readings — are rejected.
 - **Decision (issue #10):** a `-` immediately adjacent to a numeric literal in an expression position is a bare negative literal normalized to the existing unary-minus operation, so `-1`, `-128I8`, `-0.0` and `-1.0e3` are accepted with unchanged exactness, suffix, range, underflow, nonfinite and unsigned rejection. A trivia-separated `-` remains the bracket-required operator, and `--1` is never a literal.
 - **Decision (issue #12):** nominal construction is explicit, `:Type[args]` or `:module->Type[args]`, with no whitespace after the colon. Resolution, not capitalization, decides: the obsolete unprefixed `Type[args]` and qualified `model->:.Counter[0]` are rejected when their bracket target resolves to a nominal type, while uppercase value indexing, primitive/`String` conversions and `Array`/`Tuple` literal spellings are preserved unchanged. Construction continues to lower to the existing declared factory semantics.
 - **Decision (grammar boundary):** a single optional comma may separate sibling forms of a module/block sequence and sibling marker-free match/cond arms, but only when the following sibling begins with `::`; the exact parenthesized direct call `(::name[args])` preserves that direct call. No general grouping, statement punctuation or arm-separator feature is added.

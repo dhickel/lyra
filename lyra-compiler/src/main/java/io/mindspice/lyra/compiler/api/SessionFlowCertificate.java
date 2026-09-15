@@ -3654,7 +3654,7 @@ public final class SessionFlowCertificate {
                             && operands.size() >= 2 && type.equals(PrimitiveType.BOOL)
                             && operands.stream().allMatch(operand -> truthTestable(operand.type()));
                     case RANGE -> operation.filter(value -> value.equals("..")
-                                    || value.equals("...")).isPresent()
+                                    || value.equals("..=")).isPresent()
                             && operands.size() == 3
                             && type.withoutQualifiers() instanceof RangeType range
                             && operands.stream().allMatch(operand ->

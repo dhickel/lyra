@@ -143,7 +143,7 @@ parenthesized-expression
                      | operator expression-list ')'
                      | expression [identifier] '->' expression [':' expression] ')'
                      | expression ':' expression ')'
-                     | expression ('..' | '...') expression ':' expression ')'
+                     | expression ('..' | '..=') expression ':' expression ')'
                      | expression expression* ')' ) ;
 
 postfix            ::= argument-list

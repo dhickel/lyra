@@ -431,12 +431,12 @@ the local or imported space. Compiler-recognized built-ins are not callable
 values and never use `::`: the operators, the primitive/`String` conversions, the
 `Array`/`Tuple` literal forms and the reserved `match`, `cond`, `iter` and
 `while` forms use their bare spelling in the bracket application form, for
-example `+[a b]`, `I32[value]`, `Array<I32>[1 2]`, `match[...]`, `iter[...]`.
-The obsolete `::match[...]`, `::iter[...]` and `::while[...]` spellings, including
+example `+[a b]`, `I32[value]`, `Array<I32>[1 2]`, `match[...]`, `cond[...]`, `iter[...]`.
+The obsolete `::match[...]`, `::cond[...]`, `::iter[...]` and `::while[...]` spellings, including
 a qualified `namespace->::match[...]` or a receiver `value::match[...]` reading,
 are rejected with a structured source-mapped diagnostic. Every parenthesized
 special form `(match ...)`, `(cond ...)`, `(iter ...)` and `(while ...)` remains
-valid.
+valid; `cond[...]` and `match[...]` are their direct-bracket forms.
 
 Because whitespace does not terminate an expression and `::name[...]` is also a
 postfix receiver call, a following sibling expression that begins with ordinary
@@ -653,11 +653,11 @@ Range construction is an enclosed expression with an explicit step:
 
 ```lyra
 let ascending :Range<I32> = (0..100:1)
-let descending :Range<I32> = (100...0:(- 1))
+let descending :Range<I32> = (100..=0:(- 1))
 ```
 
-`..` excludes the endpoint. `...` includes it only when the step reaches it;
-`(0...5:2)` visits 0, 2, 4. A range evaluates its start, end and step exactly
+`..` excludes the endpoint. `..=` includes it when the step reaches it;
+`(0..=5:2)` visits 0, 2, 4. A range evaluates its start, end and step exactly
 once, left-to-right, at construction. Those immutable values may be stored,
 passed, returned or captured, and each traversal starts afresh. Construction
 does not allocate or evaluate a collection of elements.

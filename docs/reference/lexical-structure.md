@@ -47,7 +47,7 @@ A trivia-separated minus remains an operator and therefore needs operator syntax
 | `:.` | value, field, bound-method, tuple-position, and `length` access |
 | `::` | direct source function or method invocation |
 | `:=` | assignment |
-| `..`, `...` | exclusive and inclusive ranges |
+| `..`, `..=` | exclusive and inclusive ranges |
 
 Parentheses are not a grouping operator. The exact `(::f[])` form preserves a direct call, but `(::f[] x)` calls the value returned by `f` with `x`.
 

@@ -13,7 +13,7 @@ import std->io as io
 
 let @pub main :Fn<Array<String>;I32> = (=> |args| {
     let @mut total :I32 = 0
-    let values :Range<I32> = (1...3:1)
+    let values :Range<I32> = (1..=3:1)
 
     iter[values |value| {
         total := (+ total value)
@@ -49,7 +49,7 @@ total=6
 
 ## Range and callback rules
 
-`(1...3:1)` is inclusive because it uses `...`. `(1..3:1)` would visit `1` and `2`. A range stores signed integer start, end, and nonzero step values. A negative step supports descending traversal.
+`(1..=3:1)` is inclusive because it uses `..=`. `(1..3:1)` would visit `1` and `2`. A range stores signed integer start, end, and nonzero step values. A negative step supports descending traversal.
 
 `iter` accepts either `Fn<I32;Unit>` for this range or `Fn<;Unit>`. `while` requires exactly a `Fn<;Bool>` predicate and a `Fn<;Unit>` action. It tests the predicate before every action, including the first.
 

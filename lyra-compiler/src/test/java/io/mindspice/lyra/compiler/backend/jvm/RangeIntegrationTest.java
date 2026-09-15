@@ -40,7 +40,7 @@ class RangeIntegrationTest {
         for (String source : java.util.List.of("let r = (0..10:0)", "let r = (0.0..1.0:0.1)",
                 "let r :Range<U32> = (0..10:1)", "let r :Range<@nil I32> = (0..10:1)",
                 "let r :Range<String> = (0..10:1)", "let r :Range<I8> = (0..128:1)",
-                "let r = (0....10:1)")) {
+                "let r = (0....10:1)", "let r = (0...10:1)")) {
             var result = io.mindspice.lyra.compiler.api.LyraCompiler.compile(
                     io.mindspice.lyra.compiler.api.CompileRequest.source("invalid.lyra", source));
             var failure = assertInstanceOf(io.mindspice.lyra.compiler.api.CompileResult.Failure.class, result);
@@ -56,7 +56,7 @@ class RangeIntegrationTest {
         for (int bits : new int[]{8, 16, 32, 64}) {
             String element = "I" + bits;
             var artifact = LanguageTestSupport.compile("let @pub range :Fn<" + element + "," + element
-                    + "," + element + ";Range<" + element + ">> = (=> |a b s| (a...b:s)) "
+                    + "," + element + ";Range<" + element + ">> = (=> |a b s| (a..=b:s)) "
                     + "let @pub exclusive :Fn<" + element + "," + element + "," + element
                     + ";Range<" + element + ">> = (=> |a b s| (a..b:s))");
             try (var fixture = new LanguageTestSupport.Fixture(artifact)) {
@@ -102,11 +102,11 @@ class RangeIntegrationTest {
     void inferredAndStoredRangesRetainEvaluatedBounds() throws Throwable {
         var artifact = LanguageTestSupport.compile("""
                 let @pub range :Fn<;Range<I64>> = (=> || {
-                  let saved = (0...10:2)
+                  let saved = (0..=10:2)
                   saved
                 })
                 let @pub narrow :Fn<;Range<I8>> = (=> || {
-                  let saved :Range<I8> = (100...0:(- 1))
+                  let saved :Range<I8> = (100..=0:(- 1))
                   saved
                 })
                 """);
@@ -132,7 +132,7 @@ class RangeIntegrationTest {
     @Test
     void rangeValuesCrossTypedJavaExports() throws Throwable {
         var artifact = LanguageTestSupport.compile("""
-                let @pub range :Fn<I32,I32,I32;Range<I32>> = (=> |start end step| (start...end:step))
+                let @pub range :Fn<I32,I32,I32;Range<I32>> = (=> |start end step| (start..=end:step))
                 """);
         try (var fixture = new LanguageTestSupport.Fixture(artifact)) {
             assertEquals(new LyraRange(0, 10, 2, true, 32),

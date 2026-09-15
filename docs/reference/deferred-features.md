@@ -34,6 +34,7 @@ This page distinguishes current absence from an alternative spelling. Deferred c
 | `?? pattern -> result` | `pattern -> result` |
 | `(match _ condition -> value _ -> fallback)` | `(cond condition -> value _ -> fallback)` |
 | `::match[...]` | `match[...]` |
+| `::cond[...]` | `cond[...]` |
 | `::iter[...]` | `iter[...]` |
 | `::while[...]` | `while[...]` |
 | `Type[args]` for a nominal | `:Type[args]` |

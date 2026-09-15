@@ -61,7 +61,7 @@ The public Java API is limited to opening a session, submitting source, receivin
 Snapshots retain canonical Lyra types, bounded scalar/aggregate display data, ordering, unsigned mathematical values, UTF-16 content, nil/Unit distinctions, function descriptions, aliases, references, and explicit truncation markers. Formatting never executes user code. Default budgets are depth 6, 100 aggregate elements, and 16 KiB rendered output.
 
 Immutable `Range<T>` values use exact live data storage and the data-only scalar
-snapshot kind `RANGE`: `(start..end:step)` or `(start...end:step)`, with canonical
+snapshot kind `RANGE`: `(start..end:step)` or `(start..=end:step)`, with canonical
 signed decimal components. This is display data, not source replay (negative
 source operands still use unary forms). Snapshot validation checks element widths
 and nonzero step without traversing the range. Both callback loops execute across

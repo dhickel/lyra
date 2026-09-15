@@ -36,6 +36,11 @@ public final class LexerTest {
     }
 
     @Test
+    public void testRangeOperatorSpellings() {
+        rangeOperatorSpellings();
+    }
+
+    @Test
     public void testCommentsAndTriviaAreRetained() {
         commentsAndTriviaAreRetained();
     }
@@ -73,6 +78,18 @@ public final class LexerTest {
     @Test
     public void testEofSpansAndDefensiveImmutability() {
         eofSpansAndDefensiveImmutability();
+    }
+
+    private static void rangeOperatorSpellings() {
+        LexedSource lexed = success("0..1 0..=1");
+        check(lexed.tokens().stream().map(Token::kind).toList().equals(List.of(
+                        TokenKind.INTEGER_LITERAL, TokenKind.RANGE_EXCLUSIVE,
+                        TokenKind.INTEGER_LITERAL, TokenKind.INTEGER_LITERAL,
+                        TokenKind.RANGE_INCLUSIVE, TokenKind.INTEGER_LITERAL, TokenKind.EOF)),
+                "range operators use distinct exclusive and Rust-style inclusive tokens");
+        check(lexed.tokens().get(1).lexeme().equals("..")
+                        && lexed.tokens().get(4).lexeme().equals("..="),
+                "range token lexemes retain their exact punctuation");
     }
 
     private static void currentVocabularyAndDeferredWords() {

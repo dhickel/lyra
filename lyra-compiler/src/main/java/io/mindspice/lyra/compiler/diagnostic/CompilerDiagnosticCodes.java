@@ -67,7 +67,7 @@ public final class CompilerDiagnosticCodes {
     /** Obsolete '??' arm markers. */
     public static final DiagnosticCode PARSE_OBSOLETE_ARM_MARKER =
             DiagnosticCode.of(Phase.PARSE, 11);
-    /** Obsolete '::match[...]', '::iter[...]' and '::while[...]' spellings. */
+    /** Obsolete '::match[...]', '::cond[...]', '::iter[...]' and '::while[...]' spellings. */
     public static final DiagnosticCode PARSE_OBSOLETE_DIRECT_SPECIAL_FORM =
             DiagnosticCode.of(Phase.PARSE, 12);
     /** Obsolete conditional '(match _ ...)' special case. */

@@ -14,7 +14,7 @@ Common checks:
 - **Type annotations:** write `name :Type`, not `name:Type` or `name : Type`.
 - **Names:** declarations are source-ordered. Imports must appear in the header and only public exports can cross a module boundary.
 - **Types:** Lyra does not use `Any` or implicit lossy conversion. Add a valid explicit conversion such as `I32[value]` when required.
-- **Calls:** check exact arity and parameter contracts. Built-ins use bare heads such as `+[a b]`, `match[...]`, `iter[...]`, and `while[...]`; they do not use `::`.
+- **Calls:** check exact arity and parameter contracts. Built-ins use bare heads such as `+[a b]`, `match[...]`, `cond[...]`, `iter[...]`, and `while[...]`; they do not use `::`.
 - **Entry point:** `LYC-PACKAGE-001` means a runnable root lacks exactly one public `main :Fn<Array<String>;I32>`.
 
 Use `\type SOURCE` in a REPL to check source against committed context without executing or publishing it.

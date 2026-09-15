@@ -25,7 +25,7 @@ import java.util.Set;
  */
 public record ValueSnapshot(LyraType type, Data data, SnapshotLimits limits) {
     private static final java.util.regex.Pattern RANGE_TEXT = java.util.regex.Pattern.compile(
-            "\\((-?[0-9]+)\\.\\.(\\.?)(-?[0-9]+):(-?[0-9]+)\\)");
+            "\\((-?[0-9]+)\\.\\.(=?)(-?[0-9]+):(-?[0-9]+)\\)");
     public ValueSnapshot {
         type = Objects.requireNonNull(type, "type");
         data = Objects.requireNonNull(data, "data");

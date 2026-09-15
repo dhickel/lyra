@@ -160,7 +160,7 @@ Lyra uses the following punctuation tokens:
 
 ```text
 ( )  { }  [ ]  < >  |  ,  ;  :  =
-:=  ->  :.  ::  =>  ..  ...
+:=  ->  :.  ::  =>  ..  ..=
 ```
 
 `??` is tokenized only so an implementation can issue the migration diagnostic required by Section 17. It is not current syntax. A standalone period is not a current expression operator.
@@ -343,7 +343,7 @@ parenthesized-expression ::=
   | "(" expression { expression } ")" ;
 
 expression-list     ::= [comma-list(expression)] ;
-range-token         ::= ".." | "..." ;
+range-token         ::= ".." | "..=" ;
 
 match-bracket       ::= "match" "[" match-content "]" ;
 cond-form           ::= "(" "cond" cond-content ")"
@@ -918,10 +918,10 @@ A range is enclosed and always has an explicit step:
 
 ```lyra
 let ascending :Range<I32> = (0..100:1)
-let descending :Range<I32> = (100...0:-1)
+let descending :Range<I32> = (100..=0:-1)
 ```
 
-`..` excludes the endpoint. `...` includes the endpoint only when traversal reaches it. `(0...5:2)` therefore visits `0`, `2`, and `4`.
+`..` excludes the endpoint. `..=` includes the endpoint when traversal reaches it. `(0..=5:2)` therefore visits `0`, `2`, and `4`.
 
 Start, end, and step evaluate exactly once, left-to-right. They must resolve to one of `I8`, `I16`, `I32`, or `I64`. A complete expected `Range<T>` may provide that type. Range values are immutable, reusable, storable, passable, returnable, and capturable. Each traversal starts from the saved start.
 
@@ -1300,7 +1300,7 @@ let @pub main :Fn<Array<String>;I32> = (=> |args| {
     counter::increment[],
     ::println[String[counter::current[]]]
     (cond
-      (== args:.length 0) -> ::sumRange[(0...3:1)]
+      (== args:.length 0) -> ::sumRange[(0..=3:1)]
       _ -> 0)
 })
 ```

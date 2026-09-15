@@ -11,8 +11,8 @@ class ExecutedSnapshotTest {
     @Test
     void rangesRemainBoundedDataAndPersistInsideAggregates() {
         var type = new io.mindspice.lyra.runtime.RangeType(PrimitiveType.I8);
-        assertEquals("(127...-128:-1)", scalar(ValueSnapshot.scalar(type, ScalarKind.RANGE, "(127...-128:-1)")));
-        for (String invalid : List.of("(0..3:0)", "(0..128:1)", "(00..3:1)", "(-0..3:1)", "(0....3:1)")) {
+        assertEquals("(127..=-128:-1)", scalar(ValueSnapshot.scalar(type, ScalarKind.RANGE, "(127..=-128:-1)")));
+        for (String invalid : List.of("(0..3:0)", "(0..128:1)", "(00..3:1)", "(-0..3:1)", "(0...3:1)", "(0....3:1)")) {
             assertThrows(IllegalArgumentException.class,
                     () -> ValueSnapshot.scalar(type, ScalarKind.RANGE, invalid), invalid);
         }

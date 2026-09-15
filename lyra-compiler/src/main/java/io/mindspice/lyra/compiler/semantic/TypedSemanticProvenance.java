@@ -724,7 +724,7 @@ final class TypedSemanticProvenance {
             require(expression.type() instanceof io.mindspice.lyra.compiler.types.RangeType,
                     "range construction must have a Range type");
             var rangeType = (io.mindspice.lyra.compiler.types.RangeType) expression.type();
-            require(expression.operator().orElse("").equals(range.inclusive() ? "..." : ".."),
+            require(expression.operator().orElse("").equals(range.inclusive() ? "..=" : ".."),
                     "range endpoint inclusion changed from source");
             var bounds = List.of(range.start(), range.end(), range.step());
             for (int index = 0; index < bounds.size(); index++) {

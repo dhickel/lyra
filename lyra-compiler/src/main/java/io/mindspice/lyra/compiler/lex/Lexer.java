@@ -174,7 +174,7 @@ public final class Lexer {
             int start = index;
 
             if (startsWith("..")) {
-                boolean inclusive = startsWith("...");
+                boolean inclusive = startsWith("..=");
                 index += inclusive ? 3 : 2;
                 add(inclusive ? TokenKind.RANGE_INCLUSIVE : TokenKind.RANGE_EXCLUSIVE,
                         start, index, TokenValue.None.INSTANCE);

@@ -79,4 +79,4 @@ A method read such as `counter:.increment` captures the current method selection
 
 After exact resolution, parenthesized and bracket direct spellings have the same call semantics and tail behavior. Computed callable targets still use runtime authentication. `::` is not valid without bracket arguments.
 
-Compiler-recognized built-ins are not callable values and do not use `::`. Write `+[a b]`, `I32[value]`, `match[...]`, `iter[...]`, or `while[...]`, not `::+[...]`, `::I32[...]`, `::match[...]`, `::iter[...]`, or `::while[...]`.
+Compiler-recognized built-ins are not callable values and do not use `::`. Write `+[a b]`, `I32[value]`, `match[...]`, `cond[...]`, `iter[...]`, or `while[...]`, not `::+[...]`, `::I32[...]`, `::match[...]`, `::cond[...]`, `::iter[...]`, or `::while[...]`.

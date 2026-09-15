@@ -15,10 +15,9 @@ local or imported space. Compiler-recognized built-ins are not callable values a
 never take `::`: `match`, `cond`, `iter` and `while` use their bare bracket spelling
 (`match[...]`, `iter[...]`, `while[...]`), and the operators, primitive/`String`
 conversions and `Array`/`Tuple` literal forms already use bare bracket application.
-The `::match[...]`, `::iter[...]` and `::while[...]` spellings, including qualified
-(`ns->::match[...]`) and receiver (`x::match[...]`) readings, are rejected with the
-structured obsolete-special-form diagnostic (`LYC-PARSE-012`).
-`cond` is a reserved parenthesized-only special form; `cond[...]` is invalid.
+The `::match[...]`, `::cond[...]`, `::iter[...]` and `::while[...]` spellings, including
+qualified (`ns->::match[...]`) and receiver (`x::match[...]`) readings, are rejected
+with the structured obsolete-special-form diagnostic (`LYC-PARSE-012`).
 
 ## Project Relevance
 Surface notation tracks semantics: a built-in that is not an ordinary eager callable

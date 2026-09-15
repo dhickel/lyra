@@ -30,7 +30,7 @@ Important migration diagnostics are exact:
 | Code | Meaning |
 | --- | --- |
 | `LYC-PARSE-011` | Obsolete `??` match-arm marker |
-| `LYC-PARSE-012` | Obsolete `::match[...]`, `::iter[...]`, or `::while[...]` special-form spelling |
+| `LYC-PARSE-012` | Obsolete `::match[...]`, `::cond[...]`, `::iter[...]`, or `::while[...]` special-form spelling |
 | `LYC-PARSE-013` | Obsolete conditional `(match _ ...)` form |
 | `LYC-PARSE-014` | Invalid explicit construction marker |
 | `LYC-RESOLVE-027` | Obsolete `Type[...]` or `module->:.Type[...]` nominal construction |

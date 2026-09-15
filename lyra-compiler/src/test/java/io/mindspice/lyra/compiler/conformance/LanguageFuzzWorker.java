@@ -197,7 +197,7 @@ public final class LanguageFuzzWorker {
             actions++;
             sum += binding ? x : 1;
         }
-        String range = "(" + signedLoopLiteral(start) + (inclusive ? "..." : "..")
+        String range = "(" + signedLoopLiteral(start) + (inclusive ? "..=" : "..")
                 + signedLoopLiteral(end) + ":" + signedLoopLiteral(step) + ")";
         String callback = binding ? "|x| { sum := (+ sum x) }" : "|| { sum := (+ sum 1) }";
         String iter = bracket ? "iter[range " + callback + "]" : "(iter range " + callback + ")";
