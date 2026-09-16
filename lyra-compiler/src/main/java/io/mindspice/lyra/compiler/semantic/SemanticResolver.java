@@ -2203,10 +2203,24 @@ public final class SemanticResolver {
                     return Use.empty();
                 }
                 Optional<ResolvedNominal> constructor = constructorTarget(target);
+                if (constructor.isEmpty() && !construction.hasColonPrefix()
+                        && construction.namespacePath().isPresent()) {
+                    List<SyntaxNode.Expression> arguments = construction.arguments().expressions();
+                    if (arguments.size() != 1) {
+                        fail(CompilerDiagnosticCodes.RESOLVE_INVALID_SIGNATURE,
+                                construction.arguments().span(),
+                                "value indexing requires exactly one index expression");
+                        return Use.empty();
+                    }
+                    SyntaxNode.Expression index = arguments.getFirst();
+                    resolveExpression(index, scope, work, lambda, currentDeclaration, Optional.empty());
+                    addLink(new SyntaxLink(construction.span(), SyntaxLinkKind.ACCESS));
+                    return indexUse(target, index);
+                }
                 if (constructor.isEmpty()) {
                     fail(CompilerDiagnosticCodes.RESOLVE_UNRESOLVED_NAME,
                             construction.typeName().span(),
-                            "explicit ':' construction requires a declared nominal type name");
+                            "nominal construction requires a declared nominal type name");
                     return Use.empty();
                 }
                 return resolveConstruction(constructor.orElseThrow(),
@@ -2372,10 +2386,14 @@ public final class SemanticResolver {
                         access.receiver(), scope, work, lambda, currentDeclaration, Optional.empty());
                 Optional<ResolvedNominal> constructor = constructorTarget(receiver);
                 if (constructor.isPresent()) {
-                    fail(CompilerDiagnosticCodes.RESOLVE_OBSOLETE_CONSTRUCTION, access.span(),
-                            "nominal construction requires the explicit ':' prefix, as in"
-                                    + " :Type[arguments] or :module->Type[arguments]");
-                    return Use.empty();
+                    if (access.receiver() instanceof SyntaxNode.NamespaceMemberAccess) {
+                        fail(CompilerDiagnosticCodes.RESOLVE_OBSOLETE_CONSTRUCTION, access.span(),
+                                "qualified nominal construction uses module->Type[arguments], not"
+                                        + " module->:.Type[arguments]");
+                        return Use.empty();
+                    }
+                    return resolveConstruction(constructor.orElseThrow(), List.of(access.index()),
+                            access.span(), scope, work, lambda, currentDeclaration);
                 }
                 resolveExpression(access.index(), scope, work, lambda, currentDeclaration, Optional.empty());
                 addLink(new SyntaxLink(access.span(), SyntaxLinkKind.ACCESS));
@@ -2385,10 +2403,14 @@ public final class SemanticResolver {
                 Use target = resolveExpression(application.target(), scope, work, lambda, currentDeclaration, Optional.empty());
                 Optional<ResolvedNominal> constructor = constructorTarget(target);
                 if (constructor.isPresent()) {
-                    fail(CompilerDiagnosticCodes.RESOLVE_OBSOLETE_CONSTRUCTION, application.span(),
-                            "nominal construction requires the explicit ':' prefix, as in"
-                                    + " :Type[arguments] or :module->Type[arguments]");
-                    return Use.empty();
+                    if (application.target() instanceof SyntaxNode.NamespaceMemberAccess) {
+                        fail(CompilerDiagnosticCodes.RESOLVE_OBSOLETE_CONSTRUCTION, application.span(),
+                                "qualified nominal construction uses module->Type[arguments], not"
+                                        + " module->:.Type[arguments]");
+                        return Use.empty();
+                    }
+                    return resolveConstruction(constructor.orElseThrow(), application.arguments().expressions(),
+                            application.span(), scope, work, lambda, currentDeclaration);
                 }
                 if (!failed()) {
                     fail(CompilerDiagnosticCodes.RESOLVE_INVALID_SIGNATURE, application.arguments().span(),

@@ -31,8 +31,8 @@ class Counter {
 }
 
 let @pub main :Fn<Array<String>;I32> = (=> |args| {
-    let point :Point = :Point[20 22]
-    let counter :Counter = :Counter[(+ point:.x point:.y)]
+    let point :Point = Point[20 22]
+    let counter :Counter = Counter[(+ point:.x point:.y)]
     let saved :Fn<;Unit> = counter:.increment
     (saved)
     io->::println[String[counter::current[]]]
@@ -57,7 +57,7 @@ Expected output:
 - `Point` is a nominal struct. Its uninitialized fields become constructor parameters in declaration order.
 - `Counter` has one explicit constructor. Its body initializes `value` through `self`.
 - Class fields and methods are private unless marked `@pub`. Struct fields are public by default.
-- `:Point[...]` and `:Counter[...]` are explicit nominal construction. The leading colon is required.
+- `Point[...]` and `Counter[...]` construct nominal values. The older colon-prefixed forms remain accepted for compatibility; the leading colon is not required.
 - `counter::current[]` calls a method with an implicit receiver.
 - `counter:.increment` reads the current receiver-bound function value. `saved` retains that selected method and receiver.
 

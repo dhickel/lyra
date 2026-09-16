@@ -406,6 +406,8 @@ public final class TypeChecker {
                 result = checkTupleLiteral(tuple, expected, moduleId);
             } else if (syntax instanceof SyntaxNode.IndexAccess index) {
                 result = checkIndexAccess(index, moduleId);
+            } else if (syntax instanceof SyntaxNode.BracketApplication application) {
+                result = checkBracketApplication(application, moduleId);
             } else {
                 fail(CompilerDiagnosticCodes.TYPE_UNSUPPORTED_CONSTRUCT,
                         syntax.span(), "source expression has no typed semantic representation");
@@ -728,6 +730,15 @@ public final class TypeChecker {
         private ExprResult checkIndexAccess(
                 SyntaxNode.IndexAccess syntax,
                 ModuleId moduleId) {
+            if (constructionAt(syntax.span()).isPresent()) {
+                if (!(syntax.receiver() instanceof SyntaxNode.Identifier typeName)) {
+                    fail(CompilerDiagnosticCodes.TYPE_INVALID_ACCESS, syntax.span(),
+                            "unqualified construction requires a type name before its brackets");
+                    return null;
+                }
+                return checkConstruction(Optional.empty(), typeName, List.of(syntax.index()),
+                        syntax.span(), moduleId);
+            }
             ExprResult receiver = checkExpression(syntax.receiver(), Optional.empty(), moduleId);
             if (receiver == null) {
                 return null;
@@ -778,6 +789,23 @@ public final class TypeChecker {
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.empty(), List.of(), Optional.empty()));
+        }
+
+        private ExprResult checkBracketApplication(
+                SyntaxNode.BracketApplication syntax,
+                ModuleId moduleId) {
+            if (constructionAt(syntax.span()).isPresent()) {
+                if (!(syntax.target() instanceof SyntaxNode.Identifier typeName)) {
+                    fail(CompilerDiagnosticCodes.TYPE_INVALID_ACCESS, syntax.span(),
+                            "unqualified construction requires a type name before its brackets");
+                    return null;
+                }
+                return checkConstruction(Optional.empty(), typeName,
+                        syntax.arguments().expressions(), syntax.span(), moduleId);
+            }
+            fail(CompilerDiagnosticCodes.TYPE_INVALID_ACCESS, syntax.span(),
+                    "value indexing requires exactly one index expression");
+            return null;
         }
 
         private Optional<ResolvedNominal> constructionAt(SourceSpan span) {

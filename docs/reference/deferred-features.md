@@ -37,8 +37,8 @@ This page distinguishes current absence from an alternative spelling. Deferred c
 | `::cond[...]` | `cond[...]` |
 | `::iter[...]` | `iter[...]` |
 | `::while[...]` | `while[...]` |
-| `Type[args]` for a nominal | `:Type[args]` |
-| `module->:.Type[args]` | `:module->Type[args]` |
+| `module->:.Type[args]` | `module->Type[args]` |
+| `:Type[args]` as the canonical spelling | `Type[args]` (the colon-prefixed form remains accepted for compatibility) |
 | `name:Type` or `name : Type` | `name :Type` |
 | `::method` as a value | `receiver:.method`; `::` always has brackets |
 | `:=[target value]` | `target := value` or `(:= target value)` |

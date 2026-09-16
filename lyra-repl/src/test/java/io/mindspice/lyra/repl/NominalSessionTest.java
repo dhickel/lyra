@@ -25,7 +25,7 @@ class NominalSessionTest {
             success(session.submit(EvaluationSource.of(
                     "type-1.lyra", "struct Point { let value :I32 }")));
             success(session.submit(EvaluationSource.of(
-                    "type-2.lyra", "let point :Point = :Point[23]")));
+                    "type-2.lyra", "let point :Point = Point[23]")));
             EvaluationResult.Success result = success(
                     session.submit(EvaluationSource.of("type-3.lyra", "point:.value")));
             assertEquals("23", assertInstanceOf(ValueSnapshot.Scalar.class,
@@ -44,7 +44,7 @@ class NominalSessionTest {
                     }
                     """)));
             success(session.submit(EvaluationSource.of(
-                    "factory-2.lyra", "let fresh :Counter = :Counter[41]")));
+                    "factory-2.lyra", "let fresh :Counter = Counter[41]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
                     "factory-3.lyra", "fresh::read[]")));
             assertEquals("41", assertInstanceOf(ValueSnapshot.Scalar.class,
@@ -68,7 +68,7 @@ class NominalSessionTest {
                 new Probe("direct call", "I32", "::inc[1I32]", "box:.value", "I32", "1"),
                 new Probe("array", "Array<I32>", "Array<I32>[1I32]", "box:.value[0I32]", "I32", "1"),
                 new Probe("tuple", "Tuple<I32>", "Tuple[1I32]", "box:.value:.0", "I32", "1"),
-                new Probe("construction", "Nested", ":Nested[]", "box:.value:.value", "I32", "1"),
+                new Probe("construction", "Nested", "Nested[]", "box:.value:.value", "I32", "1"),
                 new Probe("operator", "I32", "(+ 1I32 2I32)", "box:.value", "I32", "3"),
                 new Probe("short circuit", "Bool", "(and #T #F)", "box:.value", "Bool", "false"),
                 new Probe("block/declaration/rebinding", "I32",

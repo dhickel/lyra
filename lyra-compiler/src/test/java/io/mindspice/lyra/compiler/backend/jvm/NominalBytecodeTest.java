@@ -945,10 +945,10 @@ class NominalBytecodeTest {
     @Test void qualifiedConstructionUsesTheDefiningModuleFactory() throws Throwable {
         for (String mainSource : java.util.List.of("""
                 import model as m
-                let @pub make :Fn<I32;m->Point> = (=> |value| :m->Point[value])
+                let @pub make :Fn<I32;m->Point> = (=> |value| m->Point[value])
                 """, """
                 import model->{Point as P}
-                let @pub make :Fn<I32;P> = (=> |value| :P[value])
+                let @pub make :Fn<I32;P> = (=> |value| P[value])
                 """)) {
             var request = CompileRequest.builder().rootModule("main").resolver(SourceResolver.memory(
                     ResolvedSource.memory(io.mindspice.lyra.compiler.source.LogicalModuleId.parse("model"),

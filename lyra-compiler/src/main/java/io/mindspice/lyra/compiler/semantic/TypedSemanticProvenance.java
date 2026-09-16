@@ -63,6 +63,12 @@ final class TypedSemanticProvenance {
     private final Map<DeclarationId, LyraType> sourceDeclarationTypes = new HashMap<>();
     private final Set<DeclarationId> sourceTypeInProgress = new java.util.HashSet<>();
 
+    private record ConstructionSource(
+            Optional<SyntaxNode.NamespacePath> namespacePath,
+            SyntaxNode.Identifier typeName,
+            List<SyntaxNode.Expression> arguments) {
+    }
+
     private TypedSemanticProvenance(TypedSemanticGraph typed) {
         this.typed = Objects.requireNonNull(typed, "typed");
         this.resolved = typed.resolvedGraph();
@@ -382,10 +388,9 @@ final class TypedSemanticProvenance {
                 "typed expression does not retain its exact originating source span");
 
         if (expression.kind() == TypedExpressionKind.CONSTRUCTION) {
-            if (!(syntax instanceof SyntaxNode.ExplicitConstruction construction)) {
-                throw invalid("typed construction has no explicit ':' source");
-            }
-            List<SyntaxNode.Expression> arguments = construction.arguments().expressions();
+            ConstructionSource construction = constructionSourceOf(syntax)
+                    .orElseThrow(() -> invalid("typed construction has no recognized source form"));
+            List<SyntaxNode.Expression> arguments = construction.arguments();
             var origin = resolved.syntaxLinks().stream().filter(link -> link.kind() == SyntaxLinkKind.CALL
                             && link.span().equals(syntax.span())).flatMap(link -> link.declarationId().stream())
                     .flatMap(id -> resolved.nominals().stream().filter(value -> value.declaration().equals(id)))
@@ -770,6 +775,25 @@ final class TypedSemanticProvenance {
         }
         throw invalid("typed graph published an unsupported source expression: "
                 + syntax.getClass().getSimpleName());
+    }
+
+    private Optional<ConstructionSource> constructionSourceOf(SyntaxNode.Expression syntax) {
+        if (syntax instanceof SyntaxNode.ExplicitConstruction construction) {
+            return Optional.of(new ConstructionSource(
+                    construction.namespacePath(), construction.typeName(),
+                    construction.arguments().expressions()));
+        }
+        if (syntax instanceof SyntaxNode.IndexAccess access
+                && access.receiver() instanceof SyntaxNode.Identifier typeName) {
+            return Optional.of(new ConstructionSource(
+                    Optional.empty(), typeName, List.of(access.index())));
+        }
+        if (syntax instanceof SyntaxNode.BracketApplication application
+                && application.target() instanceof SyntaxNode.Identifier typeName) {
+            return Optional.of(new ConstructionSource(
+                    Optional.empty(), typeName, application.arguments().expressions()));
+        }
+        return Optional.empty();
     }
 
     private TypedExpression unwrapImplicitConversions(

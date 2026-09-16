@@ -14,7 +14,7 @@ Define Lyra's source syntax, static semantics, evaluation behavior, modules, and
 
 ### Current scope
 
-The current language includes static typing with local inference; immutable-by-default lexical bindings; `@pub`, `@mut`, and `@nil`; first-class typed lambdas; primitives, arrays, tuples, strings, and characters; blocks, conditionals, value matching, the dedicated `cond` conditional, operators, assignment, modules, imports, exports, and the `->`, `:.`, and `::` accessors. Nominal construction uses the explicit `:Type[...]`/`:module->Type[...]` spelling.
+The current language includes static typing with local inference; immutable-by-default lexical bindings; `@pub`, `@mut`, and `@nil`; first-class typed lambdas; primitives, arrays, tuples, strings, and characters; blocks, conditionals, value matching, the dedicated `cond` conditional, operators, assignment, modules, imports, exports, and the `->`, `:.`, and `::` accessors. Nominal construction uses the canonical `Type[...]`/`module->Type[...]` spelling; the older colon-prefixed spelling remains accepted for source compatibility.
 
 Structs and classes are implemented current-scope nominal types as specified below. The existing range, `iter`, and `while` sections also belong to the current language scope.
 
@@ -25,7 +25,7 @@ Outside current scope are variants, destructuring and type patterns, inheritance
 - Identifiers are case-sensitive ASCII names matching `[A-Za-z_][A-Za-z0-9_]*`.
 - Punctuation is never part of an identifier.
 - `iter`, `while`, `match`, `cond`, `when`, `struct` and `class` are reserved keywords. `_` remains an ordinary identifier except in the explicit match/cond wildcard positions below; it is not a value or an `Any` type in those positions.
-- Whitespace separates tokens and is otherwise insignificant except for type annotations, explicit constructions, and bare negative literals.
+- Whitespace separates tokens and is otherwise insignificant except for type annotations, legacy colon-prefixed constructions, and bare negative literals.
 - Commas are optional separators only inside delimited parameter, argument, type-argument, tuple, and array lists, and as the narrow sibling-`::` separator described under calls and accessors. They are not globally ignored.
 - `//` begins a line comment.
 - `/* ... */` is a nestable block comment.
@@ -174,8 +174,8 @@ class Counter {
     let @pub current :Fn<;I32> = (=> || self:.value)
 }
 
-let position :Vec2 = :Vec2[10.0 20.0]
-let counter :Counter = :Counter[0]
+let position :Vec2 = Vec2[10.0 20.0]
+let counter :Counter = Counter[0]
 counter::increment[]
 let saved :Fn<;Unit> = counter:.increment
 ```
@@ -204,20 +204,19 @@ Declarations and identity:
 
 Construction and initialization:
 
-- Nominal construction is explicit: `:Type[arguments]` or
-  `:module->Type[arguments]`. The leading `:` marks type access and must be
-  immediately adjacent to the type name, so construction is never confused with
-  value indexing and capitalization never decides between them. Arguments are
-  exact positional arguments, evaluated once left-to-right before instance
-  initialization. A qualified type annotation remains `:model->Counter`.
+- Nominal construction uses `Type[arguments]` or `module->Type[arguments]`.
+  Resolution, not capitalization, decides whether a bracket target is a nominal
+  constructor or an ordinary value being indexed/applied. The legacy
+  `:Type[arguments]` and `:module->Type[arguments]` spellings remain accepted for
+  source compatibility. Arguments are exact positional arguments, evaluated once
+  left-to-right before instance initialization. A qualified type annotation
+  remains `:model->Counter`.
 - Primitive and `String` conversions and the `Array`/`Tuple` literal forms are
   not nominal constructions and keep their unprefixed spelling, including
   `Array<T>[]`, `Tuple<T>[...]`, bare `Array[]`/`Tuple[]` Unit spellings, and
   `I32[value]`.
-- The obsolete unprefixed construction `Type[arguments]` and the obsolete
-  qualified namespace-value form `model->:.Counter[0]` are rejected with a stable
-  source-mapped migration diagnostic when the bracket target resolves to a
-  declared nominal type. Ordinary value indexing, including indexing a value whose
+- The qualified namespace-value form `model->:.Counter[0]` remains invalid; use
+  `model->Counter[0]`. Ordinary value indexing, including indexing a value whose
   identifier begins with an uppercase letter, remains valid, and unknown or
   arity-invalid constructions remain resolution errors.
 - A struct's uninitialized fields are constructor parameters in declaration order.
@@ -830,9 +829,10 @@ conformance-coverage inventory (`tools/phase24-conformance-coverage.tsv`,
   of every obsolete conditional-match spelling;
 - operator arity, checked/trapping arithmetic, equality, and identity;
 - array/tuple construction, access, mutation, aliases, equality, length, bounds
-  failures, explicit `:Type`/`:module->Type` nominal construction, preserved
-  unprefixed conversions and aggregate literals, uppercase value indexing, and
-  rejection of the obsolete unprefixed and qualified constructions;
+  failures, canonical `Type`/`module->Type` nominal construction, legacy
+  colon-prefixed construction compatibility, preserved unprefixed conversions
+  and aggregate literals, uppercase value indexing, and rejection of the obsolete
+  qualified namespace-value construction;
 - explicit primitive/Unit string conversion and UTF-16 string length;
 - module imports, aliases, re-exports, visibility, and cycles;
 - structured compile diagnostics and invocation-aborting runtime failures.

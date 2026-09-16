@@ -25,7 +25,7 @@ Startup is an empty scratch workspace. `DIR` and source roots configure module d
 | `\history` | Show source-only history; never replay it |
 | `\quit` | Exit locally or detach remotely |
 
-Commands are recognized only at a top-level source-unit boundary, not in multiline source, strings, comments, or program input. A colon-leading unit is Lyra source. `:Type[...]`, `::name[...]`, and `:.` are never console commands.
+Commands are recognized only at a top-level source-unit boundary, not in multiline source, strings, comments, or program input. A type construction such as `Type[...]`, the legacy colon-prefixed `:Type[...]` spelling, `::name[...]`, and `:.` are Lyra source, never console commands.
 
 JLine mode adds multiline completeness, highlighting, delimiter matching, bracketed paste, indentation, Emacs/vi keymaps, search, and resize handling. Plain mode has no terminal decoration, uses the same completeness rules, and reports incomplete EOF. Source entry and local `readLine` coordinate one input owner. Program input is not source history.
 

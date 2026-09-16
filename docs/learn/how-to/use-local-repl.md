@@ -31,7 +31,7 @@ Enter these with one literal leading backslash:
 
 `\type SOURCE` checks a complete source unit without executing, pinning, publishing, or recording it. `\load FILE` reads one UTF-8 file on the execution host and submits it once. Quoted paths with spaces are accepted.
 
-Commands are recognized only at a top-level source-unit boundary. A colon-leading input such as `:Point[1 2]` or `::function[]` is ordinary Lyra source.
+Commands are recognized only at a top-level source-unit boundary. A type construction such as `Point[1 2]`, its legacy colon-prefixed spelling `:Point[1 2]`, or a direct call such as `::function[]` is ordinary Lyra source.
 
 ## Work with persistent state
 

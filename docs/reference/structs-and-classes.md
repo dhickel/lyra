@@ -39,15 +39,15 @@ Structs may contain class references as data. They cannot contain function value
 
 ## Creating values
 
-Construction is explicit:
+Construction uses the type name followed by bracket arguments:
 
 ```lyra
-let point :Vec2 = :Vec2[10.0 20.0]
-let remote :model->Vec2 = :model->Vec2[1.0 2.0]
-let counter :Counter = :Counter[0]
+let point :Vec2 = Vec2[10.0 20.0]
+let remote :model->Vec2 = model->Vec2[1.0 2.0]
+let counter :Counter = Counter[0]
 ```
 
-The colon must touch the type name. `Type[...]` and `module->:.Type[...]` are obsolete. Capitalization never turns ordinary indexing into construction. Primitive conversions and array/tuple literals remain unprefixed.
+Resolution distinguishes nominal construction from value indexing; capitalization alone does not. The older `:Type[...]` and `:module->Type[...]` spellings remain accepted for compatibility. Primitive conversions and array/tuple literals remain unprefixed. `module->:.Type[...]` is invalid; use `module->Type[...]`.
 
 For a struct, fields without initializers are positional constructor arguments in declaration order. Initialized fields are not optional arguments. A class constructor is written `Name = (=> |typed parameters| body)` without `let`; it has Unit return semantics, while the construction expression returns the new instance. Without an explicit constructor, zero-argument class construction is legal only when every field has an initializer.
 

@@ -144,7 +144,7 @@ public final class CompilerDiagnosticCodes {
     @Deprecated(forRemoval = false)
     public static final DiagnosticCode RESOLVE_NOMINAL_NOT_IMPLEMENTED =
             DiagnosticCode.of(Phase.RESOLVE, 26);
-    /** Obsolete unprefixed nominal construction 'Type[...]' or 'module->:.Type[...]'. */
+    /** Obsolete qualified namespace-value nominal construction 'module->:.Type[...]'. */
     public static final DiagnosticCode RESOLVE_OBSOLETE_CONSTRUCTION =
             DiagnosticCode.of(Phase.RESOLVE, 27);
 

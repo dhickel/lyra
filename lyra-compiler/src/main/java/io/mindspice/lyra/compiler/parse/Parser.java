@@ -627,7 +627,8 @@ public final class Parser {
         }
 
         private Object replayConstruction(GrammarDescriptor descriptor) {
-            SourceSpan colon = cursor.consume(TokenKind.COLON, descriptor);
+            SourceSpan marker = cursor.currentToken(descriptor).kind() == TokenKind.COLON
+                    ? cursor.consume(TokenKind.COLON, descriptor) : null;
             List<GrammarDescriptor> children = descriptor.children();
             if (children.size() != 2 && children.size() != 3) {
                 throw invariant("construction must have a target and arguments", descriptor);
@@ -648,7 +649,8 @@ public final class Parser {
             SyntaxNode.ArgumentList arguments = asArgumentList(
                     replay(argumentsDescriptor), argumentsDescriptor);
             return new SyntaxNode.ExplicitConstruction(
-                    namespacePath, typeName, arguments, colon, sourceView.span(descriptor));
+                    namespacePath, typeName, arguments,
+                    marker != null ? marker : typeName.span(), sourceView.span(descriptor));
         }
 
         private Object replayMatchArm(GrammarDescriptor descriptor) {

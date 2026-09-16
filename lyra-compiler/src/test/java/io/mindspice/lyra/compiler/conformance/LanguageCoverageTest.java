@@ -144,14 +144,14 @@ class LanguageCoverageTest {
                 "Add an obsolete conditional-subject rejection fixture");
         var nominal = corpus.stream().filter(test -> test.feature().equals("nominal")).toList();
         assertTrue(nominal.stream().anyMatch(test -> test.outcome().equals("value")
-                        && test.source().contains(":Box[")),
-                "Add an explicit construction fixture");
+                        && test.source().contains("Box[")),
+                "Add an unprefixed nominal construction fixture");
         assertTrue(nominal.stream().anyMatch(test -> test.outcome().equals("value")
                         && test.source().contains("Values[")),
                 "Add an uppercase value-indexing fixture");
-        assertTrue(nominal.stream().anyMatch(test -> test.outcome().equals("reject")
-                        && test.expected().equals("LYC-RESOLVE-027")),
-                "Add an obsolete unprefixed-construction rejection fixture");
+        assertTrue(nominal.stream().anyMatch(test -> test.outcome().equals("value")
+                        && test.source().contains(":Box[")),
+                "Retain a legacy colon-prefixed construction fixture");
         var operators = corpus.stream().filter(test -> test.feature().equals("operators")).toList();
         assertTrue(operators.stream().anyMatch(test -> test.outcome().equals("value")
                         && test.source().contains("-1)")),

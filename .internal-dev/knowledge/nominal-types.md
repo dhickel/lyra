@@ -45,8 +45,9 @@ active bug records remain unarchived until integrated validation and closeout.
   BracketApplication. Both must resolve the target's type/value role later. An
   uppercase array variable must remain indexable, and a lowercase type alias must
   not be rejected by lexical capitalization guesses.
-- Named type annotations retain namespace segments/arrows. Qualified construction
-  uses existing `model->:.Counter[args]`, avoiding ambiguity with conditional arrows.
+- Named type annotations retain namespace segments/arrows. Canonical qualified
+  construction is `model->Counter[args]`; the older `:model->Counter[args]`
+  spelling remains accepted, while `model->:.Counter[args]` is invalid.
 - Former unknown-type and multi-index grammar failures now belong to resolution;
   negative compile tests still require real unresolved-name/value-index diagnostics.
 - The Java-name mangling fixture now uses the Java keyword `public` because `class`

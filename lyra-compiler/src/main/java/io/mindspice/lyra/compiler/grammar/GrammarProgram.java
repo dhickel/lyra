@@ -256,7 +256,8 @@ public record GrammarProgram(
             case COND -> TokenKind.COND;
             case NEGATIVE_LITERAL -> TokenKind.MINUS;
             case CALLBACK_LOOP_BRACKET -> source.tokens().get(descriptor.startTokenIndex()).kind();
-            case CONSTRUCTION -> TokenKind.COLON;
+            case CONSTRUCTION -> source.tokens().get(descriptor.startTokenIndex()).kind() == TokenKind.COLON
+                    ? TokenKind.COLON : null;
             case MATCH_ARM -> TokenKind.ARROW;
             case RANGE -> source.tokens().get(descriptor.children().getFirst().endTokenIndex()).kind()
                     == TokenKind.RANGE_INCLUSIVE ? TokenKind.RANGE_INCLUSIVE : TokenKind.RANGE_EXCLUSIVE;
@@ -272,7 +273,8 @@ public record GrammarProgram(
         int primary = descriptor.metadata().primaryTokenIndex();
         boolean requiresOperatorPrimary = descriptor.kind() == ProductionKind.OPERATOR_S_EXPRESSION
                 || descriptor.kind() == ProductionKind.OPERATOR_BRACKET;
-        boolean allowsNoPrimary = descriptor.kind() == ProductionKind.UNIT_LITERAL;
+        boolean allowsNoPrimary = descriptor.kind() == ProductionKind.UNIT_LITERAL
+                || descriptor.kind() == ProductionKind.CONSTRUCTION;
         if (expectedPrimary != null) {
             if (primary < 0) {
                 throw new IllegalArgumentException(descriptor.kind() + " must record its primary token");
@@ -296,7 +298,9 @@ public record GrammarProgram(
             case CONDITIONAL -> conditionalArrowIndex(descriptor);
             case MATCH -> keywordIndex(descriptor, source, TokenKind.MATCH);
             case COND -> keywordIndex(descriptor, source, TokenKind.COND);
-            case CONSTRUCTION, NEGATIVE_LITERAL, CALLBACK_LOOP_BRACKET -> descriptor.startTokenIndex();
+            case CONSTRUCTION -> source.tokens().get(descriptor.startTokenIndex()).kind() == TokenKind.COLON
+                    ? descriptor.startTokenIndex() : -1;
+            case NEGATIVE_LITERAL, CALLBACK_LOOP_BRACKET -> descriptor.startTokenIndex();
             case MATCH_ARM -> descriptor.children().getLast().startTokenIndex() - 1;
             case DIRECT_CALL, MEMBER_ACCESS -> directAccessorIndex(descriptor);
             case NAMESPACE_DIRECT_CALL, NAMESPACE_MEMBER_ACCESS ->
@@ -812,8 +816,11 @@ public record GrammarProgram(
 
     private static void validateConstructionShape(
             GrammarDescriptor descriptor, LexedSource source) {
-        int colon = descriptor.startTokenIndex();
-        requireToken(source.tokens().get(colon), TokenKind.COLON, descriptor.kind());
+        int start = descriptor.startTokenIndex();
+        boolean prefixed = source.tokens().get(start).kind() == TokenKind.COLON;
+        if (!prefixed && source.tokens().get(start).kind() != TokenKind.IDENTIFIER) {
+            throw new IllegalArgumentException("construction must begin with a nominal type name");
+        }
         int childCount = descriptor.children().size();
         if (childCount != 2 && childCount != 3) {
             throw new IllegalArgumentException(
@@ -826,21 +833,25 @@ public record GrammarProgram(
                 || arguments.kind() != ProductionKind.ARGUMENT_LIST
                 || arguments.startTokenIndex() != descriptor.metadata().openingTokenIndex()
                 || arguments.endTokenIndex() != descriptor.endTokenIndex()
-                || source.tokens().get(typeName.startTokenIndex()).hasLeadingTrivia()) {
+                || (prefixed && source.tokens().get(typeName.startTokenIndex()).hasLeadingTrivia())) {
             throw new IllegalArgumentException(
-                    "construction must name a nominal type immediately after ':'");
+                    "construction must name a nominal type and its bracket arguments");
         }
         if (childCount == 3) {
             GrammarDescriptor path = descriptor.children().getFirst();
+            int expectedStart = prefixed ? start + 1 : start;
             if (path.kind() != ProductionKind.NAMESPACE_PATH
-                    || path.startTokenIndex() != colon + 1
+                    || path.startTokenIndex() != expectedStart
                     || path.endTokenIndex() + 1 != typeName.startTokenIndex()) {
                 throw new IllegalArgumentException(
                         "qualified construction must name its namespace path before the type");
             }
-        } else if (typeName.startTokenIndex() != colon + 1) {
-            throw new IllegalArgumentException(
-                    "unqualified construction target must immediately follow ':'");
+        } else {
+            int expectedStart = prefixed ? start + 1 : start;
+            if (typeName.startTokenIndex() != expectedStart) {
+                throw new IllegalArgumentException(
+                        "unqualified construction target must immediately precede its arguments");
+            }
         }
     }
 

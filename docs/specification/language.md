@@ -176,7 +176,7 @@ name :I32
 value :@nil String
 ```
 
-`name:I32` and `name : I32` are invalid. A return annotation has no preceding name and is written `:Type`. Explicit construction likewise requires the colon to be adjacent to the first type-path segment, as in `:Counter[]`.
+`name:I32` and `name : I32` are invalid. A return annotation has no preceding name and is written `:Type`. Canonical nominal construction is written `Counter[]` (or `module->Counter[]` for a qualified type); the older `:Counter[]` and `:module->Counter[]` spellings remain accepted for source compatibility.
 
 Qualifiers that are part of a type contract may follow the colon. No trivia may intervene between the colon and the first qualifier or type token. Ordinary token separation applies after a qualifier, as in `:@nil String`.
 
@@ -302,7 +302,7 @@ atom                ::= literal
                       | iter-bracket
                       | while-bracket
                       | operator-bracket
-                      | explicit-construction
+                      | nominal-construction
                       | typed-application ;
 
 literal             ::= boolean-literal | nil-literal | unit-literal
@@ -387,7 +387,8 @@ tuple-literal       ::= "Tuple" "[" comma-list(expression) "]"
 primitive-conversion ::= primitive-type argument-list ;
 typed-application   ::= array-literal | tuple-literal | primitive-conversion ;
 
-explicit-construction ::= ":" named-type argument-list ;
+nominal-construction ::= named-type argument-list
+                        | ":" named-type argument-list ;
 ```
 
 Operator arity is a grammar requirement:
@@ -399,7 +400,7 @@ Operator arity is a grammar requirement:
 
 Assignment has infix and parenthesized prefix forms. It has no bracket form.
 
-The compiler-recognized bare forms are the operators, primitive and `String` conversions, `Array` and `Tuple` literals, `match`, `cond`, `iter`, and `while`. They are syntax rather than resolved callable names. Prefixing any of them with `::`, or selecting one through a receiver or namespace, is invalid. `cond` has only its parenthesized special form; the other forms use exactly the spellings defined above.
+The compiler-recognized bare forms are the operators, primitive and `String` conversions, `Array` and `Tuple` literals, `match`, `cond`, `iter`, and `while`. They are syntax rather than resolved callable names. Prefixing any of them with `::`, or selecting one through a receiver or namespace, is invalid. `cond` has equivalent parenthesized and direct-bracket forms; the other forms use exactly the spellings defined above.
 
 ## 5. Names, declarations, and scopes
 
@@ -992,17 +993,17 @@ Privacy is lexical. Code in the declaring class may access a private member thro
 
 ### 14.2 Construction syntax
 
-Construction is explicit:
+Construction uses the type target followed by bracket arguments:
 
 ```lyra
-let position :Vec2 = :Vec2[10.0 20.0]
-let counter :Counter = :Counter[0]
-let imported :model->Counter = :model->Counter[0]
+let position :Vec2 = Vec2[10.0 20.0]
+let counter :Counter = Counter[0]
+let imported :model->Counter = model->Counter[0]
 ```
 
-The arguments evaluate exactly once, left-to-right, before initialization begins. Primitive conversions, `String[value]`, and `Array` or `Tuple` literals retain their unprefixed forms.
+The arguments evaluate exactly once, left-to-right, before initialization begins. The legacy `:Type[arguments]` and `:module->Type[arguments]` spellings remain accepted. Primitive conversions, `String[value]`, and `Array` or `Tuple` literals retain their unprefixed forms.
 
-Unprefixed `Type[arguments]` does not construct a nominal value. When it resolves to a nominal type, it receives a migration diagnostic. Capitalization never changes an ordinary bracket access into construction, so `Values[1]` indexes a value named `Values`.
+Resolution decides whether a bracket target is a nominal constructor or an ordinary value access; capitalization alone never changes the meaning. Thus `Values[1]` indexes a value named `Values`. The qualified namespace-value spelling `model->:.Counter[0]` is invalid; use `model->Counter[0]`.
 
 ### 14.3 Struct initialization
 
@@ -1187,7 +1188,6 @@ The following obsolete spellings are specifically invalid:
 (match _ condition -> result _ -> fallback)
 ::match[...]  ::cond[...]  ::iter[...]  ::while[...]
 namespace->::match[...] and corresponding receiver forms
-Type[arguments] for nominal construction
 module->:.Type[arguments] for qualified nominal construction
 ```
 
@@ -1295,8 +1295,8 @@ let sumRange :Fn<Range<I32>;I32> = (=> |range| {
 })
 
 let @pub main :Fn<Array<String>;I32> = (=> |args| {
-    let point :Point = :Point[3 4]
-    let counter :Counter = :Counter[(+ point:.x point:.y)]
+    let point :Point = Point[3 4]
+    let counter :Counter = Counter[(+ point:.x point:.y)]
     counter::increment[],
     ::println[String[counter::current[]]]
     (cond

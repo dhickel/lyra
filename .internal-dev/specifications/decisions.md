@@ -590,6 +590,14 @@ The initial parenthesized-only boundary was removed after implementation review.
 - This is an immediate source-breaking contract. It takes **language contract version 2**, applied coherently to `LyraRuntimeConstants.LANGUAGE_CONTRACT_VERSION` and the compiler's `ModuleRevision.LANGUAGE_CONTRACT_VERSION`, so module/export identity, `LYRA-EXPORT-ID` derivation, embedded facade metadata publication and artifact revision all move together. `RuntimeAbi` stays `1.0` and the artifact schema version stays `1`/`2`: this change alters the accepted source language, not the generated-class/runtime member ABI. Artifacts published under language contract 1 are rejected by the runtime with the explicit `LYR-COMPAT` diagnostic `unsupported language contract version: 1`, which `ArtifactMetadataReader` now reports before any version-derived identity check; the frozen `legacy-artifact-v1-normal.json` fixtures are retained as incompatible-artifact evidence rather than migrated.
 - Active fixtures, generators, oracles, models, examples and coverage documents are migrated in the same completed tranche; saved fuzz replays keep their original bytes and gain migrated semantic twins so the original counterexamples stay exercised.
 
+### Amendment: canonical unprefixed nominal construction
+
+- **Source:** owner request to remove the required `:` before user-defined type construction.
+- **Decision:** `Type[args]` and `module->Type[args]` are the canonical nominal construction spellings. Resolution distinguishes these targets from ordinary value indexing, so uppercase value names remain indexable and built-in forms remain unchanged. The existing `:Type[args]` and `:module->Type[args]` spellings remain accepted for source compatibility. The qualified namespace-value spelling `module->:.Type[args]` remains invalid.
+- **Justification:** removes a redundant marker without relying on capitalization or changing factory, initialization, flow, IR, bytecode, or runtime authority semantics.
+- **Versioning:** this is additive because the former colon-prefixed spellings remain valid; language contract version 2 is unchanged.
+- **Affected specifications:** `language-core.md`, `repl.md`, `grammar_spec.md`, and the reference/tutorial documentation.
+
 ## 2026-09-14 — Retained nominal member routes use opaque occurrence evidence (issue #7)
 
 ### Source and review

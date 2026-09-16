@@ -91,8 +91,10 @@ public class NominalSyntaxTest {
                 .modifiers().stream().map(SyntaxNode.Modifier::kind).toList());
         var point = assertInstanceOf(SyntaxNode.LetBinding.class, parsed.syntax().forms().get(2));
         assertInstanceOf(SyntaxNode.NamedType.class, point.annotation().orElseThrow().type());
-        assertEquals(2, assertInstanceOf(SyntaxNode.ExplicitConstruction.class,
-                point.initializer()).arguments().expressions().size());
+        var explicitPointConstruction = assertInstanceOf(SyntaxNode.ExplicitConstruction.class,
+                point.initializer());
+        assertTrue(explicitPointConstruction.hasColonPrefix());
+        assertEquals(2, explicitPointConstruction.arguments().expressions().size());
         assertInstanceOf(SyntaxNode.DirectCall.class, parsed.syntax().forms().get(4));
         var saved = assertInstanceOf(SyntaxNode.LetBinding.class, parsed.syntax().forms().get(5));
         assertInstanceOf(SyntaxNode.MemberAccess.class, saved.initializer());
@@ -102,7 +104,7 @@ public class NominalSyntaxTest {
     void typeReferencesAndBracketsDoNotGuessNamesFromCapitalization() {
         var syntax = parse("""
                 struct Empty {} class Object {}
-                let value :pkg->model->Object = :pkg->model->Object[]
+                let value :pkg->model->Object = pkg->model->Object[]
                 let items :Array<pkg->model->Object>=Array<pkg->model->Object>[]
                 let UppercaseArray = Array<I32>[1]
                 UppercaseArray[0]
@@ -115,6 +117,10 @@ public class NominalSyntaxTest {
         assertEquals(List.of("pkg", "model", "Object"), named.path().segments().stream()
                 .map(SyntaxNode.Identifier::name).toList());
         assertEquals(2, named.path().arrowSpans().size());
+        var qualifiedConstruction = assertInstanceOf(SyntaxNode.LetBinding.class, syntax.forms().get(2));
+        var markerFreeConstruction = assertInstanceOf(SyntaxNode.ExplicitConstruction.class,
+                qualifiedConstruction.initializer());
+        assertFalse(markerFreeConstruction.hasColonPrefix());
         assertInstanceOf(SyntaxNode.IndexAccess.class, syntax.forms().get(5));
         assertInstanceOf(SyntaxNode.IndexAccess.class, syntax.forms().get(6));
         assertInstanceOf(SyntaxNode.BracketApplication.class, syntax.forms().get(7));

@@ -33,7 +33,7 @@ Important migration diagnostics are exact:
 | `LYC-PARSE-012` | Obsolete `::match[...]`, `::cond[...]`, `::iter[...]`, or `::while[...]` special-form spelling |
 | `LYC-PARSE-013` | Obsolete conditional `(match _ ...)` form |
 | `LYC-PARSE-014` | Invalid explicit construction marker |
-| `LYC-RESOLVE-027` | Obsolete `Type[...]` or `module->:.Type[...]` nominal construction |
+| `LYC-RESOLVE-027` | Obsolete qualified `module->:.Type[...]` nominal construction; use `module->Type[...]` |
 
 `LYC-RESOLVE-026` is retired and retained only to prevent code reuse. Deferred syntax normally receives the ordinary lexical, parse, resolution, or type diagnostic appropriate to what was written.
 

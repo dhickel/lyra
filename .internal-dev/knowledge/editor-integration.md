@@ -14,7 +14,7 @@ JavaFX tooling around Lyra's existing compiler, session API and JDI source maps.
 
 ## Key Takeaways
 
-- A REPL console command starts with a single backslash; every colon-leading unit, including `:Type[]` and `::function[]`, is ordinary source. Test the distinction through the visible GUI, not only a backend helper.
+- A REPL console command starts with a single backslash; nominal construction uses `Type[]` canonically, while the legacy `:Type[]` form and `::function[]` remain ordinary source. Test the distinction through the visible GUI, not only a backend helper.
 - Sessions own compiler identities `repl/submission-<evaluation UUID>.lyra`, even when diagnostics use a file origin. Register the actual protocol request ID before binding JDI locations. Normal imports use their own source IDs.
 - Protocol v2 admits one controller. Initialize a direct session host before constructing its server when a test expects a nonzero initial revision; the real application activation surface has its own registration gate.
 - Grammar/typing errors in editor fixtures are not reasons to invent editor-specific language semantics. Namespace value reads use `module->:.name`. Local lambdas may need complete return annotations, and a following direct-access expression can be parsed as access on the preceding initializer; use unambiguous block/source forms already supported by the compiler.

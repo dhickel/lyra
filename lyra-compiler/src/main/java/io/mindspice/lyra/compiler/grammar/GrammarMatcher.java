@@ -2171,6 +2171,7 @@ public final class GrammarMatcher {
             while (index < tokens.size()) {
                 TokenKind kind = tokens.get(index).kind();
                 if (kind == TokenKind.IDENTIFIER) {
+                    String spelling = tokens.get(index).lexeme();
                     index++;
                     if (index < tokens.size() && tokens.get(index).kind() == TokenKind.ARROW) {
                         index++;
@@ -2178,11 +2179,22 @@ public final class GrammarMatcher {
                     }
                     return index < tokens.size()
                             && (tokens.get(index).kind() == TokenKind.COLON_DOT
-                            || tokens.get(index).kind() == TokenKind.DOUBLE_COLON);
+                            || tokens.get(index).kind() == TokenKind.DOUBLE_COLON
+                            || (tokens.get(index).kind() == TokenKind.LEFT_BRACKET
+                            && isNominalTypeSpelling(spelling)));
                 }
                 return kind == TokenKind.COLON_DOT || kind == TokenKind.DOUBLE_COLON;
             }
             return false;
+        }
+
+        private boolean isNominalTypeSpelling(GrammarDescriptor descriptor) {
+            return isNominalTypeSpelling(token(descriptor.startTokenIndex()).lexeme());
+        }
+
+        private boolean isNominalTypeSpelling(String spelling) {
+            return spelling != null && !spelling.isEmpty()
+                    && Character.isUpperCase(spelling.charAt(0));
         }
 
         private boolean namespaceSuffixIsCompleteMatchHead() {
@@ -2357,10 +2369,36 @@ public final class GrammarMatcher {
                         metadata(-1, -1, accessor, List.of(), List.of(),
                                 terminalArrow >= 0 ? List.of(terminalArrow) : List.of()));
             }
+            if (terminalArrow < 0 && at(TokenKind.LEFT_BRACKET)
+                    && isNominalTypeSpelling(segments.getLast())) {
+                GrammarDescriptor typeName = segments.getLast();
+                GrammarDescriptor typePath = descriptor(
+                        ProductionKind.NAMESPACE_PATH,
+                        segments.getFirst().startTokenIndex(),
+                        segments.get(segments.size() - 2).endTokenIndex(),
+                        segments.subList(0, segments.size() - 1),
+                        metadata(-1, -1, -1, List.of(), List.of(),
+                                arrows.subList(0, arrows.size() - 1)));
+                GrammarDescriptor arguments = parseArgumentList();
+                if (arguments == null) {
+                    return null;
+                }
+                return descriptor(
+                        ProductionKind.CONSTRUCTION,
+                        base.startTokenIndex(),
+                        arguments.endTokenIndex(),
+                        List.of(typePath, typeName, arguments),
+                        metadata(
+                                arguments.metadata().openingTokenIndex(),
+                                arguments.metadata().closingTokenIndex(),
+                                -1,
+                                arguments.metadata().commaTokenIndices(),
+                                List.of(), List.of()));
+            }
             fail(
                     CompilerDiagnosticCodes.PARSE_INVALID_ACCESSOR,
                     current,
-                    "a namespace-qualified access must end with ':.' or '::'");
+                    "a namespace-qualified access must end with a type construction, ':.' or '::'");
             return null;
         }
 

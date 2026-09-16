@@ -104,7 +104,7 @@ public class NominalSemanticsTest {
     void functionsConstructAndReturnNominalObjects() {
         var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
                 struct Point { let x :I32 let y :I32 = 2 }
-                let make :Fn<I32;Point> = (=> |x| :Point[x])
+                let make :Fn<I32;Point> = (=> |x| Point[x])
                 let wrapped :Fn<I32;Point> = (=> |x| ::make[x])
                 let point :Point = ::wrapped[3]
                 point:.x
@@ -120,7 +120,7 @@ public class NominalSemanticsTest {
                     let @pub read :Fn<;I32> = (=> || self:.x)
                     Counter = (=> |start :I32| { self:.x := start })
                 }
-                let make :Fn<I32;Counter> = (=> |x| :Counter[x])
+                let make :Fn<I32;Counter> = (=> |x| Counter[x])
                 let counter :Counter = ::make[3]
                 counter::read[]
                 """))));
@@ -131,7 +131,7 @@ public class NominalSemanticsTest {
     void typesDefaultAndRequiredStructConstruction() {
         var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
                 struct Point { let @mut x :I32 let y :I64 = 2 }
-                let p :Point = :Point[1]
+                let p :Point = Point[1]
                 p:.x
                 """))));
         assertEquals(1, typed.expressions().stream().filter(value -> value.kind()
@@ -175,7 +175,7 @@ public class NominalSemanticsTest {
     void savedCallableRetainsSelectedSlotWhileAliasesSeeReplacement() {
         var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
                 class Cell { let @pub @mut read :Fn<;I32> = (=> || 1) }
-                let @mut cell :Cell = :Cell[]
+                let @mut cell :Cell = Cell[]
                 let alias :Cell = cell
                 let saved :Fn<;I32> = cell:.read
                 cell:.read := (=> || 2)
@@ -329,7 +329,7 @@ public class NominalSemanticsTest {
     void requiredArgumentsAreInstalledBeforeSourceOrderedDefaults() {
         var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
                 struct Point { let first :I32 = self:.required let required :I32 let next :I32 = (+ self:.first 1) }
-                let point :Point = :Point[4]
+                let point :Point = Point[4]
                 """))));
         success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(typed));
         var invalid = io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve(
@@ -343,7 +343,7 @@ public class NominalSemanticsTest {
     void collectsExactSchemasAndRequiredFieldConstructorOrder() {
         var graph = success(resolve("""
                 struct Point { let @mut x :I32 let y :I64 let label :String = "p" }
-                let p :Point = :Point[1 2]
+                let p :Point = Point[1 2]
                 p:.x
                 """));
         var schema = graph.nominals().getFirst().schema();
@@ -421,8 +421,8 @@ public class NominalSemanticsTest {
     @Test
     void qualifiedAndSelectiveTypeImportsRetainOriginIdentity() {
         var library = module("model.lyra", "struct @pub Point { let x :I32 } class Hidden {}");
-        for (String source : List.of("import model as m let p :m->Point = :m->Point[1] p:.x",
-                "import model->{Point as P} let p :P = :P[1] p:.x")) {
+        for (String source : List.of("import model as m let p :m->Point = m->Point[1] p:.x",
+                "import model->{Point as P} let p :P = P[1] p:.x")) {
             var main = module("main.lyra", source);
             var logical = LogicalModuleId.parse("model");
             var edges = main.program().imports().stream().map(value ->
@@ -437,11 +437,9 @@ public class NominalSemanticsTest {
     }
 
     @Test
-    void obsoleteNominalConstructionSpellingsHaveStableResolutionDiagnostics() {
+    void unqualifiedNominalConstructionUsesTheDeclaredTypeAndLegacyQualifiedSpellingRemainsInvalid() {
         var unqualified = resolve("struct Point { let x :I32 } let point :Point = Point[1]");
-        assertInstanceOf(PhaseResult.Failure.class, unqualified);
-        assertEquals(io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes.RESOLVE_OBSOLETE_CONSTRUCTION,
-                unqualified.diagnostics().getFirst().code());
+        assertInstanceOf(PhaseResult.Success.class, unqualified);
 
         var library = module("model.lyra", "struct @pub Point { let x :I32 }");
         var main = module("main.lyra", "import model as m let point :m->Point = m->:.Point[1]");

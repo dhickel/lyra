@@ -1,4 +1,4 @@
-// nominal	reject	-	LYC-RESOLVE-027	unprefixed nominal construction requires the explicit ':' prefix
+// nominal	value	I32	7	unprefixed nominal construction resolves through the declared type
 struct Box {
     let value :I32
 }

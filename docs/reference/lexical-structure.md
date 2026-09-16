@@ -30,7 +30,7 @@ Trivia normally separates tokens and otherwise has no effect. Exact spacing is r
 | --- | --- | --- |
 | Named annotation | `name :Type` | `name:Type`, `name : Type` |
 | Return annotation | `:Type` | `: Type` |
-| Construction | `:Type[...]` | `: Type[...]` |
+| Construction | `Type[...]` (canonical); `:Type[...]` (legacy) | `: Type[...]` |
 | Bare negative literal | `-1` | `- 1`, `-/*comment*/1` |
 
 A trivia-separated minus remains an operator and therefore needs operator syntax such as `(- 1)` or `-[1]`.

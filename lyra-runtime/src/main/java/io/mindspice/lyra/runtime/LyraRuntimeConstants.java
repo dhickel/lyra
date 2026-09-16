@@ -5,8 +5,8 @@ public final class LyraRuntimeConstants {
     /**
      * Source-language contract version.  Version 2 introduced marker-free match arms,
      * the parenthesized {@code cond} form, bare bracket spellings for compiler-recognized
-     * built-ins, adjacent bare negative numeric literals, and explicit {@code :Type[...]}
-     * nominal construction.
+     * built-ins, adjacent bare negative numeric literals, and nominal construction with
+     * canonical {@code Type[...]} plus legacy {@code :Type[...]} spelling.
      */
     public static final int LANGUAGE_CONTRACT_VERSION = 2;
     public static final int LANGUAGE_VERSION = LANGUAGE_CONTRACT_VERSION;

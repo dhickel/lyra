@@ -45,8 +45,9 @@ position is a bare negative literal normalized to the unary-minus operation.
 `match` and `cond` are reserved.  A named annotation is exactly `name :Type`:
 whitespace is required before `:` and forbidden after it.  A return annotation
 has no name before its colon and is written `:Type`; whitespace remains forbidden
-after the colon.  An explicit construction `:Type[...]` likewise forbids
-whitespace after its colon.
+after the colon.  Canonical nominal construction is `Type[...]` (or
+`module->Type[...]`); the legacy `:Type[...]` and `:module->Type[...]` spellings
+remain accepted for compatibility.
 
 ## Compilation units and imports
 
@@ -262,16 +263,17 @@ contract; `@pub` is not a nested contract modifier.
 
 Unary postfix brackets retain an index-shaped syntax node until type/value
 resolution; zero/multiple arguments retain a bracket-application node. Capitalization
-does not distinguish construction from indexing. Nominal construction is explicit
-and separately produced:
+does not distinguish construction from indexing. Nominal construction is resolved
+from the bracket target:
 
 ```ebnf
-explicit-construction ::= ':' named-type argument-list ;
+nominal-construction ::= named-type argument-list
+                       | ':' named-type argument-list ; (* legacy spelling *)
 ```
 
-An explicit construction is the only nominal-construction spelling; the obsolete
-unprefixed `Type[args]` and qualified `model->:.Counter[0]` forms are rejected when
-their bracket target resolves to a nominal type, while primitive/`String`
+`Type[args]` and `module->Type[args]` are the canonical nominal-construction
+spellings. The legacy colon-prefixed forms remain accepted, while the qualified
+namespace-value form `model->:.Counter[0]` is rejected. Primitive/`String`
 conversions and `Array`/`Tuple` literals keep their unprefixed spelling. A named
 type annotation uses `:model->Counter`. Unknown type names are resolution
 failures.

@@ -862,8 +862,9 @@ public sealed interface SyntaxNode
     }
 
     /**
-     * Explicit nominal construction {@code :Type[arguments]} or
-     * {@code :module->Type[arguments]}.
+     * Nominal construction, canonically {@code Type[arguments]} or
+     * {@code module->Type[arguments]}. The older colon-prefixed spellings are
+     * retained for source compatibility.
      */
     record ExplicitConstruction(
             Optional<NamespacePath> namespacePath,
@@ -880,6 +881,11 @@ public sealed interface SyntaxNode
             if (!typeName.span().sourceId().equals(colonSpan.sourceId())) {
                 throw new IllegalArgumentException("construction target belongs to a different source");
             }
+        }
+
+        /** True when this source spelling contains the compatibility ':' marker. */
+        public boolean hasColonPrefix() {
+            return colonSpan.startOffset() < typeName.span().startOffset();
         }
 
         @Override

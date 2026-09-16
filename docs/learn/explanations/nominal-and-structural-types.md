@@ -13,14 +13,14 @@ Structs are data-only nominal types. Uninitialized fields become positional cons
 
 Classes may have private state, function-valued methods, and one explicit constructor. Class fields and methods are private unless `@pub`. Class equality is instance identity.
 
-Construction is always explicit:
+Construction uses the type name followed by bracket arguments:
 
 ```lyra
-let point :Point = :Point[1 2]
-let counter :model->Counter = :model->Counter[0]
+let point :Point = Point[1 2]
+let counter :model->Counter = model->Counter[0]
 ```
 
-The leading colon distinguishes construction from indexing and conversion. Struct arguments initialize required fields before defaults. Class field defaults run in declaration order before the constructor body. Definite initialization rejects reads, duplicate immutable writes, method calls, or escape of incomplete `self`.
+Resolution distinguishes construction from indexing and conversion; capitalization alone does not. The older `:Point[...]` and `:model->Counter[...]` forms remain accepted for compatibility. Struct arguments initialize required fields before defaults. Class field defaults run in declaration order before the constructor body. Definite initialization rejects reads, duplicate immutable writes, method calls, or escape of incomplete `self`.
 
 There is no inheritance, interface implementation, overriding, overloading, custom struct constructor, static member, or user-defined operator surface.
 
