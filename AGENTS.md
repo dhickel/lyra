@@ -35,7 +35,7 @@ This is a Java-based compiler/runtime for a standalone functional JVM language, 
 
 ## Versioning and Release Updates
 
-Lyra uses Semantic Versioning for the Maven coordinates, runtime/compiler metadata, CLI/editor artifacts, documentation examples, and installation layout. The current release is `0.1.0`; do not reintroduce `-SNAPSHOT` coordinates or stale versioned paths.
+Lyra uses Semantic Versioning for the Maven coordinates, runtime/compiler metadata, CLI/editor artifacts, documentation examples, and installation layout. The current release is `0.1.1`; do not reintroduce `-SNAPSHOT` coordinates or stale versioned paths.
 
 When changing the version, update the root and every module POM, `LyraRuntimeConstants`, artifact/runtime coordinate checks, packaging and launcher scripts, integration-test artifact paths, release-audit tooling, examples, and user documentation together. Verify with a repository search before committing.
 

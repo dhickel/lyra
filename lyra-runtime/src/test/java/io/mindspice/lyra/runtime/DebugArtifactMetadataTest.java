@@ -86,7 +86,7 @@ final class DebugArtifactMetadataTest {
     @Test
     void debugMetadataRejectsMissingOrWrongClosure() {
         assertThrows(IllegalArgumentException.class, () -> ArtifactMetadata.builder()
-                .compilerVersion("0.1.0").compilerBuild("lyra-phase18")
+                .compilerVersion("0.1.1").compilerBuild("lyra-phase18")
                 .runtimeAbi(RuntimeAbi.CURRENT).profile(RuntimeProfile.CURRENT)
                 .previewRequired(false).artifactId("test")
                 .artifactRevision(ArtifactRevision.of(SHA))
@@ -103,7 +103,7 @@ final class DebugArtifactMetadataTest {
                 .build());
         // A debug publication may never omit an embedded source snapshot.
         assertThrows(IllegalArgumentException.class, () -> ArtifactMetadata.builder()
-                .compilerVersion("0.1.0").compilerBuild("lyra-phase18")
+                .compilerVersion("0.1.1").compilerBuild("lyra-phase18")
                 .runtimeAbi(RuntimeAbi.CURRENT).profile(RuntimeProfile.CURRENT)
                 .previewRequired(false).artifactId("test")
                 .artifactRevision(ArtifactRevision.of(SHA))
@@ -118,7 +118,7 @@ final class DebugArtifactMetadataTest {
                 .build());
         // Session artifacts cannot be debug publications.
         assertThrows(IllegalArgumentException.class, () -> ArtifactMetadata.builder()
-                .compilerVersion("0.1.0").compilerBuild("lyra-phase18")
+                .compilerVersion("0.1.1").compilerBuild("lyra-phase18")
                 .runtimeAbi(RuntimeAbi.CURRENT).profile(RuntimeProfile.CURRENT)
                 .previewRequired(false).artifactId("test")
                 .artifactRevision(ArtifactRevision.of(SHA))
@@ -156,7 +156,7 @@ final class DebugArtifactMetadataTest {
         // A changed closure entry invalidates the canonical revision inputs.
         assertThrows(LyraCompatibilityException.class,
                 () -> ArtifactMetadataReader.read(json.replace(
-                        "\"version\":\"0.1.0\",\"profile\":\"normal\"",
+                        "\"version\":\"0.1.1\",\"profile\":\"normal\"",
                         "\"version\":\"9.9.9\",\"profile\":\"normal\"")));
     }
 
@@ -201,7 +201,7 @@ final class DebugArtifactMetadataTest {
                 Optional.empty(), ArtifactProfile.NORMAL, List.of(), List.of(),
                 Optional.empty(), List.of(), Map.of(), false);
         return ArtifactMetadata.builder()
-                .compilerVersion("0.1.0").compilerBuild("lyra-phase18")
+                .compilerVersion("0.1.1").compilerBuild("lyra-phase18")
                 .runtimeAbi(RuntimeAbi.CURRENT).profile(RuntimeProfile.CURRENT)
                 .previewRequired(false).artifactId("ordinary-test")
                 .artifactRevision(revision)
@@ -232,7 +232,7 @@ final class DebugArtifactMetadataTest {
                 debugClosure(executionProfile), context, List.of(),
                 Map.of("checked-arithmetic", "on"), true);
         return ArtifactMetadata.builder()
-                .compilerVersion("0.1.0").compilerBuild("lyra-phase18")
+                .compilerVersion("0.1.1").compilerBuild("lyra-phase18")
                 .runtimeAbi(RuntimeAbi.CURRENT).profile(RuntimeProfile.CURRENT)
                 .previewRequired(false).artifactId("debug-test")
                 .artifactRevision(revision)

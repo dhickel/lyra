@@ -6,11 +6,11 @@
 
 | Module | Coordinate and boundary |
 | --- | --- |
-| Runtime | `io.mindspice:lyra-runtime:0.1.0`; values, metadata, loading, lifecycle, I/O, launcher |
-| Compiler | `io.mindspice:lyra-compiler:0.1.0`; source resolution through Java 25 Class-File API emission and packaging |
-| REPL | `io.mindspice:lyra-repl:0.1.0`; optional persistent sessions and protocol v2 |
-| CLI | `io.mindspice:lyra-cli:0.1.0`; commands and console adapters |
-| Editor | `io.mindspice:lyra-editor:0.1.0`; optional JavaFX workspace |
+| Runtime | `io.mindspice:lyra-runtime:0.1.1`; values, metadata, loading, lifecycle, I/O, launcher |
+| Compiler | `io.mindspice:lyra-compiler:0.1.1`; source resolution through Java 25 Class-File API emission and packaging |
+| REPL | `io.mindspice:lyra-repl:0.1.1`; optional persistent sessions and protocol v2 |
+| CLI | `io.mindspice:lyra-cli:0.1.1`; commands and console adapters |
+| Editor | `io.mindspice:lyra-editor:0.1.1`; optional JavaFX workspace |
 
 ## Output forms
 

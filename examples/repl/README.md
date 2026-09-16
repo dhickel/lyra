@@ -2,7 +2,7 @@
 
 These sources drive the documented workflows end to end. All commands assume the
 reactor is packaged (`mvn clean verify`) and run from this directory with
-`CLI=../../lyra-cli/target/lyra-cli-0.1.0.jar`.
+`CLI=../../lyra-cli/target/lyra-cli-0.1.1.jar`.
 
 - `counter.lyra`, `shapes.lyra`, `main-counter.lyra`: module imports, pinned
   reuse, `std->io`, and `\reload` via the local console.

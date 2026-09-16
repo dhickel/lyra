@@ -90,7 +90,7 @@ public final class RuntimeFoundationTest {
                 List.of(moduleMetadata), names, RuntimeProfile.CURRENT, PackagingMode.CLASSES,
                 false, List.of(sourceMetadata));
         ArtifactMetadata metadata = ArtifactMetadata.builder()
-                .compilerVersion("0.1.0")
+                .compilerVersion("0.1.1")
                 .compilerBuild("test-build")
                 .artifactId("app")
                 .artifactRevision(artifactRevision)

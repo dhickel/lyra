@@ -655,7 +655,7 @@ The initial parenthesized-only boundary was removed after implementation review.
 
 ### Decision
 
-- Lyra release and Maven coordinates use Semantic Versioning. The current release is `0.1.0`; installed and released artifacts do not use Maven `SNAPSHOT` coordinates.
+- Lyra release and Maven coordinates use Semantic Versioning. The current release is `0.1.1`; installed and released artifacts do not use Maven `SNAPSHOT` coordinates.
 - Before `1.0.0`, new features and breaking contract changes advance the minor version, while compatible fixes and documentation-only changes advance the patch version. From `1.0.0` onward, standard SemVer major/minor/patch meanings apply. Prereleases use explicit SemVer prerelease identifiers.
 - The installer keeps immutable releases under a versioned directory, exposes one stable `lyra` launcher through an atomic `current` pointer, and preserves older releases for rollback. It does not overwrite an active release as the normal upgrade path.
 - Java 25 AOT caches are generated during installation for the exact CLI JAR, Java runtime, operating system and architecture. A cache is optional at launch and is ignored when absent or incompatible; the normal CLI/REPL behavior remains available without it.

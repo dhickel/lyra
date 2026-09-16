@@ -62,8 +62,8 @@ public final class CompileAndRun {
 Compile and run:
 
 ```sh
-javac -cp lyra-compiler/target/lyra-compiler-0.1.0.jar:lyra-runtime/target/lyra-runtime-0.1.0.jar CompileAndRun.java
-java -cp .:lyra-compiler/target/lyra-compiler-0.1.0.jar:lyra-runtime/target/lyra-runtime-0.1.0.jar CompileAndRun
+javac -cp lyra-compiler/target/lyra-compiler-0.1.1.jar:lyra-runtime/target/lyra-runtime-0.1.1.jar CompileAndRun.java
+java -cp .:lyra-compiler/target/lyra-compiler-0.1.1.jar:lyra-runtime/target/lyra-runtime-0.1.1.jar CompileAndRun
 ```
 
 Expected output:

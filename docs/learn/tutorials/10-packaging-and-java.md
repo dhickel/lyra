@@ -56,8 +56,8 @@ public final class UseLyra {
 Compile and run from the repository root:
 
 ```sh
-javac -cp lyra-runtime/target/lyra-runtime-0.1.0.jar UseLyra.java
-java -cp .:build/library-thin.jar:lyra-runtime/target/lyra-runtime-0.1.0.jar UseLyra
+javac -cp lyra-runtime/target/lyra-runtime-0.1.1.jar UseLyra.java
+java -cp .:build/library-thin.jar:lyra-runtime/target/lyra-runtime-0.1.1.jar UseLyra
 ```
 
 Expected output:

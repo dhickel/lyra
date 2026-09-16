@@ -273,15 +273,27 @@ else
     fi
 fi
 
+atomic_replace_link() {
+    source=$1
+    destination=$2
+    if mv -fT "$source" "$destination" 2>/dev/null; then
+        return
+    fi
+    if mv -fh "$source" "$destination" 2>/dev/null; then
+        return
+    fi
+    fail "cannot atomically replace symbolic link: $destination"
+}
+
 CURRENT_TMP=$PREFIX/.current.$$
 rm -f "$CURRENT_TMP"
 ln -s "versions/$VERSION" "$CURRENT_TMP"
-mv -f "$CURRENT_TMP" "$PREFIX/current"
+atomic_replace_link "$CURRENT_TMP" "$PREFIX/current"
 
 BIN_TMP=$BIN_DIR/.lyra.$$
 rm -f "$BIN_TMP"
 ln -s "$PREFIX/current/bin/lyra" "$BIN_TMP"
-mv -f "$BIN_TMP" "$BIN_DIR/lyra"
+atomic_replace_link "$BIN_TMP" "$BIN_DIR/lyra"
 
 printf 'lyra: installed %s\n' "$VERSION"
 printf 'lyra: launcher %s\n' "$BIN_DIR/lyra"

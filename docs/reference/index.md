@@ -1,6 +1,6 @@
 # Lyra reference
 
-This reference describes Lyra 0.1.0 as implemented for language contract 2, runtime ABI 1.1, artifact schemas 1 and 2, and Java 25. It is organized for lookup. The [formal language specification](../specification/language.md) owns normative language semantics. These language pages summarize that contract, while product pages describe current compiler, runtime, CLI, REPL, and editor behavior without adding language rules.
+This reference describes Lyra 0.1.1 as implemented for language contract 2, runtime ABI 1.1, artifact schemas 1 and 2, and Java 25. It is organized for lookup. The [formal language specification](../specification/language.md) owns normative language semantics. These language pages summarize that contract, while product pages describe current compiler, runtime, CLI, REPL, and editor behavior without adding language rules.
 
 ## Language
 
@@ -39,7 +39,7 @@ These versions have different purposes:
 
 | Dimension | Current value | Meaning |
 | --- | --- | --- |
-| Product SemVer | `0.1.0` | Maven coordinates, launchers, and distribution version. |
+| Product SemVer | `0.1.1` | Maven coordinates, launchers, and distribution version. |
 | Language contract | `2` | Accepted source syntax and semantics. Source has no edition directive. |
 | Runtime ABI | `1.1` | Compatibility of generated classes with the runtime. A runtime accepts the same major and an equal or lower required minor. |
 | Artifact schema | `1`, or `2` when nominal schemas are published | Metadata representation. |

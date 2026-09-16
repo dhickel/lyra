@@ -17,7 +17,7 @@ export PATH="$HOME/.local/bin:$PATH"
 lyra --version
 ```
 
-You can use `java -jar lyra-cli/target/lyra-cli-0.1.0.jar` instead of an installed `lyra` command. The tutorials use `lyra` for brevity.
+You can use `java -jar lyra-cli/target/lyra-cli-0.1.1.jar` instead of an installed `lyra` command. The tutorials use `lyra` for brevity.
 
 ## Tutorials
 

@@ -108,6 +108,6 @@ final class JLineDistributionIT {
     }
 
     private static Path cliJar() {
-        return Path.of("target/lyra-cli-0.1.0.jar").toAbsolutePath();
+        return Path.of("target/lyra-cli-0.1.1.jar").toAbsolutePath();
     }
 }

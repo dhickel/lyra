@@ -22,7 +22,7 @@ lyra --version
 For a repository-local command, replace `lyra` below with:
 
 ```sh
-java -jar lyra-cli/target/lyra-cli-0.1.0.jar
+java -jar lyra-cli/target/lyra-cli-0.1.1.jar
 ```
 
 ## 2. Create `hello.lyra`

@@ -19,12 +19,12 @@ if [[ -n "${LYRA_EDITOR_RUNTIME_IMAGE:-}" ]]; then
     cp -RL -- "$LYRA_EDITOR_RUNTIME_IMAGE" "$LYRA_EDITOR_STAGE/runtime"
     LYRA_EDITOR_LINK_ARGS=(--runtime-image "$LYRA_EDITOR_STAGE/runtime")
 fi
-cp -- "$LYRA_EDITOR_ROOT/lyra-editor/target/lyra-editor-0.1.0.jar" "$LYRA_EDITOR_INPUT/"
+cp -- "$LYRA_EDITOR_ROOT/lyra-editor/target/lyra-editor-0.1.1.jar" "$LYRA_EDITOR_INPUT/"
 cp -R -- "$LYRA_EDITOR_ROOT/lyra-editor/target/lib" "$LYRA_EDITOR_INPUT/lib"
-"$LYRA_EDITOR_PACKAGE" --type app-image --name LyraEditor --app-version 1.0 \
+"$LYRA_EDITOR_PACKAGE" --type app-image --name LyraEditor --app-version 0.1.1 \
     --description "Lyra source editor, REPL and JVM debugger" --vendor "Mindspice" \
     --input "$LYRA_EDITOR_INPUT" --dest "$LYRA_EDITOR_DEST" \
-    --main-jar lyra-editor-0.1.0.jar --main-class io.mindspice.lyra.editor.EditorLauncher \
+    --main-jar lyra-editor-0.1.1.jar --main-class io.mindspice.lyra.editor.EditorLauncher \
     "${LYRA_EDITOR_LINK_ARGS[@]}" \
     --java-options --enable-preview --java-options --add-modules=jdk.jdi \
     --java-options --enable-native-access=ALL-UNNAMED

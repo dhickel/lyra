@@ -1,6 +1,6 @@
 # Command-line interface
 
-The installed `lyra` launcher requires Java 25. Product version is `0.1.0`.
+The installed `lyra` launcher requires Java 25. Product version is `0.1.1`.
 
 ## Commands
 
@@ -15,7 +15,7 @@ lyra --help
 lyra --version
 ```
 
-The installed launcher maps no arguments to `repl`, so `lyra` opens the local REPL. The Java CLI entry point and the repository launcher script require an explicit command; use `java -jar lyra-cli-0.1.0.jar repl` or `lyra repl` when bypassing the installed wrapper. A no-argument direct invocation reports usage status 2.
+The installed launcher maps no arguments to `repl`, so `lyra` opens the local REPL. The Java CLI entry point and the repository launcher script require an explicit command; use `java -jar lyra-cli-0.1.1.jar repl` or `lyra repl` when bypassing the installed wrapper. A no-argument direct invocation reports usage status 2.
 
 ## `repl` and `attach`
 

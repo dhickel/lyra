@@ -83,8 +83,8 @@ See [docs/editor.md](docs/editor.md) for shortcuts, the live-development workflo
 After packaging, the CLI can compile or run a source file:
 
 ```sh
-java -jar lyra-cli/target/lyra-cli-0.1.0.jar compile program.lyra
-java -jar lyra-cli/target/lyra-cli-0.1.0.jar run program.lyra -- arg1 arg2
+java -jar lyra-cli/target/lyra-cli-0.1.1.jar compile program.lyra
+java -jar lyra-cli/target/lyra-cli-0.1.1.jar run program.lyra -- arg1 arg2
 ```
 
 A runnable bundled artifact requires a public `main :Fn<Array<String>;I32>` export. Use `--help` and `--version` for the exact command surface. Thin artifacts require a compatible `lyra-runtime` on the class path; bundled artifacts include the launcher and runtime. Java 25 preview support is explicit in artifact metadata and launch options.
@@ -92,10 +92,10 @@ A runnable bundled artifact requires a public `main :Fn<Array<String>;I32>` expo
 The interactive and attachment surfaces are:
 
 ```sh
-java -jar lyra-cli/target/lyra-cli-0.1.0.jar repl [DIR] [--source-root DIR]...
-java -jar lyra-cli/target/lyra-cli-0.1.0.jar attach HOST:PORT
-java -jar lyra-cli/target/lyra-cli-0.1.0.jar run ROOT --repl [--repl-port PORT] [--repl-wait] [-- ARGS...]
-java -jar lyra-cli/target/lyra-cli-0.1.0.jar compile ROOT --repl --format bundled-jar --output app.jar
+java -jar lyra-cli/target/lyra-cli-0.1.1.jar repl [DIR] [--source-root DIR]...
+java -jar lyra-cli/target/lyra-cli-0.1.1.jar attach HOST:PORT
+java -jar lyra-cli/target/lyra-cli-0.1.1.jar run ROOT --repl [--repl-port PORT] [--repl-wait] [-- ARGS...]
+java -jar lyra-cli/target/lyra-cli-0.1.1.jar compile ROOT --repl --format bundled-jar --output app.jar
 ```
 
 `run --repl` starts an unauthenticated loopback-only listener before `main` and gates live work until the root initializes and registers. `compile --repl` records the same capability without ever listening; compiled artifacts activate only through `-Dlyra.repl.enabled=true` (plus optional `-Dlyra.repl.port` and `-Dlyra.repl.wait`). The full REPL workflow, security warning, and limits are documented in [docs/repl.md](docs/repl.md) with runnable sources under [examples/repl](examples/repl).

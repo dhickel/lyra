@@ -1029,11 +1029,11 @@ else
 fi
 
 if [[ -n "${JDEPS_BIN:-}" && -x "$JDEPS_BIN" ]] && [[ -x "$PYTHON_BIN" ]]; then
-    RUNTIME_JAR="$ROOT/lyra-runtime/target/lyra-runtime-0.1.0.jar"
-    COMPILER_JAR="$ROOT/lyra-compiler/target/lyra-compiler-0.1.0.jar"
-    REPL_JAR="$ROOT/lyra-repl/target/lyra-repl-0.1.0.jar"
-    CLI_FAT_JAR="$ROOT/lyra-cli/target/lyra-cli-0.1.0.jar"
-    CLI_ORIGINAL_JAR="$ROOT/lyra-cli/target/original-lyra-cli-0.1.0.jar"
+    RUNTIME_JAR="$ROOT/lyra-runtime/target/lyra-runtime-0.1.1.jar"
+    COMPILER_JAR="$ROOT/lyra-compiler/target/lyra-compiler-0.1.1.jar"
+    REPL_JAR="$ROOT/lyra-repl/target/lyra-repl-0.1.1.jar"
+    CLI_FAT_JAR="$ROOT/lyra-cli/target/lyra-cli-0.1.1.jar"
+    CLI_ORIGINAL_JAR="$ROOT/lyra-cli/target/original-lyra-cli-0.1.1.jar"
     JLINE_CP=$(find "${HOME:-/nonexistent}/.m2/repository/org/jline" -type f \
         -name '*.jar' ! -name '*-sources.jar' -print 2>/dev/null | paste -sd: -)
     if {
@@ -1063,11 +1063,11 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 expected = [
-    root / "lyra-runtime/target/lyra-runtime-0.1.0.jar",
-    root / "lyra-compiler/target/lyra-compiler-0.1.0.jar",
-    root / "lyra-repl/target/lyra-repl-0.1.0.jar",
-    root / "lyra-cli/target/original-lyra-cli-0.1.0.jar",
-    root / "lyra-cli/target/lyra-cli-0.1.0.jar",
+    root / "lyra-runtime/target/lyra-runtime-0.1.1.jar",
+    root / "lyra-compiler/target/lyra-compiler-0.1.1.jar",
+    root / "lyra-repl/target/lyra-repl-0.1.1.jar",
+    root / "lyra-cli/target/original-lyra-cli-0.1.1.jar",
+    root / "lyra-cli/target/lyra-cli-0.1.1.jar",
 ]
 for path in expected:
     if not path.is_file():
@@ -1141,7 +1141,7 @@ determinism_smoke() {
     local log="$OUT/determinism.log"
     rm -rf "$smoke"
     mkdir -p "$smoke"
-    if [[ ! -f "$ROOT/lyra-cli/target/lyra-cli-0.1.0.jar" ]]; then
+    if [[ ! -f "$ROOT/lyra-cli/target/lyra-cli-0.1.1.jar" ]]; then
         printf 'CLI package is missing\n' >"$log"
         return 1
     fi
@@ -1154,8 +1154,8 @@ determinism_smoke() {
         local thin_b="$smoke/thin-b.jar"
         local bundled_a="$smoke/bundled-a.jar"
         local bundled_b="$smoke/bundled-b.jar"
-        local cli="$ROOT/lyra-cli/target/lyra-cli-0.1.0.jar"
-        local runtime="$ROOT/lyra-runtime/target/lyra-runtime-0.1.0.jar"
+        local cli="$ROOT/lyra-cli/target/lyra-cli-0.1.1.jar"
+        local runtime="$ROOT/lyra-runtime/target/lyra-runtime-0.1.1.jar"
         printf '%s\n' \
             'let @pub answer :I32 = 42' \
             'let @pub main :Fn<Array<String>;I32> = (=> |args| args:.length)' >"$source"

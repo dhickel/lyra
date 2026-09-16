@@ -15,8 +15,9 @@ Versioned Lyra CLI installation, stable launcher upgrades, and Java 25 AOT start
 
 ## Key Takeaways
 
-- Lyra release coordinates use SemVer; the current release is `0.1.0`. Installed releases use immutable version directories and a stable `current` pointer rather than replacing the active JAR in place.
+- Lyra release coordinates use SemVer; the current release is `0.1.1`. Installed releases use immutable version directories and a stable `current` pointer rather than replacing the active JAR in place.
 - The stable launcher is exposed through `~/.local/bin/lyra` by default, while release contents live under `~/.local/share/lyra/versions/<version>` (or explicit `--prefix`/`--bin-dir` locations).
+- Replacing `current` with ordinary `mv -f temporary-link current` is incorrect when `current` is a symlink to a directory: `mv` may follow it and place the temporary link inside the old release. Use no-target-directory (`mv -T`) or the BSD no-dereference equivalent (`mv -h`) so the symlink itself is atomically replaced, and verify the resolved launcher version after installation.
 - The installer generates an AOT cache during installation by training a representative plain REPL launch. The cache is stored inside the exact release and keyed by the CLI JAR digest, Java runtime fingerprint, operating system, and architecture.
 - Launching with an absent or incompatible cache must fall back to ordinary Java startup. `-XX:AOTMode=on` is useful for validation, not for the normal installed wrapper.
 - Java 25 AOT caches are not portable across arbitrary JDK builds, operating systems, architectures, or changed CLI class paths. A new SemVer release receives a distinct cache identity.

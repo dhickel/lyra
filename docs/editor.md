@@ -89,7 +89,7 @@ Running source is read-only throughout a debug session so source lines cannot dr
 
 ## Distribute the editor
 
-`mvn package` creates `lyra-editor/target/lyra-editor-0.1.0-distribution.zip` with the application JAR, runtime libraries, shell/Windows launchers, documentation and examples. Extract it, then launch `lyra-editor` or `lyra-editor.cmd` with Java 25 installed. JavaFX libraries are selected for the build platform; build a distribution on each target OS/architecture. The existing compiler/runtime/CLI distributions do not acquire JavaFX dependencies.
+`mvn package` creates `lyra-editor/target/lyra-editor-0.1.1-distribution.zip` with the application JAR, runtime libraries, shell/Windows launchers, documentation and examples. Extract it, then launch `lyra-editor` or `lyra-editor.cmd` with Java 25 installed. JavaFX libraries are selected for the build platform; build a distribution on each target OS/architecture. The existing compiler/runtime/CLI distributions do not acquire JavaFX dependencies.
 
 To produce a native application image containing its Java runtime:
 

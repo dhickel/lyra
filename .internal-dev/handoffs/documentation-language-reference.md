@@ -53,7 +53,7 @@ Reference the five modules and boundaries:
 - `lyra-cli`: `repl`, `attach`, `run`, `compile`, launchers and JLine/plain behavior;
 - `lyra-editor`: optional JavaFX workspace, compiler-backed analysis, child-process execution, REPL, JDI debugging.
 
-Reference Java 25 requirements, Maven setup, version `0.1.0` only where verified from current POM/README, deterministic classes/thin/bundled JARs, metadata/debug maps, generated Java facades, exact export handles, runtime loading, owner-thread lifecycle, failure categories, and trusted-Java live array escape. Do not expose compiler-private typed IR/provenance as a public API.
+Reference Java 25 requirements, Maven setup, version `0.1.1` only where verified from current POM/README, deterministic classes/thin/bundled JARs, metadata/debug maps, generated Java facades, exact export handles, runtime loading, owner-thread lifecycle, failure categories, and trusted-Java live array escape. Do not expose compiler-private typed IR/provenance as a public API.
 
 Reference CLI forms and restrictions:
 
