@@ -36,13 +36,13 @@ final class SessionCompilerTest {
     void nonConstructorSelfAggregateMutationsRemainStructuredResolutionFailures() {
         List<String> sources = List.of("""
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub mutate :Fn<;Unit> = (=> || { self:.values[0] := 7 })
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub mutate :Fn<;Unit> = (=> || { self:.values[0] := 7 })
                 }
                 """, """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut mutate :Fn<;Unit> = (=> || {})
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut mutate :Fn<;Unit> = (=> || {})
                 }
                 let install :Fn<@mut Box;Unit> = (=> |@mut box| {
                     box:.mutate := (=> || { self:.values[0] := 7 })
@@ -75,7 +75,7 @@ final class SessionCompilerTest {
     void callableNominalMembersEmitSessionOnlyRouteDelegateClasses() {
         String source = """
                 import std->io
-                class Holder { let @pub printer :Fn<String;Unit> = io->:.println }
+                class Holder { @pub printer :Fn<String;Unit> = io->:.println }
                 """;
         var session = assertInstanceOf(SessionCompileResult.Success.class,
                 LyraCompiler.compileSession(new SessionCompileRequest(

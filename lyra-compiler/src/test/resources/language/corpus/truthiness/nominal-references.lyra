@@ -1,9 +1,9 @@
 // truthiness	value	Bool	true	non-nil nominal references are truth-testable
 struct Point {
-    let x :I32
+    x :I32
 }
 class Box {
-    let value :I32 = 1
+    value :I32 = 1
 }
 let @pub run :Fn<;Bool> = (=> || {
     let point :Point = :Point[1]

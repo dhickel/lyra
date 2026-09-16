@@ -193,7 +193,7 @@ public final class CallableCallParityTest {
         SessionCompileResult.Success localRoutes = assertInstanceOf(SessionCompileResult.Success.class,
                 LyraCompiler.compileSession(new SessionCompileRequest("routes.lyra", """
                         import std->io->{println}
-                        class Box { let @pub apply :Fn<I32;I32> = (=> |x| (+ x 1)) }
+                        class Box { @pub apply :Fn<I32;I32> = (=> |x| (+ x 1)) }
                         let @pub routes :Fn<Fn<I32;I32>,Box;I32> = (=> |parameter box| {
                           let local :Fn<I32;I32> = (=> |x| x)
                           let @mut mutable :Fn<I32;I32> = local
@@ -291,8 +291,8 @@ public final class CallableCallParityTest {
     @Test
     void provenMemberSFormAndDirectCallsShareReceiverSelectionAndInvokeShape() {
         String prefix = "class Box { "
-                + "let @pub @mut apply :Fn<I32;I32> = (=> |x| (+ x 1)) "
-                + "let @pub replace :Fn<I32;I32> = (=> |x| { self:.apply := (=> |y| (+ y 100)) x }) } ";
+                + "@pub @mut apply :Fn<I32;I32> = (=> |x| (+ x 1)) "
+                + "@pub replace :Fn<I32;I32> = (=> |x| { self:.apply := (=> |y| (+ y 100)) x }) } ";
         CompiledArtifact sForm = compile(prefix
                 + "let @pub run :Fn<Box,I32;I32> = (=> |box x| (box:.apply (box:.replace x)))");
         CompiledArtifact direct = compile(prefix
@@ -628,8 +628,8 @@ public final class CallableCallParityTest {
     void receiverMethodsSelectTheCurrentSlotOnceBeforeArgumentsInBothSpellings() throws Throwable {
         String source = """
                 class Box {
-                    let @pub @mut next :Fn<I32;I32> = (=> |x| (+ x 1))
-                    let @pub replace :Fn<I32;I32> = (=> |x| { self:.next := (=> |y| (+ y 100)) x })
+                    @pub @mut next :Fn<I32;I32> = (=> |x| (+ x 1))
+                    @pub replace :Fn<I32;I32> = (=> |x| { self:.next := (=> |y| (+ y 100)) x })
                 }
                 let @pub make :Fn<;Box> = (=> | | :Box[])
                 let @pub runS :Fn<Box,I32;I32> = (=> |b x| (b:.next (b:.replace x)))
@@ -1000,11 +1000,11 @@ public final class CallableCallParityTest {
     void nominalCallableGettersAndAdaptersResolveSignatureMetadataOncePerObjectInsteadOfPerRead() {
         String body = """
                 class Box {
-                    let @pub @mut apply :Fn<I32;I32> = (=> |x| (+ x 1))
-                    let @mut hidden :Fn<I32;I32> = (=> |x| (+ x 2))
-                    let @pub hiddenCall :Fn<I32;I32> = (=> |x| (self:.hidden x))
-                    let @pub echo :Fn<U32;U32> = (=> |x| x)
-                    let @pub fs :Array<Fn<I32;I32>> = Array<Fn<I32;I32>>[]
+                    @pub @mut apply :Fn<I32;I32> = (=> |x| (+ x 1))
+                    @mut hidden :Fn<I32;I32> = (=> |x| (+ x 2))
+                    @pub hiddenCall :Fn<I32;I32> = (=> |x| (self:.hidden x))
+                    @pub echo :Fn<U32;U32> = (=> |x| x)
+                    @pub fs :Array<Fn<I32;I32>> = Array<Fn<I32;I32>>[]
                 }
                 let @pub run :Fn<Box,I32;I32> = (=> |box x| (box:.apply x))
                 let @pub hiddenRun :Fn<Box,I32;I32> = (=> |box x| (box:.hiddenCall x))

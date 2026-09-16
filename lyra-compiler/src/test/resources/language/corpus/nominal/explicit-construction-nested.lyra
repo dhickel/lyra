@@ -1,8 +1,8 @@
 // nominal	value	I32	9	nested explicit construction evaluates arguments once
 struct Inner {
-    let value :I32
+    value :I32
 }
 struct Outer {
-    let inner :Inner
+    inner :Inner
 }
 let @pub run :Fn<;I32> = (=> | | { let outer :Outer = :Outer[:Inner[9]] outer:.inner:.value })

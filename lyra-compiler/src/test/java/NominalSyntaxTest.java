@@ -47,17 +47,17 @@ public class NominalSyntaxTest {
     void agreedClassAndStructFormsRetainExactRoles() {
         String source = """
                 struct @pub Vec2 {
-                    let @mut x :F64
-                    let @mut y :F64
-                    let label :String = "point"
+                    @mut x :F64
+                    @mut y :F64
+                    label :String = "point"
                 }
                 class Counter {
-                    let @mut value :I32
+                    @mut value :I32
                     Counter = (=> |start :I32| { self:.value := start })
-                    let @pub @mut increment :Fn<;Unit> = (=> || {
+                    @pub @mut increment :Fn<;Unit> = (=> || {
                         self:.value := (++ self:.value)
                     })
-                    let @pub current :Fn<;I32> = (=> || self:.value)
+                    @pub current :Fn<;I32> = (=> || self:.value)
                 }
                 let point :Vec2 = :Vec2[1.0 2.0]
                 let counter :Counter = :Counter[0]
@@ -101,6 +101,25 @@ public class NominalSyntaxTest {
     }
 
     @Test
+    void letRemainsValidForOrdinaryBindingsButNotNominalMembers() {
+        String ordinary = "let top :I32 = 1"
+                + " let block :I32 = { let blockLocal :I32 = 2 blockLocal }"
+                + " let lambda :Fn<;I32> = (=> || { let lambdaLocal :I32 = 3 lambdaLocal })"
+                + " struct Empty {} class Box { value :I32 = { let memberLocal :I32 = 4 memberLocal } }";
+        assertInstanceOf(PhaseResult.Success.class, GrammarMatcher.match(lex(ordinary)));
+        for (String source : List.of("struct Empty { let value :I32 }", "class Box { let value :I32 = 2 }")) {
+            var result = GrammarMatcher.match(lex(source));
+            var failure = (PhaseResult.Failure<?>) assertInstanceOf(PhaseResult.Failure.class, result, source);
+            assertEquals(io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes.PARSE_INVALID_FORM,
+                    failure.diagnostics().getFirst().code(), source);
+        }
+        for (String source : List.of("{ blockLocal :I32 = 2 blockLocal }",
+                "(=> || { lambdaLocal :I32 = 3 lambdaLocal })")) {
+            assertInstanceOf(PhaseResult.Failure.class, GrammarMatcher.match(lex(source)), source);
+        }
+    }
+
+    @Test
     void typeReferencesAndBracketsDoNotGuessNamesFromCapitalization() {
         var syntax = parse("""
                 struct Empty {} class Object {}
@@ -131,16 +150,17 @@ public class NominalSyntaxTest {
     void malformedDeclarationsFailWithoutPartialGrammar() {
         for (String source : List.of(
                 "struct", "class C {", "struct lower {}", "class @mut C {}", "class @pub @pub C {}",
-                "struct @nil C {}", "class C let x :I32 = 0", "class C { let x = 0 }",
-                "class C { let x:I32 }", "class C { let x : I32 }", "class C { let @pub @pub x :I32 }",
-                "class C { let x :I32 = }", "class C { let f :Fn<;Unit> = || () }",
+                "struct @nil C {}", "class C let x :I32 = 0", "class C { x = 0 }",
+                "class C { let x :I32 }", "struct C { let x :I32 }", "class C { x:I32 }",
+                "class C { x : I32 }", "class C { @pub @pub x :I32 }",
+                "class C { x :I32 = }", "class C { f :Fn<;Unit> = || () }",
                 "class C { Other = (=> || ()) }", "struct C { C = (=> || ()) }",
                 "class C { C = || () }", "class C { C = 1 }", "class C { C := (=> || ()) }",
                 "class C { C = (=> || ()) C = (=> || ()) }", "class C { (someFunction) }",
                 "class C { class D {} }", "class C :Parent {}", "{ class C {} }", "{ struct S {} }",
                 "let x :I32", "let class = 1", "let struct = 1", "class C {} import later",
-                "class C { let x :Array<Missing,> }", "class C { let x :pkg-> }",
-                ":Counter[1,]", ":Counter[,1]", ":Counter[1 2", "class C { let x :I32, let y :I32 }")) {
+                "class C { x :Array<Missing,> }", "class C { x :pkg-> }",
+                ":Counter[1,]", ":Counter[,1]", ":Counter[1 2", "class C { x :I32, y :I32 }")) {
             var result = GrammarMatcher.match(lex(source));
             assertInstanceOf(PhaseResult.Failure.class, result, source);
             assertTrue(result.optionalValue().isEmpty(), source);
@@ -149,7 +169,7 @@ public class NominalSyntaxTest {
 
     @Test
     void declarationMetadataCannotPointAtNestedPunctuation() {
-        Parsed parsed = parse("class C { let x :I32 = 1 C = (=> || { let y :I32 = 2 () }) }");
+        Parsed parsed = parse("class C { x :I32 = 1 C = (=> || { let y :I32 = 2 () }) }");
         var declaration = parsed.grammar().root().children().getFirst();
         int nestedLet = parsed.lexed().tokens().stream().filter(token -> token.lexeme().equals("let"))
                 .mapToInt(token -> parsed.lexed().tokens().indexOf(token)).reduce((a, b) -> b).orElseThrow();
@@ -177,8 +197,8 @@ public class NominalSyntaxTest {
             return withMetadata(descriptor, new DescriptorMetadata(-1, -1, -1,
                     List.of(), List.of(), List.of(arrow, arrow)));
         });
-        Parsed modifiers = parse("class C { let @pub @mut value :I32 = 0 }");
-        LexedSource duplicate = lex("class C { let @pub @pub value :I32 = 0 }");
+        Parsed modifiers = parse("class C { @pub @mut value :I32 = 0 }");
+        LexedSource duplicate = lex("class C { @pub @pub value :I32 = 0 }");
         GrammarProgram forged = new GrammarProgram(duplicate.snapshot().sourceId(),
                 duplicate.snapshot().sha256(), duplicate.tokens().size(), modifiers.grammar().root());
         assertThrows(IllegalArgumentException.class, () -> forged.validateAgainst(duplicate));
@@ -203,7 +223,7 @@ public class NominalSyntaxTest {
                     boolean hasMutable = random.nextBoolean();
                     initialized.add(hasInitializer);
                     mutable.add(hasMutable);
-                    source.append("let ").append(hasMutable ? "@mut " : "")
+                    source.append(hasMutable ? "@mut " : "")
                             .append("field").append(field).append(" :I32")
                             .append(hasInitializer ? " = " + field : "").append('\n');
                 }

@@ -110,7 +110,7 @@ final class PlainConsoleTest {
 
     @Test
     void colonLeadingNominalSourceExecutesWhileBackslashRemainsACommand() {
-        Invocation invocation = run("struct Point { let value :I32 }\n"
+        Invocation invocation = run("struct Point { value :I32 }\n"
                 + "let @pub point :Point = :Point[23]\n"
                 + "\\bindings\n\\quit\n");
 

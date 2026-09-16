@@ -244,7 +244,7 @@ public record GrammarProgram(
     private static void validateProductionMetadata(
             GrammarDescriptor descriptor, LexedSource source) {
         TokenKind expectedPrimary = switch (descriptor.kind()) {
-            case LET_BINDING, MEMBER_DECLARATION -> TokenKind.LET;
+            case LET_BINDING -> TokenKind.LET;
             case NOMINAL_DECLARATION -> source.tokens().get(descriptor.startTokenIndex()).kind();
             case CONSTRUCTOR_DECLARATION -> TokenKind.EQUAL;
             case IMPORT_DECLARATION -> TokenKind.IMPORT;
@@ -274,7 +274,8 @@ public record GrammarProgram(
         boolean requiresOperatorPrimary = descriptor.kind() == ProductionKind.OPERATOR_S_EXPRESSION
                 || descriptor.kind() == ProductionKind.OPERATOR_BRACKET;
         boolean allowsNoPrimary = descriptor.kind() == ProductionKind.UNIT_LITERAL
-                || descriptor.kind() == ProductionKind.CONSTRUCTION;
+                || descriptor.kind() == ProductionKind.CONSTRUCTION
+                || descriptor.kind() == ProductionKind.MEMBER_DECLARATION;
         if (expectedPrimary != null) {
             if (primary < 0) {
                 throw new IllegalArgumentException(descriptor.kind() + " must record its primary token");
@@ -288,7 +289,7 @@ public record GrammarProgram(
             throw new IllegalArgumentException(descriptor.kind() + " must not record a primary token");
         }
         int exactPrimary = switch (descriptor.kind()) {
-            case NOMINAL_DECLARATION, MEMBER_DECLARATION, LET_BINDING, IMPORT_DECLARATION, IMPORT_ALIAS,
+            case NOMINAL_DECLARATION, LET_BINDING, IMPORT_DECLARATION, IMPORT_ALIAS,
                     TYPE_ANNOTATION, RETURN_ANNOTATION,
                     ARRAY_LITERAL, TUPLE_LITERAL, OPERATOR_BRACKET -> descriptor.startTokenIndex();
             case LAMBDA, PREFIX_ASSIGNMENT, OPERATOR_S_EXPRESSION ->
@@ -573,13 +574,13 @@ public record GrammarProgram(
     private static void validateMemberDeclaration(GrammarDescriptor descriptor, LexedSource source) {
         var children = descriptor.children();
         int index = 0;
-        int position = descriptor.startTokenIndex() + 1;
+        int position = descriptor.startTokenIndex();
         var modifiers = EnumSet.noneOf(ModifierKind.class);
         while (index < children.size() && children.get(index).kind() == ProductionKind.MODIFIER) {
             var child = children.get(index++);
             var modifier = source.tokens().get(child.startTokenIndex()).modifier().orElse(null);
             if (child.startTokenIndex() != position++ || modifier == null || !modifiers.add(modifier)) {
-                throw new IllegalArgumentException("member modifiers must be unique and follow let");
+                throw new IllegalArgumentException("member modifiers must be unique and precede the member name");
             }
         }
         if (children.size() - index < 2 || children.size() - index > 3) {

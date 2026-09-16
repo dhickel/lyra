@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class ConsoleParsingTest {
     @Test
     void nominalBodiesRetainMultilineDelimiterCompleteness() {
-        for (String prefix : List.of("struct Data { let value :I32\n",
+        for (String prefix : List.of("struct Data { value :I32\n",
                 "class Counter { Counter = (=> || { () })\n")) {
             assertTrue(LexicalCompleteness.inspect(prefix).incomplete());
             assertFalse(LexicalCompleteness.inspect(prefix).invalid());

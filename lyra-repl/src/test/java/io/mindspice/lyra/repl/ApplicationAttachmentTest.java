@@ -324,7 +324,7 @@ class ApplicationAttachmentTest {
                 LyraCompiler.compileAttachable(CompileRequest.builder().source(
                         "attached-factory-root.lyra", """
                         class RootBox {
-                            let @pub value :I32
+                            @pub value :I32
                             RootBox = (=> |value :I32| { self:.value := value })
                         }
                         let @pub makeBox :Fn<I32;RootBox> =
@@ -365,7 +365,7 @@ class ApplicationAttachmentTest {
                     let makeInstalled :Fn<I32;Fn<I32;I32>> =
                         (=> |captured| (=> |ignored| captured))
                     class WaitBox {
-                        let @pub value :I32 = 9
+                        @pub value :I32 = 9
                         WaitBox = (=> |captured :I32| {
                             selected := ::makeInstalled[captured]
                             let @nil ignored :String = io->::readLine[]

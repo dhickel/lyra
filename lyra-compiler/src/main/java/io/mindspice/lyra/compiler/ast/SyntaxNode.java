@@ -572,14 +572,13 @@ public sealed interface SyntaxNode
 
     record MemberDeclaration(
             List<Modifier> modifiers, Identifier name, TypeAnnotation annotation,
-            Optional<Expression> initializer, SourceSpan letKeywordSpan,
-            Optional<SourceSpan> equalsSpan, SourceSpan span) implements SyntaxNode {
+            Optional<Expression> initializer, Optional<SourceSpan> equalsSpan,
+            SourceSpan span) implements SyntaxNode {
         public MemberDeclaration {
             modifiers = copy(modifiers, "modifiers");
             Objects.requireNonNull(name, "name");
             Objects.requireNonNull(annotation, "annotation");
             Objects.requireNonNull(initializer, "initializer");
-            requireSpan(letKeywordSpan, "letKeywordSpan");
             Objects.requireNonNull(equalsSpan, "equalsSpan");
             requireSpan(span);
             if (initializer.isPresent() != equalsSpan.isPresent()) {

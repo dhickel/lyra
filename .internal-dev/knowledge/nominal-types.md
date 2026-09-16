@@ -48,6 +48,9 @@ active bug records remain unarchived until integrated validation and closeout.
 - Named type annotations retain namespace segments/arrows. Canonical qualified
   construction is `model->Counter[args]`; the older `:model->Counter[args]`
   spelling remains accepted, while `model->:.Counter[args]` is invalid.
+- Nominal members omit `let`: direct fields and `Fn`-typed method slots use
+  `Modifier* name :Type [= expression]`. Ordinary lexical declarations still
+  require `let`, and a nominal body containing `let` is a parse failure.
 - Former unknown-type and multi-index grammar failures now belong to resolution;
   negative compile tests still require real unresolved-name/value-index diagnostics.
 - The Java-name mangling fixture now uses the Java keyword `public` because `class`

@@ -23,7 +23,7 @@ class NominalSessionTest {
     void retainedTypeNamesConstructTheExactOriginalNominalType() {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of(
-                    "type-1.lyra", "struct Point { let value :I32 }")));
+                    "type-1.lyra", "struct Point { value :I32 }")));
             success(session.submit(EvaluationSource.of(
                     "type-2.lyra", "let point :Point = Point[23]")));
             EvaluationResult.Success result = success(
@@ -38,8 +38,8 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("factory-1.lyra", """
                     class Counter {
-                        let @pub @mut value :I32 = 0
-                        let @pub read :Fn<;I32> = (=> || self:.value)
+                        @pub @mut value :I32 = 0
+                        @pub read :Fn<;I32> = (=> || self:.value)
                         Counter = (=> |start :I32| { self:.value := start })
                     }
                     """)));
@@ -98,10 +98,10 @@ class NominalSessionTest {
                         let zero :Fn<;I32> = (=> || 0I32)
                         let external :I32 = 1I32
                         let @nil maybe :I32 = #NIL
-                        class Nested { let @pub value :I32 = 1I32 }
+                        class Nested { @pub value :I32 = 1I32 }
                         class C {
-                            let seed :I32 = 1I32
-                            let @pub value :%s = %s
+                            seed :I32 = 1I32
+                            @pub value :%s = %s
                         }
                         """.formatted(probe.type(), probe.initializer()))));
                 success(session.submit(EvaluationSource.of(
@@ -143,7 +143,7 @@ class NominalSessionTest {
             try (LyraSession session = LyraSession.open(options)) {
                 success(session.submit(EvaluationSource.of("unit-inventory-producer.lyra", """
                         import std->io
-                        class C { let @pub value :%s = %s }
+                        class C { @pub value :%s = %s }
                         """.formatted(probe.type(), probe.initializer()))));
                 assertEquals("", output.toString(StandardCharsets.UTF_8));
                 // Construction executes the initializer exactly once.
@@ -176,7 +176,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open(options)) {
             success(session.submit(EvaluationSource.of("anti-launder-producer.lyra", """
                     import std->io
-                    class Box { let @pub printer :Fn<String;Unit> = io->:.println }
+                    class Box { @pub printer :Fn<String;Unit> = io->:.println }
                     let @pub raw :Fn<String;Unit> = io->:.println
                     """)));
             success(session.submit(EvaluationSource.of(
@@ -210,7 +210,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open(options)) {
             success(session.submit(EvaluationSource.of("coexist-producer.lyra", """
                     import std->io
-                    class Box { let @pub printer :Fn<String;Unit> = io->:.println }
+                    class Box { @pub printer :Fn<String;Unit> = io->:.println }
                     let @pub raw :Fn<String;Unit> = io->:.println
                     """)));
             success(session.submit(EvaluationSource.of(
@@ -249,7 +249,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open(options)) {
             success(session.submit(EvaluationSource.of("propagation-producer.lyra", """
                     import std->io
-                    class Box { let @pub printer :Fn<String;Unit> = io->:.println }
+                    class Box { @pub printer :Fn<String;Unit> = io->:.println }
                     """)));
             success(session.submit(EvaluationSource.of(
                     "propagation-construction.lyra", "let box :Box = :Box[]")));
@@ -304,7 +304,7 @@ class NominalSessionTest {
             try (LyraSession session = LyraSession.open()) {
                 success(session.submit(EvaluationSource.of("lambda-member-producer.lyra", """
                         import std->io
-                        class Box { let @pub f :Fn<;I32> = (=> || 7I32) }
+                        class Box { @pub f :Fn<;I32> = (=> || 7I32) }
                         """)));
                 success(session.submit(EvaluationSource.of(
                         "lambda-member-construction.lyra", "let box :Box = :Box[]")));
@@ -322,7 +322,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open(options)) {
             success(session.submit(EvaluationSource.of("replacement-producer.lyra", """
                     import std->io
-                    class Box { let @pub @mut printer :Fn<String;Unit> = io->:.println }
+                    class Box { @pub @mut printer :Fn<String;Unit> = io->:.println }
                     let @pub quiet :Fn<String;Unit> = (=> |s| ())
                     """)));
             success(session.submit(EvaluationSource.of(
@@ -353,7 +353,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("occurrence-producer.lyra", """
                     import std->io
-                    class Box { let @pub @mut printer :Fn<String;Unit> = io->:.println }
+                    class Box { @pub @mut printer :Fn<String;Unit> = io->:.println }
                     let @pub raw :Fn<String;Unit> = io->:.println
                     """)));
             success(session.submit(EvaluationSource.of(
@@ -391,7 +391,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("consumer-replacement-producer.lyra", """
                     import std->io
-                    class Box { let @pub @mut f :Fn<;I32> = (=> || 1I32) }
+                    class Box { @pub @mut f :Fn<;I32> = (=> || 1I32) }
                     """)));
             success(session.submit(EvaluationSource.of(
                     "consumer-replacement-construction.lyra", "let @mut box :Box = :Box[]")));
@@ -416,7 +416,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open(options)) {
             success(session.submit(EvaluationSource.of("nested-producer.lyra", """
                     import std->io
-                    class Box { let @pub pair :Tuple<Fn<String;Unit>,I32> = Tuple[io->:.println 7I32] }
+                    class Box { @pub pair :Tuple<Fn<String;Unit>,I32> = Tuple[io->:.println 7I32] }
                     """)));
             success(session.submit(EvaluationSource.of(
                     "nested-construction.lyra", "let box :Box = :Box[]")));
@@ -440,7 +440,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("private-producer.lyra", """
                     import std->io
-                    class Box { let printer :Fn<String;Unit> = io->:.println }
+                    class Box { printer :Fn<String;Unit> = io->:.println }
                     """)));
             success(session.submit(EvaluationSource.of(
                     "private-construction.lyra", "let box :Box = :Box[]")));
@@ -458,8 +458,8 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open(options)) {
             success(session.submit(EvaluationSource.of("nested-route-producer.lyra", """
                     import std->io
-                    class Inner { let @pub printer :Fn<String;Unit> = io->:.println }
-                    class Outer { let @pub inner :Inner = :Inner[] }
+                    class Inner { @pub printer :Fn<String;Unit> = io->:.println }
+                    class Outer { @pub inner :Inner = :Inner[] }
                     """)));
             success(session.submit(EvaluationSource.of(
                     "nested-route-construction.lyra", "let outer :Outer = :Outer[]")));
@@ -480,7 +480,7 @@ class NominalSessionTest {
     void retainedMixedTupleInitializerPreservesScalarAndInvocableLambdaAcrossGenerations() {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("mixed-tuple-producer.lyra", """
-                    class C { let @pub x :Tuple<I32,Fn<;I32>> = Tuple[1 (=> || 2)] }
+                    class C { @pub x :Tuple<I32,Fn<;I32>> = Tuple[1 (=> || 2)] }
                     """)));
             success(session.submit(EvaluationSource.of("mixed-tuple-construction.lyra", "let box :C = :C[]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
@@ -510,8 +510,8 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("nilable-index-producer.lyra", """
                     class C {
-                        let @pub all :Array<@nil I32> = Array<@nil I32>[#NIL 1I32]
-                        let @pub picked :@nil I32 = Array<@nil I32>[#NIL 1I32][1I32]
+                        @pub all :Array<@nil I32> = Array<@nil I32>[#NIL 1I32]
+                        @pub picked :@nil I32 = Array<@nil I32>[#NIL 1I32][1I32]
                     }
                     """)));
             success(session.submit(EvaluationSource.of(
@@ -536,16 +536,16 @@ class NominalSessionTest {
             success(session.submit(EvaluationSource.of("algebra-1.lyra", """
                     let inc :Fn<I32;I32> = (=> |value| (+ value 1I32))
                     let source :Array<I32> = Array<I32>[1I32, ::inc[1I32]]
-                    class Inner { let @pub value :I32 = 9I32 }
+                    class Inner { @pub value :I32 = 9I32 }
                     class Defaults {
-                        let @pub op :I32 = (+ ::inc[1I32] 2I32)
-                        let @pub converted :I32 = I32[3I16]
-                        let @pub values :Array<I32> = Array<I32>[1I32, ::inc[1I32]]
-                        let @pub index :I32 = source[1I32]
-                        let @pub tuple :Tuple<I32,I32> = Tuple[1I32, ::inc[2I32]]
-                        let @pub branch :I32 = (#T -> ::inc[3I32] : 0I32)
-                        let @pub block :I32 = { let @mut local :I32 = 1I32 local := ::inc[local] local }
-                        let @pub nested :Inner = :Inner[]
+                        @pub op :I32 = (+ ::inc[1I32] 2I32)
+                        @pub converted :I32 = I32[3I16]
+                        @pub values :Array<I32> = Array<I32>[1I32, ::inc[1I32]]
+                        @pub index :I32 = source[1I32]
+                        @pub tuple :Tuple<I32,I32> = Tuple[1I32, ::inc[2I32]]
+                        @pub branch :I32 = (#T -> ::inc[3I32] : 0I32)
+                        @pub block :I32 = { let @mut local :I32 = 1I32 local := ::inc[local] local }
+                        @pub nested :Inner = :Inner[]
                     }
                     """)));
             success(session.submit(EvaluationSource.of("algebra-2.lyra", "let value :Defaults = :Defaults[]")));
@@ -563,22 +563,22 @@ class NominalSessionTest {
     void retainedStructuredChildrenKeepTheirExactResolvedTypes() {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("typed-children-1.lyra", """
-                    struct Inner { let values :Array<I32> }
+                    struct Inner { values :Array<I32> }
                     let candidate :Fn<;I32> = (=> || 3I32)
                     class TypedDefaults {
-                        let @pub callable :Fn<;I32> = {
+                        @pub callable :Fn<;I32> = {
                             let @mut selected :Fn<;I32> = (=> || 1I32)
                             selected := (=> || 7I32)
                             selected
                         }
-                        let @pub values :Array<I32> = {
+                        @pub values :Array<I32> = {
                             let @mut selected :Array<I32> = Array<I32>[1I32]
                             selected := Array<I32>[8I32]
                             selected
                         }
-                        let @pub nested :Inner = :Inner[Array<I32>[9I32]]
-                        let @pub choice :Bool = (or candidate #F)
-                        let @pub looped :Unit = while[|| #F || ()]
+                        @pub nested :Inner = :Inner[Array<I32>[9I32]]
+                        @pub choice :Bool = (or candidate #F)
+                        @pub looped :Unit = while[|| #F || ()]
                     }
                     """)));
             success(session.submit(EvaluationSource.of(
@@ -602,7 +602,7 @@ class NominalSessionTest {
                         value := 12I32
                         readLocal
                     })
-                    class CounterFactory { let @pub read :Fn<;I32> = ::make[] }
+                    class CounterFactory { @pub read :Fn<;I32> = ::make[] }
                     """)));
             success(session.submit(EvaluationSource.of(
                     "local-cell-2.lyra", "let value :CounterFactory = :CounterFactory[]")));
@@ -619,7 +619,7 @@ class NominalSessionTest {
                         let @mut value :I32 = 1I32
                         Tuple[(=> || value) (=> || { value := (+ value 1I32) })]
                     })
-                    class Counter { let @pub operations :Tuple<Fn<;I32>,Fn<;Unit>> = ::make[] }
+                    class Counter { @pub operations :Tuple<Fn<;I32>,Fn<;Unit>> = ::make[] }
                     """)));
             success(session.submit(EvaluationSource.of("two-cells-2.lyra", """
                     let first :Counter = :Counter[]
@@ -640,8 +640,8 @@ class NominalSessionTest {
                     let @nil maybe :I32 = 4I32
                     let @mut selected :Array<I32> = Array<I32>[1I32]
                     class Choice {
-                        let @pub narrowed :I32 = (maybe present -> present : 0I32)
-                        let @pub matched :I32 = (match 0I32
+                        @pub narrowed :I32 = (maybe present -> present : 0I32)
+                        @pub matched :I32 = (match 0I32
                             { selected := Array<I32>[9I32] 1I32 } -> 0I32
                             _ -> selected[0I32])
                     }
@@ -660,7 +660,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("nested-lambda-1.lyra", """
                     let apply :Fn<Fn<;I32>;I32> = (=> |callable| (callable))
-                    class Box { let @pub value :I32 = ::apply[(=> || 31I32)] }
+                    class Box { @pub value :I32 = ::apply[(=> || 31I32)] }
                     """)));
             success(session.submit(EvaluationSource.of("nested-lambda-2.lyra", "let box :Box = :Box[]")));
             assertScalar("31", success(session.submit(EvaluationSource.of(
@@ -673,7 +673,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("callable-value-1.lyra", """
                     let selected :Fn<;I32> = (=> || 32I32)
-                    class Box { let @pub value :I32 = (selected) }
+                    class Box { @pub value :I32 = (selected) }
                     """)));
             success(session.submit(EvaluationSource.of("callable-value-2.lyra", "let box :Box = :Box[]")));
             assertScalar("32", success(session.submit(EvaluationSource.of(
@@ -686,7 +686,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("shadow-1.lyra", """
                     let source :Fn<;I32> = (=> || 41I32)
-                    class Box { let @pub value :I32 = ::source[] }
+                    class Box { @pub value :I32 = ::source[] }
                     """)));
             success(session.submit(EvaluationSource.of("shadow-2.lyra",
                     "let source :Fn<;I32> = (=> || 99I32)")));
@@ -700,12 +700,12 @@ class NominalSessionTest {
     void retainedFactoryObservesCurrentMethodSlotButSavedCallableKeepsOriginalSlot() {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("slot-1.lyra", """
-                    class Counter { let @pub @mut read :Fn<;I32> = (=> || 1I32) }
+                    class Counter { @pub @mut read :Fn<;I32> = (=> || 1I32) }
                     let @mut counter :Counter = :Counter[]
                     let saved :Fn<;I32> = counter:.read
                     class Box {
-                        let @pub current :I32 = counter::read[]
-                        let @pub original :I32 = (saved)
+                        @pub current :I32 = counter::read[]
+                        @pub original :I32 = (saved)
                     }
                     """)));
             success(session.submit(EvaluationSource.of("slot-2.lyra",
@@ -721,8 +721,8 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("callable-routes-1.lyra", """
                     class Routes {
-                        let @pub array :Array<Fn<;I32>> = Array<Fn<;I32>>[(=> || 5I32)]
-                        let @pub tuple :Tuple<Fn<;I32>,Fn<;I32>> = Tuple[(=> || 6I32) (=> || 7I32)]
+                        @pub array :Array<Fn<;I32>> = Array<Fn<;I32>>[(=> || 5I32)]
+                        @pub tuple :Tuple<Fn<;I32>,Fn<;I32>> = Tuple[(=> || 6I32) (=> || 7I32)]
                     }
                     """)));
             success(session.submit(EvaluationSource.of("callable-routes-2.lyra", "let routes :Routes = :Routes[]")));
@@ -740,9 +740,9 @@ class NominalSessionTest {
                 let @mut writes :I32 = 0I32
                 let @nil maybe :I32 = 7I32
                 class Choices {
-                    let @pub conditional :I32 = (#T -> 7I32 : { writes := 99I32 0I32 })
-                    let @pub coalesced :I32 = (maybe : { writes := 99I32 0I32 })
-                    let @pub matched :I32 = (match 1I32 1I32 -> 7I32 _ -> { writes := 99I32 0I32 })
+                    @pub conditional :I32 = (#T -> 7I32 : { writes := 99I32 0I32 })
+                    @pub coalesced :I32 = (maybe : { writes := 99I32 0I32 })
+                    @pub matched :I32 = (match 1I32 1I32 -> 7I32 _ -> { writes := 99I32 0I32 })
                 }
                 """;
         try (LyraSession retained = LyraSession.open(options); LyraSession ordinary = LyraSession.open(options)) {
@@ -766,7 +766,7 @@ class NominalSessionTest {
     void retainedClassFactoriesPreserveAggregateDefaultProvenance() {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("aggregate-factory-1.lyra", """
-                    class Bag { let @pub values :Array<I32> = Array<I32>[1 2] }
+                    class Bag { @pub values :Array<I32> = Array<I32>[1 2] }
                     """)));
             success(session.submit(EvaluationSource.of(
                     "aggregate-factory-2.lyra", "let bag :Bag = :Bag[]")));
@@ -781,7 +781,7 @@ class NominalSessionTest {
     void retainedClassFactoriesPreserveNestedAggregateDefaultProvenance() {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("nested-aggregate-factory-1.lyra", """
-                    class Bag { let @pub values :Tuple<Array<I32>,I32> = Tuple[Array<I32>[3 4] 5] }
+                    class Bag { @pub values :Tuple<Array<I32>,I32> = Tuple[Array<I32>[3 4] 5] }
                     """)));
             success(session.submit(EvaluationSource.of(
                     "nested-aggregate-factory-2.lyra", "let bag :Bag = :Bag[]")));
@@ -797,8 +797,8 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("aggregate-alias-factory-1.lyra", """
                     class Bag {
-                        let @pub values :Array<I32> = Array<I32>[8 9]
-                        let @pub alias :Array<I32> = self:.values
+                        @pub values :Array<I32> = Array<I32>[8 9]
+                        @pub alias :Array<I32> = self:.values
                     }
                     """)));
             success(session.submit(EvaluationSource.of(
@@ -815,7 +815,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("aggregate-call-factory-1.lyra", """
                     let make :Fn<;Array<I32>> = (=> || Array<I32>[10 11])
-                    class Bag { let @pub values :Array<I32> = ::make[] }
+                    class Bag { @pub values :Array<I32> = ::make[] }
                     """)));
             success(session.submit(EvaluationSource.of(
                     "aggregate-call-factory-2.lyra", "let bag :Bag = :Bag[]")));
@@ -831,7 +831,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("callable-call-factory-1.lyra", """
                     let make :Fn<;Fn<;I32>> = (=> || (=> || 14))
-                    class Box { let @pub read :Fn<;I32> = ::make[] }
+                    class Box { @pub read :Fn<;I32> = ::make[] }
                     """)));
             success(session.submit(EvaluationSource.of(
                     "callable-call-factory-2.lyra", "let box :Box = :Box[]")));
@@ -846,9 +846,9 @@ class NominalSessionTest {
     void retainedCallableSummariesResolveNestedProducerConstructions() {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("nested-construction-1.lyra", """
-                    class Inner { let @pub value :I32 = 7 }
+                    class Inner { @pub value :I32 = 7 }
                     let make :Fn<;Inner> = (=> || :Inner[])
-                    class Outer { let @pub inner :Inner = ::make[] }
+                    class Outer { @pub inner :Inner = ::make[] }
                     """)));
             success(session.submit(EvaluationSource.of(
                     "nested-construction-2.lyra", "let outer :Outer = :Outer[]")));
@@ -867,7 +867,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open(options)) {
             success(session.submit(EvaluationSource.of("intrinsic-member-1.lyra", """
                     import std->io
-                    class Printer { let @pub print :Fn<String;Unit> = io->:.println }
+                    class Printer { @pub print :Fn<String;Unit> = io->:.println }
                     """)));
             success(session.submit(EvaluationSource.of(
                     "intrinsic-member-2.lyra", "let printer :Printer = :Printer[]")));
@@ -886,7 +886,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open(options)) {
             success(session.submit(EvaluationSource.of("intrinsic-default-1.lyra", """
                     import std->io
-                    class Printer { let @pub printed :Unit = io->::println["retained"] }
+                    class Printer { @pub printed :Unit = io->::println["retained"] }
                     """)));
             success(session.submit(EvaluationSource.of(
                     "intrinsic-default-2.lyra", "let printer :Printer = :Printer[]")));
@@ -898,7 +898,7 @@ class NominalSessionTest {
     void retainedNilDefaultsKeepProducerCertifiedProvenance() {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of(
-                    "nil-default-1.lyra", "class Maybe { let @pub @nil value :I32 = #NIL }")));
+                    "nil-default-1.lyra", "class Maybe { @pub @nil value :I32 = #NIL }")));
             success(session.submit(EvaluationSource.of(
                     "nil-default-2.lyra", "let maybe :Maybe = :Maybe[]")));
             EvaluationResult.Success result = success(session.submit(EvaluationSource.of(
@@ -917,8 +917,8 @@ class NominalSessionTest {
     void nilableMemberReadContractsCompileAndExecuteAcrossGenerations() {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("nilable-member-1.lyra", """
-                    class Empty { let @pub @nil n :I32 = #NIL }
-                    class Full { let @pub @nil n :I32 = 5I32 }
+                    class Empty { @pub @nil n :I32 = #NIL }
+                    class Full { @pub @nil n :I32 = 5I32 }
                     """)));
             success(session.submit(EvaluationSource.of(
                     "nilable-member-2.lyra", "let empty :Empty = :Empty[] let full :Full = :Full[]")));
@@ -957,7 +957,7 @@ class NominalSessionTest {
     void nilableMemberReadNegativesStayStructuredAcrossGenerations() {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of(
-                    "nilable-negative-1.lyra", "class Empty { let @pub @nil n :I32 = #NIL }")));
+                    "nilable-negative-1.lyra", "class Empty { @pub @nil n :I32 = #NIL }")));
             success(session.submit(EvaluationSource.of(
                     "nilable-negative-2.lyra", "let empty :Empty = :Empty[]")));
 
@@ -988,7 +988,7 @@ class NominalSessionTest {
     void retainedAggregateDefaultsRemainForeignForConsumerMutation() {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("foreign-default-1.lyra", """
-                    class Bag { let @pub values :Array<I32> = Array<I32>[1 2] }
+                    class Bag { @pub values :Array<I32> = Array<I32>[1 2] }
                     """)));
 
             EvaluationResult.CompilationFailure failure = assertInstanceOf(
@@ -1008,7 +1008,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("constructor-aggregate-1.lyra", """
                     class Bag {
-                        let @pub values :Array<I32>
+                        @pub values :Array<I32>
                         Bag = (=> |values :Array<I32>| { self:.values := values })
                     }
                     """)));
@@ -1044,12 +1044,12 @@ class NominalSessionTest {
                     let @mut effects :I32 = 0
                     let record :Fn<I32;I32> = (=> |value| { effects := (++ effects) value })
                     let make :Fn<I32;Fn<;I32>> = (=> |value| (=> || (+ value 1)))
-                    class Inner { let @pub value :I32 = 5 }
+                    class Inner { @pub value :I32 = 5 }
                     class Box {
-                        let @pub @mut captured :Fn<;I32> = (=> || 0)
-                        let @pub @mut returned :Fn<;I32> = (=> || 0)
-                        let @pub @mut nested :Tuple<Array<I32>,I32> = Tuple[Array<I32>[1 2] 3]
-                        let @pub built :Inner
+                        @pub @mut captured :Fn<;I32> = (=> || 0)
+                        @pub @mut returned :Fn<;I32> = (=> || 0)
+                        @pub @mut nested :Tuple<Array<I32>,I32> = Tuple[Array<I32>[1 2] 3]
+                        @pub built :Inner
                         Box = (=> |value :I32| {
                             self:.captured := (=> || value)
                             self:.returned := ::make[value]
@@ -1080,19 +1080,19 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("nested-constructor-contexts-1.lyra", """
                     class Deep {
-                        let @pub @mut values :Array<I32> = Array<I32>[0]
+                        @pub @mut values :Array<I32> = Array<I32>[0]
                         Deep = (=> |value :I32| { self:.values[0] := value })
                     }
                     class Leaf {
-                        let @pub deep :Deep
+                        @pub deep :Deep
                         Leaf = (=> |value :I32| { self:.deep := :Deep[value] })
                     }
                     class Middle {
-                        let @pub leaf :Leaf
+                        @pub leaf :Leaf
                         Middle = (=> |value :I32| { self:.leaf := :Leaf[value] })
                     }
                     class Outer {
-                        let @pub middle :Middle
+                        @pub middle :Middle
                         Outer = (=> || { self:.middle := :Middle[7] })
                     }
                     let producerOuter :Outer = :Outer[]
@@ -1125,15 +1125,15 @@ class NominalSessionTest {
                         digit
                     })
                     class Ordered {
-                        let @pub first :I32 = ::mark[3]
-                        let @pub second :I32 = ::mark[4]
+                        @pub first :I32 = ::mark[3]
+                        @pub second :I32 = ::mark[4]
                         Ordered = (=> |left :I32 right :I32| {
                             let ignored :I32 = ::mark[(+ self:.first 2)]
                         })
                     }
                     struct Sequence {
-                        let required :I32
-                        let afterRequired :I32 = ::mark[(+ self:.required 1)]
+                        required :I32
+                        afterRequired :I32 = ::mark[(+ self:.required 1)]
                     }
                     """)));
             success(session.submit(EvaluationSource.of("constructor-order-2.lyra", """
@@ -1157,7 +1157,7 @@ class NominalSessionTest {
                     let rootValue :I32 = ::initializeRoot[]
                     let @mut defaultEffects :I32 = 0
                     class Once {
-                        let @pub value :I32 = {
+                        @pub value :I32 = {
                             defaultEffects := (++ defaultEffects)
                             defaultEffects
                         }
@@ -1189,15 +1189,15 @@ class NominalSessionTest {
                         digit
                     })
                     class ArgumentFailure {
-                        let @pub value :I32 = 1
+                        @pub value :I32 = 1
                         ArgumentFailure = (=> |left :I32 right :I32| { () })
                     }
                     class DefaultFailure {
-                        let @pub first :I32 = ::touch[1]
-                        let @pub broken :I32 = (% 8 divisor)
+                        @pub first :I32 = ::touch[1]
+                        @pub broken :I32 = (% 8 divisor)
                     }
                     class ConstructorFailure {
-                        let @pub value :I32 = ::touch[2]
+                        @pub value :I32 = ::touch[2]
                         ConstructorFailure = (=> || {
                             let marker :I32 = ::touch[3]
                             let ignored :I32 = (% 9 divisor)
@@ -1241,7 +1241,7 @@ class NominalSessionTest {
                             "let stagedDefault :DefaultFailure = :DefaultFailure[]")));
             assertEquals("LYR-ARITH", defaultFailure.code());
             assertProducerFrame(defaultFailure, producerSource,
-                    "(% 8 divisor)", 13, 28);
+                    "(% 8 divisor)", 13, 24);
             assertScalar("41", success(session.submit(EvaluationSource.of(
                     "constructor-default-effects.lyra", "effects"))));
             assertInstanceOf(EvaluationResult.CompilationFailure.class,
@@ -1286,9 +1286,9 @@ class NominalSessionTest {
                         (=> |factory| (=> || (factory)))
                     let captured :Fn<;Array<I32>> = ::capture[make]
                     class Outer {
-                        let @pub directValue :Array<I32> = ::direct[]
-                        let @pub parameterValue :Array<I32> = ::parameter[]
-                        let @pub capturedValue :Array<I32> = ::captured[]
+                        @pub directValue :Array<I32> = ::direct[]
+                        @pub parameterValue :Array<I32> = ::parameter[]
+                        @pub capturedValue :Array<I32> = ::captured[]
                     }
                     let outer :Outer = :Outer[]
                     """)));
@@ -1305,7 +1305,7 @@ class NominalSessionTest {
         try (LyraSession session = LyraSession.open()) {
             success(session.submit(EvaluationSource.of("mutable-callable-default-1.lyra", """
                     let @mut selected :Fn<;I32> = (=> || 1I32)
-                    class C { let @pub value :I32 = (selected) }
+                    class C { @pub value :I32 = (selected) }
                     """)));
             assertScalar("1", success(session.submit(EvaluationSource.of(
                     "mutable-callable-default-2.lyra", "let first :C = :C[] first:.value"))));
@@ -1326,7 +1326,7 @@ class NominalSessionTest {
                     """)));
             success(session.submit(EvaluationSource.of("nested-returned-callable-2.lyra", """
                     let wrapper :Fn<;Fn<;I32>> = (=> || ::make[])
-                    class Box { let @pub read :Fn<;I32> = ::wrapper[] }
+                    class Box { @pub read :Fn<;I32> = ::wrapper[] }
                     let box :Box = :Box[]
                     """)));
             assertScalar("14", success(session.submit(EvaluationSource.of(
@@ -1340,8 +1340,8 @@ class NominalSessionTest {
             success(session.submit(EvaluationSource.of(
                     "nominal-1.lyra", """
                             class Counter {
-                                let @pub @mut value :I32 = 1
-                                let @pub @mut read :Fn<;I32> = (=> || self:.value)
+                                @pub @mut value :I32 = 1
+                                @pub @mut read :Fn<;I32> = (=> || self:.value)
                             }
                             let @mut counter :Counter = :Counter[]
                             let saved :Fn<;I32> = counter:.read
@@ -1367,7 +1367,7 @@ class NominalSessionTest {
     void nominalSnapshotsExposeStructDataButNotPrivateClassState() {
         try (LyraSession session = LyraSession.open()) {
             EvaluationResult.Success structResult = success(session.submit(EvaluationSource.of(
-                    "snapshot-struct.lyra", "struct Pair { let left :I32 let right :I32 } :Pair[2 3]")));
+                    "snapshot-struct.lyra", "struct Pair { left :I32 right :I32 } :Pair[2 3]")));
             ValueSnapshot.Aggregate struct = assertInstanceOf(ValueSnapshot.Aggregate.class,
                     structResult.value().orElseThrow().data());
             assertEquals(AggregateKind.STRUCT, struct.kind());
@@ -1377,7 +1377,7 @@ class NominalSessionTest {
                     .map(ValueSnapshot.Scalar::value).toList());
 
             EvaluationResult.Success classResult = success(session.submit(EvaluationSource.of(
-                    "snapshot-class.lyra", "class Secret { let value :I32 = 9 } :Secret[]")));
+                    "snapshot-class.lyra", "class Secret { value :I32 = 9 } :Secret[]")));
             ValueSnapshot.Aggregate clazz = assertInstanceOf(ValueSnapshot.Aggregate.class,
                     classResult.value().orElseThrow().data());
             assertEquals(AggregateKind.CLASS, clazz.kind());

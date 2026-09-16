@@ -9,7 +9,7 @@ pair:.0
 
 Structs and classes are nominal. Their identity comes from the declaration and originating module revision, not from matching field shapes. Two declarations with identical members still define different types.
 
-Structs are data-only nominal types. Uninitialized fields become positional construction parameters in declaration order, and fields are public by default. Struct equality compares current field values structurally within the same nominal type.
+Structs are data-only nominal types. Uninitialized fields become positional construction parameters in declaration order, and fields are public by default. Member declarations omit `let` only inside struct/class bodies; top-level, block-local, and lambda-local bindings remain `let` bindings. Struct equality compares current field values structurally within the same nominal type.
 
 Classes may have private state, function-valued methods, and one explicit constructor. Class fields and methods are private unless `@pub`. Class equality is instance identity.
 

@@ -46,45 +46,45 @@ public class NilableMemberReadContractTest {
         for (String source : List.of(
                 // Explicit annotation over a #NIL member read.
                 """
-                class Box { let @pub @nil n :I32 = #NIL }
+                class Box { @pub @nil n :I32 = #NIL }
                 let box :Box = :Box[]
                 let v :@nil I32 = box:.n
                 """,
                 // Annotation widening over a non-nil member value.
                 """
-                class Box { let @pub n :I32 = 4 }
+                class Box { @pub n :I32 = 4 }
                 let box :Box = :Box[]
                 let v :@nil I32 = box:.n
                 """,
                 // Coalesce consumes the independently derived nilable contract.
                 """
-                class Box { let @pub @nil n :I32 = #NIL }
+                class Box { @pub @nil n :I32 = #NIL }
                 let box :Box = :Box[]
                 let v :I32 = (box:.n : 0)
                 """,
                 // Predicate narrowing consumes the independently derived contract.
                 """
-                class Box { let @pub @nil n :I32 = 5I32 }
+                class Box { @pub @nil n :I32 = 5I32 }
                 let box :Box = :Box[]
                 let v :I32 = (box:.n narrowed -> narrowed : 0)
                 """,
                 // Value match uses only the legal #NIL equality on a nilable subject.
                 """
-                class Box { let @pub @nil n :I32 = #NIL }
+                class Box { @pub @nil n :I32 = #NIL }
                 let box :Box = :Box[]
                 let v :I32 = (match box:.n #NIL -> 1 _ -> 0)
                 """,
                 // Value match over a non-nilable member read keeps its value equality.
                 """
-                class Box { let @pub n :I32 = 4 }
+                class Box { @pub n :I32 = 4 }
                 let box :Box = :Box[]
                 let v :I32 = (match box:.n 4 -> 1 _ -> 0)
                 """,
                 // Nilable member read inside a structural literal/self read.
                 """
                 class Box {
-                    let @pub @nil n :I32 = #NIL
-                    let @pub copy :@nil I32 = self:.n
+                    @pub @nil n :I32 = #NIL
+                    @pub copy :@nil I32 = self:.n
                 }
                 let box :Box = :Box[]
                 let t :Tuple<@nil I32> = Tuple[box:.copy]
@@ -103,27 +103,27 @@ public class NilableMemberReadContractTest {
     void nilableMemberReadNegativesStayStructuredSourceFailures() {
         for (String[] negative : List.of(
                 new String[] { """
-                        class Box { let @pub @nil n :I32 = #NIL }
+                        class Box { @pub @nil n :I32 = #NIL }
                         let @nil box :Box = #NIL
                         let v :@nil I32 = box:.n
                         """, "LYC-TYPE-013", "nilable values must be narrowed before member access" },
                 new String[] { """
-                        class Box { let @pub @nil n :I32 = #NIL }
+                        class Box { @pub @nil n :I32 = #NIL }
                         let box :Box = :Box[]
                         let v :I32 = box:.n
                         """, "LYC-TYPE-001", "cannot use @nilI32 where I32 is required" },
                 new String[] { """
-                        class Box { let @pub n :I32 = 4 }
+                        class Box { @pub n :I32 = 4 }
                         let box :Box = :Box[]
                         let v :I32 = (box:.n : 0)
                         """, "LYC-TYPE-005", "nil coalescing requires an @nil value" },
                 new String[] { """
-                        class Box { let @pub @nil n :I32 = #NIL }
+                        class Box { @pub @nil n :I32 = #NIL }
                         let box :Box = :Box[]
                         let v :I32 = (match box:.n 1 -> 1 _ -> 0)
                         """, "LYC-TYPE-005", "nilable match subjects may only use #NIL equality before narrowing" },
                 new String[] { """
-                        class Box { let @pub @nil n :I32 = #NIL }
+                        class Box { @pub @nil n :I32 = #NIL }
                         let box :Box = :Box[]
                         let v :@nil I32 = box:.missing
                         """, "LYC-RESOLVE-013", "unknown member: missing" })) {
@@ -137,7 +137,7 @@ public class NilableMemberReadContractTest {
         // contract constrains it contextually: the exact-schema-slot derivation
         // is the rejecting proof.
         TypedSemanticGraph original = success("""
-                class Box { let @pub @nil n :I32 = #NIL }
+                class Box { @pub @nil n :I32 = #NIL }
                 let box :Box = :Box[]
                 let v = (box:.n : 0)
                 """);
@@ -158,7 +158,7 @@ public class NilableMemberReadContractTest {
     @Test
     void irValidationRejectsForgedMemberLinksAndContracts() {
         TypedIr ir = phaseSuccess(TypedIrBuilder.lower(success("""
-                class Box { let @pub @nil n :I32 = #NIL }
+                class Box { @pub @nil n :I32 = #NIL }
                 let box :Box = :Box[]
                 let v :@nil I32 = box:.n
                 """)));
@@ -200,7 +200,7 @@ public class NilableMemberReadContractTest {
         // A non-nil annotation consuming a nilable member read is an ordinary
         // type mismatch; it never reaches IR validation or LYC-IR-003.
         PhaseResult<?> typed = TypeChecker.check(success(resolve("""
-                class Box { let @pub @nil n :I32 = #NIL }
+                class Box { @pub @nil n :I32 = #NIL }
                 let box :Box = :Box[]
                 let v :I32 = box:.n
                 """)));

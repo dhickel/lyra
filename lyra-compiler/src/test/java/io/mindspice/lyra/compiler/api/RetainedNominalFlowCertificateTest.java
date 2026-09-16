@@ -75,13 +75,13 @@ final class RetainedNominalFlowCertificateTest {
                 new Probe("range", "Range<I32>", "(0I32..2I32:1I32)", TypedExpressionKind.RANGE, true, ""),
                 new Probe("iter", "Unit", "iter[(0I32..2I32:1I32) || ()]", TypedExpressionKind.ITER, true, ""),
                 new Probe("while", "Unit", "while[|| #F || ()]", TypedExpressionKind.WHILE, true, ""),
-                new Probe("nominal declaration", "Unit", "struct Invalid { let value :I32 }", TypedExpressionKind.NOMINAL_DECLARATION, false, "LYC-PARSE-001"),
+                new Probe("nominal declaration", "Unit", "struct Invalid { value :I32 }", TypedExpressionKind.NOMINAL_DECLARATION, false, "LYC-PARSE-001"),
                 new Probe("top-level declaration", "I32", "let local :I32 = 1I32", TypedExpressionKind.DECLARATION, false, "LYC-PARSE-001"),
                 new Probe("top-level rebinding", "I32", "local := 1I32", TypedExpressionKind.REBINDING, false, "LYC-PARSE-003"));
         for (Probe probe : probes) {
             String source = "import std->io let inc :Fn<I32;I32> = (=> |value| value) let zero :Fn<;I32> = (=> || 0I32) let external :I32 = 1I32 "
-                    + "let @nil maybe :I32 = #NIL class Nested { let value :I32 = 1I32 } let externalNominal :Nested = :Nested[] class C { "
-                    + "let seed :I32 = 1I32 let value :" + probe.type() + " = " + probe.initializer() + " }";
+                    + "let @nil maybe :I32 = #NIL class Nested { value :I32 = 1I32 } let externalNominal :Nested = :Nested[] class C { "
+                    + "seed :I32 = 1I32 value :" + probe.type() + " = " + probe.initializer() + " }";
             SessionCompileResult result = LyraCompiler.compileSession(
                     new SessionCompileRequest("inventory-" + probe.name() + ".lyra", source,
                             SessionSnapshot.empty()));
@@ -109,11 +109,11 @@ final class RetainedNominalFlowCertificateTest {
         SessionCompileResult.Success producer = compile("alternative-shape.lyra", """
                 let @nil maybe :I32 = 7I32
                 class Choices {
-                    let conditional :I32 = (#T -> 1I32 : 2I32)
-                    let unitConditional :Unit = (#T -> ())
-                    let coalesced :I32 = (maybe : 3I32)
-                    let matched :I32 = (match 1I32 1I32 -> 4I32 _ -> 5I32)
-                    let conditioned :I32 = (cond #F -> 6I32 _ -> 7I32)
+                    conditional :I32 = (#T -> 1I32 : 2I32)
+                    unitConditional :Unit = (#T -> ())
+                    coalesced :I32 = (maybe : 3I32)
+                    matched :I32 = (match 1I32 1I32 -> 4I32 _ -> 5I32)
+                    conditioned :I32 = (cond #F -> 6I32 _ -> 7I32)
                 }
                 """, SessionSnapshot.empty());
         SessionFlowCertificate.RetainedNominal choices = nominal(certificate(producer), "Choices");
@@ -161,10 +161,10 @@ final class RetainedNominalFlowCertificateTest {
                 let matchEffect :Fn<;I32> = (=> || { io->::println["match"] 0I32 })
                 let condEffect :Fn<;I32> = (=> || { io->::println["cond"] 0I32 })
                 class Choices {
-                    let conditional :I32 = (#T -> 1I32 : (conditionalEffect))
-                    let coalesced :I32 = (maybe : (coalesceEffect))
-                    let matched :I32 = (match 1I32 1I32 -> 1I32 _ -> (matchEffect))
-                    let conditioned :I32 = (cond #T -> 1I32 _ -> (condEffect))
+                    conditional :I32 = (#T -> 1I32 : (conditionalEffect))
+                    coalesced :I32 = (maybe : (coalesceEffect))
+                    matched :I32 = (match 1I32 1I32 -> 1I32 _ -> (matchEffect))
+                    conditioned :I32 = (cond #T -> 1I32 _ -> (condEffect))
                 }
                 """;
         SessionCompileResult.Success producer = compile("alternative-effects-producer.lyra", definitions,
@@ -183,10 +183,10 @@ final class RetainedNominalFlowCertificateTest {
         SessionCompileResult.Success producer = compile("callable-routes-proof.lyra", """
                 let selected :Fn<;I32> = (=> || 3I32)
                 class Routes {
-                    let call :I32 = (selected)
-                    let chosen :Fn<;I32> = (cond #T -> selected _ -> (=> || 4I32))
-                    let array :Array<Fn<;I32>> = Array<Fn<;I32>>[(=> || 5I32)]
-                    let tuple :Tuple<Fn<;I32>,Fn<;I32>> = Tuple[(=> || 6I32) (=> || 7I32)]
+                    call :I32 = (selected)
+                    chosen :Fn<;I32> = (cond #T -> selected _ -> (=> || 4I32))
+                    array :Array<Fn<;I32>> = Array<Fn<;I32>>[(=> || 5I32)]
+                    tuple :Tuple<Fn<;I32>,Fn<;I32>> = Tuple[(=> || 6I32) (=> || 7I32)]
                 }
                 """, SessionSnapshot.empty());
         SessionFlowCertificate.RetainedNominal routes = nominal(certificate(producer), "Routes");
@@ -211,9 +211,9 @@ final class RetainedNominalFlowCertificateTest {
     @Test
     void retainedConstructionCertificationRejectsUnderivableRoutes() {
         var producer = compile("object-route-producer.lyra", """
-                class Nested { let @pub value :I32 = 7I32 }
+                class Nested { @pub value :I32 = 7I32 }
                 let make :Fn<;Tuple<Nested>> = (=> || Tuple[:Nested[]])
-                class Holder { let @pub value :Tuple<Nested> = ::make[] }
+                class Holder { @pub value :Tuple<Nested> = ::make[] }
                 """, SessionSnapshot.empty());
         var certificate = certificate(producer);
         var construction = certificate.callableSummaries().orderedSummaries().stream()
@@ -238,7 +238,7 @@ final class RetainedNominalFlowCertificateTest {
     void derivedCertificationRejectsDiscardedSequenceAllocations() {
         SessionCompileResult.Success producer = compile("discarded-allocation-producer.lyra", """
                 class Box {
-                    let @pub values :Array<I32> = {
+                    @pub values :Array<I32> = {
                         let discarded :Array<I32> = Array<I32>[1 2]
                         Array<I32>[3 4]
                     }
@@ -276,7 +276,7 @@ final class RetainedNominalFlowCertificateTest {
     void derivedCertificationFollowsTheExactShadowedResultBinding() {
         SessionCompileResult.Success producer = compile("shadowed-allocation-producer.lyra", """
                 class Box {
-                    let @pub values :Array<I32> = {
+                    @pub values :Array<I32> = {
                         let selected :Array<I32> = Array<I32>[1]
                         {
                             let selected :Array<I32> = Array<I32>[2]
@@ -326,7 +326,7 @@ final class RetainedNominalFlowCertificateTest {
         // "aggregate owner module is foreign" bug exception.
         SessionCompileResult.Success producer = compile("rebind-tuple-producer.lyra", """
                 class Holder {
-                    let @pub pair :Tuple<Array<I32>,I32> = {
+                    @pub pair :Tuple<Array<I32>,I32> = {
                         let @mut selected :Array<I32> = Array<I32>[1 2]
                         Tuple[selected 3]
                     }
@@ -377,7 +377,7 @@ final class RetainedNominalFlowCertificateTest {
     void derivedCertificationRejectsOverwrittenRebindAllocations() {
         SessionCompileResult.Success producer = compile("overwritten-rebind-producer.lyra", """
                 class Box {
-                    let @pub values :Array<I32> = {
+                    @pub values :Array<I32> = {
                         let @mut selected :Array<I32> = Array<I32>[1 2]
                         selected := Array<I32>[3 4]
                         selected := Array<I32>[5 6]
@@ -432,7 +432,7 @@ final class RetainedNominalFlowCertificateTest {
         // rebind chain resolves through the sequence bindings.
         SessionCompileResult.Success returned = compile("returned-rebind-producer.lyra", """
                 class Box {
-                    let @pub values :Array<I32> = {
+                    @pub values :Array<I32> = {
                         let @mut selected :Array<I32> = Array<I32>[1 2]
                         selected := Array<I32>[3 4]
                         selected
@@ -467,8 +467,8 @@ final class RetainedNominalFlowCertificateTest {
         // and keeps certifying the written value.
         SessionCompileResult.Success fieldWrite = compile("field-write-rebind-producer.lyra", """
                 class Box {
-                    let @pub @mut sink :Array<I32> = Array<I32>[0]
-                    let @pub values :Array<I32> = {
+                    @pub @mut sink :Array<I32> = Array<I32>[0]
+                    @pub values :Array<I32> = {
                         self:.sink := Array<I32>[1 2]
                         Array<I32>[3 4]
                     }
@@ -508,10 +508,10 @@ final class RetainedNominalFlowCertificateTest {
         // A nominal object argument the callee neither returns nor writes
         // must not mint a certified derived object identity.
         SessionCompileResult.Success ignored = compile("ignored-object-argument-producer.lyra", """
-                class Inner { let @pub value :I32 = 5 }
+                class Inner { @pub value :I32 = 5 }
                 let pick :Fn<Inner;Inner> = (=> |ignored| :Inner[])
                 class Box {
-                    let @pub nested :Inner = ::pick[:Inner[]]
+                    @pub nested :Inner = ::pick[:Inner[]]
                 }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success ignoredConsumer = compile("ignored-object-argument-consumer.lyra",
@@ -521,10 +521,10 @@ final class RetainedNominalFlowCertificateTest {
 
         // Returned and written arguments keep certifying.
         SessionCompileResult.Success returned = compile("returned-object-argument-producer.lyra", """
-                class Inner { let @pub value :I32 = 5 }
+                class Inner { @pub value :I32 = 5 }
                 let keep :Fn<Inner;Inner> = (=> |kept| kept)
                 class Box {
-                    let @pub nested :Inner = ::keep[:Inner[]]
+                    @pub nested :Inner = ::keep[:Inner[]]
                 }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success returnedConsumer = compile("returned-object-argument-consumer.lyra",
@@ -533,11 +533,11 @@ final class RetainedNominalFlowCertificateTest {
                 "an object argument the summary returns must certify");
 
         SessionCompileResult.Success written = compile("written-object-argument-producer.lyra", """
-                class Inner { let @pub value :I32 = 5 }
+                class Inner { @pub value :I32 = 5 }
                 let @mut @nil sink :Inner = #NIL
                 let store :Fn<Inner;Unit> = (=> |kept| { sink := kept })
                 class Box {
-                    let @pub nested :Inner = { ::store[:Inner[]] :Inner[] }
+                    @pub nested :Inner = { ::store[:Inner[]] :Inner[] }
                 }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success writtenConsumer = compile("written-object-argument-consumer.lyra",
@@ -585,7 +585,7 @@ final class RetainedNominalFlowCertificateTest {
                 let choose :Fn<Array<I32>,Array<I32>;Array<I32>> =
                     (=> |selected discarded| selected)
                 class Box {
-                    let @pub values :Array<I32> =
+                    @pub values :Array<I32> =
                         ::choose[Array<I32>[1] Array<I32>[2]]
                 }
                 """, SessionSnapshot.empty());
@@ -617,13 +617,13 @@ final class RetainedNominalFlowCertificateTest {
     void derivedCertificationFollowsOnlyConstructorArgumentsWrittenToState() {
         SessionCompileResult.Success producer = compile("constructor-argument-allocation-producer.lyra", """
                 class Box {
-                    let @pub values :Array<I32>
+                    @pub values :Array<I32>
                     Box = (=> |selected :Array<I32> discarded :Array<I32>| {
                         self:.values := selected
                     })
                 }
                 class Outer {
-                    let @pub box :Box =
+                    @pub box :Box =
                         :Box[Array<I32>[1] Array<I32>[2]]
                 }
                 """, SessionSnapshot.empty());
@@ -656,7 +656,7 @@ final class RetainedNominalFlowCertificateTest {
     void derivedCertificationRejectsStaticallyUnselectedAlternativeAllocations() {
         SessionCompileResult.Success producer = compile("unselected-allocation-producer.lyra", """
                 class Box {
-                    let @pub values :Array<I32> =
+                    @pub values :Array<I32> =
                         (#T -> Array<I32>[3] : Array<I32>[4])
                 }
                 """, SessionSnapshot.empty());
@@ -692,8 +692,8 @@ final class RetainedNominalFlowCertificateTest {
         var producer = compile("callable-route-producer.lyra", """
                 let selected :Fn<;I32> = (=> || 3I32)
                 class Holder {
-                    let @pub value :Tuple<Fn<;I32>> = Tuple[selected]
-                    let @pub array :Array<Fn<;I32>> = Array<Fn<;I32>>[selected]
+                    @pub value :Tuple<Fn<;I32>> = Tuple[selected]
+                    @pub array :Array<Fn<;I32>> = Array<Fn<;I32>>[selected]
                 }
                 """, SessionSnapshot.empty());
         var certificate = certificate(producer);
@@ -716,8 +716,8 @@ final class RetainedNominalFlowCertificateTest {
                 let second :Fn<;I32> = (=> || 2I32)
                 let identity :Fn<Fn<;I32>;Fn<;I32>> = (=> |value| value)
                 class Holder {
-                    let @pub root :Fn<;I32> = ::identity[first]
-                    let @pub tuple :Tuple<Fn<;I32>> = Tuple[::identity[second]]
+                    @pub root :Fn<;I32> = ::identity[first]
+                    @pub tuple :Tuple<Fn<;I32>> = Tuple[::identity[second]]
                 }
                 """, SessionSnapshot.empty());
         var certificate = certificate(producer);
@@ -734,8 +734,8 @@ final class RetainedNominalFlowCertificateTest {
         var producer = compile("callable-reprojection-producer.lyra", """
                 let selected :Fn<;I32> = (=> || 3I32)
                 class Holder {
-                    let @pub value :Tuple<Fn<;I32>> = Tuple[selected]
-                    let @pub array :Array<Fn<;I32>> = Array<Fn<;I32>>[selected]
+                    @pub value :Tuple<Fn<;I32>> = Tuple[selected]
+                    @pub array :Array<Fn<;I32>> = Array<Fn<;I32>>[selected]
                 }
                 """, SessionSnapshot.empty());
         compile("callable-route-consumer.lyra", """
@@ -749,7 +749,7 @@ final class RetainedNominalFlowCertificateTest {
     void retainedCallableFactoryAllocationCallsKeepDistinctFiniteCallSites() {
         SessionCompileResult.Success producer = compile("allocator-proof.lyra", """
                 let make :Fn<;Array<I32>> = (=> || Array<I32>[1I32])
-                class Pair { let values :Tuple<Array<I32>,Array<I32>> = Tuple[::make[], ::make[]] }
+                class Pair { values :Tuple<Array<I32>,Array<I32>> = Tuple[::make[], ::make[]] }
                 """, SessionSnapshot.empty());
         var tuple = assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Composite.class,
                 transfer(nominal(certificate(producer), "Pair"), "values"));
@@ -774,7 +774,7 @@ final class RetainedNominalFlowCertificateTest {
                 let allocate :Fn<;Array<I32>> = (=> || Array<I32>[1I32])
                 let makePair :Fn<;Tuple<Array<I32>,Array<I32>>> =
                     (=> || Tuple[::allocate[], ::allocate[]])
-                class Pair { let @pub values :Tuple<Array<I32>,Array<I32>> = ::makePair[] }
+                class Pair { @pub values :Tuple<Array<I32>,Array<I32>> = ::makePair[] }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success consumer = compile("nested-allocator-consumer.lyra",
                 "let pair :Pair = :Pair[]", producer.stagedSnapshot());
@@ -793,10 +793,10 @@ final class RetainedNominalFlowCertificateTest {
                 let shared :Array<I32> = Array<I32>[5I32]
                 let sharedValue :Fn<;Array<I32>> = (=> || shared)
                 class Fresh {
-                    let @pub values :Array<I32> = Array<I32>[1I32]
-                    let @pub alias :Array<I32> = self:.values
+                    @pub values :Array<I32> = Array<I32>[1I32]
+                    @pub alias :Array<I32> = self:.values
                 }
-                class Shared { let @pub values :Array<I32> = ::sharedValue[] }
+                class Shared { @pub values :Array<I32> = ::sharedValue[] }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success consumer = compile("fresh-consumer.lyra", """
                 let first :Fresh = :Fresh[]
@@ -830,10 +830,10 @@ final class RetainedNominalFlowCertificateTest {
     @Test
     void retainedFreshAllocationsDifferAcrossGenerationsAndNestedConstructionSites() {
         SessionCompileResult.Success producer = compile("nested-fresh-producer.lyra", """
-                class Inner { let @pub values :Array<I32> = Array<I32>[1I32] }
+                class Inner { @pub values :Array<I32> = Array<I32>[1I32] }
                 class Outer {
-                    let @pub left :Inner = :Inner[]
-                    let @pub right :Inner = :Inner[]
+                    @pub left :Inner = :Inner[]
+                    @pub right :Inner = :Inner[]
                 }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success second = compile(
@@ -859,10 +859,10 @@ final class RetainedNominalFlowCertificateTest {
     @Test
     void retainedProjectedFreshValuesAreRebasedAndCertifiedAtRoot() {
         SessionCompileResult.Success producer = compile("projected-producer.lyra", """
-                class Inner { let value :I32 = 1I32 }
+                class Inner { value :I32 = 1I32 }
                 class Box {
-                    let values :Array<I32> = Tuple[Array<I32>[1I32]]:.0
-                    let nested :Inner = Tuple[:Inner[]]:.0
+                    values :Array<I32> = Tuple[Array<I32>[1I32]]:.0
+                    nested :Inner = Tuple[:Inner[]]:.0
                 }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success consumer = compile(
@@ -879,7 +879,7 @@ final class RetainedNominalFlowCertificateTest {
     @Test
     void derivedCertificationLegacyOverloadFailsClosedWithoutAnExactConsumerTarget() {
         SessionCompileResult.Success producer = compile("exact-target-producer.lyra", """
-                class Left { let values :Array<I32> = Array<I32>[1I32] }
+                class Left { values :Array<I32> = Array<I32>[1I32] }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success consumer = compile("exact-target-consumer.lyra",
                 "let leftValue :Left = :Left[]", producer.stagedSnapshot());
@@ -909,9 +909,9 @@ final class RetainedNominalFlowCertificateTest {
                     (=> |factory| (=> || (factory)))
                 let captured :Fn<;Array<I32>> = ::capture[make]
                 class Outer {
-                    let directValue :Array<I32> = ::direct[]
-                    let parameterValue :Array<I32> = ::parameter[]
-                    let capturedValue :Array<I32> = ::captured[]
+                    directValue :Array<I32> = ::direct[]
+                    parameterValue :Array<I32> = ::parameter[]
+                    capturedValue :Array<I32> = ::captured[]
                 }
                 let outer :Outer = :Outer[]
                 """, producer.stagedSnapshot());
@@ -926,7 +926,7 @@ final class RetainedNominalFlowCertificateTest {
     @Test
     void capturedCurrentWrapperCarriesContextToRetainedObjectFactory() {
         SessionCompileResult.Success producer = compile("wrapper-object-producer.lyra", """
-                class Inner { let value :I32 = 1I32 }
+                class Inner { value :I32 = 1I32 }
                 let make :Fn<;Inner> = (=> || :Inner[])
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success consumer = compile("wrapper-object-consumer.lyra", """
@@ -958,7 +958,7 @@ final class RetainedNominalFlowCertificateTest {
 
         compile("nested-callable-proof-2.lyra", """
                 let wrapper :Fn<;Fn<;I32>> = (=> || ::make[])
-                class Box { let read :Fn<;I32> = ::wrapper[] }
+                class Box { read :Fn<;I32> = ::wrapper[] }
                 let box :Box = :Box[]
                 """, producer.stagedSnapshot());
     }
@@ -1005,7 +1005,7 @@ final class RetainedNominalFlowCertificateTest {
         SessionCompileResult.Success producer = compile("effect-producer.lyra", """
                 import std->io
                 let initialize :Fn<;I32> = (=> || { io->::println["retained"] 7 })
-                class Box { let value :I32 = ::initialize[] }
+                class Box { value :I32 = ::initialize[] }
                 """, SessionSnapshot.empty());
 
         SessionCompileResult.Success consumer = compile(
@@ -1028,10 +1028,10 @@ final class RetainedNominalFlowCertificateTest {
     void retainedConstructorSummaryCertifiesNestedObjectsAndTupleArrayWrites() {
         SessionCompileResult.Success producer = compile("constructor-summary-producer.lyra", """
                 let record :Fn<I32;I32> = (=> |value| value)
-                class Inner { let @pub value :I32 = 5 }
+                class Inner { @pub value :I32 = 5 }
                 class Box {
-                    let @pub built :Inner
-                    let @pub @mut nested :Tuple<Array<I32>,I32> =
+                    @pub built :Inner
+                    @pub @mut nested :Tuple<Array<I32>,I32> =
                         Tuple[Array<I32>[1 2] 3]
                     Box = (=> || {
                         self:.nested:.0[1] := ::record[9]
@@ -1150,7 +1150,7 @@ final class RetainedNominalFlowCertificateTest {
     @Test
     void nilCertificationAcceptsOnlyExactProducerProvenance() {
         SessionCompileResult.Success producer = compile("nil-proof.lyra",
-                "class Maybe { let @nil value :I32 = #NIL }", SessionSnapshot.empty());
+                "class Maybe { @nil value :I32 = #NIL }", SessionSnapshot.empty());
         SessionFlowCertificate certificate = certificate(producer);
         var value = assertInstanceOf(
                 SessionFlowCertificate.RetainedInitializerTransfer.Value.class,
@@ -1276,11 +1276,11 @@ final class RetainedNominalFlowCertificateTest {
     @Test
     void closedTransferRecordsRejectForgedChildTypesAndSchemas() {
         SessionCompileResult.Success compiled = compile("forged-transfer.lyra", """
-                class Inner { let value :I32 = 1I32 }
+                class Inner { value :I32 = 1I32 }
                 class Holder {
-                    let value :I32 = 1I32
-                    let nested :Inner = :Inner[]
-                    let looped :Unit = while[|| #F || ()]
+                    value :I32 = 1I32
+                    nested :Inner = :Inner[]
+                    looped :Unit = while[|| #F || ()]
                 }
                 """, SessionSnapshot.empty());
         SessionFlowCertificate.RetainedNominal holder = nominal(certificate(compiled), "Holder");
@@ -1384,7 +1384,7 @@ final class RetainedNominalFlowCertificateTest {
     void derivedAllocationCertificationRejectsAnotherConsumerContext() {
         SessionCompileResult.Success producer = compile(
                 "derived-proof-producer.lyra",
-                "class Inner { let value :I32 = 1I32 } class Box { let values :Array<I32> = Array<I32>[1I32] let inner :Inner = :Inner[] }",
+                "class Inner { value :I32 = 1I32 } class Box { values :Array<I32> = Array<I32>[1I32] inner :Inner = :Inner[] }",
                 SessionSnapshot.empty());
         SessionCompileResult.Success consumer = compile(
                 "derived-proof-consumer.lyra", "let box :Box = :Box[]", producer.stagedSnapshot());
@@ -1425,7 +1425,7 @@ final class RetainedNominalFlowCertificateTest {
     @Test
     void certifiedProofPredicatesRejectForgedWitnessesAndUseSites() {
         SessionCompileResult.Success producer = compile("holder.lyra", """
-                class Holder { let @pub values :Array<I32> = Array<I32>[1 2] }
+                class Holder { @pub values :Array<I32> = Array<I32>[1 2] }
                 let @mut holder :Holder = :Holder[]
                 """, SessionSnapshot.empty());
         SessionFlowCertificate certificate = certificate(producer);
@@ -1497,7 +1497,7 @@ final class RetainedNominalFlowCertificateTest {
         for (int index = 0; index < legalForms.length; index++) {
             String label = "legal-" + index + ".lyra";
             SessionCompileResult.Success producer = compile(label,
-                    "class C" + index + " { let @pub x :"
+                    "class C" + index + " { @pub x :"
                             + (index == 4 ? "Tuple<I32,Fn<;I32>>" : "I32") + " = "
                             + legalForms[index] + " }", SessionSnapshot.empty());
             assertTrue(SessionFlowCertificate.retainedInitializerDiagnostic(
@@ -1505,7 +1505,7 @@ final class RetainedNominalFlowCertificateTest {
                     "retained initializer guard rejected a legal form: " + legalForms[index]);
         }
         SessionCompileResult.Success producer = compile("supported-guard.lyra", """
-                class Guard { let @pub x :I32 = (+ 1 2) }
+                class Guard { @pub x :I32 = (+ 1 2) }
                 """, SessionSnapshot.empty());
         assertTrue(SessionFlowCertificate.retainedInitializerDiagnostic(
                 producer.typedGraph()).isEmpty());
@@ -1526,7 +1526,7 @@ final class RetainedNominalFlowCertificateTest {
     @Test
     void nilableElementArrayIndexInitializerTransfersAndConstructsAcrossGenerations() {
         SessionCompileResult.Success producer = compile("nilable-index-producer.lyra", """
-                class C { let @pub x :@nil I32 = Array<@nil I32>[#NIL 1I32][1I32] }
+                class C { @pub x :@nil I32 = Array<@nil I32>[#NIL 1I32][1I32] }
                 """, SessionSnapshot.empty());
         SessionFlowCertificate.RetainedNominal retained = nominal(certificate(producer), "C");
         var project = assertInstanceOf(SessionFlowCertificate.RetainedInitializerTransfer.Project.class,
@@ -1573,7 +1573,7 @@ final class RetainedNominalFlowCertificateTest {
     @Test
     void nilableElementCompositeMemberCertifiesNilAcrossGenerations() {
         SessionCompileResult.Success producer = compile("nilable-composite-producer.lyra", """
-                class C { let @pub all :Array<@nil I32> = Array<@nil I32>[#NIL 1I32] }
+                class C { @pub all :Array<@nil I32> = Array<@nil I32>[#NIL 1I32] }
                 """, SessionSnapshot.empty());
         SessionCompileResult.Success consumer = compile("nilable-composite-consumer.lyra",
                 "let value :C = :C[]", producer.stagedSnapshot());
@@ -1631,14 +1631,14 @@ final class RetainedNominalFlowCertificateTest {
         return compile("producer.lyra", """
                 let increment :Fn<I32;I32> = (=> |value| (+ value 1))
                 class Defaults {
-                    let literal :I32 = 7
-                    let alias :I32 = self:.literal
-                    let lambda :Fn<;Array<I32>> = (=> || Array<I32>[3])
-                    let called :I32 = ::increment[4]
+                    literal :I32 = 7
+                    alias :I32 = self:.literal
+                    lambda :Fn<;Array<I32>> = (=> || Array<I32>[3])
+                    called :I32 = ::increment[4]
                 }
                 struct Data {
-                    let required :I32
-                    let array :Array<I32> = Array<I32>[1 2]
+                    required :I32
+                    array :Array<I32> = Array<I32>[1 2]
                 }
                 """, SessionSnapshot.empty());
     }

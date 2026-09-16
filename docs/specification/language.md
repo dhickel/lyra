@@ -238,12 +238,12 @@ struct-declaration  ::= "struct" ["@pub"] capitalized-name
                         "{" { member-declaration } "}" ;
 class-declaration   ::= "class" ["@pub"] capitalized-name
                         "{" { member-declaration | constructor-declaration } "}" ;
-member-declaration  ::= "let" { modifier } identifier named-annotation
+member-declaration  ::= { modifier } identifier named-annotation
                         ["=" expression] ;
 constructor-declaration ::= capitalized-name "=" lambda ;
 ```
 
-Nominal declarations occur only at module level. A constructor name must equal its enclosing class name. A class has at most one constructor. A struct has none.
+Nominal declarations occur only at module level. Members omit `let` and use an optional modifier list followed by the member name and complete type. This exception is limited to struct/class bodies: top-level declarations, block-local declarations, and lambda-local declarations remain `let` bindings. A `let` binding is not valid inside a nominal body. A constructor name must equal its enclosing class name. A class has at most one constructor. A struct has none.
 
 ### 4.3 Bindings, assignment, blocks, and lambdas
 
@@ -264,7 +264,10 @@ named-annotation    ::= ":" type ;
 return-annotation   ::= ":" type ;
 ```
 
-The optional comma rule applies to every `comma-list` production below.
+`let-binding` applies to ordinary module-level, block-local, and lambda-local
+bindings. It is not the spelling for a struct/class member; those use the
+`member-declaration` production above. The optional comma rule applies to every
+`comma-list` production below.
 
 ### 4.4 Types
 
@@ -966,22 +969,22 @@ A struct or class declaration introduces one concrete nominal type. Names begin 
 
 ```lyra
 struct Vec2 {
-    let @mut x :F64
-    let @mut y :F64
+    @mut x :F64
+    @mut y :F64
 }
 
 class Counter {
-    let @mut value :I32
+    @mut value :I32
 
     Counter = (=> |start :I32| {
         self:.value := start
     })
 
-    let @pub @mut increment :Fn<;Unit> = (=> || {
+    @pub @mut increment :Fn<;Unit> = (=> || {
         self:.value := (++ self:.value)
     })
 
-    let @pub current :Fn<;I32> = (=> || self:.value)
+    @pub current :Fn<;I32> = (=> || self:.value)
 }
 ```
 
@@ -1270,22 +1273,22 @@ The compiler's static truth-test admission, typed semantic validation, retained-
 import std->io->{println}
 
 struct Point {
-    let x :I32
-    let y :I32
+    x :I32
+    y :I32
 }
 
 class Counter {
-    let @mut value :I32
+    @mut value :I32
 
     Counter = (=> |start :I32| {
         self:.value := start
     })
 
-    let @pub increment :Fn<;Unit> = (=> || {
+    @pub increment :Fn<;Unit> = (=> || {
         self:.value := (++ self:.value)
     })
 
-    let @pub current :Fn<;I32> = (=> || self:.value)
+    @pub current :Fn<;I32> = (=> || self:.value)
 }
 
 let sumRange :Fn<Range<I32>;I32> = (=> |range| {

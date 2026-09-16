@@ -74,14 +74,17 @@ nominal-declaration ::= 'struct' ['@pub'] capitalized-identifier
                         '{' member-declaration* '}'
                       | 'class' ['@pub'] capitalized-identifier
                         '{' (member-declaration | constructor-declaration)* '}' ;
-member-declaration  ::= 'let' modifier* identifier named-annotation ['=' expression] ;
+member-declaration  ::= modifier* identifier named-annotation ['=' expression] ;
 constructor-declaration ::= enclosing-class-name '=' lambda ;
 named-type          ::= identifier ('->' identifier)* ;
 ```
 
 `struct` and `class` are reserved; declarations are module-level only. Members
-require explicit types; ordinary let bindings still require initializers. A class
-has at most one same-name constructor. Structs have none. Constructor parameter/
+are declared directly with optional modifiers, a name, and an explicit type;
+ordinary `let` bindings still require initializers and are not valid in a nominal
+body. The member exception is limited to struct/class bodies; top-level,
+block-local, and lambda-local declarations still use `let`. A class has at most
+one same-name constructor. Structs have none. Constructor parameter/
 return contracts, member uniqueness, privacy, data-only restrictions and definite
 initialization belong to semantics. Resolution, initialization/flow certification,
 typed IR, JVM emission and persistent-session execution are implemented in their

@@ -212,7 +212,7 @@ final class Phase22ConformanceTest {
                 "let value = (match 1)",
                 "let value = (for 1)",
                 "let value = (<< 1 2)",
-                "class Thing { let missing :I32 }",
+                "class Thing { missing :I32 }",
                 "let value = Any[1]");
         for (String source : malformed) {
             CompileResult result = LyraCompiler.compile(CompileRequest.source("rejected.lyra", source));

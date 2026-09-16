@@ -188,7 +188,7 @@ class NominalMemberDelegateAuthorityTest {
     @Test
     void structuralLoaderRequiresTheDelegateExactNominalAndFunctionRouteTypes() {
         var compiled = compile("delegate-loader.lyra", """
-                class Route { let @pub apply :Fn<I32;I32> = (=> |n| n) }
+                class Route { @pub apply :Fn<I32;I32> = (=> |n| n) }
                 """);
         Map<String, byte[]> classes = compiled.artifact().classes();
         String delegateName = classes.keySet().stream()

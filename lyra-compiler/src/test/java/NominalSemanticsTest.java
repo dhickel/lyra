@@ -103,7 +103,7 @@ public class NominalSemanticsTest {
     @Test
     void functionsConstructAndReturnNominalObjects() {
         var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
-                struct Point { let x :I32 let y :I32 = 2 }
+                struct Point { x :I32 y :I32 = 2 }
                 let make :Fn<I32;Point> = (=> |x| Point[x])
                 let wrapped :Fn<I32;Point> = (=> |x| ::make[x])
                 let point :Point = ::wrapped[3]
@@ -116,8 +116,8 @@ public class NominalSemanticsTest {
     void factoryFunctionsReturnInitializedClassMethods() {
         var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
                 class Counter {
-                    let @mut x :I32
-                    let @pub read :Fn<;I32> = (=> || self:.x)
+                    @mut x :I32
+                    @pub read :Fn<;I32> = (=> || self:.x)
                     Counter = (=> |start :I32| { self:.x := start })
                 }
                 let make :Fn<I32;Counter> = (=> |x| Counter[x])
@@ -130,7 +130,7 @@ public class NominalSemanticsTest {
     @Test
     void typesDefaultAndRequiredStructConstruction() {
         var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
-                struct Point { let @mut x :I32 let y :I64 = 2 }
+                struct Point { @mut x :I32 y :I64 = 2 }
                 let p :Point = Point[1]
                 p:.x
                 """))));
@@ -143,10 +143,10 @@ public class NominalSemanticsTest {
     @Test
     void rejectsIncompleteAndDuplicateClassInitialization() {
         for (String source : List.of(
-                "class Bad { let x :I32 }",
-                "class Bad { let x :I32 = self:.x }",
-                "class Bad { let x :I32 = 1 Bad = (=> || { self:.x := 2 }) }",
-                "class Bad { let x :I32 Bad = (=> |flag :Bool| { (flag -> { self:.x := 1 }) }) }")) {
+                "class Bad { x :I32 }",
+                "class Bad { x :I32 = self:.x }",
+                "class Bad { x :I32 = 1 Bad = (=> || { self:.x := 2 }) }",
+                "class Bad { x :I32 Bad = (=> |flag :Bool| { (flag -> { self:.x := 1 }) }) }")) {
             var result = io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve(source)));
             assertInstanceOf(PhaseResult.Failure.class, result, source);
             assertTrue(result.diagnostics().stream().anyMatch(value -> value.code().equals(
@@ -159,10 +159,10 @@ public class NominalSemanticsTest {
     void typesClassConstructorAndBoundMethodSelection() {
         var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
                 class Counter {
-                    let @mut value :I32
+                    @mut value :I32
                     Counter = (=> |start :I32| { self:.value := start })
-                    let @pub current :Fn<;I32> = (=> || self:.value)
-                    let @pub increment :Fn<;Unit> = (=> || { self:.value := (++ self:.value) })
+                    @pub current :Fn<;I32> = (=> || self:.value)
+                    @pub increment :Fn<;Unit> = (=> || { self:.value := (++ self:.value) })
                 }
                 let counter :Counter = :Counter[0]
                 counter::increment[]
@@ -174,7 +174,7 @@ public class NominalSemanticsTest {
     @Test
     void savedCallableRetainsSelectedSlotWhileAliasesSeeReplacement() {
         var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
-                class Cell { let @pub @mut read :Fn<;I32> = (=> || 1) }
+                class Cell { @pub @mut read :Fn<;I32> = (=> || 1) }
                 let @mut cell :Cell = Cell[]
                 let alias :Cell = cell
                 let saved :Fn<;I32> = cell:.read
@@ -196,8 +196,8 @@ public class NominalSemanticsTest {
     void replacementLambdasReceiveContextualSelfWithoutPrivateAuthority() {
         var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
                 class Counter {
-                    let @pub @mut value :I32 = 0
-                    let @pub @mut update :Fn<I32;I32> = (=> |delta| delta)
+                    @pub @mut value :I32 = 0
+                    @pub @mut update :Fn<I32;I32> = (=> |delta| delta)
                 }
                 let install :Fn<@mut Counter;Unit> = (=> |@mut counter| {
                     counter:.update := (=> |delta| {
@@ -221,8 +221,8 @@ public class NominalSemanticsTest {
 
         var inaccessible = resolve("""
                 class Secret {
-                    let @mut hidden :I32 = 0
-                    let @pub @mut action :Fn<;Unit> = (=> || {})
+                    @mut hidden :I32 = 0
+                    @pub @mut action :Fn<;Unit> = (=> || {})
                 }
                 let install :Fn<@mut Secret;Unit> = (=> |@mut secret| {
                     secret:.action := (=> || { self:.hidden := 1 })
@@ -236,12 +236,12 @@ public class NominalSemanticsTest {
     @Test
     void classIdentityOperatorsDoNotMakeStructsIdentityBearing() {
         success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
-                class Box { let value :I32 = 1 }
+                class Box { value :I32 = 1 }
                 let box :Box = :Box[]
                 let same :Bool = (eq? box box)
                 """))));
         var invalid = io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
-                struct Point { let x :I32 }
+                struct Point { x :I32 }
                 let point :Point = :Point[1]
                 let bad :Bool = (eq? point point)
                 """)));
@@ -261,8 +261,8 @@ public class NominalSemanticsTest {
                     let consume :Fn<Box;Unit> = (=> |box| {})
                     let publish :Fn<Fn<;Box>;Unit> = (=> |callback| {})
                     class Box {
-                        let @mut x :I32
-                        let @pub read :Fn<;I32> = (=> || self:.x)
+                        @mut x :I32
+                        @pub read :Fn<;I32> = (=> || self:.x)
                         Box = (=> || { %s })
                     }
                     """.formatted(body);
@@ -288,7 +288,7 @@ public class NominalSemanticsTest {
                         && (defaults & (left | right)) == 0;
                 StringBuilder source = new StringBuilder("class Box { ");
                 for (int field = 0; field < fields; field++) {
-                    source.append("let f").append(field).append(" :I32");
+                    source.append("f").append(field).append(" :I32");
                     if ((defaults & (1 << field)) != 0) source.append(" = ").append(field);
                     source.append(' ');
                 }
@@ -328,12 +328,12 @@ public class NominalSemanticsTest {
     @Test
     void requiredArgumentsAreInstalledBeforeSourceOrderedDefaults() {
         var typed = success(io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve("""
-                struct Point { let first :I32 = self:.required let required :I32 let next :I32 = (+ self:.first 1) }
+                struct Point { first :I32 = self:.required required :I32 next :I32 = (+ self:.first 1) }
                 let point :Point = Point[4]
                 """))));
         success(io.mindspice.lyra.compiler.ir.TypedIrBuilder.build(typed));
         var invalid = io.mindspice.lyra.compiler.semantic.TypeChecker.check(success(resolve(
-                "struct Point { let first :I32 = self:.next let next :I32 = 1 }")));
+                "struct Point { first :I32 = self:.next next :I32 = 1 }")));
         assertInstanceOf(PhaseResult.Failure.class, invalid);
         assertEquals(io.mindspice.lyra.compiler.diagnostic.CompilerDiagnosticCodes.TYPE_INVALID_BINDING,
                 invalid.diagnostics().getFirst().code());
@@ -342,7 +342,7 @@ public class NominalSemanticsTest {
     @Test
     void collectsExactSchemasAndRequiredFieldConstructorOrder() {
         var graph = success(resolve("""
-                struct Point { let @mut x :I32 let y :I64 let label :String = "p" }
+                struct Point { @mut x :I32 y :I64 label :String = "p" }
                 let p :Point = Point[1 2]
                 p:.x
                 """));
@@ -359,10 +359,10 @@ public class NominalSemanticsTest {
     void resolvesClassSelfCapturesAndPrivateMethods() {
         var graph = success(resolve("""
                 class Counter {
-                    let @mut value :I32
+                    @mut value :I32
                     Counter = (=> |start :I32| { self:.value := start })
-                    let @pub current :Fn<;I32> = (=> || self:.value)
-                    let @pub increment :Fn<;Unit> = (=> || { self:.value := (++ self:.value) })
+                    @pub current :Fn<;I32> = (=> || self:.value)
+                    @pub increment :Fn<;Unit> = (=> || { self:.value := (++ self:.value) })
                 }
                 let counter :Counter = :Counter[0]
                 counter::increment[]
@@ -378,13 +378,13 @@ public class NominalSemanticsTest {
     @Test
     void rejectsPrivateAccessImmutableSlotAndInvalidConstructorArity() {
         for (String source : List.of(
-                "class Hidden { let x :I32 = 1 } let h :Hidden = :Hidden[] h:.x",
-                "struct Point { let x :I32 } let @mut p :Point = :Point[1] p:.x := 2",
-                "struct Point { let x :I32 } :Point[]",
-                "struct Point { let x :I32 } :Point[1 2]",
-                "struct Bad { let callback :Array<Fn<;Unit>> }",
-                "struct Bad { let next :@nil Bad let callback :Fn<;I32> }",
-                "class Bad { let x :I32 = 1 let x :I64 = 2 }")) {
+                "class Hidden { x :I32 = 1 } let h :Hidden = :Hidden[] h:.x",
+                "struct Point { x :I32 } let @mut p :Point = :Point[1] p:.x := 2",
+                "struct Point { x :I32 } :Point[]",
+                "struct Point { x :I32 } :Point[1 2]",
+                "struct Bad { callback :Array<Fn<;Unit>> }",
+                "struct Bad { next :@nil Bad callback :Fn<;I32> }",
+                "class Bad { x :I32 = 1 x :I64 = 2 }")) {
             assertInstanceOf(PhaseResult.Failure.class, resolve(source), source);
         }
     }
@@ -392,8 +392,8 @@ public class NominalSemanticsTest {
     @Test
     void recursiveDataAllowsClassReferencesWithoutTraversingPrivateMethods() {
         var graph = success(resolve("""
-                struct Node { let @nil next :Node let target :Target }
-                class Target { let f :Fn<;I32> = (=> || 1) }
+                struct Node { @nil next :Node target :Target }
+                class Target { f :Fn<;I32> = (=> || 1) }
                 """));
         assertEquals(2, graph.nominalTypes().schemas().size());
     }
@@ -401,10 +401,10 @@ public class NominalSemanticsTest {
     @Test
     void supportsInferredReceiversAndKeepsRedeclarationsNominal() {
         var graph = success(resolve("""
-                struct Point { let @mut x :I32 }
+                struct Point { @mut x :I32 }
                 let @mut first = :Point[1]
                 first:.x := 2
-                struct Point { let @mut x :I32 }
+                struct Point { @mut x :I32 }
                 let second = :Point[3]
                 second:.x
                 """));
@@ -420,7 +420,7 @@ public class NominalSemanticsTest {
 
     @Test
     void qualifiedAndSelectiveTypeImportsRetainOriginIdentity() {
-        var library = module("model.lyra", "struct @pub Point { let x :I32 } class Hidden {}");
+        var library = module("model.lyra", "struct @pub Point { x :I32 } class Hidden {}");
         for (String source : List.of("import model as m let p :m->Point = m->Point[1] p:.x",
                 "import model->{Point as P} let p :P = P[1] p:.x")) {
             var main = module("main.lyra", source);
@@ -438,10 +438,10 @@ public class NominalSemanticsTest {
 
     @Test
     void unqualifiedNominalConstructionUsesTheDeclaredTypeAndLegacyQualifiedSpellingRemainsInvalid() {
-        var unqualified = resolve("struct Point { let x :I32 } let point :Point = Point[1]");
+        var unqualified = resolve("struct Point { x :I32 } let point :Point = Point[1]");
         assertInstanceOf(PhaseResult.Success.class, unqualified);
 
-        var library = module("model.lyra", "struct @pub Point { let x :I32 }");
+        var library = module("model.lyra", "struct @pub Point { x :I32 }");
         var main = module("main.lyra", "import model as m let point :m->Point = m->:.Point[1]");
         var logical = LogicalModuleId.parse("model");
         var edge = main.program().imports().getFirst();
@@ -475,7 +475,7 @@ public class NominalSemanticsTest {
                     expectedVisibility.add(struct || pub);
                     expectedMutability.add(mutable ? BindingMutability.MUTABLE : BindingMutability.IMMUTABLE);
                     if (!initialized) expectedParameters.add(PrimitiveType.I32);
-                    source.append(" let ").append(mutable ? "@mut " : "").append(pub ? "@pub " : "")
+                    source.append(" ").append(mutable ? "@mut " : "").append(pub ? "@pub " : "")
                             .append(name).append(" :I32").append(initialized ? " = 7" : "");
                 }
                 source.append(" }");

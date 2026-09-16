@@ -158,10 +158,6 @@ public final class GrammarMatcher {
             return expression;
         }
 
-        private GrammarDescriptor parseLet(boolean inTopLevel) {
-            return parseLet(inTopLevel, false);
-        }
-
         private GrammarDescriptor parseNominalDeclaration() {
             int keyword = advance();
             boolean struct = token(keyword).kind() == TokenKind.STRUCT;
@@ -187,11 +183,12 @@ public final class GrammarMatcher {
                     return null;
                 }
                 if (at(TokenKind.LET)) {
-                    GrammarDescriptor member = parseLet(true, true);
-                    if (member == null) return null;
-                    children.add(member);
+                    fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, current,
+                            "nominal members do not use 'let'; write the member name and type directly");
+                    return null;
                 } else if (!struct && !constructorSeen && at(TokenKind.IDENTIFIER)
-                        && token(current).lexeme().equals(token(name.startTokenIndex()).lexeme())) {
+                        && token(current).lexeme().equals(token(name.startTokenIndex()).lexeme())
+                        && current + 1 < tokens.size() && token(current + 1).kind() == TokenKind.EQUAL) {
                     int start = current;
                     GrammarDescriptor constructorName = leaf(ProductionKind.IDENTIFIER, advance());
                     if (!at(TokenKind.EQUAL)) {
@@ -210,9 +207,13 @@ public final class GrammarMatcher {
                             lambda.endTokenIndex(), List.of(constructorName, lambda),
                             metadata(-1, -1, equals, List.of(), List.of(), List.of())));
                     constructorSeen = true;
+                } else if (at(TokenKind.MODIFIER) || at(TokenKind.IDENTIFIER)) {
+                    GrammarDescriptor member = parseMember();
+                    if (member == null) return null;
+                    children.add(member);
                 } else {
                     fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, current,
-                            "expected a let member or the single same-name class constructor");
+                            "expected a member declaration or the single same-name class constructor");
                     return null;
                 }
             }
@@ -221,7 +222,7 @@ public final class GrammarMatcher {
                     metadata(opening, closing, keyword, List.of(), modifiers, List.of()));
         }
 
-        private GrammarDescriptor parseLet(boolean inTopLevel, boolean member) {
+        private GrammarDescriptor parseLet(boolean inTopLevel) {
             int start = current;
             int letToken = advance();
             List<Integer> modifierIndices = readModifiers(
@@ -243,19 +244,6 @@ public final class GrammarMatcher {
                 if (annotation == null) {
                     return null;
                 }
-            }
-            if (member && annotation == null) {
-                fail(CompilerDiagnosticCodes.PARSE_INVALID_TYPE_FORM, name.startTokenIndex(),
-                        "a member requires an explicit type annotation");
-                return null;
-            }
-            if (member && !at(TokenKind.EQUAL)) {
-                List<GrammarDescriptor> children = new ArrayList<>();
-                modifierIndices.forEach(index -> children.add(leaf(ProductionKind.MODIFIER, index)));
-                children.add(name);
-                children.add(annotation);
-                return descriptor(ProductionKind.MEMBER_DECLARATION, start, annotation.endTokenIndex(), children,
-                        metadata(-1, -1, letToken, List.of(), modifierIndices, List.of()));
             }
             if (!at(TokenKind.EQUAL)) {
                 failExpected("'=' after a binding name");
@@ -284,11 +272,56 @@ public final class GrammarMatcher {
             }
             children.add(initializer);
             return descriptor(
-                    member ? ProductionKind.MEMBER_DECLARATION : ProductionKind.LET_BINDING,
+                    ProductionKind.LET_BINDING,
                     start,
                     initializer.endTokenIndex(),
                     children,
                     metadata(-1, -1, letToken, List.of(), modifierIndices, List.of()));
+        }
+
+        private GrammarDescriptor parseMember() {
+            int start = current;
+            List<Integer> modifierIndices = readModifiers(
+                    EnumSet.allOf(ModifierKind.class), true, "member");
+            if (modifierIndices == null) {
+                return null;
+            }
+            if (!at(TokenKind.IDENTIFIER)) {
+                failExpected("an identifier after member modifiers");
+                return null;
+            }
+            GrammarDescriptor name = leaf(ProductionKind.IDENTIFIER, advance());
+            if (!at(TokenKind.COLON)) {
+                fail(CompilerDiagnosticCodes.PARSE_INVALID_TYPE_FORM, name.startTokenIndex(),
+                        "a member requires an explicit type annotation");
+                return null;
+            }
+            GrammarDescriptor annotation = parseNamedTypeAnnotation();
+            if (annotation == null) {
+                return null;
+            }
+
+            List<GrammarDescriptor> children = new ArrayList<>();
+            modifierIndices.forEach(index -> children.add(leaf(ProductionKind.MODIFIER, index)));
+            children.add(name);
+            children.add(annotation);
+            if (at(TokenKind.EQUAL)) {
+                advance();
+                GrammarDescriptor initializer = parseExpression();
+                if (initializer == null) {
+                    return null;
+                }
+                if (initializer.kind() == ProductionKind.COMPACT_LAMBDA) {
+                    fail(CompilerDiagnosticCodes.PARSE_INVALID_FORM, initializer.startTokenIndex(),
+                            "a compact lambda cannot initialize a member");
+                    return null;
+                }
+                children.add(initializer);
+                return descriptor(ProductionKind.MEMBER_DECLARATION, start, initializer.endTokenIndex(), children,
+                        metadata(-1, -1, -1, List.of(), modifierIndices, List.of()));
+            }
+            return descriptor(ProductionKind.MEMBER_DECLARATION, start, annotation.endTokenIndex(), children,
+                    metadata(-1, -1, -1, List.of(), modifierIndices, List.of()));
         }
 
         private GrammarDescriptor parseImport() {

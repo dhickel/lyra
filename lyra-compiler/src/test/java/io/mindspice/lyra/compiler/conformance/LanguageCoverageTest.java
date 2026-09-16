@@ -147,6 +147,12 @@ class LanguageCoverageTest {
                         && test.source().contains("Box[")),
                 "Add an unprefixed nominal construction fixture");
         assertTrue(nominal.stream().anyMatch(test -> test.outcome().equals("value")
+                        && test.source().contains("struct Box") && test.source().contains("value :I32")),
+                "Add a canonical member declaration fixture without let");
+        assertTrue(nominal.stream().anyMatch(test -> test.outcome().equals("reject")
+                        && test.source().contains("let value :I32")),
+                "Add rejection coverage for let in a nominal body");
+        assertTrue(nominal.stream().anyMatch(test -> test.outcome().equals("value")
                         && test.source().contains("Values[")),
                 "Add an uppercase value-indexing fixture");
         assertTrue(nominal.stream().anyMatch(test -> test.outcome().equals("value")

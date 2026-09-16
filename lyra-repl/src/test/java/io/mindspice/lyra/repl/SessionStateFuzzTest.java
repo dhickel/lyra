@@ -234,15 +234,15 @@ public class SessionStateFuzzTest {
         success(session, "let @mut @nil maybe :I32 = #NIL let label :String = \"original\" let readLabel :Fn<;String> = (=> || label)");
         success(session, "let @mut constructorEffects :I32 = 0 let @mut divisor :I32 = 0"
                 + " let touch :Fn<I32;I32> = (=> |v| { constructorEffects := (++ constructorEffects) v })"
-                + " class SessionBox { let @pub @mut value :I32 = 0"
-                + " let @pub @mut read :Fn<;I32> = (=> || self:.value)"
+                + " class SessionBox { @pub @mut value :I32 = 0"
+                + " @pub @mut read :Fn<;I32> = (=> || self:.value)"
                 + " SessionBox = (=> |start :I32| { self:.value := start }) }"
-                + " class SessionOrdered { let @pub @mut value :I32 = 0"
-                + " let @pub first :I32 = ::touch[1I32]"
+                + " class SessionOrdered { @pub @mut value :I32 = 0"
+                + " @pub first :I32 = ::touch[1I32]"
                 + " SessionOrdered = (=> |start :I32| { constructorEffects := (+ constructorEffects 10I32) self:.value := start }) }"
-                + " class SessionFragile { let @pub touched :I32 = ::touch[1I32]"
-                + " let @pub broken :I32 = (% 8 divisor) }"
-                + " class SessionFresh { let @pub values :Array<I32> = Array<I32>[1I32 2I32] }");
+                + " class SessionFragile { @pub touched :I32 = ::touch[1I32]"
+                + " @pub broken :I32 = (% 8 divisor) }"
+                + " class SessionFresh { @pub values :Array<I32> = Array<I32>[1I32 2I32] }");
     }
 
     private static EvaluationResult submit(LyraSession session, String source) {

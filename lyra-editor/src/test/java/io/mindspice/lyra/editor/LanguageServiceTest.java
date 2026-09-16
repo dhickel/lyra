@@ -69,7 +69,7 @@ class LanguageServiceTest {
         }
     }
     @Test void nominalKeywordsAreHighlightedEvenBeforeSemanticSupportIsComplete() {
-        String source = "struct Data { let value :I32 } class Counter {}";
+        String source = "struct Data { value :I32 } class Counter {}";
         var result = analyze(source, Map.of());
         for (String keyword : List.of("struct", "class")) {
             assertTrue(result.styles().stream().anyMatch(style -> style.css().equals("syntax-keyword")

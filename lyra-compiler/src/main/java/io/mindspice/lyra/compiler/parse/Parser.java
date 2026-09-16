@@ -342,7 +342,6 @@ public final class Parser {
         }
 
         private Object replayMemberDeclaration(GrammarDescriptor descriptor) {
-            SourceSpan let = cursor.consume(TokenKind.LET, descriptor);
             var children = descriptor.children();
             int index = 0;
             List<SyntaxNode.Modifier> modifiers = new ArrayList<>();
@@ -362,7 +361,7 @@ public final class Parser {
                 initializer = asExpression(replay(child), child);
             }
             return new SyntaxNode.MemberDeclaration(modifiers, name, annotation,
-                    Optional.ofNullable(initializer), let, Optional.ofNullable(equals), sourceView.span(descriptor));
+                    Optional.ofNullable(initializer), Optional.ofNullable(equals), sourceView.span(descriptor));
         }
 
         private Object replayConstructorDeclaration(GrammarDescriptor descriptor) {

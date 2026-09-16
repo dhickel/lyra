@@ -1,0 +1,2 @@
+// nominal	reject	-	LYC-PARSE-003	'let' is not valid for struct/class members
+class Bad { let value :I32 }

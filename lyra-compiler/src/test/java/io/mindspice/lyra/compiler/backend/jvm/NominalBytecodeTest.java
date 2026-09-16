@@ -17,13 +17,13 @@ class NominalBytecodeTest {
     @Test void ordinaryMethodsCannotMutateAggregatesThroughImmutableSelf() {
         for (String source : java.util.List.of("""
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub mutate :Fn<;Unit> = (=> || { self:.values[0] := 7 })
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub mutate :Fn<;Unit> = (=> || { self:.values[0] := 7 })
                 }
                 """, """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut mutate :Fn<;Unit> = (=> || {})
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut mutate :Fn<;Unit> = (=> || {})
                 }
                 let install :Fn<@mut Box;Unit> = (=> |@mut box| {
                     box:.mutate := (=> || { self:.values[0] := 7 })
@@ -51,8 +51,8 @@ class NominalBytecodeTest {
         String[] rejected = {
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub poke :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub poke :Fn<;I32> = (=> || {
                         let @mut alias :Box = self
                         alias:.values[0] := 7
                         0
@@ -61,8 +61,8 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut poke :Fn<;I32> = (=> || 0)
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut poke :Fn<;I32> = (=> || 0)
                 }
                 let install :Fn<@mut Box;Unit> = (=> |@mut box| {
                     box:.poke := (=> || {
@@ -74,18 +74,18 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let transfer :Fn<@mut Box;I32> = (=> |@mut alias| {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    transfer :Fn<@mut Box;I32> = (=> |@mut alias| {
                         alias:.values[0] := 7
                         0
                     })
-                    let @pub poke :Fn<;I32> = (=> || self::transfer[self])
+                    @pub poke :Fn<;I32> = (=> || self::transfer[self])
                 }
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub poke :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub poke :Fn<;I32> = (=> || {
                         let @mut alias :Box = self
                         let mutate :Fn<;I32> = (=> :I32 || { alias:.values[0] := 7  0 })
                         ::mutate[]
@@ -94,8 +94,8 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub poke :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub poke :Fn<;I32> = (=> || {
                         let @mut alias :Array<I32> = self:.values
                         alias[0] := 7
                         alias[0]
@@ -104,8 +104,8 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub poke :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub poke :Fn<;I32> = (=> || {
                         let selected :Fn<;Array<I32>> = (=> || self:.values)
                         let @mut alias :Array<I32> = ::selected[]
                         alias[0] := 7
@@ -127,8 +127,8 @@ class NominalBytecodeTest {
         // directly and through a local alias, and the writes execute.
         var artifact = compile("""
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut aliasValues :Array<I32> = Array<I32>[3 4]
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut aliasValues :Array<I32> = Array<I32>[3 4]
                     Box = (=> || {
                         self:.values[0] := 7
                         let @mut alias :Box = self
@@ -155,7 +155,7 @@ class NominalBytecodeTest {
     @Test void condBranchesEstablishDefiniteInitializationWithoutDoubleExecuting() throws Throwable {
         var artifact = compile("""
                 class Box {
-                    let @pub value :I32
+                    @pub value :I32
                     Box = (=> |flag :Bool| {
                         (cond flag -> (self:.value := 1I32) _ -> (self:.value := 2I32))
                     })
@@ -181,8 +181,8 @@ class NominalBytecodeTest {
         String[] rejected = {
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut poke :Fn<;I32> = (=> || 0)
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut poke :Fn<;I32> = (=> || 0)
                 }
                 let @pub make :Fn<;Box> = (=> || :Box[])
                 let install :Fn<@mut Box,Bool;Unit> = (=> |@mut box flag| {
@@ -196,8 +196,8 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut poke :Fn<;I32> = (=> || 0)
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut poke :Fn<;I32> = (=> || 0)
                 }
                 let @pub make :Fn<;Box> = (=> || :Box[])
                 let install :Fn<@mut Box,I32;Unit> = (=> |@mut box selector| {
@@ -211,8 +211,8 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut poke :Fn<;I32> = (=> || 0)
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut poke :Fn<;I32> = (=> || 0)
                 }
                 let @pub make :Fn<;Box> = (=> || :Box[])
                 let install :Fn<@mut Box;Unit> = (=> |@mut box| {
@@ -240,10 +240,10 @@ class NominalBytecodeTest {
         // fixed point, not just to the immediate callee.
         String source = """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let mutate :Fn<@mut Box;Unit> = (=> |@mut inner| { inner:.values[0] := 7 })
-                    let forward :Fn<@mut Box;Unit> = (=> |@mut outer| { self::mutate[outer] })
-                    let @pub poke :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    mutate :Fn<@mut Box;Unit> = (=> |@mut inner| { inner:.values[0] := 7 })
+                    forward :Fn<@mut Box;Unit> = (=> |@mut outer| { self::mutate[outer] })
+                    @pub poke :Fn<;I32> = (=> || {
                         let @mut alias :Box = self
                         alias::forward[alias]
                         0
@@ -272,9 +272,9 @@ class NominalBytecodeTest {
         // self through its result.
         String source = """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let id :Fn<Box;Box> = (=> |value| value)
-                    let @pub poke :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    id :Fn<Box;Box> = (=> |value| value)
+                    @pub poke :Fn<;I32> = (=> || {
                         let @mut alias :Box = self::id[self]
                         alias:.values[0] := 7
                         0
@@ -306,8 +306,8 @@ class NominalBytecodeTest {
         String[] rejected = {
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub poke :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub poke :Fn<;I32> = (=> || {
                         let id :Fn<;Box> = (=> || self)
                         let @mut alias :Box = ::id[]
                         alias:.values[0] := 7
@@ -318,9 +318,9 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let id :Fn<;Box> = (=> || self)
-                    let @pub poke :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    id :Fn<;Box> = (=> || self)
+                    @pub poke :Fn<;I32> = (=> || {
                         let @mut alias :Box = self::id[]
                         alias:.values[0] := 7
                         alias:.values[0]
@@ -330,8 +330,8 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub poke :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub poke :Fn<;I32> = (=> || {
                         let pair :Fn<;Tuple<Box,I32>> = (=> || Tuple[self 1])
                         let @mut alias :Box = ::pair[]:.0
                         alias:.values[0] := 7
@@ -342,8 +342,8 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub poke :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub poke :Fn<;I32> = (=> || {
                         let id :Fn<;Box> = (=> || self)
                         let aliasOf :Fn<;Box> = id
                         let @mut alias :Box = ::aliasOf[]
@@ -355,8 +355,8 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub poke :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub poke :Fn<;I32> = (=> || {
                         let id :Fn<;Box> = (=> || self)
                         let apply :Fn<Fn<;Box>;Box> = (=> |h| ::h[])
                         let @mut alias :Box = ::apply[id]
@@ -392,7 +392,7 @@ class NominalBytecodeTest {
         CompileResult closure = LyraCompiler.compile(CompileRequest.builder()
                 .source("constructor-closure-alias.lyra", """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
                     Box = (=> || {
                         let id :Fn<;Box> = (=> || self)
                         let @mut alias :Box = ::id[]
@@ -404,8 +404,8 @@ class NominalBytecodeTest {
         assertInstanceOf(CompileResult.Success.class, closure);
         var artifact = compile("""
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut aliasValues :Array<I32> = Array<I32>[3 4]
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut aliasValues :Array<I32> = Array<I32>[3 4]
                     Box = (=> || {
                         let @mut alias :Box = self
                         alias:.aliasValues[0] := 8
@@ -436,17 +436,17 @@ class NominalBytecodeTest {
         // that was still moving at the bound, never publish a partial state.
         StringBuilder members = new StringBuilder();
         members.append(
-                "let g9 :Fn<@mut Box;Unit> = (=> |@mut x9| { x9:.values[0] := 7 })\n");
+                "g9 :Fn<@mut Box;Unit> = (=> |@mut x9| { x9:.values[0] := 7 })\n");
         for (int i = 8; i >= 1; i--) {
-            members.append("let g").append(i).append(" :Fn<@mut Box;Unit> = (=> |@mut x")
+            members.append("g").append(i).append(" :Fn<@mut Box;Unit> = (=> |@mut x")
                     .append(i).append("| { self::g").append(i + 1).append("[x")
                     .append(i).append("] })\n");
         }
         String source = """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
                 %s
-                    let @pub poke :Fn<;I32> = (=> || {
+                    @pub poke :Fn<;I32> = (=> || {
                         let @mut alias :Box = self
                         self::g1[alias]
                         self:.values[0]
@@ -477,8 +477,8 @@ class NominalBytecodeTest {
         // aliases and conditional-merged aliases, and the writes execute.
         var artifact = compile("""
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut aliasValues :Array<I32> = Array<I32>[3 4]
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut aliasValues :Array<I32> = Array<I32>[3 4]
                     Box = (=> || {
                         self:.values[0] := 7
                         let @mut alias :Box = (#T -> self : self)
@@ -532,8 +532,8 @@ class NominalBytecodeTest {
         String[] rejected = {
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut poke :Fn<;Box> = (=> || :Box[])
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut poke :Fn<;Box> = (=> || :Box[])
                 }
                 let install :Fn<@mut Box;Unit> = (=> |@mut box| { box:.poke := (=> || self) })
                 let @pub run :Fn<;I32> = (=> || {
@@ -546,8 +546,8 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut poke :Fn<;Tuple<Box,I32>> = (=> || Tuple[:Box[] 0])
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut poke :Fn<;Tuple<Box,I32>> = (=> || Tuple[:Box[] 0])
                 }
                 let install :Fn<@mut Box;Unit> = (=> |@mut box| { box:.poke := (=> || Tuple[self 1]) })
                 let @pub run :Fn<;I32> = (=> || {
@@ -560,8 +560,8 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut poke :Fn<;Box> = (=> || :Box[])
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut poke :Fn<;Box> = (=> || :Box[])
                 }
                 let install :Fn<@mut Box;Unit> = (=> |@mut box| { box:.poke := (=> || self) })
                 let @pub run :Fn<;I32> = (=> || {
@@ -598,9 +598,9 @@ class NominalBytecodeTest {
         String[] rejected = {
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut slots :Array<Fn<;Box>> = Array[(=> || :Box[])]
-                    let @pub run :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut slots :Array<Fn<;Box>> = Array[(=> || :Box[])]
+                    @pub run :Fn<;I32> = (=> || {
                         let closure :Fn<;Box> = (=> || self)
                         let @mut other :Box = :Box[]
                         let @mut aggregate :Array<Fn<;Box>> = other:.slots
@@ -614,9 +614,9 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut slots :Array<Fn<;Box>> = Array[(=> || :Box[])]
-                    let @pub run :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut slots :Array<Fn<;Box>> = Array[(=> || :Box[])]
+                    @pub run :Fn<;I32> = (=> || {
                         let closure :Fn<;Box> = (=> || self)
                         let @mut other :Box = :Box[]
                         let pair :Tuple<Array<Fn<;Box>>> = Tuple[other:.slots]
@@ -631,9 +631,9 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut slots :Array<Fn<;Box>> = Array[(=> || :Box[])]
-                    let @pub run :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut slots :Array<Fn<;Box>> = Array[(=> || :Box[])]
+                    @pub run :Fn<;I32> = (=> || {
                         let closure :Fn<;Box> = (=> || self)
                         let @mut other :Box = :Box[]
                         let @mut holder :Array<Array<Fn<;Box>>> =
@@ -650,11 +650,11 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut slots :Array<Fn<;Box>> = Array[(=> || :Box[])]
-                    let install :Fn<@mut Array<Fn<;Box>>,Fn<;Box>;Unit> =
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut slots :Array<Fn<;Box>> = Array[(=> || :Box[])]
+                    install :Fn<@mut Array<Fn<;Box>>,Fn<;Box>;Unit> =
                             (=> |@mut aggregate closure| { aggregate[0] := closure })
-                    let @pub run :Fn<;I32> = (=> || {
+                    @pub run :Fn<;I32> = (=> || {
                         let closure :Fn<;Box> = (=> || self)
                         let @mut other :Box = :Box[]
                         let @mut aggregate :Array<Fn<;Box>> = other:.slots
@@ -668,10 +668,10 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut slots :Array<Fn<;Box>> = Array[(=> || :Box[])]
-                    let @pub @mut forwarded :Array<Fn<;Box>> = Array[(=> || :Box[])]
-                    let @pub run :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut slots :Array<Fn<;Box>> = Array[(=> || :Box[])]
+                    @pub @mut forwarded :Array<Fn<;Box>> = Array[(=> || :Box[])]
+                    @pub run :Fn<;I32> = (=> || {
                         let closure :Fn<;Box> = (=> || self)
                         let @mut other :Box = :Box[]
                         let @mut carrier :Box = :Box[]
@@ -687,9 +687,9 @@ class NominalBytecodeTest {
                 """,
                 """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut slots :Array<Fn<;Box>> = Array[(=> || :Box[])]
-                    let @pub run :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut slots :Array<Fn<;Box>> = Array[(=> || :Box[])]
+                    @pub run :Fn<;I32> = (=> || {
                         let closure :Fn<;Box> = (=> || self)
                         let @mut other :Box = :Box[]
                         let @mut aggregate :Array<Fn<;Box>> = other:.slots
@@ -721,8 +721,8 @@ class NominalBytecodeTest {
     @Test void memberStorageTransfersPreserveTheMutationPosition() {
         String source = """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub run :Fn<;I32> = (=> || {
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub run :Fn<;I32> = (=> || {
                         let @mut other :Box = :Box[]
                         other:.values := self:.values
                         other:.values[0] := 7
@@ -749,7 +749,7 @@ class NominalBytecodeTest {
     @Test void explicitNominalFunctionArrayLiteralsCompileAndExecute() throws Throwable {
         var artifact = compile("""
                 class Box {
-                    let @pub value :I32 = 7
+                    @pub value :I32 = 7
                 }
                 let @pub run :Fn<;I32> = (=> || {
                     let makers :Array<Fn<;Box>> = Array<Fn<;Box>>[(=> || :Box[])]
@@ -774,8 +774,8 @@ class NominalBytecodeTest {
         CompileResult closure = LyraCompiler.compile(CompileRequest.builder()
                 .source("constructor-member-closure.lyra", """
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut poke :Fn<;Box> = (=> || :Box[])
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut poke :Fn<;Box> = (=> || :Box[])
                     Box = (=> || {
                         self:.poke := (=> || self)
                         let @mut alias :Box = self::poke[]
@@ -787,8 +787,8 @@ class NominalBytecodeTest {
         assertInstanceOf(CompileResult.Success.class, closure);
         var artifact = compile("""
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut extra :Array<I32> = Array<I32>[3 4]
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut extra :Array<I32> = Array<I32>[3 4]
                     Box = (=> || {
                         self:.extra := self:.values
                         let @mut alias :Array<I32> = self:.extra
@@ -820,8 +820,8 @@ class NominalBytecodeTest {
         // the member slot keeps compiling and executing.
         var artifact = compile("""
                 class Box {
-                    let @pub @mut values :Array<I32> = Array<I32>[1 2]
-                    let @pub @mut poke :Fn<;Box> = (=> || :Box[])
+                    @pub @mut values :Array<I32> = Array<I32>[1 2]
+                    @pub @mut poke :Fn<;Box> = (=> || :Box[])
                 }
                 let install :Fn<@mut Box;Unit> = (=> |@mut box| { box:.poke := (=> || :Box[]) })
                 let @pub run :Fn<;I32> = (=> || {
@@ -842,7 +842,7 @@ class NominalBytecodeTest {
     @Test void failedSourceFactoryInvalidatesItsTicketAndLeavesProducerUsable() throws Throwable {
         var artifact = compile("""
                 class Fallible {
-                    let @pub value :I32
+                    @pub value :I32
                     Fallible = (=> |value :I32 divisor :I32| {
                         self:.value := value
                         let ignored :F64 = (/ value divisor)
@@ -875,7 +875,7 @@ class NominalBytecodeTest {
         var artifact = compile("""
                 let @mut count :I32 = 0
                 let next :Fn<;I32> = (=> || { count := (++ count) count })
-                struct Pair { let first :I32 let second :I32 }
+                struct Pair { first :I32 second :I32 }
                 let @pub run :Fn<;I32> = (=> || {
                     let pair :Pair = :Pair[(next) (next)]
                     (+ (* pair:.first 10) pair:.second)
@@ -900,8 +900,8 @@ class NominalBytecodeTest {
                         let rootValue :I32 = ::initializeRoot[]
                         let @mut defaults :I32 = 0
                         class Once {
-                            let @pub first :I32 = { defaults := (++ defaults) defaults }
-                            let @pub second :I32 = { defaults := (++ defaults) defaults }
+                            @pub first :I32 = { defaults := (++ defaults) defaults }
+                            @pub second :I32 = { defaults := (++ defaults) defaults }
                         }
                         let @pub make :Fn<;Once> = (=> || :Once[])
                         """, SessionSnapshot.empty())));
@@ -952,7 +952,7 @@ class NominalBytecodeTest {
                 """)) {
             var request = CompileRequest.builder().rootModule("main").resolver(SourceResolver.memory(
                     ResolvedSource.memory(io.mindspice.lyra.compiler.source.LogicalModuleId.parse("model"),
-                            "memory:nominal/model", "struct @pub Point { let x :I32 }"),
+                            "memory:nominal/model", "struct @pub Point { x :I32 }"),
                     ResolvedSource.memory(io.mindspice.lyra.compiler.source.LogicalModuleId.parse("main"),
                             "memory:nominal/main", mainSource))).build();
             var artifact = compile(request);
@@ -969,8 +969,8 @@ class NominalBytecodeTest {
 
     @Test void nominalReferencesAreTruthTestableInAllTruthContexts() throws Throwable {
         var artifact = compile("""
-                struct Point { let x :I32 }
-                class Box { let value :I32 = 1 }
+                struct Point { x :I32 }
+                class Box { value :I32 = 1 }
                 let @pub structConditional :Fn<;Bool> = (=> || {
                     let point :Point = :Point[1]
                     (point -> #T : #F)
@@ -1041,9 +1041,9 @@ class NominalBytecodeTest {
     @Test void sourceFactoriesExecuteStructDefaultsAndClassConstructors() throws Throwable {
         var structs = compile("""
                 struct Point {
-                    let first :I32 = self:.required
-                    let @mut required :I32
-                    let next :I32 = (+ self:.first 1)
+                    first :I32 = self:.required
+                    @mut required :I32
+                    next :I32 = (+ self:.first 1)
                 }
                 let @pub make :Fn<I32;Point> = (=> |value| :Point[value])
                 let @pub read :Fn<Point;I32> = (=> |point| point:.required)
@@ -1066,10 +1066,10 @@ class NominalBytecodeTest {
 
         var classes = compile("""
                 class Counter {
-                    let @pub @mut value :I32
+                    @pub @mut value :I32
                     Counter = (=> |start :I32| { self:.value := start })
-                    let @pub increment :Fn<;Unit> = (=> || { self:.value := (++ self:.value) })
-                    let @pub current :Fn<;I32> = (=> || self:.value)
+                    @pub increment :Fn<;Unit> = (=> || { self:.value := (++ self:.value) })
+                    @pub current :Fn<;I32> = (=> || self:.value)
                 }
                 let @pub make :Fn<I32;Counter> = (=> |value| :Counter[value])
                 let @pub run :Fn<I32;I32> = (=> |value| {
@@ -1087,7 +1087,7 @@ class NominalBytecodeTest {
         }
 
         var methods = compile("""
-                class Cell { let @pub @mut read :Fn<;I32> = (=> || 1) }
+                class Cell { @pub @mut read :Fn<;I32> = (=> || 1) }
                 let @pub savedBehavior :Fn<;I32> = (=> || {
                     let @mut cell :Cell = :Cell[]
                     let saved :Fn<;I32> = cell:.read
@@ -1104,8 +1104,8 @@ class NominalBytecodeTest {
     @Test void directMethodReplacementCapturesTheSelectedReceiverAsContextualSelf() throws Throwable {
         var artifact = compile("""
                 class Counter {
-                    let @pub @mut value :I32 = 0
-                    let @pub @mut change :Fn<I32;I32> = (=> |delta| {
+                    @pub @mut value :I32 = 0
+                    @pub @mut change :Fn<I32;I32> = (=> |delta| {
                         self:.value := (+ self:.value delta)
                         self:.value
                     })
@@ -1137,9 +1137,9 @@ class NominalBytecodeTest {
                 let @mut selections :I32 = 0
                 let next :Fn<;I32> = (=> || { selections := (++ selections) 0 })
                 class Counter {
-                    let @pub @mut value :I32
+                    @pub @mut value :I32
                     Counter = (=> |start :I32| { self:.value := start })
-                    let @pub @mut change :Fn<I32;I32> = (=> |delta| {
+                    @pub @mut change :Fn<I32;I32> = (=> |delta| {
                         self:.value := (+ self:.value delta)
                         self:.value
                     })
@@ -1167,12 +1167,12 @@ class NominalBytecodeTest {
 
     @Test void structsCompareStructurallyWithCyclesWhileClassesUseIdentity() throws Throwable {
         var artifact = compile("""
-                class Box { let @pub value :I32 = 7 }
+                class Box { @pub value :I32 = 7 }
                 struct Node {
-                    let @mut value :I32
-                    let @mut @nil next :Node = #NIL
+                    @mut value :I32
+                    @mut @nil next :Node = #NIL
                 }
-                struct Holder { let box :Box }
+                struct Holder { box :Box }
                 let @pub equalValues :Fn<;Bool> = (=> || (== :Node[3] :Node[3]))
                 let @pub differentValues :Fn<;Bool> = (=> || (== :Node[3] :Node[4]))
                 let @pub equalCycles :Fn<;Bool> = (=> || {
@@ -1277,8 +1277,8 @@ class NominalBytecodeTest {
     @Test void nominalSignatureMetadataIsResolvedOncePerObjectAndFailedClosedLifecyclesStayFailClosed() throws Throwable {
         var artifact = compile("""
                 class Box {
-                    let @pub @mut apply :Fn<I32;I32> = (=> |x| (+ x 1))
-                    let @mut hidden :Fn<I32;I32> = (=> |x| (+ x 2))
+                    @pub @mut apply :Fn<I32;I32> = (=> |x| (+ x 1))
+                    @mut hidden :Fn<I32;I32> = (=> |x| (+ x 2))
                 }
                 let @pub make :Fn<;Box> = (=> || :Box[])
                 let @pub run :Fn<Box,I32;I32> = (=> |box x| (box:.apply x))
@@ -1363,9 +1363,9 @@ class NominalBytecodeTest {
      */
     @Test void nilableMemberReadContractsCompileAndExecuteInOneGeneration() throws Throwable {
         var artifact = compile("""
-                class Box { let @pub @nil n :I32 = #NIL }
-                class Full { let @pub @nil n :I32 = 5I32 }
-                class Plain { let @pub n :I32 = 4I32 }
+                class Box { @pub @nil n :I32 = #NIL }
+                class Full { @pub @nil n :I32 = 5I32 }
+                class Plain { @pub n :I32 = 4I32 }
                 let @pub annotated :Fn<;I32> = (=> || {
                     let box :Box = :Box[]
                     let v :@nil I32 = box:.n
@@ -1442,14 +1442,14 @@ class NominalBytecodeTest {
 
     @Test void sourceEmitsAndLoadsExactPrimitiveObjectMethods() throws Throwable {
         var artifact = compile("""
-                struct Point { let x :I32 let @mut y :I64 }
+                struct Point { x :I32 @mut y :I64 }
                 let @pub answer :Fn<;I32> = (=> || 42)
                 """);
         try (var loaded = LyraRuntime.load(artifact); var module = loaded.instantiate()) {
             assertEquals(42, (int) module.export("answer", "Fn<;I32>").methodHandle().invokeExact());
         }
         var type = representation(artifact, "Point");
-        var repeated = compile("struct Point { let x :I32 let @mut y :I64 }\nlet @pub answer :Fn<;I32> = (=> || 42)\n");
+        var repeated = compile("struct Point { x :I32 @mut y :I64 }\nlet @pub answer :Fn<;I32> = (=> || 42)\n");
         assertEquals(artifact.classes().keySet(), repeated.classes().keySet());
         artifact.classes().forEach((name, bytes) -> assertArrayEquals(bytes, repeated.classes().get(name), name));
         assertTrue(Modifier.isFinal(type.getModifiers()));
@@ -1490,7 +1490,7 @@ class NominalBytecodeTest {
     }
 
     @Test void emittedReferenceChecksPreserveAliasesAndRejectForeignObjects() throws Exception {
-        var artifact = compile("struct Node { let @mut @nil next :Node = #NIL let text :String let items :Array<@nil String> }");
+        var artifact = compile("struct Node { @mut @nil next :Node = #NIL text :String items :Array<@nil String> }");
         var type = representation(artifact, "Node");
         var producer = producer(artifact);
         var ticket = begin(artifact, producer, type);
@@ -1521,7 +1521,7 @@ class NominalBytecodeTest {
     }
 
     @Test void privateFieldsHaveNoPublicSurfaceAndInterfaceProxiesAreNotMethods() throws Exception {
-        var privateArtifact = compile("class Secret { let hidden :I32 = 7 }");
+        var privateArtifact = compile("class Secret { hidden :I32 = 7 }");
         var secret = representation(privateArtifact, "Secret");
         assertThrows(NoSuchMethodException.class, () -> secret.getMethod("$lyra$public$get$0"));
         var secretProducer = producer(privateArtifact);
@@ -1532,7 +1532,7 @@ class NominalBytecodeTest {
         assertEquals(7, secret.getMethod("$lyra$get$0", LyraClosureAuthority.class).invoke(secretValue, secretProducer.closureAuthority()));
         secretProducer.close();
 
-        var artifact = compile("class Functions { let @pub @mut callback :Fn<;I32> = (=> || 7) }");
+        var artifact = compile("class Functions { @pub @mut callback :Fn<;I32> = (=> || 7) }");
         var type = representation(artifact, "Functions");
         var classModel = java.lang.classfile.ClassFile.of().parse(artifact.classes().get(type.getName()));
         assertTrue(classModel.methods().stream().flatMap(method -> method.code().stream()).flatMap(code -> code.elementStream())
@@ -1570,7 +1570,7 @@ class NominalBytecodeTest {
                 String constructor = classType ? "" : "value";
                 String parameters = classType ? "" : scalar;
                 String fieldDefault = classType ? " = " + expected : "";
-                String source = (classType ? "class" : "struct") + " Sample { let "
+                String source = (classType ? "class" : "struct") + " Sample { "
                         + (classType ? "@pub " : "") + (mutable ? "@mut " : "")
                         + "value :" + scalar + fieldDefault + " }\n"
                         + "let @pub make :Fn<" + parameters + ";Sample> = (=> |"

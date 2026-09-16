@@ -111,7 +111,7 @@ public final class TypedIrTest {
                         + "let conditional = (cond #T -> 1 _ -> 2) "
                         + "let range = (0..10:1) iter[range || {}] while[|| #F || {}] "
                         + "let block = { 1 } let changed = (value := (++ value)) "
-                        + "struct Point { let x :I32 } let point :Point = :Point[1]")));
+                        + "struct Point { x :I32 } let point :Point = :Point[1]")));
         Set<Class<?>> variants = new HashSet<>();
         IrTraversal.preOrder(ir.rootModule().body()).forEach(node -> variants.add(node.getClass()));
         assertEquals(Set.of(IrNode.class.getPermittedSubclasses()), variants,
@@ -492,7 +492,7 @@ public final class TypedIrTest {
     @Test
     public void nominalCallProofCannotSubstituteAnotherSameTypedReceiverOccurrence() {
         TypedIr valid = phase(TypedIrBuilder.lower(typed("""
-                class Box { let @pub value :Fn<;I32> = (=> || 7) }
+                class Box { @pub value :Fn<;I32> = (=> || 7) }
                 let @pub run :Fn<Box,Box;I32> = (=> |first second| ((#T -> first : second):.value))
                 """)));
         IrModule original = valid.rootModule();

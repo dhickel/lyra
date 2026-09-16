@@ -1,5 +1,5 @@
 // nominal	value	I32	5	zero-argument explicit construction initializes defaults
 class Counter {
-    let @pub @mut value :I32 = 5
+    @pub @mut value :I32 = 5
 }
 let @pub run :Fn<;I32> = (=> | | { let counter :Counter = Counter[] counter:.value })

@@ -49,8 +49,8 @@ public final class GeneratedTypePlannerTest {
                 boolean mutable = random.nextBoolean();
                 boolean array = random.nextBoolean();
                 String field = array ? "Array<@nil I64>" : "I32";
-                String source = "struct Node { let " + (mutable ? "@mut " : "")
-                        + "data :" + field + " let @nil next :Node }";
+                String source = "struct Node { " + (mutable ? "@mut " : "")
+                        + "data :" + field + " @nil next :Node }";
                 var typed = ir(source);
                 var runtime = NominalRuntimeContracts.from(typed);
                 var schema = runtime.schemas().getFirst();
@@ -76,10 +76,10 @@ public final class GeneratedTypePlannerTest {
     @Test
     void nominalRuntimeProjectionPreservesSourceSchemasWithoutReparsingUnknownNames() {
         TypedIr ir = ir("""
-                struct Node { let @mut @nil next :Node = #NIL let data :Array<I32> }
+                struct Node { @mut @nil next :Node = #NIL data :Array<I32> }
                 class Holder {
-                    let @mut @nil node :Node = #NIL
-                    let @pub @mut read :Fn<;@nil Node> = (=> || self:.node)
+                    @mut @nil node :Node = #NIL
+                    @pub @mut read :Fn<;@nil Node> = (=> || self:.node)
                 }
                 """);
         var runtime = NominalRuntimeContracts.from(ir);
@@ -154,7 +154,7 @@ public final class GeneratedTypePlannerTest {
 
     @Test
     void nominalLayoutRejectsForgedOriginFieldOrderAndFactoryContracts() {
-        var generated = GeneratedTypePlanner.plan(ir("struct Pair { let first :I32 let @mut second :I64 }"));
+        var generated = GeneratedTypePlanner.plan(ir("struct Pair { first :I32 @mut second :I64 }"));
         var layout = generated.nominalLayouts().values().iterator().next();
         var mapper = generated.mapper();
         assertThrows(IllegalArgumentException.class, () -> new NominalClassLayout(
@@ -181,7 +181,7 @@ public final class GeneratedTypePlannerTest {
         var typed = ir("""
                 struct Empty { }
                 class Counter {
-                    let value :I32
+                    value :I32
                     Counter = (=> |initial :I32| { self:.value := initial })
                 }
                 """);

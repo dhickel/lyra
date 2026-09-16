@@ -146,12 +146,12 @@ final class RetainedNominalModel {
                 + "let @pub make :Fn<;Array<I32>> = (=> || Array<I32>[" + constants.makeA() + "I32 "
                 + constants.makeB() + "I32])\n"
                 + "let @nil maybe :I32 = " + maybeValue + "I32\n"
-                + "class Inner { let @pub value :I32 = " + constants.inner() + "I32 }\n"
-                + "struct Pair { let left :I32 }\n";
+                + "class Inner { @pub value :I32 = " + constants.inner() + "I32 }\n"
+                + "struct Pair { left :I32 }\n";
     }
 
     private static String holders() {
-        return "class Holder { let @pub value :Tuple<Inner> = ::makeTuple[] }\n"
+        return "class Holder { @pub value :Tuple<Inner> = ::makeTuple[] }\n"
                 + "let @pub makeTuple :Fn<;Tuple<Inner>> = (=> || Tuple[:Inner[]])\n";
     }
 
@@ -161,11 +161,11 @@ final class RetainedNominalModel {
         int converted = bound(random, 1, 30000);
         String producer = preamble(random, constants) + holders() + """
                 class Box {
-                    let @pub literal :I32 = %dI32
-                    let @pub reference :I32 = baseline
-                    let @pub member :I32 = self:.literal
-                    let @pub op :I32 = (+ %dI32 %dI32)
-                    let @pub converted :I32 = I32[%dI16]
+                    @pub literal :I32 = %dI32
+                    @pub reference :I32 = baseline
+                    @pub member :I32 = self:.literal
+                    @pub op :I32 = (+ %dI32 %dI32)
+                    @pub converted :I32 = I32[%dI16]
                 }
                 """.formatted(literal, o0, o1, converted);
         List<MemberExpectation> members = List.of(
@@ -187,10 +187,10 @@ final class RetainedNominalModel {
         int lambda = bound(random, 1, 10), direct = bound(random, 1, 10);
         String producer = preamble(random, constants) + """
                 class Box {
-                    let @pub lambda :Fn<;I32> = (=> || %dI32)
-                    let @pub direct :I32 = ::inc[%dI32]
-                    let @pub callable :I32 = (zero)
-                    let @pub made :Array<I32> = ::make[]
+                    @pub lambda :Fn<;I32> = (=> || %dI32)
+                    @pub direct :I32 = ::inc[%dI32]
+                    @pub callable :I32 = (zero)
+                    @pub made :Array<I32> = ::make[]
                 }
                 """.formatted(lambda, direct);
         List<MemberExpectation> members = List.of(
@@ -215,12 +215,12 @@ final class RetainedNominalModel {
         int n0 = bound(random, 1, 10);
         String producer = preamble(random, constants) + """
                 class Box {
-                    let @pub array :Array<I32> = Array<I32>[%dI32 %dI32]
-                    let @pub tuple :Tuple<I32,Fn<;I32>> = Tuple[%dI32 (=> || %dI32)]
-                    let @pub index :I32 = Array<I32>[%dI32 %dI32][1I32]
-                    let @pub char :Char = "ab"[1I32]
-                    let @pub sized :I32 = Array<I32>[%dI32 %dI32 %dI32]:.length
-                    let @pub nilIndex :@nil I32 = Array<@nil I32>[#NIL %dI32][1I32]
+                    @pub array :Array<I32> = Array<I32>[%dI32 %dI32]
+                    @pub tuple :Tuple<I32,Fn<;I32>> = Tuple[%dI32 (=> || %dI32)]
+                    @pub index :I32 = Array<I32>[%dI32 %dI32][1I32]
+                    @pub char :Char = "ab"[1I32]
+                    @pub sized :I32 = Array<I32>[%dI32 %dI32 %dI32]:.length
+                    @pub nilIndex :@nil I32 = Array<@nil I32>[#NIL %dI32][1I32]
                 }
                 """.formatted(a0, a1, t0, t1, x0, x1, l0, l1, l2, n0);
         List<MemberExpectation> members = List.of(
@@ -246,9 +246,9 @@ final class RetainedNominalModel {
         int o0 = bound(random, 1, 10), o1 = bound(random, 1, 10), o2 = bound(random, 1, 10);
         String producer = preamble(random, constants) + """
                 class Box {
-                    let @pub declare :I32 = { let @mut local :I32 = %dI32 local := %dI32 local }
-                    let @pub shadow :I32 = { let selected :I32 = %dI32 { let selected :I32 = %dI32 selected } }
-                    let @pub overwritten :I32 = { let @mut cell :I32 = %dI32 cell := %dI32 cell := %dI32 cell }
+                    @pub declare :I32 = { let @mut local :I32 = %dI32 local := %dI32 local }
+                    @pub shadow :I32 = { let selected :I32 = %dI32 { let selected :I32 = %dI32 selected } }
+                    @pub overwritten :I32 = { let @mut cell :I32 = %dI32 cell := %dI32 cell := %dI32 cell }
                 }
                 """.formatted(d0, d1, s0, s1, o0, o1, o2);
         List<MemberExpectation> members = List.of(
@@ -278,18 +278,18 @@ final class RetainedNominalModel {
                 + "let @pub make :Fn<;Array<I32>> = (=> || Array<I32>[" + constants.makeA() + "I32 "
                 + constants.makeB() + "I32])\n"
                 + "let @nil maybe :I32 = " + (nilable ? "#NIL" : maybeValue + "I32") + "\n"
-                + "class Inner { let @pub value :I32 = " + constants.inner() + "I32 }\n"
-                + "struct Pair { let left :I32 }\n" + """
+                + "class Inner { @pub value :I32 = " + constants.inner() + "I32 }\n"
+                + "struct Pair { left :I32 }\n" + """
                 class Box {
-                    let @pub conditional :I32 = (#T -> %dI32 : %dI32)
-                    let @pub unitCond :Unit = (#T -> ())
-                    let @pub coalesced :I32 = (maybe : %dI32)
-                    let @pub matched :I32 = (match %dI32 %dI32 -> %dI32 _ -> %dI32)
-                    let @pub guarded :I32 = (match %dI32 %dI32 when #T -> %dI32 _ -> %dI32)
-                    let @pub present :@nil I32 = maybe
-                    let @pub absent :@nil I32 = #NIL
-                    let @pub narrowable :@nil I32 = maybe
-                    let @pub matchable :@nil I32 = #NIL
+                    @pub conditional :I32 = (#T -> %dI32 : %dI32)
+                    @pub unitCond :Unit = (#T -> ())
+                    @pub coalesced :I32 = (maybe : %dI32)
+                    @pub matched :I32 = (match %dI32 %dI32 -> %dI32 _ -> %dI32)
+                    @pub guarded :I32 = (match %dI32 %dI32 when #T -> %dI32 _ -> %dI32)
+                    @pub present :@nil I32 = maybe
+                    @pub absent :@nil I32 = #NIL
+                    @pub narrowable :@nil I32 = maybe
+                    @pub matchable :@nil I32 = #NIL
                 }
                 """.formatted(k0, k1, q, m0, m0, m1, m2, m0, m0, m1, m2);
         List<MemberExpectation> members = List.of(
@@ -328,11 +328,11 @@ final class RetainedNominalModel {
         int pair = bound(random, 1, 10);
         String producer = preamble(random, constants) + """
                 class Box {
-                    let @pub range :Range<I32> = (%dI32..%dI32:1I32)
-                    let @pub converted :I32 = I32[%dI16]
-                    let @pub nested :Inner = :Inner[]
-                    let @pub paired :Pair = :Pair[%dI32]
-                    let @pub made :Array<I32> = ::make[]
+                    @pub range :Range<I32> = (%dI32..%dI32:1I32)
+                    @pub converted :I32 = I32[%dI16]
+                    @pub nested :Inner = :Inner[]
+                    @pub paired :Pair = :Pair[%dI32]
+                    @pub made :Array<I32> = ::make[]
                 }
                 """.formatted(r0, r1, converted, pair);
         List<MemberExpectation> members = List.of(
@@ -356,10 +356,10 @@ final class RetainedNominalModel {
         int f0 = bound(random, 1, 10), f1 = bound(random, 1, 10);
         String producer = preamble(random, constants) + """
                 class Box {
-                    let @pub values :Array<I32> = shared
-                    let @pub alias :Array<I32> = self:.values
+                    @pub values :Array<I32> = shared
+                    @pub alias :Array<I32> = self:.values
                 }
-                class Fresh { let @pub values :Array<I32> = Array<I32>[%dI32 %dI32] }
+                class Fresh { @pub values :Array<I32> = Array<I32>[%dI32 %dI32] }
                 """.formatted(f0, f1);
         List<MemberExpectation> members = List.of(
                 new MemberExpectation("Box", "values", "Apply", 1),
@@ -383,12 +383,12 @@ final class RetainedNominalModel {
     private static Plan pinnedUnit(SplittableRandom random, int retainedOrdinal) {
         String producer = "import std->io\n" + """
                 class LoopC {
-                    let @pub iterated :Unit = iter[(0I32..2I32:1I32) || ()]
-                    let @pub looped :Unit = while[|| #F || ()]
+                    @pub iterated :Unit = iter[(0I32..2I32:1I32) || ()]
+                    @pub looped :Unit = while[|| #F || ()]
                 }
                 class Intrinsic {
-                    let @pub printed :Unit = io->::println["probe"]
-                    let @pub printer :Fn<String;Unit> = io->:.println
+                    @pub printed :Unit = io->::println["probe"]
+                    @pub printer :Fn<String;Unit> = io->:.println
                 }
                 """;
         List<MemberExpectation> members = List.of(
@@ -415,8 +415,8 @@ final class RetainedNominalModel {
                 let @mut effects :I32 = 0
                 let @mut divisor :I32 = 0
                 class Failure {
-                    let @pub touched :I32 = { effects := (++ effects) effects }
-                """ + "                    let @pub fail :I32 = (% 8 divisor)\n                }\n";
+                    @pub touched :I32 = { effects := (++ effects) effects }
+                """ + "                    @pub fail :I32 = (% 8 divisor)\n                }\n";
         List<MemberExpectation> members = List.of(
                 new MemberExpectation("Failure", "touched", "Sequence", 2),
                 new MemberExpectation("Failure", "fail", "Apply", 2));
@@ -434,15 +434,15 @@ final class RetainedNominalModel {
         int replacement = bound(random, 1, 10), sourceValue = bound(random, 1, 10);
         int shadowValue = bound(random, 1, 10);
         String producer = preamble(random, constants) + """
-                class Counter { let @pub @mut read :Fn<;I32> = (=> || 1I32) }
+                class Counter { @pub @mut read :Fn<;I32> = (=> || 1I32) }
                 let @mut holder :Counter = :Counter[]
                 let saved :Fn<;I32> = holder:.read
                 class SlotBox {
-                    let @pub current :I32 = holder::read[]
-                    let @pub original :I32 = (saved)
+                    @pub current :I32 = holder::read[]
+                    @pub original :I32 = (saved)
                 }
                 let source :Fn<;I32> = (=> || %dI32)
-                class Shadow { let @pub value :I32 = ::source[] }
+                class Shadow { @pub value :I32 = ::source[] }
                 """.formatted(sourceValue);
         List<MemberExpectation> members = List.of(
                 new MemberExpectation("SlotBox", "current", "CallableCall", 0),

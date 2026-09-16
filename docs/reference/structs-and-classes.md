@@ -6,26 +6,26 @@ Structs and classes are concrete nominal reference types. Identity belongs to th
 
 ```lyra
 struct @pub Vec2 {
-    let @mut x :F64
-    let @mut y :F64
+    @mut x :F64
+    @mut y :F64
 }
 
 class @pub Counter {
-    let @pub @mut value :I32
+    @pub @mut value :I32
 
     Counter = (=> |start :I32| {
         self:.value := start
     })
 
-    let @pub @mut increment :Fn<;Unit> = (=> || {
+    @pub @mut increment :Fn<;Unit> = (=> || {
         self:.value := (++ self:.value)
     })
 
-    let @pub current :Fn<;I32> = (=> || self:.value)
+    @pub current :Fn<;I32> = (=> || self:.value)
 }
 ```
 
-Declarations are module-level and names begin with an uppercase ASCII letter. Type visibility is private unless `@pub`. Every member has an explicit complete type. Member names are unique.
+Declarations are module-level and names begin with an uppercase ASCII letter. Type visibility is private unless `@pub`. Members omit `let`, have an explicit complete type, and are unique within the type. This omission applies only inside struct/class bodies. Top-level, block-local, and lambda-local bindings remain ordinary `let` bindings.
 
 | Rule | Struct | Class |
 | --- | --- | --- |
@@ -56,6 +56,15 @@ Arguments evaluate once from left to right. Required struct fields are installed
 Every field must be definitely initialized on all completing paths. Immutable fields initialize exactly once. Reads before initialization, method calls on incomplete `self`, duplicate immutable initialization, and escape of incomplete `self` are compile errors. A loop alone cannot prove an assignment occurs.
 
 ## Fields and methods
+
+Member declarations are not ordinary bindings. For example, the following
+`let` forms remain required outside a nominal body:
+
+```lyra
+let topLevel :I32 = 1
+let blockResult :I32 = { let local :I32 = 2 local }
+let make :Fn<;I32> = (=> || { let lambdaLocal :I32 = 3 lambdaLocal })
+```
 
 ```lyra
 let current :I32 = counter:.value

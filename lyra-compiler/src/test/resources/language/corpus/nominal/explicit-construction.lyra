@@ -1,5 +1,5 @@
 // nominal	value	I32	7	explicit nominal construction with a positional field argument
 struct Box {
-    let value :I32
+    value :I32
 }
 let @pub run :Fn<;I32> = (=> | | { let box :Box = :Box[7] box:.value })

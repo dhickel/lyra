@@ -100,6 +100,11 @@ let @pub transform :Fn<I32;I32> = (=> |value| (+ value 1))
 let @nil label :String = #NIL
 ```
 
+Nominal members are the exception to this binding spelling: their declarations omit
+`let` and use the member form specified below. This exception is limited to
+struct/class bodies. Top-level declarations, block-local declarations, and
+lambda-local declarations all remain `let` bindings.
+
 The current modifier set is closed:
 
 - `@pub`: module export or selected import re-export;
@@ -156,22 +161,22 @@ snapshots expose public nominal data without leaking private class members.
 
 ```lyra
 struct Vec2 {
-    let @mut x :F64
-    let @mut y :F64
+    @mut x :F64
+    @mut y :F64
 }
 
 class Counter {
-    let @mut value :I32
+    @mut value :I32
 
     Counter = (=> |start :I32| {
         self:.value := start
     })
 
-    let @pub @mut increment :Fn<;Unit> = (=> || {
+    @pub @mut increment :Fn<;Unit> = (=> || {
         self:.value := (++ self:.value)
     })
 
-    let @pub current :Fn<;I32> = (=> || self:.value)
+    @pub current :Fn<;I32> = (=> || self:.value)
 }
 
 let position :Vec2 = Vec2[10.0 20.0]
@@ -190,9 +195,12 @@ Declarations and identity:
   `class [@pub] Name { members }`. Names begin with an uppercase ASCII letter.
   Type visibility is private unless `@pub`; this is separate from member visibility.
   Types and values retain one namespace. Member names must be unique in a type.
-- Members use `let Modifier* name :Type [= expression]`. Every member contract
-  is explicit and complete. Missing initializers are legal only for these members,
-  not ordinary lexical bindings. `@nil` retains its existing value-contract meaning.
+- Members use `Modifier* name :Type [= expression]` without `let`. Every member
+  contract is explicit and complete. Missing initializers are legal only for these
+  members, not ordinary lexical bindings; `let` is not valid in a nominal body.
+  The member exception does not apply to declarations in a top-level sequence,
+  block, or lambda body, which continue to require `let`.
+  `@nil` retains its existing value-contract meaning.
 - Struct fields are public by default. Class fields and methods are private unless
   `@pub`. Access is checked lexically against the declaring class, including when
   taking a method reference. Access through another instance of the same class
