@@ -1,6 +1,7 @@
 # Specification Index
 
 - [`language-core.md`](language-core.md): normative current-scope source syntax, static semantics, evaluation, values, functions, mutation, modules, and language-visible failures. It excludes representation details and later Java/engine interop.
+- [`grammar.ebnf`](grammar.ebnf): formal, machine-readable EBNF grammar for the current language scope, subordinate to `language-core.md` and kept as a synchronization aid for the grammar matcher.
 - [`backend-runtime.md`](backend-runtime.md): normative compiler phases, typed IR, Java 25 bytecode, JVM representations, module resolution/lifecycle, CLI/artifacts, Java consumption API, compatibility metadata, minimal standalone library, performance evidence, and backend validation.
 - [`repl.md`](repl.md): optional persistent session/evaluation, attached-root authority, console, protocol, security, lifecycle, packaging, and validation contract.
 - [`editor.md`](editor.md): optional JavaFX development workspace, compiler tooling, project files/settings, REPL client, isolated execution, JDI debugging, distribution and editor validation. It does not own language or runtime semantics.
