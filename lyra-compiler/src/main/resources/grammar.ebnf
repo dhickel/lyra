@@ -1,0 +1,311 @@
+(*
+  Lyra syntax grammar (standard ISO 14977 EBNF)
+
+  This file is a readable, machine-friendly synchronization aid for the
+  grammar matcher.  The living specifications
+  `.internal-dev/specifications/language-core.md` and `backend-runtime.md`
+  are authoritative; this file and `grammar_spec.md` are subordinate to them.
+  Static typing, name/member legality, modifier legality that depends on a
+  binding context, and all runtime behavior belong to later phases.
+
+  Notation:
+    - `=` defines a rule and `;` terminates it.
+    - `[ ... ]` is an optional part and `{ ... }` is zero or more repetitions.
+    - `|` separates alternatives and `( ... )` groups them.
+    - `'...'` is a literal terminal; `? ... ?` is a character-class
+      special sequence (a regex-like description, not a language token).
+    - `(* ... *)` is a comment.  `ε` denotes the empty string.
+
+  Lexical context that plain EBNF cannot express:
+    - Whitespace and comments may occur between tokens except where the
+      annotation rules below say otherwise.  A comma is an optional
+      separator, shown in the rules as `[ ',']`, only inside parameter,
+      argument, type-argument, tuple, and array lists, and between sibling
+      forms of a module/block sequence or marker-free match/cond arm
+      sequence when the following sibling begins with `::`.  Leading,
+      trailing, and repeated commas are invalid.
+    - `//` begins a line comment; `/* ... */` is a nestable block comment.
+    - A named type annotation is exactly `name :Type`: whitespace is required
+      before `:` and forbidden after it.  A return annotation has no name and
+      is written `:Type`; whitespace remains forbidden after the colon.
+    - `+` and `-` are operators, not part of a numeric literal magnitude,
+      except that a `-` written immediately adjacent to a numeric literal in
+      an expression position is a bare negative literal normalized to the
+      unary-minus operation.
+*)
+
+(* ------------------------------------------------------------------ *)
+(* Lexical terminals                                                   *)
+(* ------------------------------------------------------------------ *)
+
+letter                         = ? [A-Za-z] ? ;
+digit                          = ? [0-9] ? ;
+hex-digit                      = ? [0-9A-Fa-f] ? ;
+
+identifier                     = ( letter | '_' ) { letter | digit | '_' } ;
+capitalized-identifier         = ? [A-Z] ? { letter | digit | '_' } ;
+
+type-name                      = 'I8' | 'I16' | 'I32' | 'I64'
+                               | 'U8' | 'U16' | 'U32' | 'U64'
+                               | 'F32' | 'F64'
+                               | 'Bool' | 'Char' | 'String' | 'Unit'
+                               | 'Array' | 'Range' | 'Tuple' | 'Fn' ;
+
+modifier                       = '@pub' | '@mut' | '@nil' ;
+return-modifier                = '@nil' ;
+
+boolean-literal                = '#T' | '#F' ;
+nil-literal                    = '#NIL' ;
+
+integer                        = digit { digit }
+                                 ( 'I8' | 'I16' | 'I32' | 'I64'
+                                 | 'U8' | 'U16' | 'U32' | 'U64' )? ;
+decimal                        = digit { digit } '.' digit { digit }
+                                 [ ( 'e' | 'E' ) [ '+' | '-' ] digit { digit } ]
+                                 ( 'F32' | 'F64' )? ;
+
+backslash                      = ? U+005C (REVERSE SOLIDUS) ? ;
+escape                         = backslash
+                                 ( backslash | '"' | "'" | 'n' | 'r' | 't'
+                                 | 'b' | 'f' | '0'
+                                 | 'u' hex-digit hex-digit hex-digit hex-digit ) ;
+string                         = '"' { string-char | escape } '"' ;
+character                      = "'" ( string-char | escape ) "'" ;
+(* any one UTF-16 code unit other than the reverse solidus (U+005C), the
+   double quote (U+0022), a line break, or an ISO control character; a Char
+   literal must decode to exactly one unit *)
+string-char                    = ? a UTF-16 code unit excluding U+005C, U+0022, CR, LF, and ISO controls ? ;
+
+literal                        = boolean-literal | nil-literal | integer
+                               | decimal | string | character ;
+negative-literal               = '-' ( integer | decimal ) ;   (* '-' adjacent to the digits *)
+
+operator                       = '+' | '-' | '*' | '/' | '^' | '%'
+                               | '<' | '<=' | '>' | '>=' | '==' | '!='
+                               | 'eq?' | '!eq?' | 'and' | 'or' | 'xor' | 'not'
+                               | '++' | '--' ;
+
+(* ------------------------------------------------------------------ *)
+(* Compilation units and imports                                       *)
+(* ------------------------------------------------------------------ *)
+
+program                        = { import-declaration }
+                                 { nominal-declaration | form } EOF ;
+
+form                           = let-binding | reassignment | expression ;
+
+import-declaration             = 'import' [ '@pub' ] import-path
+                                 [ 'as' identifier
+                                 | '->' '{' import-item { import-item } '}' ] ;
+import-path                    = identifier { '->' identifier } ;
+import-item                    = identifier [ 'as' identifier ] ;
+
+(* Imports must form the initial header.  '@pub' is accepted only on the
+   selective-import alternative, and a selective import has at least one
+   item.  The grammar does not decide whether a module, export, alias, or
+   member exists. *)
+
+(* ------------------------------------------------------------------ *)
+(* Nominal declarations                                                *)
+(* ------------------------------------------------------------------ *)
+
+nominal-declaration            = 'struct' [ '@pub' ] capitalized-identifier
+                                 '{' { member-declaration } '}'
+                               | 'class' [ '@pub' ] capitalized-identifier
+                                 '{' { member-declaration | constructor-declaration } '}' ;
+member-declaration             = { modifier } identifier named-annotation
+                                 [ '=' expression ] ;
+constructor-declaration        = capitalized-identifier '=' lambda ;
+named-type                     = identifier { '->' identifier } ;
+
+(* 'struct' and 'class' are reserved; declarations are module-level only.
+   Members are declared directly with optional modifiers, a name, and an
+   explicit type; ordinary 'let' bindings still require initializers and are
+   not valid in a nominal body.  A class has at most one same-name
+   constructor. *)
+
+(* ------------------------------------------------------------------ *)
+(* Bindings, assignment, blocks, and lambdas                           *)
+(* ------------------------------------------------------------------ *)
+
+let-binding                    = 'let' { modifier } identifier [ named-annotation ]
+                                 '=' expression ;
+reassignment                   = expression ':=' expression ;
+prefix-assignment              = '(' ':=' expression expression ')' ;
+
+block                          = '{' { form } '}' ;
+
+lambda                         = '(' '=>' { return-modifier } [ return-annotation ]
+                                 parameter-list expression ')' ;
+compact-lambda                 = parameter-list expression ;
+parameter-list                 = '|' [ parameter { [ ','] parameter } ] '|' ;
+parameter                      = { modifier } identifier [ named-annotation ] ;
+return-annotation              = ':' type ;
+named-annotation               = ':' type ;
+
+(* The complete lambda contract may come from an expected 'Fn' type, so the
+   parameter and return annotations can be omitted in the source form.
+   Semantic analysis requires a complete contract.  The matcher retains every
+   modifier and annotation range but does not infer that contract. *)
+
+(* ------------------------------------------------------------------ *)
+(* Expressions and accessors                                           *)
+(* ------------------------------------------------------------------ *)
+
+expression                     = atom { postfix } ;
+
+atom                           = literal
+                               | negative-literal
+                               | identifier
+                               | parenthesized-expression
+                               | block
+                               | compact-lambda
+                               | '::' identifier argument-list     (* direct call *)
+                               | match-bracket
+                               | cond-bracket
+                               | iter-bracket
+                               | while-bracket
+                               | operator-bracket
+                               | explicit-construction
+                               | typed-expression ;
+
+parenthesized-expression       = '('
+                                 ( ')'                                 (* Unit literal *)
+                                 | 'match' match-content ')'           (* (match ...) *)
+                                 | 'cond' cond-content ')'             (* (cond ...) *)
+                                 | 'iter' expression-list ')'          (* (iter ...) *)
+                                 | 'while' expression-list ')'         (* (while ...) *)
+                                 | '::' identifier argument-list ')'   (* parenthesized direct call *)
+                                 | '=>' { return-modifier } [ return-annotation ]
+                                   parameter-list expression ')'       (* lambda *)
+                                 | ':=' expression expression ')'      (* prefix assignment *)
+                                 | operator expression-list ')'        (* operator S-expression *)
+                                 | conditional ')'
+                                 | coalesce ')'
+                                 | range ')'
+                                 | call ')' ) ;
+
+conditional                    = expression [ predicate-binding ] '->' expression
+                                 [ ':' expression ] ;
+predicate-binding              = identifier ;
+coalesce                       = expression ':' expression ;
+range                          = expression ( '..' | '..=' ) expression ':' expression ;
+call                           = expression { expression } ;  (* head then arguments *)
+
+postfix                        = argument-list
+                               | ':.' member-name
+                               | '::' identifier argument-list
+                               | namespace-suffix ;
+
+namespace-suffix               = '->' [ identifier { '->' identifier } [ '->' ] ]
+                                 ( ':.' member-name
+                                 | '::' identifier argument-list ) ;
+member-name                    = identifier | unsigned-decimal-field-position ;
+unsigned-decimal-field-position = digit { digit } ;
+
+argument-list                  = '[' [ argument { [ ','] argument } ] ']' ;
+argument                       = expression ;
+expression-list                = [ argument { [ ','] argument } ] ;
+operator-bracket               = operator argument-list ;
+
+(* Postfix parsing is greedy and whitespace is not an expression boundary.
+   If one item in an argument-list or expression-list ends in an ordinary
+   direct call and the next item begins with '::', the '::' is otherwise
+   parsed as a postfix receiver call on the preceding item.  Such adjacent
+   direct-call items require the optional comma to become explicit, for
+   example '(+ ::left[], ::right[])' or '+[::left[], ::right[]]'.  The same
+   narrow separator is accepted between sibling forms of a program/block
+   sequence and between marker-free match/cond arms when, and only when, the
+   following sibling begins with '::'.  Parentheses are not general
+   expression grouping, but the exact parenthesized direct call '(::left[])'
+   preserves that direct call instead of applying its result. *)
+
+(* ------------------------------------------------------------------ *)
+(* Match and conditional expressions                                   *)
+(* ------------------------------------------------------------------ *)
+
+match-bracket                  = 'match' '[' match-content ']' ;
+cond-bracket                   = 'cond' '[' cond-content ']' ;
+iter-bracket                   = 'iter' '[' expression-list ']' ;
+while-bracket                  = 'while' '[' expression-list ']' ;
+
+match-content                  = expression { match-arm } fallback-arm ;
+cond-content                   = { cond-arm } fallback-arm ;
+
+match-arm                      = arm-head [ 'when' expression ] '->' expression ;
+arm-head                       = expression | '_' ;
+cond-arm                       = expression '->' expression ;
+fallback-arm                   = '_' '->' expression ;
+
+(* The obsolete '::match[...]', '::cond[...]', '::iter[...]' and '::while[...]'
+   bracket spellings, the obsolete '??' arm marker, and the obsolete
+   conditional '(match _ ...)' form are rejected with structured
+   source-mapped diagnostics.  Arms may be separated by a comma only when
+   the following arm begins with '::'.  Every match requires a real subject
+   and a final unguarded wildcard fallback; 'cond' has no subject and the
+   same mandatory unconditional fallback. *)
+
+(* ------------------------------------------------------------------ *)
+(* Arrays, tuples, conversions, and types                              *)
+(* ------------------------------------------------------------------ *)
+
+array-expression               = 'Array' argument-list
+                               | array-type argument-list ;
+tuple-expression               = 'Tuple' argument-list
+                               | tuple-type argument-list ;
+typed-expression               = array-expression
+                               | tuple-expression
+                               | primitive-type argument-list ;
+
+array-type                     = 'Array' '<' type '>' ;
+range-type                     = 'Range' '<' type '>' ;
+tuple-type                     = 'Tuple' '<' type { [ ','] type } '>' ;
+function-type                  = 'Fn' '<' function-parameter-types ';' type '>' ;
+function-parameter-types       = [ type { [ ','] type } ] ;
+primitive-type                 = 'I8' | 'I16' | 'I32' | 'I64'
+                               | 'U8' | 'U16' | 'U32' | 'U64'
+                               | 'F32' | 'F64'
+                               | 'Bool' | 'Char' | 'String' | 'Unit' ;
+
+type                           = { contract-modifier } type-base ;
+contract-modifier              = '@mut' | '@nil' ;
+type-base                      = primitive-type
+                               | array-type
+                               | range-type
+                               | tuple-type
+                               | function-type
+                               | named-type ;
+
+(* 'Array[]' and 'Tuple[]' are the Unit spellings.  'Array<T>[]' is an empty
+   array.  'I32[value]', 'String[value]', and the other primitive type
+   applications are explicit conversions.  'Fn<;R>' is the zero-parameter
+   function signature.  '@mut' and '@nil' may occur in nested contracts;
+   '@pub' is not a nested contract modifier.
+
+   Unary postfix brackets retain an index-shaped syntax node until type/value
+   resolution; zero/multiple arguments retain a bracket-application node.
+   Capitalization does not distinguish construction from indexing.  Nominal
+   construction is resolved from the bracket target: *)
+
+explicit-construction          = nominal-construction ;
+nominal-construction           = named-type argument-list
+                               | ':' named-type argument-list ;   (* legacy spelling *)
+
+(* 'Type[args]' and 'module->Type[args]' are the canonical nominal-construction
+   spellings.  The legacy colon-prefixed forms remain accepted, while the
+   qualified namespace-value form 'model->:.Counter[0]' is rejected.
+   Primitive/String conversions and Array/Tuple literals keep their
+   unprefixed spelling.  A named type annotation uses ':model->Counter'. *)
+
+(* ------------------------------------------------------------------ *)
+(* Excluded syntax                                                     *)
+(* ------------------------------------------------------------------ *)
+
+(* There are no grammar productions for variants, destructuring or type
+   patterns, dedicated iteration statements, user generics, macros, 'throw',
+   'try', 'catch', 'finally', varargs/default/named arguments, bitwise or
+   shift operators, or 'nor'/'nand'/'xnor'.  Their current lexical spellings
+   either remain ordinary identifiers or produce the ordinary lexical/syntax
+   diagnostic required by the living specifications; they are never
+   represented by a deferred-production placeholder.  'Any' has no special
+   meaning. *)
